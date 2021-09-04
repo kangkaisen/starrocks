@@ -225,4 +225,8 @@ public class ExchangeNode extends PlanNode {
         return accept;
     }
 
+    public boolean canDoReplicatedJoin() {
+        return false;
+    }
+
 }
