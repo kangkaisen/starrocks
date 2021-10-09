@@ -4213,4 +4213,30 @@ public class PlanFragmentTest extends PlanTestBase {
         Assert.assertFalse(plan.contains("Decode"));
         FeConstants.USE_MOCK_DICT_MANAGER = false;
     }
+
+    @Test
+    public void testDecodeNodeRewrite6() throws Exception {
+        FeConstants.USE_MOCK_DICT_MANAGER = true;
+        String sql = "select count(S_ADDRESS) from supplier";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("output: count(10: S_ADDRESS)"));
+        Assert.assertFalse(plan.contains("Decode"));
+
+        connectContext.getSessionVariable().setNewPlanerAggStage(2);
+        sql = "select count(S_ADDRESS) from supplier";
+        plan = getFragmentPlan(sql);
+        Assert.assertFalse(plan.contains("Decode"));
+        FeConstants.USE_MOCK_DICT_MANAGER = false;
+    }
+
+    @Test
+    public void testDecodeNodeRewrite7() throws Exception {
+        FeConstants.USE_MOCK_DICT_MANAGER = true;
+        String sql = "select count(*), S_ADDRESS from supplier group by S_ADDRESS";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("  2:Decode\n" +
+                "  |  <dict id 10> : <string id 3>"));
+
+        FeConstants.USE_MOCK_DICT_MANAGER = false;
+    }
 }

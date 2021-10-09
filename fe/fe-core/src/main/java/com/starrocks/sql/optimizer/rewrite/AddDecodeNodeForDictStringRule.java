@@ -227,7 +227,7 @@ public class AddDecodeNodeForDictStringRule implements PhysicalOperatorTreeRewri
                         Integer dictColumnId = context.stringColumnIdToDictColumnIds.get(columnId);
                         ColumnRefOperator dictColumn = context.columnRefFactory.getColumnRef(dictColumnId);
                         CallOperator newCall = new CallOperator(kv.getValue().getFnName(), kv.getValue().getType(),
-                                Collections.singletonList(dictColumn));
+                                Collections.singletonList(dictColumn), kv.getValue().getFunction());
                         newAggMap.put(kv.getKey(), newCall);
                     }
                 }
@@ -259,6 +259,9 @@ public class AddDecodeNodeForDictStringRule implements PhysicalOperatorTreeRewri
             }
 
             context.stringColumnIdToDictColumnIds = newStringToDicts;
+            if (newStringToDicts.isEmpty()) {
+                context.hasChanged = false;
+            }
             return new PhysicalHashAggregateOperator(aggOperator.getType(), newGroupBys,
                     newPartitionsBy, newAggMap, aggOperator.getSingleDistinctFunctionPos(), aggOperator.isSplit());
         }
