@@ -132,6 +132,7 @@ public class AddDecodeNodeForDictStringRule implements PhysicalOperatorTreeRewri
                     newOlapScan.setPredicate(scanOperator.getPredicate());
                     newOlapScan.setLimit(scanOperator.getLimit());
                     newOlapScan.setGlobalDicts(scanOperator.getGlobalDicts());
+                    newOlapScan.setPreAggregation(scanOperator.isPreAggregation());
 
                     OptExpression result =  new OptExpression(newOlapScan);
                     result.setLogicalProperty(optExpression.getLogicalProperty());

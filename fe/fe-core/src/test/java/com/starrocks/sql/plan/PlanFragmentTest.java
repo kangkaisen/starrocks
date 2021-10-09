@@ -4226,6 +4226,7 @@ public class PlanFragmentTest extends PlanTestBase {
         sql = "select count(S_ADDRESS) from supplier";
         plan = getFragmentPlan(sql);
         Assert.assertFalse(plan.contains("Decode"));
+        connectContext.getSessionVariable().setNewPlanerAggStage(0);
         FeConstants.USE_MOCK_DICT_MANAGER = false;
     }
 
@@ -4234,9 +4235,10 @@ public class PlanFragmentTest extends PlanTestBase {
         FeConstants.USE_MOCK_DICT_MANAGER = true;
         String sql = "select count(*), S_ADDRESS from supplier group by S_ADDRESS";
         String plan = getFragmentPlan(sql);
+        System.out.println(plan);
         Assert.assertTrue(plan.contains("  2:Decode\n" +
                 "  |  <dict id 10> : <string id 3>"));
-
+        Assert.assertTrue(plan.contains("PREAGGREGATION: ON"));
         FeConstants.USE_MOCK_DICT_MANAGER = false;
     }
 }
