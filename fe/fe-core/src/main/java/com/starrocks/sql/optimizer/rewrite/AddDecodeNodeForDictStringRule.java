@@ -14,7 +14,6 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.Pair;
-import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
 import com.starrocks.sql.optimizer.Utils;
@@ -549,9 +548,6 @@ public class AddDecodeNodeForDictStringRule implements PhysicalOperatorTreeRewri
 
     @Override
     public OptExpression rewrite(OptExpression root, TaskContext taskContext) {
-        if (!ConnectContext.get().getSessionVariable().isEnableLowCardinalityOptimize()) {
-            return root;
-        }
         List<LogicalOlapScanOperator> scanOperators = taskContext.getAllScanOperators();
 
         for (LogicalOlapScanOperator scanOperator : scanOperators) {
