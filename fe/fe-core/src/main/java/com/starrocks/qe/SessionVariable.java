@@ -401,7 +401,6 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     // The following variables are deprecated and invisible //
     // ----------------------------------------------------------------------------//
-
     @VariableMgr.VarAttr(name = "enable_cbo", flag = VariableMgr.INVISIBLE)
     @Deprecated
     private boolean enableCbo = true;
@@ -705,6 +704,14 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
 
     public boolean getEnableColumnExprPredicate() {
         return enableColumnExprPredicate;
+    }
+
+    public boolean isEnableCbo() {
+        return enableCbo;
+    }
+
+    public void setEnableCbo(boolean enableCbo) {
+        this.enableCbo = enableCbo;
     }
 
     // Serialize to thrift object

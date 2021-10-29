@@ -1284,7 +1284,8 @@ public class StmtExecutor {
     }
 
     private boolean supportedByNewPlanner(StatementBase statement, ConnectContext context) {
-        return statement instanceof QueryStmt || statement instanceof InsertStmt;
+        return context.getSessionVariable().isEnableCbo() &&
+                (statement instanceof QueryStmt || statement instanceof InsertStmt);
     }
 
     public void handleInsertStmtWithNewPlanner(ExecPlan execPlan, InsertStmt stmt) throws Exception {
