@@ -313,9 +313,11 @@ void DictOptimizeParser::rewrite_descriptor(RuntimeState* runtime_state, std::ve
     const auto& global_dict = runtime_state->get_global_dict_map();
     if (global_dict.empty()) return;
 
-    for (auto& slot : slot_descs) {
-        if (global_dict.count(slot->id())) {
-            slot->type().type = TYPE_VARCHAR;
+    for (size_t i = 0; i < slot_descs.size(); ++I) {
+        if (global_dict.count(slot_descs[i]->id())) {
+            SlotDescriptor* newSlot = runtime_state->obj_pool()->add(new SlotDescriptor(slot_descs[i]));
+            newSlot->type().type = TYPE_VARCHAR;
+            slot_descs[i] = newSlot;
         }
     }
 
