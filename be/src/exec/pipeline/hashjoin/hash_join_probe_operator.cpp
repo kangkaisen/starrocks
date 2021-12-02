@@ -32,6 +32,7 @@ StatusOr<vectorized::ChunkPtr> HashJoinProbeOperator::pull_chunk(RuntimeState* s
 }
 
 void HashJoinProbeOperator::set_finishing(RuntimeState* state) {
+    LOG(WARNING) << " HashJoinProbeOperator::set_finishing ";
     _is_finished = true;
     _hash_joiner->enter_post_probe_phase();
 }

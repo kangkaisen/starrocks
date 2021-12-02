@@ -30,6 +30,8 @@ Status PipelineDriver::prepare(RuntimeState* runtime_state) {
         const auto& rf_set = op->rf_waiting_set();
         all_local_rf_set.insert(rf_set.begin(), rf_set.end());
     }
+    LOG(WARNING) << " all_local_rf_set size "
+                 << all_local_rf_set.size();
     _local_rf_waiting_set_counter->set((int64_t)all_local_rf_set.size());
     _local_rf_holders = fragment_ctx()->runtime_filter_hub()->gather_holders(all_local_rf_set);
 

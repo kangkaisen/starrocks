@@ -42,6 +42,7 @@ void RuntimeFilterPort::add_listener(vectorized::RuntimeFilterProbeDescriptor* r
     if (_listeners.find(rf_id) == _listeners.end()) {
         _listeners.insert({rf_id, std::list<vectorized::RuntimeFilterProbeDescriptor*>()});
     }
+    LOG(WARNING) << "rf_id " << rf_id << " _listeners size " << _listeners.size();
     auto& wait_list = _listeners.find(rf_id)->second;
     wait_list.emplace_back(rf_desc);
 }
@@ -68,7 +69,7 @@ void RuntimeFilterPort::publish_runtime_filters(std::list<vectorized::RuntimeFil
             if (rf_desc->sender_finst_id() != state->fragment_instance_id()) {
                 continue;
             }
-            VLOG_FILE << "RuntimeFilterPort::publish_runtime_filters. broadcast join filter_id = "
+            LOG(WARNING) << "RuntimeFilterPort::publish_runtime_filters. broadcast join filter_id = "
                       << rf_desc->filter_id() << ", finst_id = " << rf_desc->sender_finst_id();
         }
 
@@ -86,7 +87,7 @@ void RuntimeFilterPort::publish_runtime_filters(std::list<vectorized::RuntimeFil
         params.set_build_be_number(state->be_number());
 
         // print before setting data, otherwise it's too big.
-        VLOG_FILE << "RuntimeFilterPort::publish_runtime_filters. merge_node[0] = " << rf_desc->merge_nodes()[0]
+        LOG(WARNING) << "RuntimeFilterPort::publish_runtime_filters. merge_node[0] = " << rf_desc->merge_nodes()[0]
                   << ", filter_size = " << filter->size() << ", query_id = " << params.query_id()
                   << ", finst_id = " << params.finst_id() << ", be_number = " << params.build_be_number();
 
@@ -105,7 +106,7 @@ void RuntimeFilterPort::publish_runtime_filters(std::list<vectorized::RuntimeFil
 void RuntimeFilterPort::receive_runtime_filter(int32_t filter_id, const vectorized::JoinRuntimeFilter* rf) {
     auto it = _listeners.find(filter_id);
     if (it == _listeners.end()) return;
-    VLOG_FILE << "RuntimeFilterPort::receive_runtime_filter(local). filter_id = " << filter_id
+    LOG(WARNING) << "RuntimeFilterPort::receive_runtime_filter(local). filter_id = " << filter_id
               << ", filter_size = " << rf->size();
     auto& wait_list = it->second;
     for (auto* rf_desc : wait_list) {
@@ -117,8 +118,8 @@ void RuntimeFilterPort::receive_shared_runtime_filter(int32_t filter_id,
                                                       const std::shared_ptr<const vectorized::JoinRuntimeFilter>& rf) {
     auto it = _listeners.find(filter_id);
     if (it == _listeners.end()) return;
-    VLOG_FILE << "RuntimeFilterPort::receive_runtime_filter(shared). filter_id = " << filter_id
-              << ", filter_size = " << rf->size();
+    LOG(WARNING) << "RuntimeFilterPort::receive_runtime_filter(shared). filter_id = " << filter_id
+                 << ", filter_size = " << rf->size();
     auto& wait_list = it->second;
     for (auto* rf_desc : wait_list) {
         rf_desc->set_shared_runtime_filter(rf);
@@ -190,9 +191,9 @@ void RuntimeFilterMerger::merge_runtime_filter(PTransmitRuntimeFilterParams& par
     status->current_size += rf->size();
     if (status->current_size > status->max_size) {
         // alreay exceeds max size, no need to build it.
-        VLOG_FILE << "RuntimeFilterMerger::merge_runtime_filter. stop building since size too "
-                     "large. size = "
-                  << status->current_size;
+        LOG(WARNING) << "RuntimeFilterMerger::merge_runtime_filter. stop building since size too "
+                        "large. size = "
+                     << status->current_size;
         status->stop = true;
         return;
     }
@@ -249,10 +250,10 @@ void RuntimeFilterMerger::_send_total_runtime_filter(int32_t filter_id, RuntimeF
     int64_t now = UnixMillis();
     status->broadcast_filter_ts = now;
 
-    VLOG_FILE << "RuntimeFilterMerger::merge_runtime_filter. target_nodes[0] = " << target_nodes->at(0)
-              << ", filter_id = " << request.filter_id() << ", filter_size = " << out->size()
-              << ", latency(last-first = " << status->recv_last_filter_ts - status->recv_first_filter_ts
-              << ", send-first = " << status->broadcast_filter_ts - status->recv_first_filter_ts << ")";
+    LOG(WARNING) << "RuntimeFilterMerger::merge_runtime_filter. target_nodes[0] = " << target_nodes->at(0)
+                 << ", filter_id = " << request.filter_id() << ", filter_size = " << out->size()
+                 << ", latency(last-first = " << status->recv_last_filter_ts - status->recv_first_filter_ts
+                 << ", send-first = " << status->broadcast_filter_ts - status->recv_first_filter_ts << ")";
     request.set_broadcast_timestamp(now);
 
     std::map<TNetworkAddress, std::vector<TUniqueId>> nodes_to_frag_insts;
@@ -324,7 +325,7 @@ void RuntimeFilterMerger::_send_total_runtime_filter(int32_t filter_id, RuntimeF
         }
 
         if (half != 0) {
-            VLOG_FILE << "RuntimeFilterMerger::merge_runtime_filter. target " << t.first << " will forward to " << half
+            LOG(WARNING) << "RuntimeFilterMerger::merge_runtime_filter. target " << t.first << " will forward to " << half
                       << " nodes. nodes[0] = " << request.forward_targets(0).DebugString();
         }
 
@@ -395,7 +396,7 @@ void RuntimeFilterWorker::send_part_runtime_filter(PTransmitRuntimeFilterParams&
 }
 
 void RuntimeFilterWorker::receive_runtime_filter(const PTransmitRuntimeFilterParams& params) {
-    VLOG_FILE << "RuntimeFilterWorker::receive_runtime_filter: partial = " << params.is_partial()
+    LOG(WARNING) << "RuntimeFilterWorker::receive_runtime_filter: partial = " << params.is_partial()
               << ", query_id = " << params.query_id() << ", finst_id = " << params.finst_id()
               << ", # probe insts = " << params.probe_finst_ids_size();
 

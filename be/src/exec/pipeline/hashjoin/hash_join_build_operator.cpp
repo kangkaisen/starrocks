@@ -48,12 +48,15 @@ void HashJoinBuildOperator::set_finishing(RuntimeState* state) {
     auto status = _partial_rf_merger->add_partial_filters(_driver_sequence, ht_row_count, std::move(partial_in_filters),
                                                           std::move(partial_bloom_filter_build_params),
                                                           std::move(partial_bloom_filters));
+    LOG(WARNING) << " add_partial_filters status " << status.value();
     if (status.ok() && status.value()) {
         auto&& in_filters = _partial_rf_merger->get_total_in_filters();
         auto&& bloom_filters = _partial_rf_merger->get_total_bloom_filters();
 
+        LOG(WARNING) << " publish_runtime_filters ";
         // publish runtime bloom-filters
-        state->runtime_filter_port()->publish_runtime_filters(bloom_filters);
+        state->runtime_filter_port()
+                                ->publish_runtime_filters(bloom_filters);
         // move runtime filters into RuntimeFilterHub.
         runtime_filter_hub()->set_collector(_plan_node_id, std::make_unique<RuntimeFilterCollector>(
                                                                    std::move(in_filters), std::move(bloom_filters)));

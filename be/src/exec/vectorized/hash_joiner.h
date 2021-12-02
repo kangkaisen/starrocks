@@ -160,6 +160,9 @@ private:
         // special cases of short-circuit break.
         if (_ht.get_row_count() == 0 && (_join_type == TJoinOp::INNER_JOIN || _join_type == TJoinOp::LEFT_SEMI_JOIN)) {
             _phase = HashJoinPhase::EOS;
+            set_finished();
+            LOG(WARNING) << "_phase is eos"
+                         << " _is_finished " << _is_finished;
         }
 
         if (_ht.get_row_count() > 0) {
@@ -172,6 +175,7 @@ private:
                 // TODO: This reserved field will be removed in the implementation mechanism in the future.
                 // at that time, you can directly use Column::has_null() to judge
                 _phase = HashJoinPhase::EOS;
+                set_finished();
             }
         }
     }
@@ -266,6 +270,7 @@ private:
             int expr_order = rf_desc->build_expr_order();
             ColumnPtr column = _ht.get_key_columns()[expr_order];
             bool eq_null = _is_null_safes[expr_order];
+            LOG(WARNING) << "filter id " << rf_desc ->filter_id() << " ht count " << _ht.get_row_count();
             _runtime_bloom_filter_build_params.emplace_back(eq_null, column, _ht.get_row_count());
         }
         return Status::OK();

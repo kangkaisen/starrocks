@@ -340,10 +340,14 @@ void RuntimeFilterProbeCollector::update_selectivity(vectorized::Chunk* chunk,
     eval_context.selectivity.clear();
     size_t chunk_size = chunk->num_rows();
     vectorized::Column::Filter* selection = nullptr;
+    LOG(WARNING) << " _descriptors size " << _descriptors.size();
     for (auto& it : _descriptors) {
         RuntimeFilterProbeDescriptor* rf_desc = it.second;
         const JoinRuntimeFilter* filter = rf_desc->runtime_filter();
-        if (filter == nullptr) continue;
+        if (filter == nullptr) {
+            LOG(WARNING) << " filter is null";
+            continue;
+        }
         ColumnPtr column = rf_desc->probe_expr_ctx()->evaluate(chunk);
         vectorized::Column::Filter& new_selection = filter->evaluate(column.get(), &eval_context.running_context);
         eval_context.run_filter_nums += 1;
@@ -449,7 +453,7 @@ void RuntimeFilterProbeCollector::wait() {
             auto* rf = it.second;
             int filter_id = rf->filter_id();
             bool ready = (rf->runtime_filter() != nullptr);
-            VLOG_FILE << "RuntimeFilterCollector::wait. filter_id = " << filter_id
+            LOG(WARNING) << "RuntimeFilterCollector::wait. filter_id = " << filter_id
                       << ", ready = " << std::to_string(ready);
         }
     }

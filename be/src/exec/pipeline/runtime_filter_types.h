@@ -227,10 +227,12 @@ public:
             if (k < i) {
                 _partial_in_filters[k] = std::move(_partial_in_filters[i]);
             }
-            num_rows += _ht_row_counts[i];
+            num_rows = std::max(num_rows, _ht_row_counts[i]);
         }
 
+        LOG(WARNING) << " num_rows " << num_rows;
         can_merge_in_filters = can_merge_in_filters && (num_rows <= 1024) && k >= 0;
+        LOG(WARNING) << " can_merge_in_filters " << can_merge_in_filters;
         if (!can_merge_in_filters) {
             _partial_in_filters[0].clear();
             return Status::OK();
@@ -268,6 +270,7 @@ public:
         for (auto count : _ht_row_counts) {
             row_count += count;
         }
+        LOG(WARNING) << " row_count " << row_count;
         for (auto& desc : _bloom_filter_descriptors) {
             desc->set_is_pipeline(true);
             // skip if it does not have consumer.
@@ -295,6 +298,8 @@ public:
                 auto status = vectorized::RuntimeFilterHelper::fill_runtime_bloom_filter(
                         param.column, desc->build_expr_type(), desc->runtime_filter(),
                         vectorized::kHashJoinKeyColumnOffset, param.eq_null);
+                LOG(WARNING) << " fill_runtime_bloom_filter status " << status.to_string() << " size "
+                             << desc->runtime_filter()->size() << " id " << desc->filter_id();
                 if (!status.ok()) {
                     desc->set_runtime_filter(nullptr);
                 }

@@ -87,6 +87,10 @@ void ScanOperator::set_finishing(RuntimeState* state) {
 }
 
 StatusOr<vectorized::ChunkPtr> ScanOperator::pull_chunk(RuntimeState* state) {
+    if (runtime_bloom_filters() != nullptr) {
+        runtime_bloom_filters()->wait();
+    }
+
     if (!_chunk_source) {
         RETURN_IF_ERROR(_pickup_morsel(state));
         return nullptr;

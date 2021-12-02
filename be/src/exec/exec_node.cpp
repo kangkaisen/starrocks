@@ -144,6 +144,7 @@ void ExecNode::push_down_join_runtime_filter_to_children(RuntimeState* state,
 void ExecNode::register_runtime_filter_descriptor(RuntimeState* state,
                                                   vectorized::RuntimeFilterProbeDescriptor* rf_desc) {
     _runtime_filter_collector.add_descriptor(rf_desc);
+    LOG(WARNING) << "register_runtime_filter_descriptor " << rf_desc->filter_id();
     state->runtime_filter_port()->add_listener(rf_desc);
 }
 
@@ -157,7 +158,8 @@ Status ExecNode::init_join_runtime_filters(const TPlanNode& tnode, RuntimeState*
         }
     }
     if (state != nullptr && state->query_options().__isset.runtime_filter_wait_timeout_ms) {
-        _runtime_filter_collector.set_wait_timeout_ms(state->query_options().runtime_filter_wait_timeout_ms);
+        _runtime_filter_collector.set_wait_timeout_ms(
+                           state->query_options().runtime_filter_wait_timeout_ms);
     }
     if (tnode.__isset.filter_null_value_columns) {
         _filter_null_value_columns = tnode.filter_null_value_columns;
@@ -167,12 +169,13 @@ Status ExecNode::init_join_runtime_filters(const TPlanNode& tnode, RuntimeState*
 
 void ExecNode::init_runtime_filter_for_operator(OperatorFactory* op, pipeline::PipelineBuilderContext* context,
                                                 const RcRfProbeCollectorPtr& rc_rf_probe_collector) {
-    op->init_runtime_filter(context->fragment_context()->runtime_filter_hub(), this->get_tuple_ids(),
-                            this->local_rf_waiting_set(), this->row_desc(), rc_rf_probe_collector);
+    LOG(WARNING) " id " << _id << " local_rf_waiting_set " << this->local_rf_waiting_set().size();
+    op->init_runtime_filter(context->fragment_context()->runtime_filter_hub(),
+                                                                 this->get_tuple_ids(), this->local_rf_waiting_set(),
+                                                                 this->row_desc(), rc_rf_probe_collector);
 }
 
 Status ExecNode::init(const TPlanNode& tnode, RuntimeState* state) {
-    VLOG(2) << "ExecNode init:\n" << apache::thrift::ThriftDebugString(tnode);
     _runtime_state = state;
     RETURN_IF_ERROR(Expr::create_expr_trees(_pool, tnode.conjuncts, &_conjunct_ctxs));
     RETURN_IF_ERROR(init_join_runtime_filters(tnode, state));
