@@ -111,17 +111,10 @@ public class ConnectScheduler {
 
     // Register one connection with its connection id.
     public boolean registerConnection(ConnectContext ctx) {
-//        if (numberConnection >= maxConnections) {
-//            return false;
-//        }
         // Check user
         if (connByUser.get(ctx.getQualifiedUser()) == null) {
             connByUser.put(ctx.getQualifiedUser(), new AtomicInteger(0));
         }
-//        int conns = connByUser.get(ctx.getQualifiedUser()).get();
-//        if (conns >= ctx.getCatalog().getAuth().getMaxConn(ctx.getQualifiedUser())) {
-//            return false;
-//        }
         numberConnection++;
         connByUser.get(ctx.getQualifiedUser()).incrementAndGet();
         connectionMap.put((long) ctx.getConnectionId(), ctx);
