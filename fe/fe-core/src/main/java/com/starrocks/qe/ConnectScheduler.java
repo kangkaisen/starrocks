@@ -47,8 +47,8 @@ public class ConnectScheduler {
     private int numberConnection;
     private AtomicInteger nextConnectionId;
 
-    private Map<Long, ConnectContext> connectionMap = Maps.newHashMap();
-    private Map<String, AtomicInteger> connByUser = Maps.newHashMap();
+    private Map<Long, ConnectContext> connectionMap = Maps.newConcurrentMap();
+    private Map<String, AtomicInteger> connByUser = Maps.newConcurrentMap();
     private ExecutorService executor = ThreadPoolManager
             .newDaemonCacheThreadPool(Config.max_connection_scheduler_threads_num, "connect-scheduler-pool", true);
 
@@ -110,18 +110,18 @@ public class ConnectScheduler {
     }
 
     // Register one connection with its connection id.
-    public synchronized boolean registerConnection(ConnectContext ctx) {
-        if (numberConnection >= maxConnections) {
-            return false;
-        }
+    public boolean registerConnection(ConnectContext ctx) {
+//        if (numberConnection >= maxConnections) {
+//            return false;
+//        }
         // Check user
         if (connByUser.get(ctx.getQualifiedUser()) == null) {
             connByUser.put(ctx.getQualifiedUser(), new AtomicInteger(0));
         }
-        int conns = connByUser.get(ctx.getQualifiedUser()).get();
-        if (conns >= ctx.getCatalog().getAuth().getMaxConn(ctx.getQualifiedUser())) {
-            return false;
-        }
+//        int conns = connByUser.get(ctx.getQualifiedUser()).get();
+//        if (conns >= ctx.getCatalog().getAuth().getMaxConn(ctx.getQualifiedUser())) {
+//            return false;
+//        }
         numberConnection++;
         connByUser.get(ctx.getQualifiedUser()).incrementAndGet();
         connectionMap.put((long) ctx.getConnectionId(), ctx);
