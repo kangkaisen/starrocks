@@ -419,9 +419,6 @@ public class Coordinator {
             // Select top fragment as global runtime filter merge address
             setGlobalRuntimeFilterParams(topParams, toBrpcHost(execBeAddr));
 
-            LOG.info("dispatch query job: {} to {}", DebugUtil.printId(queryId),
-                    topParams.instanceExecParams.get(0).host);
-
             // set the broker address for OUTFILE sink
             ResultSink resultSink = (ResultSink) topParams.fragment.getSink();
             if (resultSink.isOutputFileSink() && resultSink.needBroker()) {
@@ -439,7 +436,6 @@ public class Coordinator {
             List<Long> relatedBackendIds = Lists.newArrayList(addressToBackendID.values());
             Catalog.getCurrentCatalog().getLoadManager().initJobProgress(jobId, queryId, instanceIds,
                     relatedBackendIds);
-            LOG.info("dispatch load job: {} to {}", DebugUtil.printId(queryId), addressToBackendID.keySet());
         }
 
         computeBeInstanceNumbers();

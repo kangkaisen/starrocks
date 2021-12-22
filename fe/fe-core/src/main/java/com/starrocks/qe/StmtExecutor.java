@@ -323,9 +323,9 @@ public class StmtExecutor {
             // Only add the last running stmt for multi statement,
             // because the audit log will only show the last stmt and
             // the ConnectProcessor only add the last finished stmt
-            if (context.getIsLastStmt()) {
-                addRunningQueryDetail();
-            }
+            //            if (context.getIsLastStmt()) {
+            //                addRunningQueryDetail();
+            //            }
 
             if (parsedStmt instanceof QueryStmt) {
                 context.getState().setIsQuery(true);
