@@ -51,7 +51,6 @@ public class AcceptListener implements ChannelListener<AcceptingChannel<StreamCo
             if (connection == null) {
                 return;
             }
-            LOG.info("Connection established. remote={}", connection.getPeerAddress());
             // connection has been established, so need to call context.cleanup()
             // if exception happens.
             NConnectContext context = new NConnectContext(connection);
