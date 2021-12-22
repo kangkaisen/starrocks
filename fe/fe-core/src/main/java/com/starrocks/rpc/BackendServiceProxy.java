@@ -67,11 +67,12 @@ public class BackendServiceProxy {
         if (Config.enable_brpc_share_channel) {
             rpcOptions.setShareThreadPoolUnderEachProxy(true);
             rpcOptions.setShareChannelPool(true);
-            rpcOptions.setThreadPoolSize(8);
+            rpcOptions.setMinIdleSize(16);
+            rpcOptions.setMaxIdleSize(16);
         } else {
             rpcOptions.setThreadPoolSize(Config.brpc_number_of_concurrent_requests_processed);
         }
-        rpcOptions.setMaxWait(Config.brpc_idle_wait_max_time);
+        rpcOptions.setMaxWait(2000);
         rpcClient = new RpcClient(rpcOptions);
         serviceMap = Maps.newHashMap();
     }
