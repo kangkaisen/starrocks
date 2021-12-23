@@ -67,6 +67,7 @@ public class BackendServiceProxy {
         if (Config.enable_brpc_share_channel) {
             rpcOptions.setShareThreadPoolUnderEachProxy(true);
             rpcOptions.setShareChannelPool(true);
+            rpcOptions.setThreadPoolSize(1);
         } else {
             rpcOptions.setThreadPoolSize(Config.brpc_number_of_concurrent_requests_processed);
         }
