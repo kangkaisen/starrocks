@@ -8,22 +8,13 @@ import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.base.PhysicalPropertySet;
 import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
-import com.starrocks.sql.optimizer.rewrite.AddDecodeNodeForDictStringRule;
-import com.starrocks.sql.optimizer.rewrite.ExchangeSortToMergeRule;
-import com.starrocks.sql.optimizer.rewrite.ScalarOperatorsReuseRule;
 import com.starrocks.sql.optimizer.rule.Rule;
 import com.starrocks.sql.optimizer.rule.RuleSetType;
 import com.starrocks.sql.optimizer.rule.implementation.PreAggregateTurnOnRule;
-import com.starrocks.sql.optimizer.rule.join.ReorderJoinRule;
 import com.starrocks.sql.optimizer.rule.mv.MaterializedViewRule;
 import com.starrocks.sql.optimizer.rule.transformation.JoinForceLimitRule;
 import com.starrocks.sql.optimizer.rule.transformation.LimitPruneTabletsRule;
 import com.starrocks.sql.optimizer.rule.transformation.MergeProjectWithChildRule;
-import com.starrocks.sql.optimizer.rule.transformation.MergeTwoAggRule;
-import com.starrocks.sql.optimizer.rule.transformation.MergeTwoProjectRule;
-import com.starrocks.sql.optimizer.rule.transformation.PruneEmptyWindowRule;
-import com.starrocks.sql.optimizer.rule.transformation.PushDownAggToMetaScanRule;
-import com.starrocks.sql.optimizer.rule.transformation.PushDownJoinOnExpressionToChildProject;
 import com.starrocks.sql.optimizer.rule.transformation.ReorderIntersectRule;
 import com.starrocks.sql.optimizer.task.CTEContext;
 import com.starrocks.sql.optimizer.task.DeriveStatsTask;
@@ -79,27 +70,27 @@ public class Optimizer {
         // so we should always get root group and root group expression
         // directly from memo.
 
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MULTI_DISTINCT_REWRITE);
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.SUBQUERY_REWRITE);
-        // Note: PUSH_DOWN_PREDICATE tasks should be executed before MERGE_LIMIT tasks
-        // because of the Filter node needs to be merged first to avoid the Limit node
-        // cannot merge
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PUSH_DOWN_PREDICATE);
-        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
-        ruleRewriteOnlyOnce(memo, rootTaskContext, new PushDownAggToMetaScanRule());
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MULTI_DISTINCT_REWRITE);
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.SUBQUERY_REWRITE);
+        //        // Note: PUSH_DOWN_PREDICATE tasks should be executed before MERGE_LIMIT tasks
+        //        // because of the Filter node needs to be merged first to avoid the Limit node
+        //        // cannot merge
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PUSH_DOWN_PREDICATE);
+        //        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
+        //        ruleRewriteOnlyOnce(memo, rootTaskContext, new PushDownAggToMetaScanRule());
 
-        ruleRewriteOnlyOnce(memo, rootTaskContext, new PushDownJoinOnExpressionToChildProject());
-        ruleRewriteOnlyOnce(memo, rootTaskContext, RuleSetType.PRUNE_COLUMNS);
+        //        ruleRewriteOnlyOnce(memo, rootTaskContext, new PushDownJoinOnExpressionToChildProject());
+        //        ruleRewriteOnlyOnce(memo, rootTaskContext, RuleSetType.PRUNE_COLUMNS);
         // After prune columns, the output column in the logical property may outdated, because of the following rule
         // will use the output column, we need to derive the logical property here.
         memo.deriveAllGroupLogicalProperty();
 
-        ruleRewriteIterative(memo, rootTaskContext, new PruneEmptyWindowRule());
-        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
-        //Limit push must be after the column prune,
-        //otherwise the Node containing limit may be prune
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MERGE_LIMIT);
-        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoAggRule());
+        //        ruleRewriteIterative(memo, rootTaskContext, new PruneEmptyWindowRule());
+        //        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
+        //        //Limit push must be after the column prune,
+        //        //otherwise the Node containing limit may be prune
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MERGE_LIMIT);
+        //        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoAggRule());
         //After the MERGE_LIMIT, ProjectNode that can be merged may appear.
         //So we do another MergeTwoProjectRule
         ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_ASSERT_ROW);
@@ -135,19 +126,19 @@ public class Optimizer {
         tree = memo.getRootGroup().extractLogicalTree();
 
         // reset cte context
-        cteContext = new CTEContext();
-        cteContext.init(tree);
-        context.setCteContext(cteContext);
+        //        cteContext = new CTEContext();
+        //        cteContext.init(tree);
+        //        context.setCteContext(cteContext);
 
-        if (!connectContext.getSessionVariable().isDisableJoinReorder()) {
-            if (Utils.countInnerJoinNodeSize(tree) >
-                    connectContext.getSessionVariable().getCboMaxReorderNodeUseExhaustive()) {
-                new ReorderJoinRule().transform(tree, context);
-                context.getRuleSet().addJoinCommutativityWithOutInnerRule();
-            } else {
-                context.getRuleSet().addJoinTransformationRules();
-            }
-        }
+        //        if (!connectContext.getSessionVariable().isDisableJoinReorder()) {
+        //            if (Utils.countInnerJoinNodeSize(tree) >
+        //                    connectContext.getSessionVariable().getCboMaxReorderNodeUseExhaustive()) {
+        //                new ReorderJoinRule().transform(tree, context);
+        //                context.getRuleSet().addJoinCommutativityWithOutInnerRule();
+        //            } else {
+        //                context.getRuleSet().addJoinTransformationRules();
+        //            }
+        //        }
 
         if (connectContext.getSessionVariable().isEnableNewPlannerPushDownJoinToAgg()) {
             context.getRuleSet().addPushDownJoinToAggRule();
@@ -169,12 +160,12 @@ public class Optimizer {
             int nthExecPlan = connectContext.getSessionVariable().getUseNthExecPlan();
             result = EnumeratePlan.extractNthPlan(requiredProperty, memo.getRootGroup(), nthExecPlan);
         }
-        tryOpenPreAggregate(result);
-        // Rewrite Exchange on top of Sort to Final Sort
-        result = new ExchangeSortToMergeRule().rewrite(result);
-        result = new AddDecodeNodeForDictStringRule().rewrite(result, rootTaskContext);
-        // This rule should be last
-        result = new ScalarOperatorsReuseRule().rewrite(result, rootTaskContext);
+        //        tryOpenPreAggregate(result);
+        //        // Rewrite Exchange on top of Sort to Final Sort
+        //        result = new ExchangeSortToMergeRule().rewrite(result);
+        //        result = new AddDecodeNodeForDictStringRule().rewrite(result, rootTaskContext);
+        //        // This rule should be last
+        //        result = new ScalarOperatorsReuseRule().rewrite(result, rootTaskContext);
         return result;
     }
 
