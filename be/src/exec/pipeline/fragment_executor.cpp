@@ -101,8 +101,8 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
         _fragment_ctx->set_profile_mode(query_options.pipeline_profile_mode);
     }
 
-    LOG(INFO) << "Prepare(): query_id=" << print_id(query_id)
-              << " fragment_instance_id=" << print_id(params.fragment_instance_id) << " backend_num=" << backend_num;
+    // LOG(INFO) << "Prepare(): query_id=" << print_id(query_id)
+    //           << " fragment_instance_id=" << print_id(params.fragment_instance_id) << " backend_num=" << backend_num;
 
     _fragment_ctx->set_runtime_state(
             std::make_unique<RuntimeState>(query_id, fragment_instance_id, query_options, query_globals, exec_env));
@@ -191,8 +191,8 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
         const auto& pipeline = pipelines[n];
         // DOP(degree of parallelism) of Pipeline's SourceOperator determines the Pipeline's DOP.
         const auto degree_of_parallelism = pipeline->source_operator_factory()->degree_of_parallelism();
-        LOG(INFO) << "Pipeline " << pipeline->to_readable_string() << " parallel=" << degree_of_parallelism
-                  << " fragment_instance_id=" << print_id(params.fragment_instance_id);
+        // LOG(INFO) << "Pipeline " << pipeline->to_readable_string() << " parallel=" << degree_of_parallelism
+        //           << " fragment_instance_id=" << print_id(params.fragment_instance_id);
         const bool is_root = pipeline->is_root();
         // If pipeline's SourceOperator is with morsels, a MorselQueue is added to the SourceOperator.
         // at present, only ScanOperator need a MorselQueue attached.

@@ -73,16 +73,16 @@ Status PipelineDriver::prepare(RuntimeState* runtime_state) {
     _all_global_rf_ready_or_timeout = _global_rf_descriptors.empty();
     set_driver_state(DriverState::READY);
 
-    _total_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
-    _pending_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
-    _precondition_block_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
-    _input_empty_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
-    _output_full_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
-    _total_timer_sw->start();
-    _pending_timer_sw->start();
-    _precondition_block_timer_sw->start();
-    _input_empty_timer_sw->start();
-    _output_full_timer_sw->start();
+    // _total_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
+    // _pending_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
+    // _precondition_block_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
+    // _input_empty_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
+    // _output_full_timer_sw = runtime_state->obj_pool()->add(new MonotonicStopWatch());
+    // _total_timer_sw->start();
+    // _pending_timer_sw->start();
+    // _precondition_block_timer_sw->start();
+    // _input_empty_timer_sw->start();
+    // _output_full_timer_sw->start();
 
     return Status::OK();
 }
@@ -288,13 +288,13 @@ void PipelineDriver::finalize(RuntimeState* runtime_state, DriverState state) {
 
     set_driver_state(state);
 
-    COUNTER_UPDATE(_total_timer, _total_timer_sw->elapsed_time());
-    COUNTER_UPDATE(_schedule_timer, _total_timer->value() - _active_timer->value() - _pending_timer->value());
-    COUNTER_UPDATE(_schedule_counter, driver_acct().get_schedule_times());
-    COUNTER_UPDATE(_schedule_effective_counter, driver_acct().get_schedule_effective_times());
-    COUNTER_UPDATE(_schedule_rows_per_chunk, driver_acct().get_rows_per_chunk());
-    COUNTER_UPDATE(_schedule_accumulated_chunk_moved, driver_acct().get_accumulated_chunk_moved());
-    _update_overhead_timer();
+    // COUNTER_UPDATE(_total_timer, _total_timer_sw->elapsed_time());
+    // COUNTER_UPDATE(_schedule_timer, _total_timer->value() - _active_timer->value() - _pending_timer->value());
+    // COUNTER_UPDATE(_schedule_counter, driver_acct().get_schedule_times());
+    // COUNTER_UPDATE(_schedule_effective_counter, driver_acct().get_schedule_effective_times());
+    // COUNTER_UPDATE(_schedule_rows_per_chunk, driver_acct().get_rows_per_chunk());
+    // COUNTER_UPDATE(_schedule_accumulated_chunk_moved, driver_acct().get_accumulated_chunk_moved());
+    // _update_overhead_timer();
 
     // last root driver cancel the all drivers' execution and notify FE the
     // fragment's completion but do not unregister the FragmentContext because

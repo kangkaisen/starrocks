@@ -173,43 +173,6 @@ public:
         if (state == _state) {
             return;
         }
-
-        switch (_state) {
-        case DriverState::INPUT_EMPTY: {
-            auto elapsed_time = _input_empty_timer_sw->elapsed_time();
-            if (_first_input_empty_timer->value() == 0) {
-                _first_input_empty_timer->update(elapsed_time);
-            } else {
-                _followup_input_empty_timer->update(elapsed_time);
-            }
-            _input_empty_timer->update(elapsed_time);
-            break;
-        }
-        case DriverState::OUTPUT_FULL:
-            _output_full_timer->update(_output_full_timer_sw->elapsed_time());
-            break;
-        case DriverState::PRECONDITION_BLOCK: {
-            _precondition_block_timer->update(_precondition_block_timer_sw->elapsed_time());
-            break;
-        }
-        default:
-            break;
-        }
-
-        switch (state) {
-        case DriverState::INPUT_EMPTY:
-            _input_empty_timer_sw->reset();
-            break;
-        case DriverState::OUTPUT_FULL:
-            _output_full_timer_sw->reset();
-            break;
-        case DriverState::PRECONDITION_BLOCK:
-            _precondition_block_timer_sw->reset();
-            break;
-        default:
-            break;
-        }
-
         _state = state;
     }
 
