@@ -12,10 +12,8 @@ import com.starrocks.sql.optimizer.rule.Rule;
 import com.starrocks.sql.optimizer.rule.RuleSetType;
 import com.starrocks.sql.optimizer.rule.implementation.PreAggregateTurnOnRule;
 import com.starrocks.sql.optimizer.rule.mv.MaterializedViewRule;
-import com.starrocks.sql.optimizer.rule.transformation.JoinForceLimitRule;
 import com.starrocks.sql.optimizer.rule.transformation.LimitPruneTabletsRule;
 import com.starrocks.sql.optimizer.rule.transformation.MergeProjectWithChildRule;
-import com.starrocks.sql.optimizer.rule.transformation.ReorderIntersectRule;
 import com.starrocks.sql.optimizer.task.CTEContext;
 import com.starrocks.sql.optimizer.task.DeriveStatsTask;
 import com.starrocks.sql.optimizer.task.OptimizeGroupTask;
@@ -89,13 +87,13 @@ public class Optimizer {
         //        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
         //        //Limit push must be after the column prune,
         //        //otherwise the Node containing limit may be prune
-        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MERGE_LIMIT);
+        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.MERGE_LIMIT);
         //        ruleRewriteIterative(memo, rootTaskContext, new MergeTwoAggRule());
         //After the MERGE_LIMIT, ProjectNode that can be merged may appear.
         //So we do another MergeTwoProjectRule
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_ASSERT_ROW);
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_PROJECT);
-        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_SET_OPERATOR);
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_ASSERT_ROW);
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_PROJECT);
+        //        ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_SET_OPERATOR);
 
         OptExpression tree = memo.getRootGroup().extractLogicalTree();
         tree = new MaterializedViewRule().transform(tree, context).get(0);
@@ -105,8 +103,8 @@ public class Optimizer {
         ruleRewriteOnlyOnce(memo, rootTaskContext, LimitPruneTabletsRule.getInstance());
         ruleRewriteIterative(memo, rootTaskContext, RuleSetType.PRUNE_PROJECT);
         ruleRewriteIterative(memo, rootTaskContext, new MergeProjectWithChildRule());
-        ruleRewriteOnlyOnce(memo, rootTaskContext, new JoinForceLimitRule());
-        ruleRewriteOnlyOnce(memo, rootTaskContext, new ReorderIntersectRule());
+        //        ruleRewriteOnlyOnce(memo, rootTaskContext, new JoinForceLimitRule());
+        //        ruleRewriteOnlyOnce(memo, rootTaskContext, new ReorderIntersectRule());
         // Rewrite maybe produce empty groups, we need to remove them.
         memo.removeAllEmptyGroup();
         memo.removeUnreachableGroup();
