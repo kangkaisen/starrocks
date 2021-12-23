@@ -218,9 +218,9 @@ Status PInternalServiceImpl<T>::_exec_plan_fragment(brpc::Controller* cntl) {
         RETURN_IF_ERROR(deserialize_thrift_msg(buf, &len, TProtocolType::BINARY, &t_request));
     }
     bool is_pipeline = t_request.__isset.is_pipeline && t_request.is_pipeline;
-    LOG(INFO) << "exec plan fragment, fragment_instance_id=" << print_id(t_request.params.fragment_instance_id)
-              << ", coord=" << t_request.coord << ", backend=" << t_request.backend_num << " is_pipeline "
-              << is_pipeline;
+    // LOG(INFO) << "exec plan fragment, fragment_instance_id=" << print_id(t_request.params.fragment_instance_id)
+    //           << ", coord=" << t_request.coord << ", backend=" << t_request.backend_num << " is_pipeline "
+    //           << is_pipeline;
     if (is_pipeline) {
         auto fragment_executor = std::make_unique<starrocks::pipeline::FragmentExecutor>();
         auto status = fragment_executor->prepare(_exec_env, t_request);
@@ -261,7 +261,7 @@ void PInternalServiceImpl<T>::cancel_plan_fragment(google::protobuf::RpcControll
     Status st;
     auto reason_string =
             request->has_cancel_reason() ? cancel_reason_to_string(request->cancel_reason()) : "UnknownReason";
-    LOG(INFO) << "cancel fragment, fragment_instance_id=" << print_id(tid) << ", reason: " << reason_string;
+    // LOG(INFO) << "cancel fragment, fragment_instance_id=" << print_id(tid) << ", reason: " << reason_string;
 
     if (request->has_is_pipeline() && request->is_pipeline()) {
         TUniqueId query_id;
@@ -275,8 +275,8 @@ void PInternalServiceImpl<T>::cancel_plan_fragment(google::protobuf::RpcControll
         query_id.__set_lo(request->query_id().lo());
         auto&& query_ctx = starrocks::pipeline::QueryContextManager::instance()->get(query_id);
         if (!query_ctx) {
-            LOG(INFO) << strings::Substitute("QueryContext already destroyed: query_id=$0, fragment_instance_id=$1",
-                                             print_id(query_id), print_id(tid));
+            // LOG(INFO) << strings::Substitute("QueryContext already destroyed: query_id=$0, fragment_instance_id=$1",
+            //                                  print_id(query_id), print_id(tid));
             st.to_protobuf(result->mutable_status());
             return;
         }
