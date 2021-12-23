@@ -27,7 +27,6 @@ import com.baidu.jprotobuf.pbrpc.client.ProtobufRpcProxy;
 import com.baidu.jprotobuf.pbrpc.transport.RpcClient;
 import com.baidu.jprotobuf.pbrpc.transport.RpcClientOptions;
 import com.google.common.collect.Maps;
-import com.starrocks.common.Config;
 import com.starrocks.common.util.JdkUtils;
 import com.starrocks.proto.PCancelPlanFragmentRequest;
 import com.starrocks.proto.PCancelPlanFragmentResult;
@@ -64,14 +63,12 @@ public class BackendServiceProxy {
 
     private BackendServiceProxy() {
         final RpcClientOptions rpcOptions = new RpcClientOptions();
-        if (Config.enable_brpc_share_channel) {
-            rpcOptions.setShareThreadPoolUnderEachProxy(true);
-            rpcOptions.setShareChannelPool(true);
-            rpcOptions.setMinIdleSize(16);
-            rpcOptions.setMaxIdleSize(16);
-        } else {
-            rpcOptions.setThreadPoolSize(Config.brpc_number_of_concurrent_requests_processed);
-        }
+        //        if (Config.enable_brpc_share_channel) {
+        //            rpcOptions.setShareThreadPoolUnderEachProxy(true);
+        //            rpcOptions.setShareChannelPool(true);
+        //        } else {
+        //            rpcOptions.setThreadPoolSize(Config.brpc_number_of_concurrent_requests_processed);
+        //        }
         rpcOptions.setMaxWait(2000);
         rpcClient = new RpcClient(rpcOptions);
         serviceMap = Maps.newHashMap();
