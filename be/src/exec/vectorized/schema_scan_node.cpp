@@ -238,6 +238,7 @@ Status SchemaScanNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos)
         if (!_conjunct_ctxs.empty()) {
             ExecNode::eval_conjuncts(_conjunct_ctxs, chunk_dst.get());
         }
+        row_num = chunk_dst->num_rows();
     }
     _num_rows_returned += chunk_dst->num_rows();
     if (reached_limit()) {
