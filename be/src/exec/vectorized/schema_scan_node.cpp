@@ -197,18 +197,16 @@ Status SchemaScanNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos)
         return Status::InternalError("Failed to allocate new chunk.");
     }
 
-    while (chunk_dst->is_empty()) {
-        while (row_num < runtime_state()->chunk_size()) {
-            if (reached_limit()) {
-                _is_finished = true;
-                // if row_num is greater than 0, in this call, eos = false, and eos will be set to true
-                // in the next call
-                if (row_num == 0) {
-                    *eos = true;
-                }
-                break;
-            }
+    if (!src_slot_descs.empty()) {
+        for (size_t i = 0; i < dest_slot_descs.size(); ++i) {
+            ColumnPtr column = vectorized::ColumnHelper::create_column(dest_slot_descs[i]->type(),
+            dest_slot_descs[i]->is_nullable());
+            chunk_dst->append_column(std::move(column), dest_slot_descs[i]->id());
+        }
+    }
 
+    while (!scanner_eos && chunk_dst->is_empty()) {
+        while (row_num < runtime_state()->chunk_size()) {
             {
                 SCOPED_TIMER(_scanner_read_timer);
                 RETURN_IF_ERROR(_schema_scanner->get_next(&chunk_src, &scanner_eos));
@@ -229,12 +227,10 @@ Status SchemaScanNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos)
 
         if (!src_slot_descs.empty()) {
             for (size_t i = 0; i < dest_slot_descs.size(); ++i) {
-                if (!dest_slot_descs[i]->is_materialized()) {
-                    continue;
-                }
                 int j = _index_map[i];
-                ColumnPtr column = chunk_src->get_column_by_slot_id(src_slot_descs[j]->id());
-                chunk_dst->append_column(std::move(column), dest_slot_descs[i]->id());
+                ColumnPtr src_column = chunk_src->get_column_by_slot_id(src_slot_descs[j]->id());
+                ColumnPtr dst_column = chunk_dst->get_column_by_slot_id(dest_slot_descs[i]->id());
+                dst_column->append(*src_column);
             }
         }
 
@@ -244,8 +240,15 @@ Status SchemaScanNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos)
         }
     }
     _num_rows_returned += chunk_dst->num_rows();
+    if (reached_limit()) {
+        int64_t num_rows_over = _num_rows_returned - _limit;
+        chunk_dst->set_num_rows(chunk_dst->num_rows() - num_rows_over);
+        COUNTER_SET(_rows_returned_counter, _limit);
+    } else {
+        COUNTER_SET(_rows_returned_counter, _num_rows_returned);
+    }
     *chunk = std::move(chunk_dst);
-    COUNTER_SET(_rows_returned_counter, _num_rows_returned);
+
     return Status::OK();
 }
 
