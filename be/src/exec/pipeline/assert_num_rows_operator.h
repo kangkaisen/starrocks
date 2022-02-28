@@ -20,12 +20,14 @@ namespace pipeline {
 class AssertNumRowsOperator final : public Operator {
 public:
     AssertNumRowsOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id, const int64_t& desired_num_rows,
-                          const std::string& subquery_string, const TAssertion::type& assertion)
+                          const std::string& subquery_string, const TAssertion::type& assertion,
+                          const std::vector<SlotDescriptor*>& slots)
             : Operator(factory, id, "assert_num_rows_sink", plan_node_id),
+              _has_assert(false),
               _desired_num_rows(desired_num_rows),
               _subquery_string(subquery_string),
               _assertion(std::move(assertion)),
-              _has_assert(false) {}
+              _slots(slots) {}
 
     ~AssertNumRowsOperator() override = default;
 
@@ -43,31 +45,33 @@ public:
     bool is_finished() const override;
 
 private:
+    bool _has_assert;
+    bool _input_finished = false;
+    int64_t _actual_num_rows = 0;
+
     const int64_t& _desired_num_rows;
     const std::string& _subquery_string;
     const TAssertion::type& _assertion;
-    bool _has_assert;
-
-    int64_t _actual_num_rows = 0;
     vectorized::ChunkPtr _cur_chunk = nullptr;
-
-    bool _input_finished = false;
+    const std::vector<SlotDescriptor*>& _slots;
 };
 
 class AssertNumRowsOperatorFactory final : public OperatorFactory {
 public:
     AssertNumRowsOperatorFactory(int32_t id, int32_t plan_node_id, int64_t desired_num_rows,
-                                 const std::string& subquery_string, TAssertion::type&& assertion)
+                                 const std::string& subquery_string, TAssertion::type&& assertion,
+                                 const std::vector<SlotDescriptor*>& slots)
             : OperatorFactory(id, "assert_num_rows_sink", plan_node_id),
               _desired_num_rows(desired_num_rows),
               _subquery_string(subquery_string),
-              _assertion(std::move(assertion)) {}
+              _assertion(std::move(assertion)),
+              _slots(slots) {}
 
     ~AssertNumRowsOperatorFactory() override = default;
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
         return std::make_shared<AssertNumRowsOperator>(this, _id, _plan_node_id, _desired_num_rows, _subquery_string,
-                                                       _assertion);
+                                                       _assertion, _slots);
     }
 
     Status prepare(RuntimeState* state) override;
@@ -77,6 +81,7 @@ private:
     int64_t _desired_num_rows;
     std::string _subquery_string;
     TAssertion::type _assertion;
+    const std::vector<SlotDescriptor*>& _slots;
 };
 
 } // namespace pipeline

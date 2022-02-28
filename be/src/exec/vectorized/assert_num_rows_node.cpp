@@ -153,15 +153,10 @@ pipeline::OpFactories AssertNumRowsNode::decompose_to_pipeline(pipeline::Pipelin
     operator_before_assert_num_rows_source = context->maybe_interpolate_local_passthrough_exchange(
             runtime_state(), operator_before_assert_num_rows_source);
 
-    auto source_factory = std::make_shared<AssertNumRowsOperatorFactory>(
-            context->next_operator_id(), id(), _desired_num_rows, _subquery_string, std::move(_assertion));
+    auto source_factory = std::make_shared<AssertNumRowsOperatorFactory>(context->next_operator_id(), id(),
+                                                                         _desired_num_rows, _subquery_string,
+                                                                         std::move(_assertion), row_desc()->->slots());
     operator_before_assert_num_rows_source.emplace_back(std::move(source_factory));
-
-    // Create a shared RefCountedRuntimeFilterCollector
-    auto&& rc_rf_probe_collector = std::make_shared<RcRfProbeCollector>(1, std::move(this->runtime_filter_collector()));
-    // Initialize OperatorFactory's fields involving runtime filters.
-    this->init_runtime_filter_for_operator(operator_before_assert_num_rows_source.back().get(), context,
-                                           rc_rf_probe_collector);
     if (limit() != -1) {
         operator_before_assert_num_rows_source.emplace_back(
                 std::make_shared<LimitOperatorFactory>(context->next_operator_id(), id(), limit()));

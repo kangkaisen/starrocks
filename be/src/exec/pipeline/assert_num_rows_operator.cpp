@@ -14,10 +14,8 @@ Status AssertNumRowsOperator::prepare(RuntimeState* state) {
     // assert num rows node only use for un-correlate scalar subquery, return empty chunk is error, least fill one rows
     vectorized::ChunkPtr chunk = std::make_shared<vectorized::Chunk>();
 
-    for (const auto& desc : _factory->row_desc()->tuple_descriptors()) {
-        for (const auto& slot : desc->slots()) {
-            chunk->append_column(ColumnHelper::create_const_null_column(1), slot->id());
-        }
+    for (const auto& slot : _slots()) {
+        chunk->append_column(ColumnHelper::create_const_null_column(1), slot->id());
     }
 
     _cur_chunk = std::move(chunk);
