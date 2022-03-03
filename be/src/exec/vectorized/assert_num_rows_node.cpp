@@ -155,7 +155,7 @@ pipeline::OpFactories AssertNumRowsNode::decompose_to_pipeline(pipeline::Pipelin
 
     auto source_factory = std::make_shared<AssertNumRowsOperatorFactory>(context->next_operator_id(), id(),
                                                                          _desired_num_rows, _subquery_string,
-                                                                         std::move(_assertion), row_desc()->->slots());
+                                                                         std::move(_assertion), row_desc()->slots());
     operator_before_assert_num_rows_source.emplace_back(std::move(source_factory));
     if (limit() != -1) {
         operator_before_assert_num_rows_source.emplace_back(
