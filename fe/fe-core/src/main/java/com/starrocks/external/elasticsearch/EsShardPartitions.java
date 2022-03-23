@@ -31,6 +31,8 @@ import org.apache.logging.log4j.Logger;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -111,9 +113,19 @@ public class EsShardPartitions {
         }
     }
 
+    // SecureRandom is preferred to Random
+    private static Random rand;
+    static {
+        try {
+            rand = SecureRandom.getInstanceStrong();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+    }
+
     public TNetworkAddress randomAddress(Map<String, EsNodeInfo> nodesInfo) {
         // return a random value between 0 and 32767 : [0, 32767)
-        int seed = new Random().nextInt(Short.MAX_VALUE) % nodesInfo.size();
+        int seed = rand.nextInt(Short.MAX_VALUE) % nodesInfo.size();
         EsNodeInfo[] nodeInfos = nodesInfo.values().toArray(new EsNodeInfo[0]);
         return nodeInfos[seed].getPublishAddress();
     }

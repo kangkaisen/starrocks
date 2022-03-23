@@ -39,6 +39,8 @@ import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -79,6 +81,9 @@ public class Util {
         TYPE_STRING_MAP.put(PrimitiveType.BITMAP, "bitmap");
         TYPE_STRING_MAP.put(PrimitiveType.PERCENTILE, "percentile");
         TYPE_STRING_MAP.put(PrimitiveType.JSON, "json");
+    }
+
+    public Util() throws NoSuchAlgorithmException {
     }
 
     private static class CmdWorker extends Thread {
@@ -290,8 +295,18 @@ public class Util {
         return Math.abs((int) adler32.getValue());
     }
 
+    // SecureRandom is preferred to Random
+    private static Random rand;
+    static {
+        try {
+            rand = SecureRandom.getInstanceStrong();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+    }
+
     public static int generateSchemaHash() {
-        return Math.abs(new Random().nextInt());
+        return Math.abs(rand.nextInt());
     }
 
     public static String dumpThread(Thread t, int lineNum) {
@@ -342,7 +357,6 @@ public class Util {
                     stream.close();
                 } catch (IOException e) {
                     LOG.warn("failed to close stream when get result from url: {}", urlStr, e);
-                    return null;
                 }
             }
         }
