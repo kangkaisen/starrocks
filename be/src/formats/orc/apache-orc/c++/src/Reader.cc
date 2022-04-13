@@ -919,6 +919,11 @@ void RowReaderImpl::startNextStripe() {
             // read row group statistics and bloom filters of current stripe
             loadStripeIndex();
 
+            if (sargsApplier->getRowReaderFilter()) {
+                sargsApplier->getRowReaderFilter()->setWriterTimezone(
+                        currentStripeFooter.has_writertimezone() ? currentStripeFooter.writertimezone() : "");
+            }
+
             // select row groups to read in the current stripe
             sargsApplier->pickRowGroups(rowsInCurrentStripe, rowIndexes, bloomFilterIndex);
             if (!sargsApplier->hasSelectedFrom(currentRowInStripe)) {
@@ -931,6 +936,7 @@ void RowReaderImpl::startNextStripe() {
             const Timezone& writerTimezone = currentStripeFooter.has_writertimezone()
                                                      ? getTimezoneByName(currentStripeFooter.writertimezone())
                                                      : getLocalTimezone();
+
             StripeStreamsImpl stripeStreams(*this, currentStripe, currentStripeInfo, currentStripeFooter,
                                             currentStripeInfo.offset(), *contents->stream, writerTimezone,
                                             readerTimezone);
