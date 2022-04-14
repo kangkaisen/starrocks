@@ -119,6 +119,7 @@ struct TExportSink {
     2: required string export_path
     3: required string column_separator
     4: required string row_delimiter
+    7: required string export_format
     // properties need to access broker.
     5: optional list<Types.TNetworkAddress> broker_addresses
     6: optional map<string, string> properties

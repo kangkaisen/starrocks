@@ -810,6 +810,7 @@ public class InsertStmt extends DdlStmt {
                     table.getWritablePath(),
                     table.getColumnSeparator(),
                     table.getRowDelimiter(),
+                    table.getFileFormat(),
                     brokerDesc);
             dataPartition = dataSink.getOutputPartition();
         } else {

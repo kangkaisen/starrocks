@@ -191,6 +191,7 @@ public class BrokerTable extends Table {
             fileFormat = fileFormat.toLowerCase();
             switch (fileFormat) {
                 case "csv":
+                case "orc":
                 case "parquet":
                     break;
                 default:

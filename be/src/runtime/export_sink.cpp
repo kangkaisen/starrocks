@@ -27,6 +27,7 @@
 #include "column/column.h"
 #include "env/env_broker.h"
 #include "exec/broker_writer.h"
+#include "exec/orc_builder.h"
 #include "exec/plain_text_builder.h"
 #include "exprs/expr.h"
 #include "gutil/strings/substitute.h"
@@ -121,10 +122,20 @@ Status ExportSink::open_file_writer(int timeout_ms) {
         return Status::NotSupported(strings::Substitute("Unsupported file type $0", file_type));
     }
 
-    _file_builder = std::make_unique<PlainTextBuilder>(
-            PlainTextBuilderOptions{.column_terminated_by = _t_export_sink.column_separator,
-                                    .line_terminated_by = _t_export_sink.row_delimiter},
-            std::move(output_file), _output_expr_ctxs);
+    const auto& file_format = string(_t_export_sink.export_format);
+    if (file_format == "csv") {
+        _file_builder = std::make_unique<PlainTextBuilder>(
+                PlainTextBuilderOptions{.column_terminated_by = _t_export_sink.column_separator,
+                                        .line_terminated_by = _t_export_sink.row_delimiter},
+                std::move(output_file), _output_expr_ctxs);
+    } else if (file_format == "orc") {
+        _file_builder =
+                std::make_unique<ORCBuilder>(ORCBuilderOptions{.column_terminated_by = _t_export_sink.column_separator,
+                                                               .line_terminated_by = _t_export_sink.row_delimiter},
+                                             std::move(output_file), _output_expr_ctxs);
+    } else {
+        return Status::NotSupported("unsupported file format " + file_format);
+    }
 
     _state->add_export_output_file(file_path);
     return Status::OK();
@@ -139,7 +150,14 @@ Status ExportSink::gen_file_name(std::string* file_name) {
     std::stringstream file_name_ss;
     // now file-number is 0.
     // <file-name-prefix>_<file-number>.csv.<timestamp>
-    file_name_ss << _t_export_sink.file_name_prefix << "0.csv." << UnixMillis();
+    const auto& file_format = string(_t_export_sink.export_format);
+    if (file_format == "csv") {
+        file_name_ss << _t_export_sink.file_name_prefix << "0.csv." << UnixMillis();
+    } else if (file_format == "orc") {
+        file_name_ss << _t_export_sink.file_name_prefix << "0.orc." << UnixMillis();
+    } else {
+        return Status::NotSupported("unsupported file format " + file_format);
+    }
     *file_name = file_name_ss.str();
     return Status::OK();
 }

@@ -139,6 +139,7 @@ public class ExportJob implements Writable {
     private boolean isReplayed = false;
     private Thread doExportingThread;
     private List<TScanRangeLocations> tabletLocations = Lists.newArrayList();
+    private String fileFormat;
 
     public ExportJob() {
         this.id = -1;
@@ -159,6 +160,7 @@ public class ExportJob implements Writable {
         this.columnSeparator = "\t";
         this.rowDelimiter = "\n";
         this.includeQueryId = true;
+        this.fileFormat = "csv";
     }
 
     public ExportJob(long jobId, UUID queryId) {
@@ -193,6 +195,7 @@ public class ExportJob implements Writable {
 
         this.partitions = stmt.getPartitions();
         this.columnNames = stmt.getColumnNames();
+        this.fileFormat = stmt.getFileFormat();
 
         db.readLock();
         try {
@@ -353,7 +356,7 @@ public class ExportJob implements Writable {
 
         scanNode.setFragmentId(fragment.getFragmentId());
         fragment.setSink(new ExportSink(exportTempPath, fileNamePrefix + taskIdx + "_", columnSeparator,
-                rowDelimiter, brokerDesc));
+                rowDelimiter, fileFormat, brokerDesc));
         try {
             fragment.finalize(analyzer, false);
         } catch (Exception e) {
@@ -425,6 +428,10 @@ public class ExportJob implements Writable {
 
     public String getExportPath() {
         return exportPath;
+    }
+
+    public String getFileFormat() {
+        return fileFormat;
     }
 
     public String getColumnSeparator() {
@@ -667,6 +674,7 @@ public class ExportJob implements Writable {
                 + ", tableId=" + tableId
                 + ", state=" + state
                 + ", path=" + exportPath
+                + ", format=" + fileFormat
                 + ", partitions=(" + StringUtils.join(partitions, ",") + ")"
                 + ", progress=" + progress
                 + ", createTimeMs=" + TimeUtils.longToTimeString(createTimeMs)
@@ -687,6 +695,7 @@ public class ExportJob implements Writable {
         Text.writeString(out, exportPath);
         Text.writeString(out, columnSeparator);
         Text.writeString(out, rowDelimiter);
+        Text.writeString(out, fileFormat);
         out.writeInt(properties.size());
         for (Map.Entry<String, String> property : properties.entrySet()) {
             Text.writeString(out, property.getKey());
@@ -732,6 +741,9 @@ public class ExportJob implements Writable {
         exportPath = Text.readString(in);
         columnSeparator = Text.readString(in);
         rowDelimiter = Text.readString(in);
+        if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_93) {
+            fileFormat = Text.readString(in);
+        }
 
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_53) {
             int count = in.readInt();

@@ -25,12 +25,7 @@ import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.FsBroker;
 import com.starrocks.common.util.PrintableMap;
-import com.starrocks.thrift.TDataSink;
-import com.starrocks.thrift.TDataSinkType;
-import com.starrocks.thrift.TExplainLevel;
-import com.starrocks.thrift.TExportSink;
-import com.starrocks.thrift.TFileType;
-import com.starrocks.thrift.TNetworkAddress;
+import com.starrocks.thrift.*;
 import org.apache.commons.lang.StringEscapeUtils;
 
 public class ExportSink extends DataSink {
@@ -39,20 +34,22 @@ public class ExportSink extends DataSink {
     private final String columnSeparator;
     private final String rowDelimiter;
     private final BrokerDesc brokerDesc;
+    private final String fileFormat;
 
     public ExportSink(String exportPath, String fileNamePrefix, String columnSeparator,
-                      String rowDelimiter, BrokerDesc brokerDesc) {
+                      String rowDelimiter, String fileFormat, BrokerDesc brokerDesc) {
         this.exportPath = exportPath;
         this.fileNamePrefix = fileNamePrefix;
         this.columnSeparator = columnSeparator;
         this.rowDelimiter = rowDelimiter;
+        this.fileFormat = fileFormat;
         this.brokerDesc = brokerDesc;
     }
 
     // for insert broker table
     public ExportSink(String exportPath, String columnSeparator,
-                      String rowDelimiter, BrokerDesc brokerDesc) {
-        this(exportPath, null, columnSeparator, rowDelimiter, brokerDesc);
+                      String rowDelimiter, String fileFormat, BrokerDesc brokerDesc) {
+        this(exportPath, null, columnSeparator, rowDelimiter, fileFormat, brokerDesc);
     }
 
     public String getFileNamePrefix() {
@@ -72,6 +69,8 @@ public class ExportSink extends DataSink {
                 + StringEscapeUtils.escapeJava(columnSeparator) + "\n");
         sb.append(prefix + "  rowDelimiter="
                 + StringEscapeUtils.escapeJava(rowDelimiter) + "\n");
+        sb.append(prefix + "  fileFormat="
+                + StringEscapeUtils.escapeJava(fileFormat) + "\n");
         sb.append(prefix + "  broker_name=" + brokerDesc.getName() + " property("
                 + new PrintableMap<String, String>(
                 brokerDesc.getProperties(), "=", true, false)
@@ -83,7 +82,7 @@ public class ExportSink extends DataSink {
     @Override
     protected TDataSink toThrift() {
         TDataSink result = new TDataSink(TDataSinkType.EXPORT_SINK);
-        TExportSink tExportSink = new TExportSink(TFileType.FILE_BROKER, exportPath, columnSeparator, rowDelimiter);
+        TExportSink tExportSink = new TExportSink(TFileType.FILE_BROKER, exportPath, columnSeparator, rowDelimiter, fileFormat);
 
         FsBroker broker = Catalog.getCurrentCatalog().getBrokerMgr().getAnyBroker(brokerDesc.getName());
         if (broker != null) {

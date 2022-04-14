@@ -61,11 +61,13 @@ import java.util.Set;
 public class ExportStmt extends StatementBase {
     private static final Logger LOG = LogManager.getLogger(ExportStmt.class);
 
+    private static final String FILE_FORMAT = "file_format";
     private static final String INCLUDE_QUERY_ID_PROP = "include_query_id";
 
     private static final String DEFAULT_COLUMN_SEPARATOR = "\t";
     private static final String DEFAULT_LINE_DELIMITER = "\n";
     private static final String DEFAULT_FILE_NAME_PREFIX = "data_";
+    private static final String DEFAULT_FILE_FORMAT = "csv";
 
     private static final Set<String> VALID_SCHEMES = Sets.newHashSet(
             "afs", "bos", "hdfs", "oss", "s3a", "cosn", "viewfs");
@@ -81,6 +83,7 @@ public class ExportStmt extends StatementBase {
     private String columnSeparator;
     private String rowDelimiter;
     private boolean includeQueryId = true;
+    private String fileFormat = "csv";
 
     private TableRef tableRef;
     private long exportStartTime;
@@ -97,6 +100,7 @@ public class ExportStmt extends StatementBase {
         this.columnSeparator = DEFAULT_COLUMN_SEPARATOR;
         this.rowDelimiter = DEFAULT_LINE_DELIMITER;
         this.includeQueryId = true;
+        this.fileFormat = DEFAULT_FILE_FORMAT;
     }
 
     public long getExportStartTime() {
@@ -145,6 +149,10 @@ public class ExportStmt extends StatementBase {
 
     public boolean isIncludeQueryId() {
         return includeQueryId;
+    }
+
+    public String getFileFormat() {
+        return this.fileFormat;
     }
 
     @Override
@@ -335,6 +343,16 @@ public class ExportStmt extends StatementBase {
                 throw new AnalysisException("Invalid include query id value: " + includeQueryIdStr);
             }
             includeQueryId = Boolean.parseBoolean(properties.get(INCLUDE_QUERY_ID_PROP));
+        }
+
+        // file format
+        if (properties.containsKey(FILE_FORMAT)) {
+            String fileFormatStr = properties.get(FILE_FORMAT);
+            if (!fileFormatStr.equalsIgnoreCase("csv")
+                    && !fileFormatStr.equalsIgnoreCase("orc")) {
+                throw new AnalysisException("Invalid file format: " + fileFormatStr);
+            }
+            this.fileFormat = fileFormatStr.toLowerCase();
         }
     }
 
