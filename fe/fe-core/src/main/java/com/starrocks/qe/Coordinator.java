@@ -24,6 +24,7 @@ package com.starrocks.qe;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -147,7 +148,15 @@ public class Coordinator {
     Status queryStatus = new Status();
     // save of related backends of this query
     Map<TNetworkAddress, Long> addressToBackendID = Maps.newHashMap();
+    //backends which this query will use
     private ImmutableMap<Long, Backend> idToBackend = ImmutableMap.of();
+    //compute node which this query will use
+    private ImmutableMap<Long, Backend> idToComputeNode = ImmutableMap.of();
+    //if it has compute node, hasComputeNode is true
+    private boolean hasComputeNode = false;
+    //when use compute node, usedComputeNode is true,
+    //if hasComputeNode but preferComputeNode is false and no hdfsScanNode, usedComputeNode still false
+    private boolean usedComputeNode = false;
     // copied from TQueryExecRequest; constant across all fragments
     private final TDescriptorTable descTable;
     // Why we use query global?
@@ -196,6 +205,9 @@ public class Coordinator {
     private TUniqueId queryId;
     private final TResourceInfo tResourceInfo;
     private final boolean needReport;
+    private final boolean preferComputeNode;
+    //this query use compute node number
+    private final int useComputeNodeNumber;
     private final String clusterName;
     // force schedule local be for HybridBackendSelector
     // only for hive now
@@ -240,6 +252,8 @@ public class Coordinator {
         this.tResourceInfo = new TResourceInfo(context.getQualifiedUser(),
                 context.getSessionVariable().getResourceGroup());
         this.needReport = context.getSessionVariable().isReportSucc();
+        this.preferComputeNode = context.getSessionVariable().isPreferComputeNode();
+        this.useComputeNodeNumber = context.getSessionVariable().getUseComputeNodes();
         this.clusterName = context.getClusterName();
         this.nextInstanceId = new TUniqueId();
         nextInstanceId.setHi(queryId.hi);
@@ -263,6 +277,8 @@ public class Coordinator {
         this.queryGlobals.setTime_zone(timezone);
         this.tResourceInfo = new TResourceInfo("", "");
         this.needReport = true;
+        this.preferComputeNode = false;
+        this.useComputeNodeNumber = -1;
         this.clusterName = cluster;
         this.nextInstanceId = new TUniqueId();
         nextInstanceId.setHi(queryId.hi);
@@ -354,6 +370,16 @@ public class Coordinator {
         }
 
         this.idToBackend = Catalog.getCurrentSystemInfo().getIdToBackend();
+        this.idToComputeNode = getIdToComputeNode();
+
+        //if it has compute node and contains hdfsScanNode,will use compute node,even though preferComputeNode is false
+        if (idToComputeNode != null && idToComputeNode.size() > 0) {
+            hasComputeNode = true;
+            if (preferComputeNode) {
+                usedComputeNode = true;
+            }
+        }
+
         if (LOG.isDebugEnabled()) {
             LOG.debug("idToBackend size={}", idToBackend.size());
             for (Map.Entry<Long, Backend> entry : idToBackend.entrySet()) {
@@ -361,6 +387,23 @@ public class Coordinator {
                 Backend backend = entry.getValue();
                 LOG.debug("backend: {}-{}-{}", backendID, backend.getHost(), backend.getBePort());
             }
+        }
+    }
+
+    private ImmutableMap<Long, Backend> getIdToComputeNode() {
+        ImmutableMap<Long, Backend> idToComputeNode = ImmutableMap.copyOf(Catalog.getCurrentSystemInfo().getIdComputeNode());
+        if (useComputeNodeNumber < 0 || useComputeNodeNumber >= idToComputeNode.size()) {
+            return idToComputeNode;
+        } else {
+            Map<Long, Backend> backends = new HashMap<>();
+            for (int i = 0; i < useComputeNodeNumber; i++) {
+                Backend backend = SimpleScheduler.getBackend(idToComputeNode);
+                if (backend == null) {
+                    continue;
+                }
+                backends.put(backend.getId(), backend);
+            }
+            return ImmutableMap.copyOf(backends);
         }
     }
 
@@ -1120,7 +1163,10 @@ public class Coordinator {
         Backend backend = Catalog.getCurrentSystemInfo().getBackendWithBePort(
                 host.getHostname(), host.getPort());
         if (backend == null) {
-            throw new UserException("Backend not found. Check if any backend is down or not");
+            backend = Catalog.getCurrentSystemInfo().getComputeNodeWithBePort(host.getHostname(), host.getPort());
+            if (backend == null) {
+                throw new UserException("Backend not found. Check if any backend is down or not");
+            }
         }
         return new TNetworkAddress(backend.getHost(), backend.getBeRpcPort());
     }
@@ -1129,7 +1175,10 @@ public class Coordinator {
         Backend backend = Catalog.getCurrentSystemInfo().getBackendWithBePort(
                 host.getHostname(), host.getPort());
         if (backend == null) {
-            throw new UserException("Backend not found. Check if any backend is down or not");
+            backend = Catalog.getCurrentSystemInfo().getComputeNodeWithBePort(host.getHostname(), host.getPort());
+            if (backend == null) {
+                throw new UserException("Backend not found. Check if any backend is down or not");
+            }
         }
         if (backend.getBrpcPort() < 0) {
             return null;
@@ -1164,7 +1213,12 @@ public class Coordinator {
 
             if (fragment.getDataPartition() == DataPartition.UNPARTITIONED) {
                 Reference<Long> backendIdRef = new Reference<>();
-                TNetworkAddress execHostport = SimpleScheduler.getHost(this.idToBackend, backendIdRef);
+                TNetworkAddress execHostport;
+                if (usedComputeNode) {
+                    execHostport = SimpleScheduler.getHost(this.idToComputeNode, backendIdRef);
+                } else {
+                    execHostport = SimpleScheduler.getHost(this.idToBackend, backendIdRef);
+                }
                 if (execHostport == null) {
                     LOG.warn("DataPartition UNPARTITIONED, no scanNode Backend");
                     throw new UserException("Backend not found. Check if any backend is down or not");
@@ -1213,8 +1267,22 @@ public class Coordinator {
                 // delivered. when pipeline parallelization is adopted, the number of instances should be the size
                 // of hostSet, that it to say, each backend has exactly one fragment.
                 Set<TNetworkAddress> hostSet = Sets.newHashSet();
-                for (FInstanceExecParam execParams : maxParallelismFragmentExecParams.instanceExecParams) {
-                    hostSet.add(execParams.host);
+                if (usedComputeNode) {
+                    for (Map.Entry<Long, Backend> entry : idToComputeNode.entrySet()) {
+                        Backend backend = entry.getValue();
+                        if (!backend.isAlive() || SimpleScheduler.isInBlacklist(backend.getId())) {
+                            continue;
+                        }
+                        TNetworkAddress addr = new TNetworkAddress(backend.getHost(), backend.getBePort());
+                        hostSet.add(addr);
+                        this.addressToBackendID.put(addr, backend.getId());
+                    }
+                    //make olapScan maxParallelism equals prefer compute node number
+                    maxParallelism = hostSet.size() * fragment.getParallelExecNum();
+                } else {
+                    for (FInstanceExecParam execParams : maxParallelismFragmentExecParams.instanceExecParams) {
+                        hostSet.add(execParams.host);
+                    }
                 }
 
                 if (dopAdaptionEnabled) {
@@ -1322,7 +1390,12 @@ public class Coordinator {
 
             if (params.instanceExecParams.isEmpty()) {
                 Reference<Long> backendIdRef = new Reference<>();
-                TNetworkAddress execHostport = SimpleScheduler.getHost(this.idToBackend, backendIdRef);
+                TNetworkAddress execHostport;
+                if (usedComputeNode) {
+                    execHostport = SimpleScheduler.getHost(this.idToComputeNode, backendIdRef);
+                } else {
+                    execHostport = SimpleScheduler.getHost(this.idToBackend, backendIdRef);
+                }
                 if (execHostport == null) {
                     throw new UserException("Backend not found. Check if any backend is down or not");
                 }
@@ -1908,7 +1981,10 @@ public class Coordinator {
             this.done = false;
             this.address = host;
             this.backend = idToBackend.get(addressToBackendID.get(address));
-
+            // if useComputeNode and it's olapScan now, backend is null ,need get from olapScanNodeIdToComputeNode
+            if (backend == null) {
+                backend = idToComputeNode.get(addressToBackendID.get(address));
+            }
             String name =
                     "Instance " + DebugUtil.printId(rpcParams.params.fragment_instance_id) + " (host=" + address + ")";
             this.profile = new RuntimeProfile(name);
@@ -2527,8 +2603,14 @@ public class Coordinator {
         public void computeScanRangeAssignment() throws Exception {
             Preconditions.checkArgument(assignType != ScanRangeAssignType.SCAN_DATA_SIZE
                     || locations.size() == scanRangesBytes.size());
-
-            for (Backend backend : idToBackend.values()) {
+            ImmutableCollection<Backend> nodes;
+            if (hasComputeNode) {
+                usedComputeNode = true;
+                nodes = idToComputeNode.values();
+            } else {
+                nodes = idToBackend.values();
+            }
+            for (Backend backend : nodes) {
                 if (!backend.isAlive() || SimpleScheduler.isInBlacklist(backend.getId())) {
                     continue;
                 }

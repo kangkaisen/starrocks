@@ -436,6 +436,16 @@ public class SystemInfoService {
         return null;
     }
 
+    public ComputeNode getComputeNodeWithBePort(String host, int bePort) {
+        ImmutableMap<Long, ComputeNode> idToComputeNode = idToComputeNodeRef;
+        for (ComputeNode computeNode : idToComputeNode.values()) {
+            if (computeNode.getHost().equals(host) && computeNode.getBePort() == bePort) {
+                return computeNode;
+            }
+        }
+        return null;
+    }
+
     public List<Long> getComputeNodeIds(boolean needAlive) {
         ImmutableMap<Long, ComputeNode> idToComputeNode = idToComputeNodeRef;
         List<Long> computeNodeIds = Lists.newArrayList(idToComputeNode.keySet());

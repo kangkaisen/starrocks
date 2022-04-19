@@ -4,6 +4,9 @@ package com.starrocks.planner;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.DescriptorTable;
 import com.starrocks.analysis.Expr;
@@ -15,6 +18,7 @@ import com.starrocks.common.UserException;
 import com.starrocks.external.PredicateUtils;
 import com.starrocks.external.iceberg.ExpressionConverter;
 import com.starrocks.external.iceberg.IcebergUtil;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.system.Backend;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.THdfsScanNode;
@@ -71,7 +75,12 @@ public class IcebergScanNode extends ScanNode {
     }
 
     private void getAliveBackends() throws UserException {
-        for (Backend be : Catalog.getCurrentSystemInfo().getIdToBackend().values()) {
+        ImmutableCollection<Backend> backends = ImmutableList.copyOf(Catalog.getCurrentSystemInfo().getIdComputeNode().values());
+        if (backends == null || backends.size() == 0) {
+            backends = Catalog.getCurrentSystemInfo().getIdToBackend().values();
+        }
+
+        for (Backend be : backends) {
             if (be.isAlive()) {
                 hostToBeId.put(be.getHost(), be.getId());
             }

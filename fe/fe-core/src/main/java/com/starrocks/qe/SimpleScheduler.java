@@ -42,7 +42,10 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class SimpleScheduler {
-    private static AtomicLong nextId = new AtomicLong(0);
+    //count id for get TNetworkAddress
+    private static AtomicLong nextHostId = new AtomicLong(0);
+    //count id for get Backend/ComputeNode
+    private static AtomicLong nextBackendId = new AtomicLong(0);
     private static final Logger LOG = LogManager.getLogger(SimpleScheduler.class);
 
     private static Map<Long, Integer> blacklistBackends = Maps.newHashMap();
@@ -98,7 +101,7 @@ public class SimpleScheduler {
         if (backendSize == 0) {
             return null;
         }
-        long id = nextId.getAndIncrement() % backendSize;
+        long id = nextHostId.getAndIncrement() % backendSize;
 
         List<Long> idToBackendId = Lists.newArrayList();
         idToBackendId.addAll(backends.keySet());
@@ -126,6 +129,44 @@ public class SimpleScheduler {
                     backendIdRef.setRef(candidatebackendId);
                     return new TNetworkAddress(candidateBackend.getHost(), candidateBackend.getBePort());
                 }
+            }
+        }
+        // no backend returned
+        return null;
+    }
+
+    public static Backend getBackend(ImmutableMap<Long, Backend> backends) {
+        if (backends == null) {
+            return null;
+        }
+        int backendSize = backends.size();
+        if (backendSize == 0) {
+            return null;
+        }
+        long id = nextBackendId.getAndIncrement() % backendSize;
+
+        List<Long> idToBackendId = Lists.newArrayList();
+        idToBackendId.addAll(backends.keySet());
+        Long backendId = idToBackendId.get((int) id);
+        Backend backend = backends.get(backendId);
+
+        if (backend != null && backend.isAlive() && !blacklistBackends.containsKey(backendId)) {
+            return backend;
+        } else {
+            long candidateId = nextBackendId.getAndIncrement() % backendSize;  // get next candidate id
+            for (int i = 0; i < backendSize; i++) {
+                LOG.debug("i={} candidatedId={}", i, candidateId);
+                if (candidateId == id) {
+                    continue;
+                }
+                Long candidatebackendId = idToBackendId.get((int) candidateId);
+                LOG.debug("candidatebackendId={}", candidatebackendId);
+                Backend candidateBackend = backends.get(candidatebackendId);
+                if (candidateBackend != null && candidateBackend.isAlive()
+                        && !blacklistBackends.containsKey(candidatebackendId)) {
+                    return candidateBackend;
+                }
+                candidateId = nextBackendId.getAndIncrement() % backendSize;
             }
         }
         // no backend returned
