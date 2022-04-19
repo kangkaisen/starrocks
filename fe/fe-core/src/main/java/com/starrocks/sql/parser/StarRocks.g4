@@ -33,6 +33,11 @@ statement
         ('(' columnNameWithComment (',' columnNameWithComment)* ')')?
         AS queryStatement                                                               #alterView
     | alterStatement                                                                    #alter
+    | SHOW showParam                                                                    #show
+    ;
+
+showParam
+    : COMPUTE NODES                                                    #showComputeNodes
     ;
 
 alterStatement

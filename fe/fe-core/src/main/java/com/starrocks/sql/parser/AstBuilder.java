@@ -62,6 +62,7 @@ import com.starrocks.analysis.RangePartitionDesc;
 import com.starrocks.analysis.SelectList;
 import com.starrocks.analysis.SelectListItem;
 import com.starrocks.analysis.SetType;
+import com.starrocks.analysis.ShowComputeNodesStmt;
 import com.starrocks.analysis.ShowDbStmt;
 import com.starrocks.analysis.ShowTableStmt;
 import com.starrocks.analysis.SingleRangePartitionDesc;
@@ -146,6 +147,11 @@ public class AstBuilder extends StarRocksBaseVisitor<ParseNode> {
             hostPorts = visit(context.hostPortPairs().string(), StringLiteral.class);
         }
         return new DropComputeNodeStmt(hostPorts);
+    }
+
+    @Override
+    public ParseNode visitShowComputeNodes(StarRocksParser.ShowComputeNodesContext ctx) {
+        return new ShowComputeNodesStmt();
     }
 
     @Override

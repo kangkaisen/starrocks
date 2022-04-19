@@ -38,6 +38,7 @@ public final class ProcService {
         root = new BaseProcDir();
         root.register("auth", new AuthProcDir(Catalog.getCurrentCatalog().getAuth()));
         root.register("backends", new BackendsProcDir(Catalog.getCurrentSystemInfo()));
+        root.register("compute_nodes", new ComputeNodeProcDir(Catalog.getCurrentSystemInfo()));
         root.register("dbs", new DbsProcDir(Catalog.getCurrentCatalog()));
         root.register("jobs", new JobsDbProcDir(Catalog.getCurrentCatalog()));
         root.register("statistic", new StatisticProcDir(Catalog.getCurrentCatalog()));

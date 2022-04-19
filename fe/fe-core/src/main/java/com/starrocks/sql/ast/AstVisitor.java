@@ -41,6 +41,7 @@ import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.analysis.OrderByElement;
 import com.starrocks.analysis.ParseNode;
 import com.starrocks.analysis.ShowColumnStmt;
+import com.starrocks.analysis.ShowComputeNodesStmt;
 import com.starrocks.analysis.ShowDbStmt;
 import com.starrocks.analysis.ShowStmt;
 import com.starrocks.analysis.ShowTableStatusStmt;
@@ -117,6 +118,10 @@ public abstract class AstVisitor<R, C> {
     }
 
     public R visitDropComputeNode(DropComputeNodeStmt statement, C context) {
+        return visitStatement(statement, context);
+    }
+
+    public R visitShowComputeNodes(ShowComputeNodesStmt statement, C context) {
         return visitStatement(statement, context);
     }
 

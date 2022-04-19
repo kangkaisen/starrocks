@@ -11,6 +11,7 @@ import com.starrocks.analysis.DropWorkGroupStmt;
 import com.starrocks.analysis.InsertStmt;
 import com.starrocks.analysis.QueryStmt;
 import com.starrocks.analysis.ShowColumnStmt;
+import com.starrocks.analysis.ShowComputeNodesStmt;
 import com.starrocks.analysis.ShowDbStmt;
 import com.starrocks.analysis.ShowTableStatusStmt;
 import com.starrocks.analysis.ShowTableStmt;
@@ -148,7 +149,8 @@ public class StatementPlanner {
                 || statement instanceof QueryStatement
                 || statement instanceof ShowDbStmt
                 || statement instanceof ShowTableStmt
-                || statement instanceof AlterSystemStmtNew;
+                || statement instanceof AlterSystemStmtNew
+                || statement instanceof ShowComputeNodesStmt;
     }
 
     public static boolean supportedByNewAnalyzer(StatementBase statement) {
@@ -166,6 +168,7 @@ public class StatementPlanner {
                 || statement instanceof ShowTableStatusStmt
                 || statement instanceof ShowVariablesStmt
                 || statement instanceof ShowWorkGroupStmt
-                || statement instanceof AlterSystemStmtNew;
+                || statement instanceof AlterSystemStmtNew
+                || statement instanceof ShowComputeNodesStmt;
     }
 }
