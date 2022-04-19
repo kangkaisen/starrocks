@@ -198,6 +198,10 @@ public class Cluster implements Writable {
         backendIdSet.addAll(backendIds);
     }
 
+    public void removeComputeNode(long removedComputeNodeId) {
+        computeNodeIdSet.remove((Long) removedComputeNodeId);
+    }
+
     public void removeBackend(long removedBackendId) {
         backendIdSet.remove((Long) removedBackendId);
     }

@@ -311,7 +311,8 @@ public class JournalEntity implements Writable {
                 isRead = true;
                 break;
             }
-            case OperationType.OP_ADD_COMPUTE_NODE: {
+            case OperationType.OP_ADD_COMPUTE_NODE:
+            case OperationType.OP_DROP_COMPUTE_NODE: {
                 data = new ComputeNode();
                 ((ComputeNode) data).readFields(in);
                 isRead = true;

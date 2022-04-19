@@ -24,6 +24,7 @@ import com.starrocks.analysis.CreateViewStmt;
 import com.starrocks.analysis.CreateWorkGroupStmt;
 import com.starrocks.analysis.DdlStmt;
 import com.starrocks.analysis.DefaultValueExpr;
+import com.starrocks.analysis.DropComputeNodeStmt;
 import com.starrocks.analysis.DropWorkGroupStmt;
 import com.starrocks.analysis.ExistsPredicate;
 import com.starrocks.analysis.Expr;
@@ -112,6 +113,10 @@ public abstract class AstVisitor<R, C> {
     }
 
     public R visitAddComputeNode(AddComputeNodeStmt statement, C context) {
+        return visitStatement(statement, context);
+    }
+
+    public R visitDropComputeNode(DropComputeNodeStmt statement, C context) {
         return visitStatement(statement, context);
     }
 

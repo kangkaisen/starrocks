@@ -28,6 +28,7 @@ import com.starrocks.analysis.DateLiteral;
 import com.starrocks.analysis.DecimalLiteral;
 import com.starrocks.analysis.DefaultValueExpr;
 import com.starrocks.analysis.DistributionDesc;
+import com.starrocks.analysis.DropComputeNodeStmt;
 import com.starrocks.analysis.ExistsPredicate;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.FloatLiteral;
@@ -137,6 +138,15 @@ public class AstBuilder extends StarRocksBaseVisitor<ParseNode> {
     }
 
     // -------------------------------- Statement ------------------------------
+
+    @Override
+    public ParseNode visitDropComputeNode(StarRocksParser.DropComputeNodeContext context) {
+        List<StringLiteral> hostPorts = ImmutableList.of();
+        if (context.hostPortPairs() != null) {
+            hostPorts = visit(context.hostPortPairs().string(), StringLiteral.class);
+        }
+        return new DropComputeNodeStmt(hostPorts);
+    }
 
     @Override
     public ParseNode visitAddComputeNode(StarRocksParser.AddComputeNodeContext context) {

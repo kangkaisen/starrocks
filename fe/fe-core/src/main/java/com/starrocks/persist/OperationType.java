@@ -129,6 +129,7 @@ public class OperationType {
     public static final short OP_CREATE_REPOSITORY = 89;
     public static final short OP_DROP_REPOSITORY = 90;
     public static final short OP_ADD_COMPUTE_NODE = 91;
+    public static final short OP_DROP_COMPUTE_NODE = 92;
 
     //colocate table
     public static final short OP_COLOCATE_ADD_TABLE = 94;

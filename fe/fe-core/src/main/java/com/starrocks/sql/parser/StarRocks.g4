@@ -45,6 +45,11 @@ alterSystemStatement
 
 systemStatement
     : addSystemStatement                                                #addSystem
+    | dropSystemStatement                                               #dropSystem
+    ;
+
+dropSystemStatement
+    : DROP COMPUTE NODE hostPortPairs                                  #dropComputeNode
     ;
 
 addSystemStatement
