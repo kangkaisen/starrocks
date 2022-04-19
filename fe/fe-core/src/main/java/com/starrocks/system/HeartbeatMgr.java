@@ -106,6 +106,12 @@ public class HeartbeatMgr extends MasterDaemon {
             hbResponses.add(executor.submit(handler));
         }
 
+        // send compute node heartbeat
+        for (ComputeNode computeNode : nodeMgr.getIdComputeNode().values()) {
+            BackendHeartbeatHandler handler = new BackendHeartbeatHandler(computeNode);
+            hbResponses.add(executor.submit(handler));
+        }
+
         // send frontend heartbeat
         List<Frontend> frontends = Catalog.getCurrentCatalog().getFrontends(null);
         String masterFeNodeName = "";
@@ -176,6 +182,9 @@ public class HeartbeatMgr extends MasterDaemon {
             case BACKEND: {
                 BackendHbResponse hbResponse = (BackendHbResponse) response;
                 Backend be = nodeMgr.getBackend(hbResponse.getBeId());
+                if (be == null) {
+                    be = nodeMgr.getComputeNode(hbResponse.getBeId());
+                }
                 if (be != null) {
                     boolean isChanged = be.handleHbResponse(hbResponse);
                     if (hbResponse.getStatus() != HbStatus.OK) {

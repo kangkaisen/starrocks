@@ -26,6 +26,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.starrocks.analysis.AddSqlBlackListStmt;
+import com.starrocks.analysis.AlterSystemStmtNew;
 import com.starrocks.analysis.AnalyzeStmt;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.CreateAnalyzeJobStmt;
@@ -305,6 +306,8 @@ public class StmtExecutor {
                                 parsedStmt = selectStmt;
                                 execPlan = new StatementPlanner().plan(parsedStmt, context);
                             }
+                        } else if (parsedStmt instanceof AlterSystemStmtNew) {
+                            parsedStmt.analyze(context);
                         } else {
                             execPlan = new StatementPlanner().plan(parsedStmt, context);
                         }
@@ -451,6 +454,8 @@ public class StmtExecutor {
                 handleAddSqlBlackListStmt();
             } else if (parsedStmt instanceof DelSqlBlackListStmt) {
                 handleDelSqlBlackListStmt();
+            } else if (parsedStmt instanceof AlterSystemStmtNew) {
+                parsedStmt.handle(context);
             } else {
                 context.getState().setError("Do not support this query.");
             }

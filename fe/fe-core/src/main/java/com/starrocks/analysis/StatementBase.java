@@ -28,6 +28,7 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.UserException;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.OriginStatement;
 import com.starrocks.rewrite.ExprRewriter;
 
@@ -95,6 +96,10 @@ public abstract class StatementBase implements ParseNode {
         }
         this.clusterName = analyzer.getClusterName();
     }
+
+    public void analyze(ConnectContext context) throws AnalysisException, UserException {} //这里完全使用新API[ANTRL4解析]后需要改为abstraact
+
+    public void handle(ConnectContext context) throws Exception {} //这里完全使用新API[ANTRL4解析]后需要改为abstract
 
     public Analyzer getAnalyzer() {
         return analyzer;

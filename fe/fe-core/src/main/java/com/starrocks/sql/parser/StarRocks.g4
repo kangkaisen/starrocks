@@ -32,6 +32,27 @@ statement
     | ALTER VIEW qualifiedName
         ('(' columnNameWithComment (',' columnNameWithComment)* ')')?
         AS queryStatement                                                               #alterView
+    | alterStatement                                                                    #alter
+    ;
+
+alterStatement
+    : ALTER alterSystemStatement                                        #alterSystem
+    ;
+
+alterSystemStatement
+    : SYSTEM systemStatement                                            #system
+    ;
+
+systemStatement
+    : addSystemStatement                                                #addSystem
+    ;
+
+addSystemStatement
+    : (FREE)? ADD COMPUTE NODE (TO identifier)? hostPortPairs          #addComputeNode
+    ;
+
+hostPortPairs
+    : string (',' string)*
     ;
 
 partitionDesc
@@ -509,23 +530,23 @@ number
     ;
 
 nonReserved
-    : AVG
+    : ADD | ARRAY | AVG
     | BUCKETS
-    | CAST | CONNECTION_ID| CURRENT | COMMENT | COSTS | COUNT
-    | DATA | DATABASE | DATE | DATETIME | DAY
+    | CAST | COMPUTE | CONNECTION_ID| CURRENT | COMMENT | COSTS | COUNT
+    | DATA | DATABASE | DATE | DATETIME | DAY | DROP
     | END | EXTRACT | EVERY
-    | FILTER | FIRST | FOLLOWING | FORMAT | FN
+    | FILTER | FIRST | FOLLOWING | FORMAT | FN | FREE
     | GLOBAL
     | HASH | HOUR
     | INTERVAL
     | LAST | LESS | LOCAL | LOGICAL
     | MAX | MIN | MINUTE | MONTH | MERGE
-    | NONE | NULLS
+    | NONE | NONES | NULLS
     | OFFSET
     | PASSWORD | PRECEDING | PROPERTIES
     | ROLLUP
-    | SECOND | SESSION | SETS | START | SUM
-    | TABLES | TABLET | TEMPORARY | TIMESTAMPADD | TIMESTAMPDIFF | THAN | TIME | TYPE
+    | SECOND | SESSION | SETS | START | SUM | SYSTEM
+    | TABLES | TABLET | TEMPORARY | TIMESTAMPADD | TIMESTAMPDIFF | THAN | TIME | TO | TYPE
     | UNBOUNDED | USER
     | VIEW | VERBOSE
     | WEEK

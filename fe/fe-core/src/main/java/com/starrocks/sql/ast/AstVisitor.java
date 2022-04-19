@@ -1,6 +1,7 @@
 // This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
 package com.starrocks.sql.ast;
 
+import com.starrocks.analysis.AddComputeNodeStmt;
 import com.starrocks.analysis.AlterViewStmt;
 import com.starrocks.analysis.AlterWorkGroupStmt;
 import com.starrocks.analysis.AnalyticExpr;
@@ -108,6 +109,10 @@ public abstract class AstVisitor<R, C> {
 
     public R visitDropWorkGroupStatement(DropWorkGroupStmt statement, C context) {
         return visitDDLStatement(statement, context);
+    }
+
+    public R visitAddComputeNode(AddComputeNodeStmt statement, C context) {
+        return visitStatement(statement, context);
     }
 
     public R visitQueryStatement(QueryStatement statement, C context) {

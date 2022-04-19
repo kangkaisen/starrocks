@@ -4,6 +4,7 @@ package com.starrocks.sql.parser;
 import com.clearspring.analytics.util.Lists;
 import com.starrocks.analysis.SqlScanner;
 import com.starrocks.analysis.StatementBase;
+import com.starrocks.analysis.StmtNew;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.util.SqlParserUtils;
 import com.starrocks.qe.OriginStatement;

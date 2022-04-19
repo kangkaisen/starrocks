@@ -51,6 +51,8 @@ public class Cluster implements Writable {
     private String name;
     // backend which cluster own
     private Set<Long> backendIdSet = ConcurrentHashMap.newKeySet();
+    // compute node which cluster own
+    private Set<Long> computeNodeIdSet = ConcurrentHashMap.newKeySet();
 
     private ConcurrentHashMap<String, LinkDbInfo> linkDbNames = new ConcurrentHashMap<>();
     private ConcurrentHashMap<Long, LinkDbInfo> linkDbIds = new ConcurrentHashMap<>();
@@ -160,6 +162,18 @@ public class Cluster implements Writable {
         return dbNames.contains(name);
     }
 
+    public List<Long> getComputeNodeIdSet() {
+        return Lists.newArrayList(computeNodeIdSet);
+    }
+
+    public void setComputeNodeIdSet(List<Long> computeNodeIdList) {
+        if (computeNodeIdList == null) {
+            return;
+        }
+        computeNodeIdSet = ConcurrentHashMap.newKeySet();
+        computeNodeIdSet.addAll(computeNodeIdList);
+    }
+
     public List<Long> getBackendIdList() {
         return Lists.newArrayList(backendIdSet);
     }
@@ -170,6 +184,10 @@ public class Cluster implements Writable {
         }
         backendIdSet = ConcurrentHashMap.newKeySet();
         backendIdSet.addAll(backendIdList);
+    }
+
+    public void addComputeNode(long computeNodeId) {
+        computeNodeIdSet.add(computeNodeId);
     }
 
     public void addBackend(long backendId) {

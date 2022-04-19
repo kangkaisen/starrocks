@@ -2,8 +2,10 @@
 package com.starrocks.sql.parser;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
+import com.starrocks.analysis.AddComputeNodeStmt;
 import com.starrocks.analysis.AlterViewStmt;
 import com.starrocks.analysis.AnalyticExpr;
 import com.starrocks.analysis.AnalyticWindow;
@@ -135,6 +137,20 @@ public class AstBuilder extends StarRocksBaseVisitor<ParseNode> {
     }
 
     // -------------------------------- Statement ------------------------------
+
+    @Override
+    public ParseNode visitAddComputeNode(StarRocksParser.AddComputeNodeContext context) {
+        String clusterName = "";
+        if (context.identifier() != null) {
+            Identifier identifier = (Identifier) visit(context.identifier());
+            clusterName = identifier.getValue();
+        }
+        List<StringLiteral> hostPorts = ImmutableList.of();
+        if (context.hostPortPairs() != null) {
+            hostPorts = visit(context.hostPortPairs().string(), StringLiteral.class);
+        }
+        return new AddComputeNodeStmt(context.FREE() != null, hostPorts, clusterName);
+    }
 
     @Override
     public ParseNode visitShowDatabases(StarRocksParser.ShowDatabasesContext context) {

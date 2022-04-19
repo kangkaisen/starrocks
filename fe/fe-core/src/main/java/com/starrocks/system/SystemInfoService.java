@@ -75,6 +75,8 @@ public class SystemInfoService {
     private volatile ImmutableMap<Long, Backend> idToBackendRef;
     private volatile ImmutableMap<Long, AtomicLong> idToReportVersionRef;
 
+    private volatile ImmutableMap<Long, ComputeNode> idToComputeNodeRef;
+
     // last backend id used by round robin for sequential choosing backends for
     // tablet creation
     private final ConcurrentHashMap<String, Long> lastBackendIdForCreationMap;
@@ -100,9 +102,66 @@ public class SystemInfoService {
         idToBackendRef = ImmutableMap.<Long, Backend>of();
         idToReportVersionRef = ImmutableMap.<Long, AtomicLong>of();
 
+        idToComputeNodeRef = ImmutableMap.<Long, ComputeNode>of();
+
         lastBackendIdForCreationMap = new ConcurrentHashMap<String, Long>();
         lastBackendIdForOtherMap = new ConcurrentHashMap<String, Long>();
         pathHashToDishInfoRef = ImmutableMap.<Long, DiskInfo>of();
+    }
+
+    public void addComputeNodes(List<Pair<String, Integer>> hostPortPairs, boolean isFree, String destCluster)
+            throws DdlException {
+        for (Pair<String, Integer> pair : hostPortPairs) {
+            // check is already exist
+            if (getComputeNodeWithHeartbeatPort(pair.first, pair.second) != null) {
+                throw new DdlException("Same compute node already exists[" + pair.first + ":" + pair.second + "]");
+            }
+        }
+
+        for (Pair<String, Integer> pair : hostPortPairs) {
+            addComputeNode(pair.first, pair.second, isFree, destCluster);
+        }
+    }
+
+    private ComputeNode getComputeNodeWithHeartbeatPort(String host, Integer heartPort) {
+        ImmutableMap<Long, ComputeNode> idToComputeNode = idToComputeNodeRef;
+        for (ComputeNode computeNode : idToComputeNode.values()) {
+            if (computeNode.getHost().equals(host) && computeNode.getHeartbeatPort() == heartPort) {
+                return computeNode;
+            }
+        }
+        return null;
+    }
+
+    // Final entry of adding compute node
+    private void addComputeNode(String host, int heartbeatPort, boolean isFree, String destCluster) throws DdlException {
+        ComputeNode newComputeNode = new ComputeNode(Catalog.getCurrentCatalog().getNextId(), host, heartbeatPort);
+        // update idToComputor
+        Map<Long, ComputeNode> copiedComputeNodes = Maps.newHashMap(idToComputeNodeRef);
+        copiedComputeNodes.put(newComputeNode.getId(), newComputeNode);
+        idToComputeNodeRef = ImmutableMap.copyOf(copiedComputeNodes);
+
+        if (!Strings.isNullOrEmpty(destCluster)) {
+            // add compute node to destCluster
+            setComputeNodeOwner(newComputeNode, destCluster);
+        } else if (!isFree) {
+            // add compute node to DEFAULT_CLUSTER
+            setComputeNodeOwner(newComputeNode, DEFAULT_CLUSTER);
+        } else {
+            // compute node is free
+        }
+
+        // log
+        Catalog.getCurrentCatalog().getEditLog().logAddComputeNode(newComputeNode);
+        LOG.info("finished to add {} ", newComputeNode);
+    }
+
+    private void setComputeNodeOwner(ComputeNode computeNode, String clusterName) {
+        final Cluster cluster = Catalog.getCurrentCatalog().getCluster(clusterName);
+        Preconditions.checkState(cluster != null);
+        cluster.addComputeNode(computeNode.getId());
+        computeNode.setOwnerClusterName(clusterName);
+        computeNode.setBackendState(BackendState.using);
     }
 
     // for deploy manager
@@ -294,6 +353,10 @@ public class SystemInfoService {
 
     public Backend getBackend(long backendId) {
         return idToBackendRef.get(backendId);
+    }
+
+    public ComputeNode getComputeNode(long computeNodeId) {
+        return idToComputeNodeRef.get(computeNodeId);
     }
 
     public boolean checkBackendAvailable(long backendId) {
@@ -905,6 +968,10 @@ public class SystemInfoService {
         return idToBackendRef;
     }
 
+    public ImmutableMap<Long, ComputeNode> getIdComputeNode() {
+        return idToComputeNodeRef;
+    }
+
     public ImmutableMap<Long, Backend> getBackendsInCluster(String cluster) {
         if (Strings.isNullOrEmpty(cluster)) {
             return idToBackendRef;
@@ -1019,6 +1086,29 @@ public class SystemInfoService {
             throw new AnalysisException("Unknown host: " + e.getMessage());
         } catch (Exception e) {
             throw new AnalysisException("Encounter unknown exception: " + e.getMessage());
+        }
+    }
+
+    public void replayAddComputeNode(ComputeNode newComputeNode) {
+        // update idToComputeNode
+        if (Catalog.getCurrentCatalogJournalVersion() < FeMetaVersion.VERSION_30) {
+            newComputeNode.setOwnerClusterName(DEFAULT_CLUSTER);
+            newComputeNode.setBackendState(BackendState.using);
+        }
+        Map<Long, ComputeNode> copiedComputeNodes = Maps.newHashMap(idToComputeNodeRef);
+        copiedComputeNodes.put(newComputeNode.getId(), newComputeNode);
+        idToComputeNodeRef = ImmutableMap.copyOf(copiedComputeNodes);
+
+        // to add compute to DEFAULT_CLUSTER
+        if (newComputeNode.getBackendState() == BackendState.using) {
+            final Cluster cluster = Catalog.getCurrentCatalog().getCluster(DEFAULT_CLUSTER);
+            if (null != cluster) {
+                // replay log
+                cluster.addComputeNode(newComputeNode.getId());
+            } else {
+                // This happens in loading image when fe is restarted, because loadCluster is after loadBackend,
+                // cluster is not created. Be in cluster will be updated in loadCluster.
+            }
         }
     }
 

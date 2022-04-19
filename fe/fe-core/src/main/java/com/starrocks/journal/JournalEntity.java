@@ -92,6 +92,7 @@ import com.starrocks.plugin.PluginInfo;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.statistic.AnalyzeJob;
 import com.starrocks.system.Backend;
+import com.starrocks.system.ComputeNode;
 import com.starrocks.system.Frontend;
 import com.starrocks.transaction.TransactionState;
 import org.apache.logging.log4j.LogManager;
@@ -307,6 +308,12 @@ public class JournalEntity implements Writable {
             case OperationType.OP_BACKEND_STATE_CHANGE: {
                 data = new Backend();
                 ((Backend) data).readFields(in);
+                isRead = true;
+                break;
+            }
+            case OperationType.OP_ADD_COMPUTE_NODE: {
+                data = new ComputeNode();
+                ((ComputeNode) data).readFields(in);
                 isRead = true;
                 break;
             }
