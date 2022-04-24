@@ -1103,6 +1103,20 @@ public class SystemInfoService {
         return checksum;
     }
 
+    public long saveComputeNodes(DataOutputStream dos, long checksum) throws IOException {
+        ImmutableMap<Long, ComputeNode> idToComputeNode = idToComputeNodeRef;
+        int computeNodeCount = idToComputeNode.size();
+        checksum ^= computeNodeCount;
+        dos.writeInt(computeNodeCount);
+        for (Map.Entry<Long, ComputeNode> entry : idToComputeNode.entrySet()) {
+            long key = entry.getKey();
+            checksum ^= key;
+            dos.writeLong(key);
+            entry.getValue().write(dos);
+        }
+        return checksum;
+    }
+
     public long loadBackends(DataInputStream dis, long checksum) throws IOException {
         int count = dis.readInt();
         checksum ^= count;
@@ -1111,6 +1125,18 @@ public class SystemInfoService {
             checksum ^= key;
             Backend backend = Backend.read(dis);
             replayAddBackend(backend);
+        }
+        return checksum;
+    }
+
+    public long loadComputeNodes(DataInputStream dis, long checksum) throws IOException {
+        int count = dis.readInt();
+        checksum ^= count;
+        for (int i = 0; i < count; i++) {
+            long key = dis.readLong();
+            checksum ^= key;
+            ComputeNode computeNode = ComputeNode.read(dis);
+            replayAddComputeNode(computeNode);
         }
         return checksum;
     }

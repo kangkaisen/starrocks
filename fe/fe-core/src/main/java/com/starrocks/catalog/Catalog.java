@@ -1577,6 +1577,7 @@ public class Catalog {
             checksum = loadAnalyze(dis, checksum);
             remoteChecksum = dis.readLong();
             checksum = loadWorkGroups(dis, checksum);
+            getCurrentSystemInfo().loadComputeNodes(dis, checksum);
         } catch (EOFException exception) {
             LOG.warn("load image eof.", exception);
         } finally {
@@ -2052,6 +2053,7 @@ public class Catalog {
             checksum = saveAnalyze(dos, checksum);
             dos.writeLong(checksum);
             checksum = saveWorkGroups(dos, checksum);
+            checksum = getCurrentSystemInfo().saveComputeNodes(dos, checksum);
         }
 
         long saveImageEndTime = System.currentTimeMillis();

@@ -220,6 +220,14 @@ public class Backend implements Writable {
         this.backendState = state.ordinal();
     }
 
+    protected void setBackendStateVlaue(int state) {
+        this.backendState = state;
+    }
+
+    protected void setHeartbeatPort(int heartbeatPort) {
+        this.heartbeatPort = heartbeatPort;
+    }
+
     public void setAlive(boolean isAlive) {
         this.isAlive.set(isAlive);
     }
@@ -622,8 +630,16 @@ public class Backend implements Writable {
         }
     }
 
+    protected int getBackendStateValue() {
+        return backendState;
+    }
+
     public void setDecommissionType(DecommissionType type) {
         decommissionType = type.ordinal();
+    }
+
+    protected void setDecommissionTypeValue(int type) {
+        decommissionType = type;
     }
 
     public DecommissionType getDecommissionType() {
@@ -631,6 +647,10 @@ public class Backend implements Writable {
             return DecommissionType.ClusterDecommission;
         }
         return DecommissionType.SystemDecommission;
+    }
+
+    protected int getDecommissionTypeValue() {
+        return decommissionType;
     }
 
     /**
