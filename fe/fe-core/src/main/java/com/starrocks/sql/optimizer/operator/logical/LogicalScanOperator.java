@@ -38,6 +38,8 @@ public abstract class LogicalScanOperator extends LogicalOperator {
     protected final ImmutableMap<String, PartitionColumnFilter> columnFilters;
     protected Set<String> partitionColumns = Sets.newHashSet();
 
+    private boolean hasSplited;
+
     public LogicalScanOperator(
             OperatorType type,
             Table table,
@@ -48,6 +50,7 @@ public abstract class LogicalScanOperator extends LogicalOperator {
             Projection projection) {
         super(type, limit, predicate, projection);
         this.table = Objects.requireNonNull(table, "table is null");
+        this.hasSplited = false;
         this.colRefToColumnMetaMap = ImmutableMap.copyOf(colRefToColumnMetaMap);
         this.columnMetaToColRefMap = ImmutableMap.copyOf(columnMetaToColRefMap);
 
@@ -57,6 +60,17 @@ public abstract class LogicalScanOperator extends LogicalOperator {
 
     public Table getTable() {
         return table;
+    }
+
+    /*
+     * check this scanOperator have been splited as union's child.
+    */
+    public boolean isSplited() {
+        return hasSplited;
+    }
+
+    public void setSplit(boolean isSplit) {
+        hasSplited = isSplit;
     }
 
     public Map<ColumnRefOperator, Column> getColRefToColumnMetaMap() {

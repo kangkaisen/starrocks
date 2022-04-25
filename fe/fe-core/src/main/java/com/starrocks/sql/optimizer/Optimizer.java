@@ -29,6 +29,7 @@ import com.starrocks.sql.optimizer.rule.transformation.PushDownJoinOnExpressionT
 import com.starrocks.sql.optimizer.rule.transformation.PushLimitAndFilterToCTEProduceRule;
 import com.starrocks.sql.optimizer.rule.transformation.ReorderIntersectRule;
 import com.starrocks.sql.optimizer.rule.transformation.SemiReorderRule;
+import com.starrocks.sql.optimizer.rule.transformation.SplitOlapToUnionWithIcebergRule;
 import com.starrocks.sql.optimizer.task.DeriveStatsTask;
 import com.starrocks.sql.optimizer.task.OptimizeGroupTask;
 import com.starrocks.sql.optimizer.task.TaskContext;
@@ -237,6 +238,7 @@ public class Optimizer {
         ruleRewriteIterative(memo, rootTaskContext, new MergeProjectWithChildRule());
         ruleRewriteOnlyOnce(memo, rootTaskContext, new JoinForceLimitRule());
         ruleRewriteOnlyOnce(memo, rootTaskContext, new ReorderIntersectRule());
+        ruleRewriteOnlyOnce(memo, rootTaskContext, new SplitOlapToUnionWithIcebergRule());
 
         cleanUpMemoGroup(memo);
     }
