@@ -1430,6 +1430,44 @@ public class OlapTable extends Table {
         return hasChanged;
     }
 
+    public void setExternalTable(Map<String, String> properties) {
+        if (properties == null || properties.isEmpty()) {
+            return;
+        }
+        if (tableProperty == null) {
+            tableProperty = new TableProperty(new HashMap<>());
+        }
+        tableProperty.modifyTableProperties(PropertyAnalyzer.EXTERNAL_TABLE,
+                properties.get(PropertyAnalyzer.EXTERNAL_TABLE));
+        tableProperty.buildExternalTable();
+    }
+
+    public String getExternalTable() {
+        if (tableProperty != null) {
+            return tableProperty.getExternalTable();
+        }
+        return null; 
+    }
+
+    public void setColdDownWaitSeconds(Map<String, String> properties) {
+        if (properties == null || properties.isEmpty()) {
+            return;
+        }
+        if (tableProperty == null) {
+            tableProperty = new TableProperty(new HashMap<>());
+        }
+        tableProperty.modifyTableProperties(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS,
+                properties.getOrDefault(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS, "0"));
+        tableProperty.buildColdDownWaitSeconds();  
+    }
+
+    public long getColdDownWaitSeconds() {
+        if (tableProperty != null) {
+            return tableProperty.getColdDownWaitSeconds();
+        }
+        return 0L;
+    }
+
     public void setReplicationNum(Short replicationNum) {
         if (tableProperty == null) {
             tableProperty = new TableProperty(new HashMap<>());

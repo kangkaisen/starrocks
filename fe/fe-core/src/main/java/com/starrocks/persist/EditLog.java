@@ -755,6 +755,8 @@ public class EditLog {
                 case OperationType.OP_DYNAMIC_PARTITION:
                 case OperationType.OP_MODIFY_IN_MEMORY:
                 case OperationType.OP_SET_FORBIT_GLOBAL_DICT:
+                case OperationType.OP_MODIFY_EXTERNAL_TABLE:
+                case OperationType.OP_MODIFY_COLDDOWN_WAIT_SECONDS:
                 case OperationType.OP_MODIFY_REPLICATION_NUM: {
                     ModifyTablePropertyOperationLog modifyTablePropertyOperationLog =
                             (ModifyTablePropertyOperationLog) journal.getData();
@@ -1353,6 +1355,14 @@ public class EditLog {
 
     public void logModifyReplicationNum(ModifyTablePropertyOperationLog info) {
         logEdit(OperationType.OP_MODIFY_REPLICATION_NUM, info);
+    }
+
+    public void logModifyExternalTable(ModifyTablePropertyOperationLog info) {
+        logEdit(OperationType.OP_MODIFY_EXTERNAL_TABLE, info);
+    }
+
+    public void logModifyColdDownWaitSeconds(ModifyTablePropertyOperationLog info) {
+        logEdit(OperationType.OP_MODIFY_COLDDOWN_WAIT_SECONDS, info);
     }
 
     public void logModifyInMemory(ModifyTablePropertyOperationLog info) {

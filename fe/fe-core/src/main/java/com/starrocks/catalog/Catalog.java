@@ -3998,6 +3998,11 @@ public class Catalog {
         // this should be done before create partition.
         Map<String, String> properties = stmt.getProperties();
 
+        olapTable.setExternalTable(properties);
+        properties.remove(PropertyAnalyzer.EXTERNAL_TABLE);
+        olapTable.setColdDownWaitSeconds(properties);
+        properties.remove(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS); 
+
         // analyze bloom filter columns
         Set<String> bfColumns = null;
         double bfFpp = 0;
@@ -4625,6 +4630,16 @@ public class Catalog {
             // dynamic partition
             if (olapTable.dynamicPartitionExists()) {
                 sb.append(olapTable.getTableProperty().getDynamicPartitionProperty().toString());
+            }
+
+            if (olapTable.getExternalTable() != null) {
+                sb.append(",\n\"").append(PropertyAnalyzer.EXTERNAL_TABLE).append("\" = \"");
+                sb.append(olapTable.getExternalTable()).append("\"");
+            }
+
+            if (olapTable.getColdDownWaitSeconds() > 0) {
+                sb.append(",\n\"").append(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS).append("\" = \"");
+                sb.append(String.valueOf(olapTable.getColdDownWaitSeconds())).append("\"");
             }
 
             // in memory
@@ -6102,6 +6117,48 @@ public class Catalog {
         editLog.logModifyPartition(info);
         LOG.info("modify partition[{}-{}-{}] replication num to {}", db.getFullName(), table.getName(),
                 partition.getName(), replicationNum);
+    }
+
+    /**
+     * Set external table for olap table.
+     *
+     * @param db
+     * @param table
+     * @param properties
+     * @throws DdlException
+     */
+    // The caller need to hold the db write lock
+    public void modifyTableExternalTable(Database db, OlapTable table, Map<String, String> properties)
+            throws DdlException {
+        Preconditions.checkArgument(db.isWriteLockHeldByCurrentThread());
+        table.setExternalTable(properties);
+        // log
+        ModifyTablePropertyOperationLog info =
+                new ModifyTablePropertyOperationLog(db.getId(), table.getId(), properties);
+        editLog.logModifyExternalTable(info);
+        LOG.info("modify table[{}] external table to {}", table.getName(),
+                properties.get(PropertyAnalyzer.EXTERNAL_TABLE));
+    }
+
+    /**
+     * Set colddown wait seconds for olap table.
+     *
+     * @param db
+     * @param table
+     * @param properties
+     * @throws DdlException
+     */
+    // The caller need to hold the db write lock
+    public void modifyTableColdDownWaitSeconds(Database db, OlapTable table, Map<String, String> properties)
+            throws DdlException {
+        Preconditions.checkArgument(db.isWriteLockHeldByCurrentThread());
+        table.setColdDownWaitSeconds(properties);
+        // log
+        ModifyTablePropertyOperationLog info =
+                new ModifyTablePropertyOperationLog(db.getId(), table.getId(), properties);
+        editLog.logModifyColdDownWaitSeconds(info);
+        LOG.info("modify table[{}] cold down wait seconds to {}", table.getName(),
+                properties.get(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS));
     }
 
     /**

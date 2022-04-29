@@ -177,6 +177,8 @@ public class OperationType {
     public static final short OP_MODIFY_REPLICATION_NUM = 266;
     // set table in memory
     public static final short OP_MODIFY_IN_MEMORY = 267;
+    public static final short OP_MODIFY_EXTERNAL_TABLE = 272;
+    public static final short OP_MODIFY_COLDDOWN_WAIT_SECONDS = 273;
 
     // global dict
     public static final short OP_SET_FORBIT_GLOBAL_DICT = 268;

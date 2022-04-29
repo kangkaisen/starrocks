@@ -1520,6 +1520,12 @@ public class SchemaChangeHandler extends AlterHandler {
                 } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM)) {
                     Catalog.getCurrentCatalog().modifyTableReplicationNum(db, olapTable, properties);
                     return;
+                } else if (properties.containsKey(PropertyAnalyzer.EXTERNAL_TABLE)) {
+                    Catalog.getCurrentCatalog().modifyTableExternalTable(db, olapTable, properties);
+                    return;
+                } else if (properties.containsKey(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS)) {
+                    Catalog.getCurrentCatalog().modifyTableColdDownWaitSeconds(db, olapTable, properties);
+                    return;
                 }
             }
 

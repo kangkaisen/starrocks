@@ -80,6 +80,10 @@ public class PropertyAnalyzer {
 
     public static final String PROPERTIES_INMEMORY = "in_memory";
 
+    public static final String EXTERNAL_TABLE = "external_table";
+
+    public static final String COLDDOWN_WAIT_SECONDS = "colddown_wait_seconds";
+
     public static final String PROPERTIES_TABLET_TYPE = "tablet_type";
 
     public static final String PROPERTIES_STRICT_RANGE = "strict_range";

@@ -55,6 +55,12 @@ public class TableProperty implements Writable {
 
     private boolean isInMemory = false;
 
+    // create olap table linked with external table(hive/iceberg) to get remote data
+    // so this will transparent to users.
+    private String externalTable;
+    // wait some seconds before cold down data to remote storage.
+    private long coldDownWaitSeconds;
+
     /*
      * the default storage format of this table.
      * DEFAULT: depends on BE's config 'default_rowset_type'
@@ -97,6 +103,12 @@ public class TableProperty implements Writable {
             case OperationType.OP_MODIFY_IN_MEMORY:
                 buildInMemory();
                 break;
+            case OperationType.OP_MODIFY_EXTERNAL_TABLE:
+                buildExternalTable();
+                break;
+            case OperationType.OP_MODIFY_COLDDOWN_WAIT_SECONDS:
+                buildColdDownWaitSeconds();
+                break;
             default:
                 break;
         }
@@ -122,6 +134,16 @@ public class TableProperty implements Writable {
 
     public TableProperty buildInMemory() {
         isInMemory = Boolean.parseBoolean(properties.getOrDefault(PropertyAnalyzer.PROPERTIES_INMEMORY, "false"));
+        return this;
+    }
+
+    public TableProperty buildExternalTable() {
+        externalTable = properties.getOrDefault(PropertyAnalyzer.EXTERNAL_TABLE, null);
+        return this;
+    }
+
+    public TableProperty buildColdDownWaitSeconds() {
+        coldDownWaitSeconds = Long.parseLong(properties.getOrDefault(PropertyAnalyzer.COLDDOWN_WAIT_SECONDS, "0"));
         return this;
     }
 
@@ -155,6 +177,14 @@ public class TableProperty implements Writable {
         return isInMemory;
     }
 
+    public String getExternalTable() {
+        return externalTable;
+    }
+
+    public long getColdDownWaitSeconds() {
+        return coldDownWaitSeconds;
+    }
+
     public TStorageFormat getStorageFormat() {
         return storageFormat;
     }
@@ -186,6 +216,8 @@ public class TableProperty implements Writable {
                 .buildDynamicProperty()
                 .buildReplicationNum()
                 .buildInMemory()
-                .buildStorageFormat();
+                .buildStorageFormat()
+                .buildExternalTable()
+                .buildColdDownWaitSeconds();
     }
 }
