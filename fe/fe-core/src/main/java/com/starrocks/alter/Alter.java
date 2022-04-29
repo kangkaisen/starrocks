@@ -561,7 +561,7 @@ public class Alter {
                 partitionInfo.setTabletType(partition.getId(), tTabletType);
             }
             ModifyPartitionInfo info = new ModifyPartitionInfo(db.getId(), olapTable.getId(), partition.getId(),
-                    newDataProperty, newReplicationNum, hasInMemory ? newInMemory : oldInMemory);
+                    newDataProperty, newReplicationNum, hasInMemory ? newInMemory : oldInMemory, -1L);
             modifyPartitionInfos.add(info);
         }
 
@@ -588,6 +588,9 @@ public class Alter {
                 }
             }
             partitionInfo.setIsInMemory(info.getPartitionId(), info.isInMemory());
+            if (info.getColdDownSyncedTimeMs() != -1L) {
+                partitionInfo.setColdDownSyncedTimeMs(info.getPartitionId(), info.getColdDownSyncedTimeMs());
+            }
         } finally {
             db.writeUnlock();
         }

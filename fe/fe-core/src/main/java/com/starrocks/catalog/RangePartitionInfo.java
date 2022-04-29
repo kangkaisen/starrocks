@@ -174,6 +174,7 @@ public class RangePartitionInfo extends PartitionInfo {
         idToDataProperty.put(partitionId, desc.getPartitionDataProperty());
         idToReplicationNum.put(partitionId, desc.getReplicationNum());
         idToInMemory.put(partitionId, desc.isInMemory());
+        idToColdDownSyncedTimeMs.put(partitionId, -1L);
         return range;
     }
 
@@ -197,6 +198,7 @@ public class RangePartitionInfo extends PartitionInfo {
                 idToDataProperty.put(partitionId, desc.getPartitionDataProperty());
                 idToReplicationNum.put(partitionId, desc.getReplicationNum());
                 idToInMemory.put(partitionId, desc.isInMemory());
+                idToColdDownSyncedTimeMs.put(partitionId, -1L);
             }
         }
     }
@@ -208,6 +210,7 @@ public class RangePartitionInfo extends PartitionInfo {
         idToDataProperty.put(partitionId, dataProperty);
         idToReplicationNum.put(partitionId, replicationNum);
         idToInMemory.put(partitionId, isInMemory);
+        idToColdDownSyncedTimeMs.put(partitionId, -1L);
     }
 
     public void setRange(long partitionId, boolean isTemp, Range<PartitionKey> range) {

@@ -244,6 +244,7 @@ public class CatalogMocker {
         PartitionInfo partitionInfo = new SinglePartitionInfo();
         partitionInfo.setReplicationNum(TEST_SINGLE_PARTITION_ID, (short) 3);
         partitionInfo.setIsInMemory(TEST_SINGLE_PARTITION_ID, false);
+        partitionInfo.setColdDownSyncedTimeMs(TEST_SINGLE_PARTITION_ID, -1);
         DataProperty dataProperty = new DataProperty(TStorageMedium.HDD);
         partitionInfo.setDataProperty(TEST_SINGLE_PARTITION_ID, dataProperty);
         OlapTable olapTable = new OlapTable(TEST_TBL_ID, TEST_TBL_NAME, TEST_TBL_BASE_SCHEMA,

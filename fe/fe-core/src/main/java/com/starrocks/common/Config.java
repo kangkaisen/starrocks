@@ -1376,4 +1376,14 @@ public class Config extends ConfigBase {
      */
     @ConfField(mutable = true)
     public static long min_routine_load_lag_for_metrics = 10000;
+
+    // Configurations for cold down checker
+    /**
+     * Cold down checker will run from *cold_down_check_start_time* to *cold_down_check_end_time*.
+     * Default is from 23:00 to 04:00
+     */
+    @ConfField(mutable = true)
+    public static String cold_down_check_start_time = "23";
+    @ConfField(mutable = true)
+    public static String cold_down_check_end_time = "4";
 }

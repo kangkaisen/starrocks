@@ -62,12 +62,15 @@ public class ExportStmt extends StatementBase {
     private static final Logger LOG = LogManager.getLogger(ExportStmt.class);
 
     private static final String FILE_FORMAT = "file_format";
+    private static final String EXPORT_TYPE = "export_type";
     private static final String INCLUDE_QUERY_ID_PROP = "include_query_id";
 
     private static final String DEFAULT_COLUMN_SEPARATOR = "\t";
     private static final String DEFAULT_LINE_DELIMITER = "\n";
     private static final String DEFAULT_FILE_NAME_PREFIX = "data_";
     private static final String DEFAULT_FILE_FORMAT = "csv";
+
+    private static final String DEFAULT_EXPORT_TYPE = "default";
 
     private static final Set<String> VALID_SCHEMES = Sets.newHashSet(
             "afs", "bos", "hdfs", "oss", "s3a", "cosn", "viewfs");
@@ -85,6 +88,8 @@ public class ExportStmt extends StatementBase {
     private boolean includeQueryId = true;
     private String fileFormat = "csv";
 
+    private String exportType = "default";
+
     private TableRef tableRef;
     private long exportStartTime;
 
@@ -101,6 +106,7 @@ public class ExportStmt extends StatementBase {
         this.rowDelimiter = DEFAULT_LINE_DELIMITER;
         this.includeQueryId = true;
         this.fileFormat = DEFAULT_FILE_FORMAT;
+        this.exportType = DEFAULT_EXPORT_TYPE;
     }
 
     public long getExportStartTime() {
@@ -153,6 +159,10 @@ public class ExportStmt extends StatementBase {
 
     public String getFileFormat() {
         return this.fileFormat;
+    }
+
+    public String getExportType() {
+        return this.exportType;
     }
 
     @Override
@@ -353,6 +363,16 @@ public class ExportStmt extends StatementBase {
                 throw new AnalysisException("Invalid file format: " + fileFormatStr);
             }
             this.fileFormat = fileFormatStr.toLowerCase();
+        }
+
+        // file format
+        if (properties.containsKey(EXPORT_TYPE)) {
+            String exportTypeStr = properties.get(EXPORT_TYPE);
+            if (!exportTypeStr.equalsIgnoreCase(DEFAULT_EXPORT_TYPE)
+                    && !exportTypeStr.equalsIgnoreCase("partition_cold_down")) {
+                throw new AnalysisException("Invalid export type: " + exportTypeStr);
+            }
+            this.exportType = exportTypeStr.toLowerCase();
         }
     }
 

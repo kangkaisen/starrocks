@@ -109,6 +109,7 @@ public class UnitTestUtil {
         partitionInfo.setReplicationNum(partitionId, (short) 3);
         partitionInfo.setIsInMemory(partitionId, false);
         partitionInfo.setTabletType(partitionId, TTabletType.TABLET_TYPE_DISK);
+        partitionInfo.setColdDownSyncedTimeMs(partitionId, -1L);
         OlapTable table = new OlapTable(tableId, TABLE_NAME, columns,
                 KeysType.AGG_KEYS, partitionInfo, distributionInfo);
         Deencapsulation.setField(table, "baseIndexId", indexId);

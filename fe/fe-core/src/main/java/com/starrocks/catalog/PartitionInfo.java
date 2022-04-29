@@ -25,6 +25,7 @@ import com.google.common.base.Preconditions;
 import com.starrocks.common.FeMetaVersion;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.common.util.TimeUtils;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TTabletType;
 import org.apache.logging.log4j.LogManager;
@@ -57,12 +58,15 @@ public class PartitionInfo implements Writable {
     // Note: currently it's only used for testing, it may change/add more meta field later,
     // so we defer adding meta serialization until memory engine feature is more complete.
     protected Map<Long, TTabletType> idToTabletType;
+    // partition id -> last cold down time
+    protected Map<Long, Long> idToColdDownSyncedTimeMs;
 
     public PartitionInfo() {
         this.idToDataProperty = new HashMap<>();
         this.idToReplicationNum = new HashMap<>();
         this.idToInMemory = new HashMap<>();
         this.idToTabletType = new HashMap<>();
+        this.idToColdDownSyncedTimeMs = new HashMap<>();
     }
 
     public PartitionInfo(PartitionType type) {
@@ -71,6 +75,7 @@ public class PartitionInfo implements Writable {
         this.idToReplicationNum = new HashMap<>();
         this.idToInMemory = new HashMap<>();
         this.idToTabletType = new HashMap<>();
+        this.idToColdDownSyncedTimeMs = new HashMap<>();
     }
 
     public PartitionType getType() {
@@ -120,10 +125,19 @@ public class PartitionInfo implements Writable {
         idToTabletType.put(partitionId, tabletType);
     }
 
+    public Long getColdDownSyncedTimeMs(long partitionId) {
+        return idToColdDownSyncedTimeMs.get(partitionId);
+    }
+
+    public void setColdDownSyncedTimeMs(long partitionId, long coldDownTimeMs) {
+        idToColdDownSyncedTimeMs.put(partitionId, coldDownTimeMs);
+    }
+
     public void dropPartition(long partitionId) {
         idToDataProperty.remove(partitionId);
         idToReplicationNum.remove(partitionId);
         idToInMemory.remove(partitionId);
+        idToColdDownSyncedTimeMs.remove(partitionId);
     }
 
     public void addPartition(long partitionId, DataProperty dataProperty,
@@ -132,6 +146,7 @@ public class PartitionInfo implements Writable {
         idToDataProperty.put(partitionId, dataProperty);
         idToReplicationNum.put(partitionId, replicationNum);
         idToInMemory.put(partitionId, isInMemory);
+        idToColdDownSyncedTimeMs.put(partitionId, -1L);
     }
 
     public static PartitionInfo read(DataInput in) throws IOException {
@@ -154,6 +169,7 @@ public class PartitionInfo implements Writable {
 
         Preconditions.checkState(idToDataProperty.size() == idToReplicationNum.size());
         Preconditions.checkState(idToInMemory.keySet().equals(idToReplicationNum.keySet()));
+        Preconditions.checkState(idToInMemory.keySet().equals(idToColdDownSyncedTimeMs.keySet()));
         out.writeInt(idToDataProperty.size());
         for (Map.Entry<Long, DataProperty> entry : idToDataProperty.entrySet()) {
             out.writeLong(entry.getKey());
@@ -166,6 +182,7 @@ public class PartitionInfo implements Writable {
 
             out.writeShort(idToReplicationNum.get(entry.getKey()));
             out.writeBoolean(idToInMemory.get(entry.getKey()));
+            out.writeLong(idToColdDownSyncedTimeMs.get(entry.getKey()));
         }
     }
 
@@ -190,6 +207,12 @@ public class PartitionInfo implements Writable {
                 // for compatibility, default is false
                 idToInMemory.put(partitionId, false);
             }
+            if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_95) {
+                idToColdDownSyncedTimeMs.put(partitionId, in.readLong());
+            } else {
+                // for compatibility, default is -1L
+                idToColdDownSyncedTimeMs.put(partitionId, -1L);
+            }
         }
     }
 
@@ -209,6 +232,7 @@ public class PartitionInfo implements Writable {
             buff.append("data_property: ").append(entry.getValue().toString());
             buff.append("replica number: ").append(idToReplicationNum.get(entry.getKey()));
             buff.append("in memory: ").append(idToInMemory.get(entry.getKey()));
+            buff.append("cold down time: ").append(TimeUtils.longToTimeString(idToColdDownSyncedTimeMs.get(entry.getKey())));
         }
 
         return buff.toString();

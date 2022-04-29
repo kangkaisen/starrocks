@@ -423,13 +423,19 @@ Status ORCBuilder::add_chunk(vectorized::Chunk* chunk) {
 }
 
 std::size_t ORCBuilder::file_size() {
+    DCHECK(_writer != nullptr);
     // return _writer->size();
     return 0;
 }
 
 Status ORCBuilder::finish() {
-    _writer->close();
+    // DCHECK(_writer != nullptr);
+    if (_writer == nullptr) {
+        LOG(WARNING) << "ORCBuilder::_writer is nullptr";
+        return Status::OK();
+    }
 
+    _writer->close();
     return Status::OK();
 }
 

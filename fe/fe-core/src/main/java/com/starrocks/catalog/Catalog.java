@@ -121,6 +121,7 @@ import com.starrocks.clone.TabletSchedulerStat;
 import com.starrocks.cluster.BaseParam;
 import com.starrocks.cluster.Cluster;
 import com.starrocks.cluster.ClusterNamespace;
+import com.starrocks.colddown.ColdDownChecker;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.ConfigBase;
@@ -325,6 +326,7 @@ public class Catalog {
     private ExportMgr exportMgr;
     private Alter alter;
     private ConsistencyChecker consistencyChecker;
+    private ColdDownChecker coldDownChecker;
     private BackupHandler backupHandler;
     private PublishVersionDaemon publishVersionDaemon;
     private DeleteHandler deleteHandler;
@@ -538,6 +540,7 @@ public class Catalog {
         this.exportMgr = new ExportMgr();
         this.alter = new Alter();
         this.consistencyChecker = new ConsistencyChecker();
+        this.coldDownChecker = new ColdDownChecker();
         this.lock = new QueryableReentrantLock(true);
         this.backupHandler = new BackupHandler(this);
         this.publishVersionDaemon = new PublishVersionDaemon();
@@ -1360,6 +1363,8 @@ public class Catalog {
         getAlterInstance().start();
         // Consistency checker
         getConsistencyChecker().start();
+        // Cold down checker
+        getColdDownChecker().start();
         // Backup handler
         getBackupHandler().start();
         // catalog recycle bin
@@ -3367,6 +3372,7 @@ public class Catalog {
                 copiedTable.getPartitionInfo()
                         .setReplicationNum(partitionId, singleRangePartitionDesc.getReplicationNum());
                 copiedTable.getPartitionInfo().setIsInMemory(partitionId, singleRangePartitionDesc.isInMemory());
+                copiedTable.getPartitionInfo().setColdDownSyncedTimeMs(partitionId, -1L);
 
                 Partition partition =
                         createPartition(db, copiedTable, partitionId, partitionName, version, tabletIdSet);
@@ -4074,6 +4080,7 @@ public class Catalog {
             partitionInfo.setReplicationNum(partitionId, replicationNum);
             partitionInfo.setIsInMemory(partitionId, isInMemory);
             partitionInfo.setTabletType(partitionId, tabletType);
+            partitionInfo.setColdDownSyncedTimeMs(partitionId, -1L);
         }
 
         // check colocation properties
@@ -5465,7 +5472,8 @@ public class Catalog {
                                             partition.getId(),
                                             DataProperty.DEFAULT_DATA_PROPERTY,
                                             (short) -1,
-                                            partitionInfo.getIsInMemory(partition.getId()));
+                                            partitionInfo.getIsInMemory(partition.getId()),
+                                            -1L);
                             editLog.logModifyPartition(info);
                         }
                     } // end for partitions
@@ -5479,6 +5487,10 @@ public class Catalog {
 
     public ConsistencyChecker getConsistencyChecker() {
         return this.consistencyChecker;
+    }
+
+    public ColdDownChecker getColdDownChecker() {
+        return this.coldDownChecker;
     }
 
     public Alter getAlterInstance() {
@@ -6113,7 +6125,7 @@ public class Catalog {
 
         // log
         ModifyPartitionInfo info = new ModifyPartitionInfo(db.getId(), table.getId(), partition.getId(),
-                newDataProperty, replicationNum, isInMemory);
+                newDataProperty, replicationNum, isInMemory, -1L);
         editLog.logModifyPartition(info);
         LOG.info("modify partition[{}-{}-{}] replication num to {}", db.getFullName(), table.getName(),
                 partition.getName(), replicationNum);

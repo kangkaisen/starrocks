@@ -59,6 +59,8 @@ import com.starrocks.common.io.Writable;
 import com.starrocks.common.util.BrokerUtil;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.TimeUtils;
+import com.starrocks.load.exportcallback.ExportCallback;
+import com.starrocks.load.exportcallback.ExportCallbackFactory;
 import com.starrocks.planner.DataPartition;
 import com.starrocks.planner.ExportSink;
 import com.starrocks.planner.MysqlScanNode;
@@ -140,6 +142,7 @@ public class ExportJob implements Writable {
     private Thread doExportingThread;
     private List<TScanRangeLocations> tabletLocations = Lists.newArrayList();
     private String fileFormat;
+    private String exportType;
 
     public ExportJob() {
         this.id = -1;
@@ -161,6 +164,7 @@ public class ExportJob implements Writable {
         this.rowDelimiter = "\n";
         this.includeQueryId = true;
         this.fileFormat = "csv";
+        this.exportType = "default";
     }
 
     public ExportJob(long jobId, UUID queryId) {
@@ -196,6 +200,7 @@ public class ExportJob implements Writable {
         this.partitions = stmt.getPartitions();
         this.columnNames = stmt.getColumnNames();
         this.fileFormat = stmt.getFileFormat();
+        this.exportType = stmt.getExportType();
 
         db.readLock();
         try {
@@ -434,6 +439,10 @@ public class ExportJob implements Writable {
         return fileFormat;
     }
 
+    public String getExportType() {
+        return exportType;
+    }
+
     public String getColumnSeparator() {
         return this.columnSeparator;
     }
@@ -508,6 +517,10 @@ public class ExportJob implements Writable {
     public synchronized void addExportedFile(String file) {
         exportedFiles.add(file);
         LOG.debug("exported files: {}", this.exportedFiles);
+    }
+
+    public synchronized Set<String> getExportedFile() {
+        return exportedFiles;
     }
 
     public synchronized Thread getDoExportingThread() {
@@ -649,6 +662,13 @@ public class ExportJob implements Writable {
         LOG.info("export job cancelled. job: {}", this);
     }
 
+    public synchronized Status onFinished() {
+        // run finished callback
+        ExportCallbackFactory factory = new ExportCallbackFactory();
+        ExportCallback callback = factory.create(exportType);
+        return callback.runCallback(this);
+    }
+
     public synchronized void finish() {
         if (!updateState(JobState.FINISHED)) {
             return;
@@ -675,6 +695,7 @@ public class ExportJob implements Writable {
                 + ", state=" + state
                 + ", path=" + exportPath
                 + ", format=" + fileFormat
+                + ", exportType=" + exportType
                 + ", partitions=(" + StringUtils.join(partitions, ",") + ")"
                 + ", progress=" + progress
                 + ", createTimeMs=" + TimeUtils.longToTimeString(createTimeMs)
@@ -696,6 +717,7 @@ public class ExportJob implements Writable {
         Text.writeString(out, columnSeparator);
         Text.writeString(out, rowDelimiter);
         Text.writeString(out, fileFormat);
+        Text.writeString(out, exportType);
         out.writeInt(properties.size());
         for (Map.Entry<String, String> property : properties.entrySet()) {
             Text.writeString(out, property.getKey());
@@ -743,6 +765,9 @@ public class ExportJob implements Writable {
         rowDelimiter = Text.readString(in);
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_93) {
             fileFormat = Text.readString(in);
+        }
+        if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_94) {
+            exportType = Text.readString(in);
         }
 
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_53) {

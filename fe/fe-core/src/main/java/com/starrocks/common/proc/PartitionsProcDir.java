@@ -69,7 +69,7 @@ public class PartitionsProcDir implements ProcDirInterface {
             .add("PartitionId").add("PartitionName")
             .add("VisibleVersion").add("VisibleVersionTime").add("VisibleVersionHash")
             .add("State").add("PartitionKey").add("Range").add("DistributionKey")
-            .add("Buckets").add("ReplicationNum").add("StorageMedium").add("CooldownTime")
+            .add("Buckets").add("ReplicationNum").add("ColdDownSyncedTime").add("StorageMedium").add("CooldownTime")
             .add("LastConsistencyCheckTime")
             .add("DataSize")
             .add("IsInMemory")
@@ -276,6 +276,8 @@ public class PartitionsProcDir implements ProcDirInterface {
 
                 short replicationNum = tblPartitionInfo.getReplicationNum(partitionId);
                 partitionInfo.add(String.valueOf(replicationNum));
+                long coldDownTimeMs = tblPartitionInfo.getColdDownSyncedTimeMs(partitionId);
+                partitionInfo.add(TimeUtils.longToTimeString(coldDownTimeMs));
 
                 DataProperty dataProperty = tblPartitionInfo.getDataProperty(partitionId);
                 partitionInfo.add(dataProperty.getStorageMedium().name());

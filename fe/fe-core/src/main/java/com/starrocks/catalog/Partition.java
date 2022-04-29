@@ -472,7 +472,7 @@ public class Partition extends MetaObject implements Writable {
         buffer.append("committedVersionHash: ").append(0).append("; ");
 
         buffer.append("distribution_info.type: ").append(distributionInfo.getType().name()).append("; ");
-        buffer.append("distribution_info: ").append(distributionInfo.toString());
+        buffer.append("distribution_info: ").append(distributionInfo.toString()).append("; ");
 
         return buffer.toString();
     }

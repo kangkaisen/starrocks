@@ -41,7 +41,7 @@ public class BatchModifyPartitionsInfoTest {
         List<Long> partitionIds = Lists.newArrayList(PARTITION_ID_1, PARTITION_ID_2, PARTITION_ID_3);
         for (long partitionId : partitionIds) {
             ModifyInfos.add(new ModifyPartitionInfo(DB_ID, TB_ID, partitionId,
-                    DataProperty.DEFAULT_DATA_PROPERTY, (short) 3, true));
+                    DataProperty.DEFAULT_DATA_PROPERTY, (short) 3, true, -1L));
         }
 
         BatchModifyPartitionsInfo batchModifyPartitionsInfo = new BatchModifyPartitionsInfo(ModifyInfos);

@@ -45,6 +45,8 @@ public class ModifyPartitionInfo implements Writable {
     private short replicationNum;
     @SerializedName(value = "isInMemory")
     private boolean isInMemory;
+    @SerializedName(value = "coldDownSyncedTimeMs")
+    private long coldDownSyncedTimeMs;
 
     public ModifyPartitionInfo() {
         // for persist
@@ -52,13 +54,14 @@ public class ModifyPartitionInfo implements Writable {
 
     public ModifyPartitionInfo(long dbId, long tableId, long partitionId,
                                DataProperty dataProperty, short replicationNum,
-                               boolean isInMemory) {
+                               boolean isInMemory, long coldDownSyncedTimeMs) {
         this.dbId = dbId;
         this.tableId = tableId;
         this.partitionId = partitionId;
         this.dataProperty = dataProperty;
         this.replicationNum = replicationNum;
         this.isInMemory = isInMemory;
+        this.coldDownSyncedTimeMs = coldDownSyncedTimeMs;
     }
 
     public long getDbId() {
@@ -85,6 +88,10 @@ public class ModifyPartitionInfo implements Writable {
         return isInMemory;
     }
 
+    public long getColdDownSyncedTimeMs() {
+        return coldDownSyncedTimeMs;
+    }
+
     public static ModifyPartitionInfo read(DataInput in) throws IOException {
         ModifyPartitionInfo info = new ModifyPartitionInfo();
         info.readFields(in);
@@ -102,7 +109,8 @@ public class ModifyPartitionInfo implements Writable {
         ModifyPartitionInfo otherInfo = (ModifyPartitionInfo) other;
         return dbId == otherInfo.getDbId() && tableId == otherInfo.getTableId() &&
                 dataProperty.equals(otherInfo.getDataProperty()) && replicationNum == otherInfo.getReplicationNum()
-                && isInMemory == otherInfo.isInMemory();
+                && isInMemory == otherInfo.isInMemory()
+                && coldDownSyncedTimeMs == otherInfo.getColdDownSyncedTimeMs();
     }
 
     @Override
@@ -120,6 +128,7 @@ public class ModifyPartitionInfo implements Writable {
 
         out.writeShort(replicationNum);
         out.writeBoolean(isInMemory);
+        out.writeLong(coldDownSyncedTimeMs);
     }
 
     public void readFields(DataInput in) throws IOException {
@@ -137,6 +146,9 @@ public class ModifyPartitionInfo implements Writable {
         replicationNum = in.readShort();
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_72) {
             isInMemory = in.readBoolean();
+        }
+        if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_95) {
+            coldDownSyncedTimeMs = in.readLong();
         }
     }
 

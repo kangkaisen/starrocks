@@ -143,6 +143,17 @@ public class ExportExportingTask extends MasterTask {
             return;
         }
 
+        // update partition cold down flag
+        Status finishedStatus = job.onFinished();
+        if (!finishedStatus.ok()) {
+            String failMsg = "run finished callback fail";
+            failMsg += mvStatus.getErrorMsg();
+            job.cancelInternal(ExportFailMsg.CancelType.RUN_FAIL, failMsg);
+            LOG.warn("run finished callback fail. job:{}", job);
+            registerProfile();
+            return;
+        }
+
         // finish job
         job.finish();
         registerProfile();

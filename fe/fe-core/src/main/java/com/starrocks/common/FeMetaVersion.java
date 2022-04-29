@@ -201,6 +201,10 @@ public final class FeMetaVersion {
     public static final int VERSION_92 = 92;
     // support export orc format
     public static final int VERSION_93 = 93;
+    // support export job with type
+    public static final int VERSION_94 = 94;
+    // support partition last cold time
+    public static final int VERSION_95 = 95;
     // note: when increment meta version, should assign the latest version to VERSION_CURRENT
-    public static final int VERSION_CURRENT = VERSION_93;
+    public static final int VERSION_CURRENT = VERSION_95;
 }

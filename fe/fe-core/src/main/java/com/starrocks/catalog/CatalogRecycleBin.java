@@ -538,6 +538,7 @@ public class CatalogRecycleBin extends MasterDaemon implements Writable {
         partitionInfo.setDataProperty(partitionId, recoverPartitionInfo.getDataProperty());
         partitionInfo.setReplicationNum(partitionId, recoverPartitionInfo.getReplicationNum());
         partitionInfo.setIsInMemory(partitionId, recoverPartitionInfo.isInMemory());
+        partitionInfo.setColdDownSyncedTimeMs(partitionId, -1L);
 
         // remove from recycle bin
         idToPartition.remove(partitionId);
@@ -567,6 +568,7 @@ public class CatalogRecycleBin extends MasterDaemon implements Writable {
             rangePartitionInfo.setDataProperty(partitionId, partitionInfo.getDataProperty());
             rangePartitionInfo.setReplicationNum(partitionId, partitionInfo.getReplicationNum());
             rangePartitionInfo.setIsInMemory(partitionId, partitionInfo.isInMemory());
+            rangePartitionInfo.setColdDownSyncedTimeMs(partitionId, -1L);
 
             iterator.remove();
             idToRecycleTime.remove(partitionId);

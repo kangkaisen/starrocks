@@ -185,6 +185,9 @@ public class IcebergTableStatisticCalculator {
                 continue;
             }
 
+            if (newStats == null) {
+                continue;
+            }
             Object newValue = newStats.get(id);
             if (newValue == null) {
                 continue;
