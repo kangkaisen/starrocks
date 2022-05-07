@@ -122,6 +122,7 @@ public class ColdDownChecker extends MasterDaemon {
         // for each round. try chose enough new partitions to check
         // only add new job when it's old then visible time
         if (itsTime() && getJobNum() < MAX_JOB_NUM) {
+            long remainJobs = MAX_JOB_NUM - getJobNum();
             // clear terminated jobs
             ExportMgr exportMgr = Catalog.getCurrentCatalog().getExportMgr();
             List<ExportJob> exportJobs1 = exportMgr.getExportJobs(ExportJob.JobState.PENDING);
@@ -148,7 +149,7 @@ public class ColdDownChecker extends MasterDaemon {
             } finally {
                 jobsLock.writeLock().lock();
             }
-            List<ChosenPartition> chosenPartitions = choosePartitions();
+            List<ChosenPartition> chosenPartitions = choosePartitions(remainJobs);
             for (ChosenPartition chosenPartition : chosenPartitions) {
                 jobsLock.writeLock().lock();
                 try {
@@ -306,7 +307,7 @@ public class ColdDownChecker extends MasterDaemon {
      * we use a priority queue to sort db/table/partition/index/tablet by 'lastCheckTime'.
      * chose a tablet which has the smallest 'lastCheckTime'.
      */
-    private List<ChosenPartition> choosePartitions() {
+    private List<ChosenPartition> choosePartitions(long remainJobs) {
         Catalog catalog = Catalog.getCurrentCatalog();
         MetaObject chosenOne = null;
 
@@ -386,6 +387,10 @@ public class ColdDownChecker extends MasterDaemon {
                                         coldDownWaitSeconds);
                                 continue;
                             }
+                            if (partition.getVisibleVersion() == Partition.PARTITION_INIT_VERSION) {
+                                LOG.debug("partition[{}]'s is init version. ignore", partition.getId());
+                                continue;
+                            }
 
                             LOG.info("chose partition[{}-{}-{}] to cold down", db.getId(),
                                     table.getId(), partition.getId());
@@ -395,6 +400,11 @@ public class ColdDownChecker extends MasterDaemon {
                                     partition.getName(),
                                     externalTable);
                             chosenPartitions.add(chosenPartition);
+                            remainJobs -= 1;
+                            if (remainJobs <= 0) {
+                                LOG.info("stop chose partition as no remain jobs");
+                                break;
+                            }
                         }
                     } // end while tableQueue
                 } finally {

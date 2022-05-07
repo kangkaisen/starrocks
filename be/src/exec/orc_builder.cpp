@@ -13,6 +13,7 @@
 #include "util/date_func.h"
 #include "util/logging.h"
 #include "util/mysql_row_buffer.h"
+#include "util/timezone_utils.h"
 
 namespace starrocks {
 
@@ -206,6 +207,9 @@ void fillTimestampValues(ColumnPtr& column, orc::ColumnVectorBatch* batch, uint6
                          uint64_t read_start_idx) {
     auto* tsBatch = dynamic_cast<orc::TimestampVectorBatch*>(batch);
     bool hasNull = false;
+    cctz::time_zone ctz;
+    TimezoneUtils::find_cctz_time_zone(TimezoneUtils::default_time_zone, ctz);
+    int64_t offset = TimezoneUtils::to_utc_offset(ctz);
     for (uint64_t i = 0; i < numValues; ++i) {
         auto idx = read_start_idx + i;
         auto value = column->get(idx);
@@ -219,7 +223,7 @@ void fillTimestampValues(ColumnPtr& column, orc::ColumnVectorBatch* batch, uint6
             } else {
                 batch->notNull[i] = 1;
                 auto ts = value.get_timestamp();
-                tsBatch->data[i] = ts.to_unix_second();
+                tsBatch->data[i] = ts.to_unix_second() - offset;
                 tsBatch->nanoseconds[i] = 0;
             }
         }
