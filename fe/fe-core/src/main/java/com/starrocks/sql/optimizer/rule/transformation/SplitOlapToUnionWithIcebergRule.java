@@ -135,7 +135,7 @@ public class SplitOlapToUnionWithIcebergRule extends TransformationRule {
      */
     public Table getExternalTable(LogicalOlapScanOperator olapScanOperator, OptimizerContext context) {
         String externalTable = ((OlapTable) olapScanOperator.getTable()).getExternalTable();
-        if (externalTable == null) {
+        if (externalTable == null || externalTable.equals("")) {
             return null;
         }
         String[] split = externalTable.split("\\.");
@@ -248,18 +248,41 @@ public class SplitOlapToUnionWithIcebergRule extends TransformationRule {
         OlapTable olapTable = (OlapTable) olapScanOperator.getTable();
         RangePartitionInfo rangePartitionInfo = (RangePartitionInfo) olapTable.getPartitionInfo();
         Map<Long, Range<PartitionKey>> idToRange = rangePartitionInfo.getIdToRange(false);
+        List<TimeSequence> timeSequenceList = new ArrayList<TimeSequence>();
+
         for (Long id : idToRange.keySet()) {
             Partition partition = olapTable.getPartition(id);
             // this partition has been synced to remote storage and has preferComputeNode falg.
-            if (partition.getVisibleVersionTime() > rangePartitionInfo.getColdDownSyncedTimeMs(id) ||
-                        rangePartitionInfo.getColdDownSyncedTimeMs(id) < 0 || !preferComputeNode) {
-                BinaryPredicateOperator leftPredicate = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.GE,
-                        getPredicateArguments(columnId, partitionColumnName,
-                            getDatetimeFromPartitionInfo(idToRange.get(id).lowerEndpoint())));
+            if (partition.getVisibleVersionTime() <= rangePartitionInfo.getColdDownSyncedTimeMs(id) &&
+                        rangePartitionInfo.getColdDownSyncedTimeMs(id) > 0 && preferComputeNode) {
+                continue;
+            }
+            timeSequenceList.add(new TimeSequence(
+                    getDatetimeFromPartitionInfo(idToRange.get(id).lowerEndpoint()),
+                    getDatetimeFromPartitionInfo(idToRange.get(id).upperEndpoint())));
+        }
+        Collections.sort(timeSequenceList);
+        for (int i = 0; i < timeSequenceList.size(); ) {
+            BinaryPredicateOperator leftPredicate = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.GE,
+                        getPredicateArguments(columnId, partitionColumnName, timeSequenceList.get(i).start));
 
+            String end = timeSequenceList.get(i).end;
+            for (i++; i < timeSequenceList.size(); ) {
+                String nextStart = timeSequenceList.get(i).start;
+                if (end.compareTo(nextStart) >= 0) {
+                    end = timeSequenceList.get(i).end;
+                    i++;
+                    continue;
+                }
                 BinaryPredicateOperator rightPredicate = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.LT,
-                        getPredicateArguments(columnId, partitionColumnName,
-                            getDatetimeFromPartitionInfo(idToRange.get(id).upperEndpoint())));
+                        getPredicateArguments(columnId, partitionColumnName, end));
+
+                predicateList.add(Utils.compoundAnd(leftPredicate, rightPredicate));
+                break;
+            }
+            if (i == timeSequenceList.size()) {
+                BinaryPredicateOperator rightPredicate = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.LT,
+                        getPredicateArguments(columnId, partitionColumnName, end));
                 predicateList.add(Utils.compoundAnd(leftPredicate, rightPredicate));
             }
         }

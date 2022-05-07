@@ -108,6 +108,7 @@ import com.starrocks.sql.optimizer.rule.transformation.RewriteHllCountDistinctRu
 import com.starrocks.sql.optimizer.rule.transformation.RewriteMultiDistinctRule;
 import com.starrocks.sql.optimizer.rule.transformation.ScalarApply2JoinRule;
 import com.starrocks.sql.optimizer.rule.transformation.SplitAggregateRule;
+import com.starrocks.sql.optimizer.rule.transformation.SplitOlapToUnionWithIcebergRule;
 import com.starrocks.sql.optimizer.rule.transformation.SplitTopNRule;
 
 import java.util.List;
@@ -175,6 +176,7 @@ public class RuleSet {
         ));
 
         rewriteRules.put(RuleSetType.PARTITION_PRUNE, ImmutableList.of(
+                new SplitOlapToUnionWithIcebergRule(),
                 new PartitionPruneRule(),
                 new DistributionPruneRule(),
                 RemoteScanPartitionPruneRule.HIVE_SCAN,
