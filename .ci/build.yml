@@ -1,0 +1,45 @@
+version: v2.0
+
+on:
+  tag: ["*"]
+  mr: ["*"]
+  push: ["*"]
+
+jobs:
+  build:
+    runs-on:
+      container:
+        image: starrocks/dev-env:branch-2.2
+    steps:
+    - checkout: self
+      with:
+        enableGitLfs: false
+    - run: |
+        rm -rf /root/.m2
+        tag=`git describe --tags | awk -F '-' '{print $1}' |  sed 's/[/.]/_/g'`
+        echo "::set-output name=tag::$tag"
+      id: calculate
+    - uses: cache@1.*
+      id: cache
+      with:
+        cacheKey: "starrocks_cache_${{steps.calculate.outputs.tag}}"
+        cachePaths: "/root/.m2"
+        restoreKeys: "starrocks_cache_"
+    - run: |
+        describe=`git describe --tags`
+        ver="${describe%-*}"
+        export STARROCKS_VERSION=${ver}
+        ./build.sh --be --fe --clean
+        output/be/bin/show_be_version.sh
+        mv output starrocks-${ver}
+        tar czvf starrocks-${describe}.tar.gz starrocks-${ver}
+    - uses: UploadArtifactory@4.*
+      name: 归档构件
+      with:
+        filePath: "*.tar.gz"
+        repoName: pipeline
+
+notices:
+- type: wework-message
+  if: FAILURE
+
