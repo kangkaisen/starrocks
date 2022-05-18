@@ -59,6 +59,20 @@ public class IcebergUtil {
     }
 
     /**
+     * Returns the corresponding catalog implementation.
+     */
+    public static IcebergCatalog getIcebergCatalog(IcebergCatalogType catalogType, String metastoreUris,
+                                                    Map<String, String> properties)
+            throws StarRocksIcebergException {
+        switch (catalogType) {
+            case HIVE_CATALOG: return IcebergHiveCatalog.getInstance(metastoreUris, properties);
+            default:
+                throw new StarRocksIcebergException(
+                        "Unexpected catalog type: " + catalogType.toString());
+        }
+    }
+
+    /**
      * Get hdfs file format in StarRocks use iceberg file format.
      * @param format
      * @return HdfsFileFormat

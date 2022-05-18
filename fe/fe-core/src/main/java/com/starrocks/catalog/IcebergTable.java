@@ -16,6 +16,7 @@ import com.starrocks.external.iceberg.IcebergCatalog;
 import com.starrocks.external.iceberg.IcebergCatalogType;
 import com.starrocks.external.iceberg.IcebergUtil;
 import com.starrocks.external.iceberg.StarRocksIcebergException;
+import com.starrocks.external.iceberg.io.IcebergCachingFileIO;
 import com.starrocks.thrift.TColumn;
 import com.starrocks.thrift.TIcebergTable;
 import com.starrocks.thrift.TTableDescriptor;
@@ -80,6 +81,10 @@ public class IcebergTable extends Table {
         return resourceName;
     }
 
+    public String getFileIOMaxTotalBytes() {
+        return icebergProperties.get(IcebergCachingFileIO.FILEIO_CACHE_MAX_TOTAL_BYTES);
+    }
+
     public IcebergCatalogType getCatalogType() {
         return IcebergCatalogType.valueOf(icebergProperties.get(ICEBERG_CATALOG));
     }
@@ -100,7 +105,8 @@ public class IcebergTable extends Table {
     public synchronized org.apache.iceberg.Table getIcebergTable() {
         try {
             if (this.icbTbl == null) {
-                IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(this);
+                IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(this.getCatalogType(),
+                                        this.getIcebergHiveMetastoreUris(), icebergProperties);
                 this.icbTbl = catalog.loadTable(this);
             }
         } catch (StarRocksIcebergException e) {
@@ -153,7 +159,17 @@ public class IcebergTable extends Table {
         }
         this.resourceName = resourceName;
 
-        IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(type, icebergResource.getHiveMetastoreURIs());
+        String fileIOCacheMaxTotalBytes = copiedProps.get(IcebergCachingFileIO.FILEIO_CACHE_MAX_TOTAL_BYTES);
+        if (!Strings.isNullOrEmpty(fileIOCacheMaxTotalBytes)) {
+            icebergProperties.put(IcebergCachingFileIO.FILEIO_CACHE_MAX_TOTAL_BYTES, fileIOCacheMaxTotalBytes);
+            copiedProps.remove(IcebergCachingFileIO.FILEIO_CACHE_MAX_TOTAL_BYTES);
+        }
+
+        if (!copiedProps.isEmpty()) {
+            throw new DdlException("Unknown table properties: " + copiedProps.toString());
+        }
+
+        IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(type, icebergResource.getHiveMetastoreURIs(), icebergProperties);
         org.apache.iceberg.Table icebergTable = catalog.loadTable(IcebergUtil.getIcebergTableIdentifier(db, table));
         // TODO: use TypeUtil#indexByName to handle nested field
         Map<String, Types.NestedField> icebergColumns = icebergTable.schema().columns().stream()
@@ -171,10 +187,6 @@ public class IcebergTable extends Table {
                 throw new DdlException(
                         "iceberg extern table not support no-nullable column: [" + icebergColumn.name() + "]");
             }
-        }
-
-        if (!copiedProps.isEmpty()) {
-            throw new DdlException("Unknown table properties: " + copiedProps.toString());
         }
     }
 
