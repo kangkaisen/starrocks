@@ -33,7 +33,7 @@ import com.starrocks.sql.optimizer.rule.transformation.PushDownProjectLimitRule;
 import com.starrocks.sql.optimizer.rule.transformation.PushLimitAndFilterToCTEProduceRule;
 import com.starrocks.sql.optimizer.rule.transformation.ReorderIntersectRule;
 import com.starrocks.sql.optimizer.rule.transformation.SemiReorderRule;
-import com.starrocks.sql.optimizer.rule.transformation.TestRule;
+import com.starrocks.sql.optimizer.rule.transformation.PushDownAggToUnionRule;
 import com.starrocks.sql.optimizer.task.DeriveStatsTask;
 import com.starrocks.sql.optimizer.task.OptimizeGroupTask;
 import com.starrocks.sql.optimizer.task.TaskContext;
@@ -273,7 +273,7 @@ public class Optimizer {
         ruleRewriteIterative(memo, rootTaskContext, new MergeTwoProjectRule());
         ruleRewriteIterative(memo, rootTaskContext, new MergeProjectWithChildRule());
         ruleRewriteOnlyOnce(memo, rootTaskContext, new ReorderIntersectRule());
-        ruleRewriteIterative(memo, rootTaskContext, new TestRule());
+        ruleRewriteIterative(memo, rootTaskContext, new PushDownAggToUnionRule());
         memo.deriveAllGroupLogicalProperty();
 
         cleanUpMemoGroup(memo);

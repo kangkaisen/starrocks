@@ -1226,4 +1226,32 @@ public class AggregateTest extends PlanTestBase {
                 "  |  \n" +
                 "  0:OlapScanNode");
     }
+
+    @Test
+    public void testUnionAgg1() throws Exception {
+        String sql = "select SUM(x1) from (select v2 as x1 from t0 union all select v3 from t0) as q";
+        String plan = getFragmentPlan(sql);
+        System.out.println(plan);
+    }
+
+    @Test
+    public void testUnionAgg4() throws Exception {
+        String sql = "select SUM(x1) from (select v2 as x1, v3 as x2 from t0 union all select v2, v3 from t0) as q group by x2";
+        String plan = getFragmentPlan(sql);
+        System.out.println(plan);
+    }
+
+    @Test
+    public void testUnionAgg2() throws Exception {
+        String sql = "select SUM(x1), max(x1) from (select v2 as x1 from t0 union all select v3 from t0) as q";
+        String plan = getFragmentPlan(sql);
+        System.out.println(plan);
+    }
+
+    @Test
+    public void testUnionAgg3() throws Exception {
+        String sql = "select SUM(x1) from (select v2 as x1 from t0 union all select v3 from t0) as q group by x1";
+        String plan = getFragmentPlan(sql);
+        System.out.println(plan);
+    }
 }

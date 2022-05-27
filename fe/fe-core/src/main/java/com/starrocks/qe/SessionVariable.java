@@ -460,7 +460,7 @@ public class SessionVariable implements Serializable, Writable, Cloneable {
     private long broadcastRowCountLimit = 15000000;
 
     @VariableMgr.VarAttr(name = NEW_PLANNER_OPTIMIZER_TIMEOUT)
-    private long optimizerExecuteTimeout = 3000;
+    private long optimizerExecuteTimeout = 3000000000L;
 
     @VariableMgr.VarAttr(name = ENABLE_QUERY_DUMP)
     private boolean enableQueryDump = false;
