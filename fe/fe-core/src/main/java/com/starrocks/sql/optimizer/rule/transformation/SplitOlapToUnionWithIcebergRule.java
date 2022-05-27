@@ -359,6 +359,9 @@ public class SplitOlapToUnionWithIcebergRule extends TransformationRule {
 
             icebergColumnRef.put(icebergColumnMeta.get(column), column);
         }
+        // for (ColumnRefOperator ref : originColumnRef.keySet()) {
+        //     icebergColumnRef.put(icebergColumnMeta.get(originColumnRef.get(ref)), originColumnRef.get(ref));
+        // }
     }
 
     /**
