@@ -32,6 +32,10 @@ import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.catalog.AggregateType;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.UserException;
+import com.starrocks.sql.analyzer.ExpressionAnalyzer;
+import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import com.starrocks.sql.optimizer.transformer.SqlToScalarOperatorTranslator;
+import com.starrocks.sql.plan.ScalarOperatorToExpr;
 
 import java.util.List;
 import java.util.Map;
@@ -52,9 +56,6 @@ public abstract class LoadScanNode extends ScanNode {
             dstDescMap.put(slotDescriptor.getColumn().getName(), slotDescriptor);
         }
 
-        // substitute SlotRef in filter expression
-        // where expr must be equal first to transfer some predicates(eg: BetweenPredicate to BinaryPredicate)
-        whereExpr = analyzer.getExprRewriter().rewrite(whereExpr, analyzer);
         List<SlotRef> slots = Lists.newArrayList();
         whereExpr.collect(SlotRef.class, slots);
 
@@ -66,10 +67,15 @@ public abstract class LoadScanNode extends ScanNode {
                         + slot.getColumnName());
             }
             smap.getLhs().add(slot);
-            smap.getRhs().add(new SlotRef(slotDesc));
+            SlotRef slotRef = new SlotRef(slotDesc);
+            slotRef.setColumnName(slot.getColumnName());
+            smap.getRhs().add(slotRef);
         }
         whereExpr = whereExpr.clone(smap);
-        whereExpr.analyze(analyzer);
+        ExpressionAnalyzer.analyzeExpressionIgnoreSlot(whereExpr);
+        ScalarOperator scalarOperator = SqlToScalarOperatorTranslator.translate(whereExpr);
+        whereExpr = ScalarOperatorToExpr.buildExpression(scalarOperator);
+
         if (!whereExpr.getType().isBoolean()) {
             throw new UserException("where statement is not a valid statement return bool");
         }
