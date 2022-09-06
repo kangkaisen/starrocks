@@ -624,6 +624,7 @@ public class StmtExecutor {
 
     // Because this is called by other thread
     public void cancel() {
+        LOG.warn("stmt cancel");
         if (parsedStmt instanceof DeleteStmt && !((DeleteStmt) parsedStmt).supportNewPlanner()) {
             DeleteStmt deleteStmt = (DeleteStmt) parsedStmt;
             long jobId = deleteStmt.getJobId();
@@ -647,6 +648,7 @@ public class StmtExecutor {
             ErrorReport.reportDdlException(ErrorCode.ERR_NO_SUCH_THREAD, id);
         }
         if (context == killCtx) {
+            LOG.warn("context.setKilled" + id);
             // Suicide
             context.setKilled();
         } else {
@@ -657,7 +659,7 @@ public class StmtExecutor {
                     PrivPredicate.ADMIN)) {
                 ErrorReport.reportDdlException(ErrorCode.ERR_KILL_DENIED_ERROR, id);
             }
-
+            LOG.warn("killCtx.kill" + id);
             killCtx.kill(killStmt.isConnectionKill());
         }
         context.getState().setOk();

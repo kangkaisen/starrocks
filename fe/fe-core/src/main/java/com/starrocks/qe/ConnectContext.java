@@ -515,11 +515,12 @@ public class ConnectContext {
 
     // kill operation with no protect.
     public void kill(boolean killConnection) {
-        LOG.warn("kill timeout query, {}, kill connection: {}",
-                getMysqlChannel().getRemoteHostPortString(), killConnection);
+        LOG.warn("kill timeout query, {}, kill connection: {}, id: {}",
+                getMysqlChannel().getRemoteHostPortString(), killConnection, connectionId);
 
         if (killConnection) {
             isKilled = true;
+            LOG.warn("close mysql");
             // Close channel to break connection with client
             getMysqlChannel().close();
         }

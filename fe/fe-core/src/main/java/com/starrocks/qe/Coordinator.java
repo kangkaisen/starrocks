@@ -1346,6 +1346,7 @@ public class Coordinator {
     // fragment,
     // if any, as well as all plan fragments on remote nodes.
     public void cancel() {
+        LOG.warn("coordinotor cancel");
         lock();
         try {
             if (!queryStatus.ok()) {
