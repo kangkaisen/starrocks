@@ -49,6 +49,7 @@ public class StatementPlanner {
         }
         try {
             lock(dbLocks);
+            Thread.sleep(120000);
             Analyzer.analyze(stmt, session);
             PrivilegeChecker.check(stmt, session);
             if (stmt instanceof QueryStatement) {
@@ -68,6 +69,8 @@ public class StatementPlanner {
             } else if (stmt instanceof DeleteStmt) {
                 return new DeletePlanner().plan((DeleteStmt) stmt, session);
             }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         } finally {
             unLock(dbLocks);
         }
