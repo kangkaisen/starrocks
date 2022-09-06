@@ -26,12 +26,16 @@ import com.starrocks.sql.optimizer.transformer.RelationTransformer;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.sql.plan.PlanFragmentBuilder;
 import com.starrocks.thrift.TResultSinkType;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 public class StatementPlanner {
+
+    private static final Logger LOG = LogManager.getLogger(StatementPlanner.class);
 
     public static ExecPlan plan(StatementBase stmt, ConnectContext session) {
         return plan(stmt, session, true, TResultSinkType.MYSQL_PROTOCAL);
@@ -114,6 +118,7 @@ public class StatementPlanner {
         if (dbs == null) {
             return;
         }
+        LOG.warn("lock database lock run " + dbs.keySet());
         for (Database db : dbs.values()) {
             db.readLock();
         }
@@ -124,6 +129,7 @@ public class StatementPlanner {
         if (dbs == null) {
             return;
         }
+        LOG.warn("unlock database lock run " + dbs.keySet());
         for (Database db : dbs.values()) {
             db.readUnlock();
         }
