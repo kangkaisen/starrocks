@@ -57,7 +57,7 @@ public class StatementPlanner {
             PrivilegeChecker.check(stmt, session);
             if (stmt instanceof QueryStatement) {
                 if (dbs.size() == 1 && dbs.keySet().iterator().next().contains("test")) {
-                    Thread.sleep(120000);
+                    Thread.sleep(1200000);
                 }
                 OptimizerTraceUtil.logQueryStatement(session, "after analyze:\n%s", (QueryStatement) stmt);
             }
