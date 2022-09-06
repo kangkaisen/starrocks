@@ -49,10 +49,12 @@ public class StatementPlanner {
         }
         try {
             lock(dbLocks);
-            Thread.sleep(120000);
             Analyzer.analyze(stmt, session);
             PrivilegeChecker.check(stmt, session);
             if (stmt instanceof QueryStatement) {
+                if (dbs.size() == 1 && dbs.get(0).getFullName().contains("test")) {
+                    Thread.sleep(120000);
+                }
                 OptimizerTraceUtil.logQueryStatement(session, "after analyze:\n%s", (QueryStatement) stmt);
             }
 
