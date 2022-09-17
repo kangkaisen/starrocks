@@ -680,6 +680,7 @@ public class StmtExecutor {
                 new QeProcessorImpl.QueryInfo(context, originStmt.originStmt, coord));
 
         coord.exec();
+        LOG.info("exec query id {}", DebugUtil.printId(context.getExecutionId()));
 
         // send result
         // 1. If this is a query with OUTFILE clause, eg: select * from tbl1 into outfile xxx,
@@ -725,6 +726,8 @@ public class StmtExecutor {
             sendFields(colNames, outputExprs);
         }
 
+        LOG.info("get result done {}", DebugUtil.printId(context.getExecutionId()));
+
         statisticsForAuditLog = batch.getQueryStatistics();
         if (!isOutfileQuery) {
             context.getState().setEof();
@@ -747,6 +750,7 @@ public class StmtExecutor {
             TableMetricsEntity entity = TableMetricsRegistry.getInstance().getMetricsEntity(tableId);
             entity.counterScanFinishedTotal.increase(1L);
         }
+        LOG.info("handle query done {}", DebugUtil.printId(context.getExecutionId()));
     }
 
     private void handleAnalyzeStmt() throws Exception {

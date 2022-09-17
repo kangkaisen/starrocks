@@ -69,6 +69,7 @@ public class ResultReceiver {
         final RowBatch rowBatch = new RowBatch();
         try {
             while (!isDone && !isCancel) {
+                LOG.info("fetch result rpc begin, finstId={}", finstId);
                 PFetchDataRequest request = new PFetchDataRequest(finstId);
 
                 currentThread = Thread.currentThread();
@@ -114,6 +115,7 @@ public class ResultReceiver {
                     deserializer.deserialize(resultBatch, serialResult);
                     rowBatch.setBatch(resultBatch);
                     rowBatch.setEos(pResult.eos);
+                    LOG.info("fetch result rpc done, finstId={}", finstId);
                     return rowBatch;
                 }
             }

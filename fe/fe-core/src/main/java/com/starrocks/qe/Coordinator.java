@@ -767,7 +767,7 @@ public class Coordinator {
             long numLimitRows = fragments.get(0).getPlanRoot().getLimit();
             boolean hasLimit = numLimitRows > 0;
             if (!isBlockQuery && instanceIds.size() > 1 && hasLimit && numReceivedRows >= numLimitRows) {
-                LOG.debug("no block query, return num >= limit rows, need cancel");
+                LOG.info("no block query, return num >= limit rows, need cancel");
                 cancelInternal(PPlanFragmentCancelReason.LIMIT_REACH);
             }
         } else {
@@ -1531,6 +1531,9 @@ public class Coordinator {
                     params.backend_num, backendExecStates.size());
             return;
         }
+        LOG.info("update status start for query_id={} instance_id={}",
+                DebugUtil.printId(queryId),
+                DebugUtil.printId(params.getFragment_instance_id()));
 
         BackendExecState execState = backendExecStates.get(params.backend_num);
         lock();
@@ -1585,6 +1588,9 @@ public class Coordinator {
                     jobId, params.backend_id, params.query_id, params.fragment_instance_id, params.loaded_rows,
                     params.done);
         }
+        LOG.info("update status end for query_id={} instance_id={}",
+                DebugUtil.printId(queryId),
+                DebugUtil.printId(params.getFragment_instance_id()));
     }
 
     public void endProfile() {
