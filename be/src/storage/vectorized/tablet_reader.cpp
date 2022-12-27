@@ -380,7 +380,7 @@ Status TabletReader::_parse_seek_range(const TabletReaderParams& read_params, st
 
     CHECK_EQ(read_params.start_key.size(), read_params.end_key.size());
     size_t n = read_params.start_key.size();
-    LOG(WARNING) << "start_key size ";
+    LOG(WARNING) << "start_key size " << n;
 
     ranges->reserve(n);
     for (size_t i = 0; i < n; i++) {

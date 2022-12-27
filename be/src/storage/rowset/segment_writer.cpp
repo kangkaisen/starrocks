@@ -306,6 +306,7 @@ Status SegmentWriter::append_chunk(const vectorized::Chunk& chunk) {
                 size_t keys = _tablet_schema->num_short_key_columns();
                 vectorized::SeekTuple tuple(*chunk.schema(), chunk.get(i).datums());
                 std::string encoded_key = tuple.short_key_encode(keys, 0);
+                LOG(WARNING) << "encoded_key " << encoded_key;
                 RETURN_IF_ERROR(_index_builder->add_item(encoded_key));
             }
             ++_num_rows_written;

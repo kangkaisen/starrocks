@@ -143,6 +143,7 @@ Status OlapChunkSource::_build_scan_range(RuntimeState* state) {
             _scanner_ranges.push_back(_key_ranges[i].get());
         }
     }
+    LOG(WARNING) << "_scanner_ranges size " << _scanner_ranges.size();
     return Status::OK();
 }
 
@@ -205,6 +206,8 @@ Status OlapChunkSource::_init_reader_params(const std::vector<OlapScanRange*>& k
         not_pushdown_predicate_rewriter.rewrite_predicate(&_obj_pool);
     }
 
+    LOG(WARNING) << "key_ranges " << key_ranges.size();
+
     // Range
     for (auto key_range : key_ranges) {
         if (key_range->begin_scan_range.size() == 1 && key_range->begin_scan_range.get_value(0) == NEGATIVE_INFINITY) {
@@ -217,6 +220,8 @@ Status OlapChunkSource::_init_reader_params(const std::vector<OlapScanRange*>& k
         _params.start_key.push_back(key_range->begin_scan_range);
         _params.end_key.push_back(key_range->end_scan_range);
     }
+
+    LOG(WARNING) << "start_key size " << _params.start_key.size();
 
     // Return columns
     if (skip_aggregation) {

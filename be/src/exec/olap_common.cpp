@@ -60,6 +60,7 @@ void ColumnValueRange<bool>::convert_to_fixed_value() {}
 Status OlapScanKeys::get_key_range(std::vector<std::unique_ptr<OlapScanRange>>* key_range) {
     key_range->clear();
 
+    LOG(WARNING) << "_begin_scan_keys size " << _begin_scan_keys.size();
     for (int i = 0; i < _begin_scan_keys.size(); ++i) {
         std::unique_ptr<OlapScanRange> range(new OlapScanRange());
         range->begin_scan_range = _begin_scan_keys[i];
