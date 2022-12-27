@@ -509,6 +509,7 @@ Status SegmentIterator::_lookup_ordinal(const SeekTuple& key, bool lower, rowid_
     std::string index_key;
     index_key = lower ? key.short_key_encode(_segment->num_short_keys(), KEY_MINIMAL_MARKER)
                       : key.short_key_encode(_segment->num_short_keys(), KEY_MAXIMAL_MARKER);
+    LOG(WARNING) << "key " << key.debug_string() << " index_key " << index_key;
 
     uint32_t start_block_id;
     auto start_iter = _segment->lower_bound(index_key);
@@ -527,10 +528,15 @@ Status SegmentIterator::_lookup_ordinal(const SeekTuple& key, bool lower, rowid_
     }
     rowid_t start = start_block_id * _segment->num_rows_per_block();
 
+    LOG(WARNING) << " start_block_id " << start_block_id << " start " << start;
+
     auto end_iter = _segment->upper_bound(index_key);
     if (end_iter.valid()) {
         end = end_iter.ordinal() * _segment->num_rows_per_block();
     }
+
+    LOG(WARNING) << " start_block_id " << start_block_id << " end " << end
+    << " lower " << lower;
 
     // binary search to find the exact key
     ChunkPtr chunk = ChunkHelper::new_chunk(key.schema(), 1);
@@ -560,6 +566,7 @@ Status SegmentIterator::_lookup_ordinal(const SeekTuple& key, bool lower, rowid_
         }
     }
     *rowid = start;
+    LOG(WARNING) << " start " << start << " end " << end << " lower " << lower;
     return Status::OK();
 }
 

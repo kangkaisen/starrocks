@@ -263,6 +263,7 @@ public:
 private:
     template <bool lower_bound>
     ShortKeyIndexIterator seek(const Slice& key) const {
+        LOG(WARNING) << "seek key " << key;
         auto comparator = [](const Slice& lhs, const Slice& rhs) { return lhs.compare(rhs) < 0; };
         if (lower_bound) {
             return std::lower_bound(begin(), end(), key, comparator);
