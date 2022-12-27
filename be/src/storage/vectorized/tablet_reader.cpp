@@ -99,6 +99,7 @@ Status TabletReader::get_segment_iterators(const TabletReaderParams& params, std
     RETURN_IF_ERROR(_init_predicates(params));
     RETURN_IF_ERROR(_init_delete_predicates(params, &_delete_predicates));
     RETURN_IF_ERROR(_parse_seek_range(params, &rs_opts.ranges));
+    LOG(WARNING) << "ranges size " << rs_opts.ranges.size();
     rs_opts.predicates = _pushdown_predicates;
     RETURN_IF_ERROR(ZonemapPredicatesRewriter::rewrite_predicate_map(&_obj_pool, rs_opts.predicates,
                                                                      &rs_opts.predicates_for_zone_map));
@@ -129,6 +130,7 @@ Status TabletReader::get_segment_iterators(const TabletReaderParams& params, std
 Status TabletReader::_init_collector(const TabletReaderParams& params) {
     std::vector<ChunkIteratorPtr> seg_iters;
     RETURN_IF_ERROR(get_segment_iterators(params, &seg_iters));
+    LOG(WARNING) << "seg_iters size " << seg_iters.size();
 
     // Put each SegmentIterator into a TimedChunkIterator, if a profile is provided.
     if (params.profile != nullptr) {
@@ -378,6 +380,7 @@ Status TabletReader::_parse_seek_range(const TabletReaderParams& read_params, st
 
     CHECK_EQ(read_params.start_key.size(), read_params.end_key.size());
     size_t n = read_params.start_key.size();
+    LOG(WARNING) << "start_key size ";
 
     ranges->reserve(n);
     for (size_t i = 0; i < n; i++) {
@@ -385,6 +388,7 @@ Status TabletReader::_parse_seek_range(const TabletReaderParams& read_params, st
         SeekTuple upper;
         RETURN_IF_ERROR(_to_seek_tuple(_tablet->tablet_schema(), read_params.start_key[i], &lower));
         RETURN_IF_ERROR(_to_seek_tuple(_tablet->tablet_schema(), read_params.end_key[i], &upper));
+        LOG(WARNING) << "lower " << lower.debug_string() << " upper " << upper.debug_string();
         ranges->emplace_back(SeekRange{std::move(lower), std::move(upper)});
         ranges->back().set_inclusive_lower(inc_lower);
         ranges->back().set_inclusive_upper(inc_upper);

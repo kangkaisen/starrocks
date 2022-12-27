@@ -60,9 +60,11 @@ inline std::string SeekTuple::short_key_encode(size_t num_short_keys, uint8_t pa
             _schema.field(cid)->encode_ascending(_values[cid], &output);
         }
     }
+    LOG(WARNING) << "num_short_keys " << num_short_keys;
     if (_values.size() < num_short_keys) {
         output.push_back(padding);
     }
+    LOG(WARNING) << "short_key_encode " << output;
     return output;
 }
 

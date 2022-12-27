@@ -257,8 +257,8 @@ StatusOr<std::unique_ptr<SegmentWriter>> HorizontalBetaRowsetWriter::_create_seg
 Status HorizontalBetaRowsetWriter::add_chunk(const vectorized::Chunk& chunk) {
     if (_segment_writer == nullptr) {
         ASSIGN_OR_RETURN(_segment_writer, _create_segment_writer());
-    } else if (_segment_writer->estimate_segment_size() >= config::max_segment_file_size ||
-               _segment_writer->num_rows_written() + chunk.num_rows() >= _context.max_rows_per_segment) {
+    } else if (_segment_writer->num_rows_written() + chunk.num_rows() >= 10) {
+        LOG(WARNING) << "flush segment";
         RETURN_IF_ERROR(_flush_segment_writer(&_segment_writer));
         ASSIGN_OR_RETURN(_segment_writer, _create_segment_writer());
     }
@@ -272,8 +272,8 @@ Status HorizontalBetaRowsetWriter::add_chunk(const vectorized::Chunk& chunk) {
 Status HorizontalBetaRowsetWriter::add_chunk_with_rssid(const vectorized::Chunk& chunk, const vector<uint32_t>& rssid) {
     if (_segment_writer == nullptr) {
         ASSIGN_OR_RETURN(_segment_writer, _create_segment_writer());
-    } else if (_segment_writer->estimate_segment_size() >= config::max_segment_file_size ||
-               _segment_writer->num_rows_written() + chunk.num_rows() >= _context.max_rows_per_segment) {
+    } else if (_segment_writer->num_rows_written() + chunk.num_rows() >= 10) {
+        LOG(WARNING) << "flush segment";
         RETURN_IF_ERROR(_flush_segment_writer(&_segment_writer));
         ASSIGN_OR_RETURN(_segment_writer, _create_segment_writer());
     }
@@ -565,6 +565,7 @@ Status HorizontalBetaRowsetWriter::_final_merge() {
 }
 
 Status HorizontalBetaRowsetWriter::_flush_segment_writer(std::unique_ptr<SegmentWriter>* segment_writer) {
+    LOG(WARNING) << "_flush_segment_writer ";
     uint64_t segment_size = 0;
     uint64_t index_size = 0;
     uint64_t footer_position = 0;
