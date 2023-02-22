@@ -319,6 +319,7 @@ void CompactionManager::update_tablet(TabletSharedPtr tablet) {
     }
     VLOG(1) << "update tablet " << tablet->tablet_id();
     if (tablet->need_compaction()) {
+        VLOG(1) << "tablet need compaction " << tablet->tablet_id();
         CompactionCandidate candidate;
         candidate.tablet = tablet;
         candidate.score = tablet->compaction_score();

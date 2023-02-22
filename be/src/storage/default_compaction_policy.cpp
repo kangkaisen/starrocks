@@ -32,6 +32,9 @@ bool DefaultCumulativeBaseCompactionPolicy::need_compaction(double* score, Compa
     auto cumu_st = _pick_rowsets_to_cumulative_compact(&_cumulative_rowsets, &_cumulative_score);
     auto base_st = _pick_rowsets_to_base_compact(&_base_rowsets, &_base_score);
 
+    LOG(INFO) << "cumu_st " << cumu_st.to_string() << " base_st" << base_st.to_string() << " _cumulative_score "
+              << _cumulative_score << " _base_score " << _base_score;
+
     if (cumu_st.ok() && base_st.ok()) {
         if (_cumulative_score >= _base_score) {
             _compaction_type = CUMULATIVE_COMPACTION;
