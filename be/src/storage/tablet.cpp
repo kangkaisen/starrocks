@@ -961,7 +961,7 @@ TabletInfo Tablet::get_tablet_info() const {
 void Tablet::pick_candicate_rowsets_to_cumulative_compaction(std::vector<RowsetSharedPtr>* candidate_rowsets) {
     std::shared_lock rdlock(_meta_lock);
     for (auto& it : _rs_version_map) {
-        if (it.first.first >= _cumulative_point) {
+        if (it.first.first >= 0) {
             candidate_rowsets->push_back(it.second);
         }
     }
