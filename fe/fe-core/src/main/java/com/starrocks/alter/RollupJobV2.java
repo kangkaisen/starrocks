@@ -503,6 +503,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
             partition.visualiseShadowIndex(rollupIndexId, false);
         }
         tbl.rebuildFullSchema();
+        tbl.lastSchemaUpdateTime.set(System.currentTimeMillis());
     }
 
     /**

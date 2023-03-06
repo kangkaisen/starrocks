@@ -20,6 +20,7 @@ import com.starrocks.catalog.AggregateFunction;
 import com.starrocks.catalog.ArrayType;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
+import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Table;
@@ -43,6 +44,7 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class AnalyzerUtils {
     public static void verifyNoAggregateFunctions(Expr expression, String clause) {
@@ -234,7 +236,10 @@ public class AnalyzerUtils {
     }
 
     private static class TableCollector extends AstVisitor<Void, Void> {
-        protected final Map<TableName, Table> tables;
+        protected Map<TableName, Table> tables;
+
+        public TableCollector() {
+        }
 
         public TableCollector(Map<TableName, Table> dbs) {
             this.tables = dbs;
@@ -317,11 +322,72 @@ public class AnalyzerUtils {
         return tableRelations;
     }
 
+    public static boolean isOnlyHasOlapTables(StatementBase statementBase) {
+        Map<TableName, Table> nonOlapTables = Maps.newHashMap();
+        new AnalyzerUtils.NonOlapTableCollector(nonOlapTables).visit(statementBase);
+        return nonOlapTables.isEmpty();
+    }
+
+    public static void copyOlapTable(StatementBase statementBase, Set<OlapTable> olapTables) {
+        new AnalyzerUtils.OlapTableCollector(olapTables).visit(statementBase);
+    }
 
     public static Map<TableName, SubqueryRelation> collectAllSubQueryRelation(QueryStatement queryStatement) {
         Map<TableName, SubqueryRelation> subQueryRelations = Maps.newHashMap();
         new AnalyzerUtils.SubQueryRelationCollector(subQueryRelations).visit(queryStatement);
         return subQueryRelations;
+    }
+
+    public static Map<TableName, Table> collectAllTableAndView(StatementBase statementBase) {
+        Map<TableName, Table> tables = Maps.newHashMap();
+        new AnalyzerUtils.TableAndViewCollector(tables).visit(statementBase);
+        return tables;
+    }
+
+    private static class TableAndViewCollector extends TableCollector {
+        public TableAndViewCollector(Map<TableName, Table> dbs) {
+            super(dbs);
+        }
+
+        public Void visitView(ViewRelation node, Void context) {
+            Table table = node.getView();
+            tables.put(node.getResolveTableName(), table);
+            return null;
+        }
+    }
+
+    private static class NonOlapTableCollector extends TableCollector {
+        public NonOlapTableCollector(Map<TableName, Table> tables) {
+            super(tables);
+        }
+
+        @Override
+        public Void visitTable(TableRelation node, Void context) {
+            if (!node.getTable().isOlapTable() && tables.isEmpty()) {
+                tables.put(node.getName(), node.getTable());
+            }
+            return null;
+        }
+    }
+
+    private static class OlapTableCollector extends TableCollector {
+        Set<OlapTable> olapTables;
+
+        public OlapTableCollector(Set<OlapTable> tables) {
+            this.olapTables = tables;
+        }
+
+        @Override
+        public Void visitTable(TableRelation node, Void context) {
+            if (node.getTable().isOlapTable()) {
+                OlapTable table = (OlapTable) node.getTable();
+                olapTables.add(table);
+                // Only copy the necessary olap table meta to avoid the lock when plan query
+                OlapTable copied = table.copyOnlyForQuery();
+                node.setTable(copied);
+            }
+            return null;
+        }
     }
 
     private static class TableCollectorWithAlias extends TableCollector {
