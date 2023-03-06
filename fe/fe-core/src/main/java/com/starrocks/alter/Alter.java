@@ -498,7 +498,9 @@ public class Alter {
         boolean needProcessOutsideDatabaseLock = false;
         String tableName = dbTableName.getTbl();
 
+        boolean isSynchronous = true;
         db.writeLock();
+        OlapTable olapTable;
         try {
             Table table = db.getTable(tableName);
             if (table == null) {
@@ -508,7 +510,7 @@ public class Alter {
             if (!table.isOlapOrLakeTable()) {
                 throw new DdlException("Do not support alter non-OLAP or non-LAKE table[" + tableName + "]");
             }
-            OlapTable olapTable = (OlapTable) table;
+            olapTable = (OlapTable) table;
 
             if (olapTable.getState() != OlapTableState.NORMAL) {
                 throw new DdlException(
@@ -518,8 +520,10 @@ public class Alter {
             if (currentAlterOps.hasSchemaChangeOp()) {
                 // if modify storage type to v2, do schema change to convert all related tablets to segment v2 format
                 schemaChangeHandler.process(alterClauses, db, olapTable);
+                isSynchronous = false;
             } else if (currentAlterOps.hasRollupOp()) {
                 materializedViewHandler.process(alterClauses, db, olapTable);
+                isSynchronous = false;
             } else if (currentAlterOps.hasPartitionOp()) {
                 Preconditions.checkState(alterClauses.size() == 1);
                 AlterClause alterClause = alterClauses.get(0);
@@ -590,7 +594,7 @@ public class Alter {
                 List<String> partitionNames = clause.getPartitionNames();
                 // currently, only in memory property could reach here
                 Preconditions.checkState(properties.containsKey(PropertyAnalyzer.PROPERTIES_INMEMORY));
-                OlapTable olapTable = (OlapTable) db.getTable(tableName);
+                olapTable = (OlapTable) db.getTable(tableName);
                 if (olapTable.isLakeTable()) {
                     throw new DdlException("Lake table not support alter in_memory");
                 }
@@ -600,6 +604,7 @@ public class Alter {
 
                 db.writeLock();
                 try {
+                    olapTable = (OlapTable) db.getTable(tableName);
                     modifyPartitionsProperty(db, olapTable, partitionNames, properties);
                 } finally {
                     db.writeUnlock();
@@ -613,7 +618,7 @@ public class Alter {
                         properties.containsKey(PropertyAnalyzer.PROPERTIES_FOREIGN_KEY_CONSTRAINT) ||
                         properties.containsKey(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT));
 
-                OlapTable olapTable = (OlapTable) db.getTable(tableName);
+                olapTable = (OlapTable) db.getTable(tableName);
                 if (olapTable.isLakeTable()) {
                     throw new DdlException("Lake table not support alter in_memory or enable_persistent_index or write_quorum");
                 }
@@ -639,6 +644,10 @@ public class Alter {
             } else {
                 throw new DdlException("Invalid alter opertion: " + alterClause.getOpType());
             }
+        }
+
+        if (isSynchronous) {
+            olapTable.lastSchemaUpdateTime.set(System.currentTimeMillis());
         }
     }
 

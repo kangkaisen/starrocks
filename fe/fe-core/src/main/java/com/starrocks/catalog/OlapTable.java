@@ -90,6 +90,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.zip.Adler32;
 
@@ -179,6 +180,16 @@ public class OlapTable extends Table implements GsonPostProcessable {
     @SerializedName(value = "tableProperty")
     protected TableProperty tableProperty;
 
+    // not serialized field
+    // record all materialized views based on this OlapTable
+    private Set<Long> relatedMaterializedViews;
+
+    // Record the alter, schema change, MV update time
+    public AtomicLong lastSchemaUpdateTime = new AtomicLong(-1);
+    // Record the start and end time for data load version update phase
+    public AtomicLong lastVersionUpdateStartTime = new AtomicLong(-1);
+    public AtomicLong lastVersionUpdateEndTime = new AtomicLong(0);
+
     public OlapTable() {
         this(TableType.OLAP);
     }
@@ -238,6 +249,35 @@ public class OlapTable extends Table implements GsonPostProcessable {
         this.indexes = indexes;
 
         this.tableProperty = null;
+    }
+
+    // Only Copy necessary metadata for query.
+    // We don't do deep copy, because which is very expensive;
+    public OlapTable copyOnlyForQuery() {
+        OlapTable olapTable = new OlapTable();
+        olapTable.id = this.id;
+        olapTable.name = this.name;
+        olapTable.fullSchema = Lists.newArrayList(this.fullSchema);
+        olapTable.nameToColumn = Maps.newHashMap(this.nameToColumn);
+        olapTable.relatedMaterializedViews = Sets.newHashSet(this.relatedMaterializedViews);
+        olapTable.state = this.state;
+        olapTable.indexNameToId = Maps.newHashMap(this.indexNameToId);
+        olapTable.indexIdToMeta = Maps.newHashMap(this.indexIdToMeta);
+        olapTable.keysType = this.keysType;
+        olapTable.partitionInfo = new PartitionInfo();
+        if (this.partitionInfo instanceof RangePartitionInfo) {
+            olapTable.partitionInfo = new RangePartitionInfo((RangePartitionInfo) this.partitionInfo);
+        } else if (this.partitionInfo instanceof SinglePartitionInfo) {
+            olapTable.partitionInfo = this.partitionInfo;
+        }
+        olapTable.defaultDistributionInfo = this.defaultDistributionInfo;
+        olapTable.idToPartition = Maps.newHashMap(this.idToPartition);
+        olapTable.nameToPartition = Maps.newHashMap(this.nameToPartition);
+        olapTable.baseIndexId = this.baseIndexId;
+        if (this.tableProperty != null) {
+            olapTable.tableProperty = this.tableProperty.copy();
+        }
+        return olapTable;
     }
 
     public void setTableProperty(TableProperty tableProperty) {
@@ -1371,6 +1411,10 @@ public class OlapTable extends Table implements GsonPostProcessable {
 
         // The table may be restored from another cluster, it should be set to current cluster id.
         clusterId = GlobalStateMgr.getCurrentState().getClusterId();
+
+        lastSchemaUpdateTime = new AtomicLong(-1);
+        lastVersionUpdateStartTime = new AtomicLong(-1);
+        lastVersionUpdateEndTime = new AtomicLong(0);
     }
 
     public OlapTable selectiveCopy(Collection<String> reservedPartitions, boolean resetState, IndexExtState extState) {
@@ -1457,7 +1501,8 @@ public class OlapTable extends Table implements GsonPostProcessable {
                     replicationNum, isInMemory, storageCacheInfo);
         } else {
             partitionInfo.dropPartition(oldPartition.getId());
-            partitionInfo.addPartition(newPartition.getId(), dataProperty, replicationNum, isInMemory, storageCacheInfo);
+            partitionInfo.addPartition(newPartition.getId(), dataProperty, replicationNum, isInMemory,
+                    storageCacheInfo);
         }
 
         return oldPartition;
@@ -1485,7 +1530,7 @@ public class OlapTable extends Table implements GsonPostProcessable {
                     + "Do not allow create materialized view");
         }
         // check if all tablets are healthy, and no tablet is in tablet scheduler
-        long unhealthyTabletId  = checkAndGetUnhealthyTablet(GlobalStateMgr.getCurrentSystemInfo(),
+        long unhealthyTabletId = checkAndGetUnhealthyTablet(GlobalStateMgr.getCurrentSystemInfo(),
                 GlobalStateMgr.getCurrentState().getTabletScheduler());
         if (unhealthyTabletId != TabletInvertedIndex.NOT_EXIST_VALUE) {
             throw new DdlException("Table [" + name + "] is not stable. "
@@ -1904,7 +1949,6 @@ public class OlapTable extends Table implements GsonPostProcessable {
         return tableProperty.getCompressionType();
     }
 
-
     public boolean hasUniqueConstraints() {
         List<UniqueConstraint> uniqueConstraint = getUniqueConstraints();
         return uniqueConstraint != null;
@@ -1922,7 +1966,8 @@ public class OlapTable extends Table implements GsonPostProcessable {
             tableProperty = new TableProperty(new HashMap<>());
         }
         Map<String, String> properties = Maps.newHashMap();
-        String newProperty = uniqueConstraints.stream().map(UniqueConstraint::toString).collect(Collectors.joining(";"));
+        String newProperty =
+                uniqueConstraints.stream().map(UniqueConstraint::toString).collect(Collectors.joining(";"));
         properties.put(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT, newProperty);
         tableProperty.modifyTableProperties(properties);
         tableProperty.setUniqueConstraints(uniqueConstraints);
