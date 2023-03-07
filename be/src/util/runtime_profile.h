@@ -53,10 +53,6 @@
 
 namespace starrocks {
 
-inline unsigned long long operator"" _ms(unsigned long long x) {
-    return x * 1000 * 1000;
-}
-
 // Define macros for updating counters.  The macros make it very easy to disable
 // all counters at compile time.  Set this to 0 to remove counters.  This is useful
 // to do to make sure the counters aren't affecting the system.
