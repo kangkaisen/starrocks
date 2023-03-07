@@ -67,6 +67,7 @@ QueryContext::~QueryContext() noexcept {
         }
         _exec_env->runtime_filter_cache()->remove(_query_id);
     }
+    LOG(WARNING) << " QueryContext destruct " << print_id(_query_id);
 }
 
 void QueryContext::count_down_fragments() {
@@ -212,6 +213,7 @@ void QueryContextManager::_clean_slot_unlocked(size_t i, std::vector<QueryContex
     while (sc_it != sc_map.end()) {
         if (sc_it->second->has_no_active_instances() && sc_it->second->is_delivery_expired()) {
             del.emplace_back(std::move(sc_it->second));
+            LOG(WARNING) << " clean query " << print_id(sc_it->first) << "from the second map";
             sc_it = sc_map.erase(sc_it);
         } else {
             ++sc_it;
@@ -292,6 +294,7 @@ QueryContext* QueryContextManager::get_or_register(const TUniqueId& query_id) {
         ctx_raw_ptr->set_query_id(query_id);
         ctx_raw_ptr->increment_num_fragments();
         context_map.emplace(query_id, std::move(ctx));
+        LOG(WARNING) << " registe query " << print_id(query_id) << " to the  context_map";
         return ctx_raw_ptr;
     }
 }
@@ -323,6 +326,8 @@ size_t QueryContextManager::size() {
         std::shared_lock<std::shared_mutex> read_lock(_mutexes[i]);
         sz += _context_maps[i].size();
         sz += _second_chance_maps[i].size();
+        LOG(WARNING) << i << " context size " << _context_maps[i].size() << " second size "
+                     << _second_chance_maps[i].size();
     }
     return sz;
 }
@@ -350,6 +355,7 @@ bool QueryContextManager::remove(const TUniqueId& query_id) {
     if (it->second->is_dead()) {
         query_ctx = std::move(it->second);
         context_map.erase(it);
+        LOG(WARNING) << " remove query " << print_id(query_id) << " from the  context_map";
         return true;
     } else if (it->second->has_no_active_instances()) {
         // although all of active fragments of the query context terminates, but some fragments maybe comes too late
@@ -359,6 +365,7 @@ bool QueryContextManager::remove(const TUniqueId& query_id) {
         ctx->extend_delivery_lifetime();
         context_map.erase(it);
         sc_map.emplace(query_id, std::move(ctx));
+        LOG(WARNING) << " remove query " << print_id(query_id) << " from the  context_map but put the sc_map";
         return false;
     }
     return false;
@@ -455,6 +462,7 @@ void QueryContextManager::collect_query_statistics(const PCollectQueryStatistics
 
 void QueryContextManager::report_fragments(
         const std::vector<PipeLineReportTaskKey>& pipeline_need_report_query_fragment_ids) {
+    LOG(WARNING) << " QueryContextManager::report_fragments ";
     std::vector<std::shared_ptr<FragmentContext>> need_report_fragment_context;
     std::vector<std::shared_ptr<QueryContext>> need_report_query_ctx;
 

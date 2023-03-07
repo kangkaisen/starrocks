@@ -178,6 +178,7 @@ void WorkGroup::decr_num_running_drivers() {
 
 StatusOr<RunningQueryTokenPtr> WorkGroup::acquire_running_query_token() {
     int64_t old = _num_running_queries.fetch_add(1);
+    LOG(WARNING) << " acquire _num_running_queries " << old;
     if (_concurrency_limit != ABSENT_CONCURRENCY_LIMIT && old >= _concurrency_limit) {
         _num_running_queries.fetch_sub(1);
         _concurrency_overflow_count++;
@@ -189,6 +190,7 @@ StatusOr<RunningQueryTokenPtr> WorkGroup::acquire_running_query_token() {
 
 void WorkGroup::decr_num_queries() {
     int64_t old = _num_running_queries.fetch_sub(1);
+    LOG(WARNING) << " decr _num_running_queries " << old;
     DCHECK_GT(old, 0);
 }
 
