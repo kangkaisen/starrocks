@@ -180,10 +180,6 @@ public class OlapTable extends Table implements GsonPostProcessable {
     @SerializedName(value = "tableProperty")
     protected TableProperty tableProperty;
 
-    // not serialized field
-    // record all materialized views based on this OlapTable
-    private Set<Long> relatedMaterializedViews;
-
     // Record the alter, schema change, MV update time
     public AtomicLong lastSchemaUpdateTime = new AtomicLong(-1);
     // Record the start and end time for data load version update phase
