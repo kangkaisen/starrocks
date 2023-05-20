@@ -224,4 +224,47 @@ public class TableFunctionTest extends PlanTestBase {
                 "     constant exprs: \n" +
                 "         NULL");
     }
+
+    @Test
+    public void testUnnestColumnPrune() throws Exception {
+        starRocksAssert.withTable("CREATE TABLE `t0_array` (\n" +
+                "  `v1` bigint NOT NULL COMMENT \"\",\n" +
+                "  `v2` bigint NOT NULL COMMENT \"\",\n" +
+                "  `v3` ARRAY<bigint(20)>  NULL ,\n" +
+                "  `v4` ARRAY<bigint(20)>  NULL ,\n" +
+                "  `v5` ARRAY<bigint(20)>  NULL\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`v1`)\n" +
+                "DISTRIBUTED BY HASH(`v1`) BUCKETS 1\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
+        // first arg column
+        String sql = "select count(t1.v7) from t0_array, " +
+                "unnest(t0_array.v3, t0_array.v4, t0_array.v5) as t1(v7, v8, v9);";
+        String plan = getCostExplain(sql);
+        assertContains(plan, "  1:TableValueFunction\n" +
+                "  |  tableFunctionName: unnest\n" +
+                "  |  columns: [unnest]\n" +
+                "  |  returnTypes: [BIGINT]");
+
+        // second arg column
+        sql = "select count(t1.v8) from t0_array, " +
+                "unnest(t0_array.v3, t0_array.v4, t0_array.v5) as t1(v7, v8, v9);";
+        plan = getCostExplain(sql);
+        assertContains(plan, "  1:TableValueFunction\n" +
+                "  |  tableFunctionName: unnest\n" +
+                "  |  columns: [unnest]\n" +
+                "  |  returnTypes: [BIGINT]");
+
+        sql = "select t0_array.v3 from t0_array, " +
+                "unnest(t0_array.v3, t0_array.v4, t0_array.v5) as t1(v7, v8, v9);";
+        plan = getCostExplain(sql);
+        assertContains(plan, "  |  tableFunctionName: unnest\n" +
+                "  |  columns: []\n" +
+                "  |  returnTypes: []");
+
+    }
 }
