@@ -24,7 +24,7 @@ import com.starrocks.sql.optimizer.rule.RuleType;
 import java.util.Collections;
 import java.util.List;
 
-public class PruneEmptyTableFunctionRule extends TransformationRule{
+public class PruneEmptyTableFunctionRule extends TransformationRule {
     public PruneEmptyTableFunctionRule() {
         super(RuleType.TF_PRUNE_EMPTY_TABLE_FUNCTION, Pattern.create(OperatorType.LOGICAL_TABLE_FUNCTION)
                 .addChildren(Pattern.create(OperatorType.PATTERN_LEAF, OperatorType.PATTERN_MULTI_LEAF)));
