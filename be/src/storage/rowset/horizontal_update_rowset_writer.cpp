@@ -64,7 +64,6 @@ Status HorizontalUpdateRowsetWriter::add_chunk(const Chunk& chunk) {
         }
         ASSIGN_OR_RETURN(_update_file_writer, _create_update_file_writer());
     }
-
     return _update_file_writer->append_chunk(chunk);
 }
 

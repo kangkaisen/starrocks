@@ -269,13 +269,15 @@ private:
                                   OlapReaderStatistics* stats, RowSourceMaskBuffer* mask_buffer = nullptr,
                                   std::vector<std::unique_ptr<RowSourceMaskBuffer>>* rowsets_mask_buffer = nullptr) {
         std::unique_ptr<Column> sort_column;
+        LOG(WARNING) << "sort_key_idxes size " << schema.sort_key_idxes().size();
         if (schema.sort_key_idxes().size() > 1) {
             if (!PrimaryKeyEncoder::create_column(schema, &sort_column, schema.sort_key_idxes()).ok()) {
                 LOG(FATAL) << "create column for primary key encoder failed";
             }
-        } else if (schema.sort_key_idxes().size() == 1 && schema.field(schema.sort_key_idxes()[0])->is_nullable()) {
+        } else if (schema.sort_key_idxes().size() == 1) {
             sort_column = std::make_unique<BinaryColumn>();
         }
+
         std::vector<std::unique_ptr<vector<RowSourceMask>>> rowsets_source_masks;
         uint16_t order = 0;
         for (const auto& rowset : rowsets) {
@@ -295,6 +297,7 @@ private:
                 entry.segment_itr = std::move(new_heap_merge_iterator(res.value()));
             }
             if (sort_column) {
+                LOG(WARNING) << "has sort column";
                 entry.encode_schema = &schema;
                 entry.chunk_pk_column = sort_column->clone_shared();
                 entry.chunk_pk_column->reserve(_chunk_size);
@@ -538,6 +541,7 @@ Status compaction_merge_rowsets(Tablet& tablet, int64_t version, const vector<Ro
     }();
     std::unique_ptr<RowsetMerger> merger;
     auto key_type = PrimaryKeyEncoder::encoded_primary_key_type(schema, schema.sort_key_idxes());
+    LOG(WARNING) << "key_type " << key_type;
     switch (key_type) {
     case TYPE_BOOLEAN:
         merger = std::make_unique<RowsetMergerImpl<uint8_t>>();

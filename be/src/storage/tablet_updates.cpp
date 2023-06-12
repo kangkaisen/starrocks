@@ -1451,6 +1451,7 @@ Status TabletUpdates::_do_compaction(std::unique_ptr<CompactionInfo>* pinfo) {
     CompactionAlgorithm algorithm = CompactionUtils::choose_compaction_algorithm(
             _tablet.num_columns(), config::vertical_compaction_max_columns_per_group, input_rowsets.size());
 
+    LOG(WARNING) << "algorithm " << algorithm;
     RowsetWriterContext context;
     context.rowset_id = StorageEngine::instance()->next_rowset_id();
     context.tablet_uid = _tablet.tablet_uid();

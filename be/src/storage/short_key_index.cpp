@@ -44,6 +44,7 @@ using strings::Substitute;
 namespace starrocks {
 
 Status ShortKeyIndexBuilder::add_item(const Slice& key) {
+    LOG(WARNING) << "add " << _num_items << " key= " << key.to_string();
     put_varint32(&_offset_buf, _key_buf.size());
     _key_buf.append(key.data, key.size);
     _num_items++;
@@ -75,6 +76,7 @@ Status ShortKeyIndexDecoder::parse(const Slice& body, const ShortKeyFooterPB& fo
         return Status::Corruption(strings::Substitute("Index size not match, need=$0, real=$1",
                                                       _footer.key_bytes() + _footer.offset_bytes(), body.size));
     }
+    LOG(WARNING) << "add short key num " << _footer.num_items();
 
     // set index buffer
     _key_data = Slice(body.data, _footer.key_bytes());
@@ -98,6 +100,10 @@ Status ShortKeyIndexDecoder::parse(const Slice& body, const ShortKeyFooterPB& fo
         return Status::Corruption("Still has data after parse all key offset");
     }
     _parsed = true;
+
+    for (uint32_t i = 0; i < _footer.num_items(); ++i) {
+        LOG(WARNING) << i << " key= " << Slice(_key_data.data + _offsets[i], _offsets[i + 1] - _offsets[i]);
+    }
     return Status::OK();
 }
 
