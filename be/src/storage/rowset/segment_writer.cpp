@@ -126,7 +126,11 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
 
     _column_indexes.insert(_column_indexes.end(), column_indexes.begin(), column_indexes.end());
     _column_writers.reserve(_column_indexes.size());
-    LOG(WARNING) << "column_indexes " << column_indexes << " has_key " << has_key;
+
+    LOG(WARNING) << "column_indexes size " << column_indexes.size() << " has_key " << has_key;
+    for (auto index : column_indexes) {
+        LOG(WARNING) << "column_indexes " << index;
+    }
     size_t num_columns = _tablet_schema->num_columns();
     for (uint32_t column_index : _column_indexes) {
         if (column_index >= num_columns) {
