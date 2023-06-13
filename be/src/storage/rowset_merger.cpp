@@ -274,7 +274,7 @@ private:
             if (!PrimaryKeyEncoder::create_column(schema, &sort_column, schema.sort_key_idxes()).ok()) {
                 LOG(FATAL) << "create column for primary key encoder failed";
             }
-        } else if (schema.sort_key_idxes().size() == 1) {
+        } else if (schema.sort_key_idxes().size() == 1 && schema.field(schema.sort_key_idxes()[0])->is_nullable()) {
             sort_column = std::make_unique<BinaryColumn>();
         }
 
