@@ -120,9 +120,6 @@ Schema::Schema(const Schema& schema)
         _build_index_map(_fields);
     }
     _init_sort_key_idxes();
-    for (auto index : _sort_key_idxes) {
-        LOG(WARNING) << "_sort_key_index " << index;
-    }
 }
 
 // if we use this constructor and share the name_to_index with another schema,

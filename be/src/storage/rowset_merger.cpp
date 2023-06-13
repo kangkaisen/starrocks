@@ -102,12 +102,15 @@ struct MergeEntry {
         if (st.ok()) {
             // 1. setup chunk_pk_column
             if (encode_schema != nullptr) {
+                LOG(WARNING) << "encode column ";
                 // need to encode
                 chunk_pk_column->reset_column();
                 PrimaryKeyEncoder::encode_sort_key(*encode_schema, *chunk, 0, chunk->num_rows(), chunk_pk_column.get());
             } else {
+                LOG(WARNING) << "sort_key_idxe " << chunk->schema()->sort_key_idxes()[0];
                 // just use chunk's first column
                 chunk_pk_column = chunk->get_column_by_index(chunk->schema()->sort_key_idxes()[0]);
+                LOG(WARNING) << "chunk_pk_column " << chunk_pk_column->get_name();
             }
             DCHECK(chunk_pk_column->size() > 0);
             DCHECK(chunk_pk_column->size() == chunk->num_rows());
