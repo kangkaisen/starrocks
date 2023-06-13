@@ -237,6 +237,7 @@ public:
             CompactionUtils::split_column_into_groups(tablet.num_columns(), schema.sort_key_idxes(),
                                                       config::vertical_compaction_max_columns_per_group,
                                                       &column_groups);
+            LOG(WARNING) << "column group size " << column_groups.size();
             RETURN_IF_ERROR(_do_merge_vertically(tablet, version, rowsets, writer, cfg, column_groups,
                                                  &total_input_size, &total_rows, &total_chunk, &stats));
         } else {
@@ -295,6 +296,7 @@ private:
                 entry.segment_itr = std::move(new_heap_merge_iterator(res.value()));
             }
             if (sort_column) {
+                LOG(WARNING) << "has sort column " << sort_column->get_name();
                 entry.encode_schema = &schema;
                 entry.chunk_pk_column = sort_column->clone_shared();
                 entry.chunk_pk_column->reserve(_chunk_size);
@@ -328,6 +330,7 @@ private:
             source_masks = std::make_unique<vector<RowSourceMask>>();
             column_indexes = tablet.tablet_schema().sort_key_idxes();
         }
+        LOG(WARNING) << "column_indexes size " << column_indexes.size();
 
         auto chunk = ChunkHelper::new_chunk(schema, _chunk_size);
         while (true) {
@@ -355,6 +358,7 @@ private:
                 }
 
                 if (!source_masks->empty()) {
+                    LOG(WARNING) << "source_masks size " << source_masks->size();
                     RETURN_IF_ERROR(mask_buffer->write(*source_masks));
                     source_masks->clear();
                 }
@@ -428,6 +432,7 @@ private:
                                                    total_rows, total_chunk, stats, mask_buffer.get(),
                                                    &rowsets_mask_buffer));
         }
+        LOG(WARNING) << "rowsets_mask_buffer size " << rowsets_mask_buffer.size();
 
         // merge non key columns
         auto source_masks = std::make_unique<vector<RowSourceMask>>();

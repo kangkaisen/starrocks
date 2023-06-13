@@ -93,6 +93,7 @@ void CompactionUtils::split_column_into_groups(size_t num_columns, const std::ve
                                                int64_t max_columns_per_group,
                                                std::vector<std::vector<uint32_t>>* column_groups) {
     column_groups->emplace_back(sort_key_idxes);
+    LOG(WARNING) << "sort_key_idxes size " << sort_key_idxes.size();
     std::vector<ColumnId> all_columns;
     for (ColumnId i = 0; i < num_columns; ++i) {
         all_columns.push_back(i);
