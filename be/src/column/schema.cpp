@@ -50,8 +50,8 @@ Schema::Schema(Schema* schema, const std::vector<ColumnId>& cids)
     _num_keys = std::count_if(_fields.begin(), _fields.end(), is_key);
     _build_index_map(_fields);
     _init_sort_key_idxes();
-    LOG(WARNING) << "cids " << cids << "_sort_key_idxes " << _sort_key_idxes;
-    << "_sort_key_idxes " << _sort_key_idxes;
+    LOG(WARNING) << "_sort_key_idxes " << _sort_key_idxes << " num key " << _num_keys;
+;
 }
 
 Schema::Schema(Schema* schema, const std::vector<ColumnId>& cids, const std::vector<ColumnId>& scids)
@@ -67,7 +67,7 @@ Schema::Schema(Schema* schema, const std::vector<ColumnId>& cids, const std::vec
     _num_keys = std::count_if(_fields.begin(), _fields.end(), is_key);
     _build_index_map(_fields);
     _init_sort_key_idxes();
-    LOG(WARNING) << "cids " << cids << " scids " << scids << "_sort_key_idxes " << _sort_key_idxes;
+    LOG(WARNING) << "_sort_key_idxes " << _sort_key_idxes << " num key " << _num_keys;
 }
 
 // if we use this constructor and share the name_to_index with another schema,
