@@ -112,7 +112,7 @@ void CompactionUtils::split_column_into_groups(size_t num_columns, const std::ve
 CompactionAlgorithm CompactionUtils::choose_compaction_algorithm(size_t num_columns, int64_t max_columns_per_group,
                                                                  size_t source_num) {
     // if the number of columns in the schema is less than or equal to max_columns_per_group, use HORIZONTAL_COMPACTION.
-    return HORIZONTAL_COMPACTION;
+    return VERTICAL_COMPACTION;
 }
 
 } // namespace starrocks
