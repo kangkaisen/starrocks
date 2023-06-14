@@ -97,8 +97,10 @@ Status ShortKeyIndexDecoder::parse(const Slice& body, const ShortKeyFooterPB& fo
     if (offset_slice.size != 0) {
         return Status::Corruption("Still has data after parse all key offset");
     }
+    for (uint32_t i = 0; i < _footer.num_items(); ++i) {
+        LOG(WARNING) << i << "  " << Slice(_key_data.data + _offsets[i], _offsets[i + 1] - _offsets[i]).to_string();
+    }
     _parsed = true;
     return Status::OK();
 }
-
 } // namespace starrocks
