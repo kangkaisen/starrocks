@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/user_function_cache.cpp
 
@@ -22,20 +35,18 @@
 #include "runtime/user_function_cache.h"
 
 #include <atomic>
-#include <boost/algorithm/string/classification.hpp> // boost::is_any_of
-#include <boost/algorithm/string/predicate.hpp>      // boost::algorithm::ends_with
+#include <boost/algorithm/string/predicate.hpp> // boost::algorithm::ends_with
 #include <memory>
-#include <regex>
 #include <utility>
 #include <vector>
 
 #include "common/status.h"
-#include "env/env.h"
 #include "fmt/compile.h"
+#include "fs/fs.h"
+#include "fs/fs_util.h"
 #include "gutil/strings/split.h"
 #include "util/download_util.h"
 #include "util/dynamic_util.h"
-#include "util/file_utils.h"
 #include "util/spinlock.h"
 
 namespace starrocks {
@@ -163,14 +174,14 @@ int UserFunctionCache::get_function_type(const std::string& url) {
 
 Status UserFunctionCache::_load_cached_lib() {
     // create library directory if not exist
-    RETURN_IF_ERROR(FileUtils::create_dir(_lib_dir));
+    RETURN_IF_ERROR(fs::create_directories(_lib_dir));
 
     for (int i = 0; i < kLibShardNum; ++i) {
         std::string sub_dir = _lib_dir + "/" + std::to_string(i);
-        RETURN_IF_ERROR(FileUtils::create_dir(sub_dir));
+        RETURN_IF_ERROR(fs::create_directories(sub_dir));
 
         auto scan_cb = [this, &sub_dir](std::string_view file) {
-            if (is_dot_or_dotdot(file)) {
+            if (file == "." || file == "..") {
                 return true;
             }
             auto st = _load_entry_from_lib(sub_dir, std::string(file));
@@ -179,7 +190,7 @@ Status UserFunctionCache::_load_cached_lib() {
             }
             return true;
         };
-        RETURN_IF_ERROR(Env::Default()->iterate_dir(sub_dir, scan_cb));
+        RETURN_IF_ERROR(FileSystem::Default()->iterate_dir(sub_dir, scan_cb));
     }
     return Status::OK();
 }
@@ -268,7 +279,7 @@ Status UserFunctionCache::_load_cache_entry_internal(UserFunctionCacheEntryPtr& 
 
 std::string UserFunctionCache::_make_lib_file(int64_t function_id, const std::string& checksum,
                                               const std::string& shuffix) {
-    int shard = function_id % kLibShardNum;
+    int shard = std::abs(function_id % kLibShardNum);
     return fmt::format("{}/{}/{}.{}{}", _lib_dir, shard, function_id, checksum, shuffix);
 }
 

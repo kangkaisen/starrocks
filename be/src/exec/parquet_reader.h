@@ -1,23 +1,16 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/exec/parquet_reader.h
-
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
 //
-//   http://www.apache.org/licenses/LICENSE-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -36,25 +29,20 @@
 #include <map>
 #include <string>
 
+#include "column/vectorized_fwd.h"
 #include "common/status.h"
-#include "gen_cpp/FileBrokerService_types.h"
-#include "gen_cpp/PlanNodes_types.h"
-#include "gen_cpp/Types_types.h"
+#include "exprs/expr.h"
+#include "fs/fs.h"
+#include "runtime/types.h"
 
 namespace starrocks {
 
-class ExecEnv;
-class TBrokerRangeDesc;
-class TNetworkAddress;
-class RuntimeState;
-class SlotDescriptor;
-class MemPool;
-class FileReader;
-
-class ParquetFile : public arrow::io::RandomAccessFile {
+using RecordBatch = ::arrow::RecordBatch;
+using RecordBatchPtr = std::shared_ptr<RecordBatch>;
+class ParquetChunkFile : public arrow::io::RandomAccessFile {
 public:
-    ParquetFile(FileReader* file);
-    ~ParquetFile() override;
+    ParquetChunkFile(std::shared_ptr<starrocks::RandomAccessFile> file, uint64_t pos);
+    ~ParquetChunkFile() override;
     arrow::Result<int64_t> Read(int64_t nbytes, void* buffer) override;
     arrow::Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) override;
     arrow::Result<int64_t> GetSize() override;
@@ -63,41 +51,45 @@ public:
     arrow::Result<int64_t> Tell() const override;
     arrow::Status Close() override;
     bool closed() const override;
+    const std::string& filename() const;
 
 private:
-    FileReader* _file;
-    int64_t _pos = 0;
+    std::shared_ptr<starrocks::RandomAccessFile> _file;
+    uint64_t _pos = 0;
 };
 
-// Reader of broker parquet file
 class ParquetReaderWrap {
 public:
-    ParquetReaderWrap(FileReader* file_reader, int32_t num_of_columns_from_file, int64_t read_offset,
-                      int64_t read_size);
     ParquetReaderWrap(std::shared_ptr<arrow::io::RandomAccessFile>&& parquet_file, int32_t num_of_columns_from_file,
                       int64_t read_offset, int64_t read_size);
     virtual ~ParquetReaderWrap();
 
     void close();
     Status size(int64_t* size);
-    Status init_parquet_reader(const std::vector<SlotDescriptor*>& tuple_slot_descs, const std::string& timezone);
+    Status init_parquet_reader(const std::vector<SlotDescriptor*>& tuple_slot_descs);
     Status read_record_batch(const std::vector<SlotDescriptor*>& tuple_slot_descs, bool* eof);
     const std::shared_ptr<arrow::RecordBatch>& get_batch();
+    int64_t num_rows() { return _num_rows; }
+
+    Status get_schema(std::vector<SlotDescriptor>* schema);
 
 private:
     Status column_indices(const std::vector<SlotDescriptor*>& tuple_slot_descs);
     Status handle_timestamp(const std::shared_ptr<arrow::TimestampArray>& ts_array, uint8_t* buf, int32_t* wbtyes);
     Status next_selected_row_group();
+    // _init_parquet_reader initializes the underlying parquets reader.
+    Status _init_parquet_reader();
 
     const int32_t _num_of_columns_from_file;
-    parquet::ReaderProperties _properties;
+    int64_t _num_rows = 0;
+    ::parquet::ReaderProperties _properties;
     std::shared_ptr<arrow::io::RandomAccessFile> _parquet;
 
     // parquet file reader object
     std::shared_ptr<::arrow::RecordBatchReader> _rb_batch;
     std::shared_ptr<arrow::RecordBatch> _batch;
-    std::unique_ptr<parquet::arrow::FileReader> _reader;
-    std::shared_ptr<parquet::FileMetaData> _file_metadata;
+    std::unique_ptr<::parquet::arrow::FileReader> _reader;
+    std::shared_ptr<::parquet::FileMetaData> _file_metadata;
 
     // For nested column type, it's consisting of multiple physical-columns
     std::map<std::string, std::vector<int>> _map_column_nested;
@@ -112,7 +104,26 @@ private:
     int64_t _read_offset;
     int64_t _read_size;
 
-    std::string _timezone;
+    std::string _filename;
+};
+
+// Reader of broker parquet file
+class ParquetChunkReader {
+public:
+    enum State { UNINITIALIZED, INITIALIZED, END_OF_FILE };
+
+    ParquetChunkReader(std::shared_ptr<ParquetReaderWrap>&& parquet_reader,
+                       const std::vector<SlotDescriptor*>& src_slot_descs, std::string time_zone);
+    ~ParquetChunkReader();
+    Status next_batch(RecordBatchPtr* batch);
+    int64_t total_num_rows() const;
+    Status get_schema(std::vector<SlotDescriptor>* schema);
+
+private:
+    std::shared_ptr<ParquetReaderWrap> _parquet_reader;
+    const std::vector<SlotDescriptor*>& _src_slot_descs;
+    std::string _time_zone;
+    State _state;
 };
 
 } // namespace starrocks

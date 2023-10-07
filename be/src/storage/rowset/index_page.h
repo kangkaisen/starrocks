@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/index_page.h
 
@@ -50,6 +63,8 @@ class IndexPageBuilder {
 public:
     explicit IndexPageBuilder(size_t index_page_size, bool is_leaf)
             : _index_page_size(index_page_size), _is_leaf(is_leaf) {}
+    IndexPageBuilder(const IndexPageBuilder&) = delete;
+    const IndexPageBuilder& operator=(const IndexPageBuilder&) = delete;
 
     void add(const Slice& key, const PagePointer& ptr);
 
@@ -61,10 +76,6 @@ public:
 
     uint64_t size() { return _buffer.size(); }
 
-    // Return the key of the first entry in this index block.
-    // The pointed-to data is only valid until the next call to this builder.
-    Status get_first_key(Slice* key) const;
-
     void reset() {
         _finished = false;
         _buffer.clear();
@@ -72,8 +83,6 @@ public:
     }
 
 private:
-    IndexPageBuilder(const IndexPageBuilder&) = delete;
-    const IndexPageBuilder& operator=(const IndexPageBuilder&) = delete;
     const size_t _index_page_size;
     const bool _is_leaf;
     bool _finished = false;
@@ -84,36 +93,29 @@ private:
 class IndexPageIterator;
 class IndexPageReader {
 public:
-    IndexPageReader() {}
+    IndexPageReader() = default;
 
     Status parse(const Slice& body, const IndexPageFooterPB& footer);
 
-    inline size_t count() const {
+    size_t count() const {
         DCHECK(_parsed);
-        return _footer.num_entries();
+        return _num_entries;
     }
 
-    inline bool is_leaf() const {
+    const Slice& get_key(int idx) const {
         DCHECK(_parsed);
-        return _footer.type() == IndexPageFooterPB::LEAF;
-    }
-
-    inline const Slice& get_key(int idx) const {
-        DCHECK(_parsed);
-        DCHECK(idx >= 0 && idx < _footer.num_entries());
+        DCHECK(idx >= 0 && idx < _num_entries);
         return _keys[idx];
     }
 
-    inline const PagePointer& get_value(int idx) const {
+    const PagePointer& get_value(int idx) const {
         DCHECK(_parsed);
-        DCHECK(idx >= 0 && idx < _footer.num_entries());
+        DCHECK(idx >= 0 && idx < _num_entries);
         return _values[idx];
     }
 
     size_t mem_usage() const {
-        // _footer.SpaceUsedLong() conatain the memory of sizeof(IndexPageFooterPB),
-        // so substract the sizeof(IndexPageFooterPB) from size
-        size_t size = sizeof(IndexPageReader) + _footer.SpaceUsedLong() - sizeof(IndexPageFooterPB);
+        size_t size = sizeof(IndexPageReader);
         size += _keys.size() * sizeof(Slice) + _values.size() * sizeof(PagePointer);
         return size;
     }
@@ -121,9 +123,13 @@ public:
     const std::vector<Slice>& get_keys() const { return _keys; }
 
 private:
+    void _reset();
+    Status _parse(const Slice& body, const IndexPageFooterPB& footer);
+
     bool _parsed{false};
 
-    IndexPageFooterPB _footer;
+    uint32_t _num_entries = 0;
+
     std::vector<Slice> _keys;
     std::vector<PagePointer> _values;
 };
@@ -154,14 +160,12 @@ public:
         return true;
     }
 
-    const Slice& current_key() const { return _reader->get_key(_pos); }
-
     const PagePointer& current_page_pointer() const { return _reader->get_value(_pos); }
 
 private:
     const IndexPageReader* _reader;
 
-    size_t _pos = 0;
+    uint32_t _pos = 0;
 };
 
 } // namespace starrocks

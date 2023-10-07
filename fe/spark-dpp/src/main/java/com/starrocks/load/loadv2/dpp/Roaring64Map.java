@@ -41,6 +41,7 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -427,7 +428,11 @@ public class Roaring64Map {
 
             @Override
             public Long next() {
-                return it.next();
+                if (!this.hasNext()) {
+                    throw new NoSuchElementException();
+                } else {
+                    return it.next();
+                }
             }
 
             @Override
@@ -632,13 +637,7 @@ public class Roaring64Map {
 
         final int index;
         if (indexOk == 0) {
-            if (sortedHighs.length == 0) {
-                index = -1;
-                // } else if (sortedHighs[0] == currentHigh) {
-                // index = 0;
-            } else {
-                index = -1;
-            }
+            index = -1;
         } else if (indexOk < sortedHighs.length) {
             index = -indexOk - 1;
         } else {
@@ -1301,8 +1300,10 @@ public class Roaring64Map {
         out.write(BitmapValue.BITMAP64);
         Codec.encodeVarint64(highToBitmap.size(), out);
 
+        // The key should be the same little endian with BE deserialized process
+        // which is decode_fixed32_le called by Roaring64Map read method.
         for (Map.Entry<Integer, BitmapDataProvider> entry : highToBitmap.entrySet()) {
-            out.writeInt(entry.getKey().intValue());
+            out.writeInt(Integer.reverseBytes(entry.getKey().intValue()));
             entry.getValue().serialize(out);
         }
     }
@@ -1335,7 +1336,8 @@ public class Roaring64Map {
 
         long nbHighs = Codec.decodeVarint64(in);
         for (int i = 0; i < nbHighs; i++) {
-            int high = in.readInt();
+            // The key should be the same little endian with serialize.
+            int high = Integer.reverseBytes(in.readInt());
             RoaringBitmap provider = new RoaringBitmap();
             provider.deserialize(in);
             highToBitmap.put(high, provider);

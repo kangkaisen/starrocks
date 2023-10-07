@@ -1,25 +1,36 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exec/pipeline/exchange/exchange_merge_sort_source_operator.h"
 
 #include "exec/sort_exec_exprs.h"
 #include "runtime/data_stream_mgr.h"
 #include "runtime/data_stream_recvr.h"
-#include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "runtime/vectorized/sorted_chunks_merger.h"
+#include "runtime/sorted_chunks_merger.h"
 
 namespace starrocks::pipeline {
 Status ExchangeMergeSortSourceOperator::prepare(RuntimeState* state) {
-    SourceOperator::prepare(state);
+    RETURN_IF_ERROR(SourceOperator::prepare(state));
+    auto query_statistic_recv = state->query_recv();
     _stream_recvr = state->exec_env()->stream_mgr()->create_recvr(
             state, _row_desc, state->fragment_instance_id(), _plan_node_id, _num_sender,
-            config::exchg_node_buffer_size_bytes, _unique_metrics, true, nullptr, true,
+            config::exchg_node_buffer_size_bytes, _unique_metrics, true, query_statistic_recv, true,
             // ExchangeMergeSort will never perform pipeline level shuffle
             DataStreamRecvr::INVALID_DOP_FOR_NON_PIPELINE_LEVEL_SHUFFLE, true);
-    _stream_recvr->create_merger_for_pipeline(state, _sort_exec_exprs, &_is_asc_order, &_nulls_first);
-    return Status::OK();
+    return _stream_recvr->create_merger_for_pipeline(state, _sort_exec_exprs, &_is_asc_order, &_nulls_first);
 }
 
 void ExchangeMergeSortSourceOperator::close(RuntimeState* state) {
@@ -44,9 +55,9 @@ Status ExchangeMergeSortSourceOperator::set_finishing(RuntimeState* state) {
     return Status::OK();
 }
 
-StatusOr<vectorized::ChunkPtr> ExchangeMergeSortSourceOperator::pull_chunk(RuntimeState* state) {
-    auto chunk = std::make_shared<vectorized::Chunk>();
-    get_next_merging(state, &chunk);
+StatusOr<ChunkPtr> ExchangeMergeSortSourceOperator::pull_chunk(RuntimeState* state) {
+    auto chunk = std::make_shared<Chunk>();
+    RETURN_IF_ERROR(get_next_merging(state, &chunk));
     eval_runtime_bloom_filters(chunk.get());
     return std::move(chunk);
 }
@@ -68,17 +79,17 @@ Status ExchangeMergeSortSourceOperator::get_next_merging(RuntimeState* state, Ch
     bool should_exit = false;
     if (_num_rows_input < _offset) {
         ChunkPtr tmp_chunk;
-        do {
-            if (!should_exit) {
-                RETURN_IF_ERROR(_stream_recvr->get_next_for_pipeline(&tmp_chunk, &_is_finished, &should_exit));
-            }
+        while (!_is_finished && !should_exit && _num_rows_input < _offset) {
+            ChunkPtr empty_chunk;
+            RETURN_IF_ERROR(_stream_recvr->get_next_for_pipeline(&empty_chunk, &_is_finished, &should_exit));
 
-            if (tmp_chunk) {
-                _num_rows_input += tmp_chunk->num_rows();
+            if (empty_chunk) {
+                _num_rows_input += empty_chunk->num_rows();
+                std::swap(empty_chunk, tmp_chunk);
             } else {
                 break;
             }
-        } while (!_is_finished && !should_exit && _num_rows_input < _offset);
+        }
 
         // tmp_chunk is the last chunk, no extra chunks needs to be read
         if (_num_rows_input > _offset) {

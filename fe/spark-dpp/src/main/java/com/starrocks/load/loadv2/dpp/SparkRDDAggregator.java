@@ -21,6 +21,8 @@ import com.starrocks.common.SparkDppException;
 import com.starrocks.load.loadv2.etl.EtlJobConfig;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.log4j.LogManager;
+import org.apache.log4j.Logger;
 import org.apache.spark.Partitioner;
 import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFunction;
@@ -43,13 +45,15 @@ import java.util.Map;
 
 public abstract class SparkRDDAggregator<T> implements Serializable {
 
+    protected static final Logger LOG = LogManager.getLogger(SparkRDDAggregator.class);
+
     T init(Object value) {
         return (T) value;
     }
 
     abstract T update(T v1, T v2);
 
-    Object finalize(Object value) {
+    Object finish(Object value) {
         return value;
     }
 
@@ -191,14 +195,24 @@ class EncodeRollupAggregateTableFunction
         List<Object> keys = new ArrayList();
         Object[] values = new Object[valueColumnIndexMap.length];
 
+        int parentRollupKeysSize = parentRollupKeyValuePair._1.size() - 1;
+
         // deal bucket_id column
         keys.add(parentRollupKeyValuePair._1().get(0));
         for (int i = 0; i < keyColumnIndexMap.length; i++) {
-            keys.add(parentRollupKeyValuePair._1().get(keyColumnIndexMap[i] + 1));
+            if (keyColumnIndexMap[i] < parentRollupKeysSize) {
+                keys.add(parentRollupKeyValuePair._1().get(keyColumnIndexMap[i] + 1));
+            } else {
+                keys.add(parentRollupKeyValuePair._2()[keyColumnIndexMap[i] - parentRollupKeysSize]);
+            }
         }
 
         for (int i = 0; i < valueColumnIndexMap.length; i++) {
-            values[i] = parentRollupKeyValuePair._2()[valueColumnIndexMap[i]];
+            if (valueColumnIndexMap[i] < parentRollupKeysSize) {
+                values[i] = parentRollupKeyValuePair._1().get(valueColumnIndexMap[i] + 1);
+            } else {
+                values[i] = parentRollupKeyValuePair._2()[valueColumnIndexMap[i] - parentRollupKeysSize];
+            }
         }
         return new Tuple2<>(keys, values);
     }
@@ -268,14 +282,14 @@ class BitmapUnionAggregator extends SparkRDDAggregator<BitmapValue> {
     }
 
     @Override
-    byte[] finalize(Object value) {
+    byte[] finish(Object value) {
         try {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             DataOutputStream outputStream = new DataOutputStream(bos);
             ((BitmapValue) value).serialize(outputStream);
             return bos.toByteArray();
         } catch (IOException ioException) {
-            ioException.printStackTrace();
+            LOG.warn(ioException);
             throw new RuntimeException(ioException);
         }
     }
@@ -312,14 +326,14 @@ class HllUnionAggregator extends SparkRDDAggregator<Hll> {
     }
 
     @Override
-    byte[] finalize(Object value) {
+    byte[] finish(Object value) {
         try {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             DataOutputStream outputStream = new DataOutputStream(bos);
             ((Hll) value).serialize(outputStream);
             return bos.toByteArray();
         } catch (IOException ioException) {
-            ioException.printStackTrace();
+            LOG.warn(ioException);
             throw new RuntimeException(ioException);
         }
     }
@@ -347,7 +361,7 @@ class LargeIntMaxAggregator extends SparkRDDAggregator<BigInteger> {
     }
 
     @Override
-    String finalize(Object value) {
+    String finish(Object value) {
         if (value == null) {
             return null;
         }

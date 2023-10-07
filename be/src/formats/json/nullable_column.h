@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -11,11 +23,15 @@
 #include "runtime/types.h"
 #include "simdjson.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                            simdjson::ondemand::value* value, bool invalid_as_null);
 
-Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                           simdjson::ondemand::object* value, bool invalid_as_null);
-} // namespace starrocks::vectorized
+Status add_adaptive_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
+                                    simdjson::ondemand::value* value, bool invalid_as_null);
+
+Status add_adaptive_nullable_column_by_json_object(Column* column, const TypeDescriptor& type_desc,
+                                                   const std::string& name, simdjson::ondemand::object* value,
+                                                   bool invalid_as_null);
+} // namespace starrocks

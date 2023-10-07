@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "column/chunk.h"
 #include "column/vectorized_fwd.h"
@@ -16,14 +28,15 @@ namespace starrocks::pipeline {
 
 class PipelineTestBase : public ::testing::Test {
 public:
-    static vectorized::ChunkPtr _create_and_fill_chunk(const std::vector<SlotDescriptor*>& slots, size_t row_num);
-    static vectorized::ChunkPtr _create_and_fill_chunk(size_t row_num);
+    static ChunkPtr _create_and_fill_chunk(const std::vector<SlotDescriptor*>& slots, size_t row_num);
+    static ChunkPtr _create_and_fill_chunk(size_t row_num);
 
 public:
     virtual void SetUp() final;
     virtual void TearDown() final;
 
 protected:
+    int32_t _vector_chunk_size = 4096;
     ExecEnv* _exec_env = nullptr;
     QueryContext* _query_ctx = nullptr;
     FragmentContext* _fragment_ctx = nullptr;

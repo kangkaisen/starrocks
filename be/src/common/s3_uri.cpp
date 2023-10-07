@@ -1,32 +1,55 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "common/s3_uri.h"
 
-#include <brpc/uri.h>
+#include <aws/core/utils/StringUtils.h>
+#include <aws/crt/io/Uri.h>
 #include <fmt/format.h>
 #include <gutil/strings/util.h>
 
+#include <algorithm>
+
 namespace starrocks {
 
-bool S3URI::parse(const char* uri_str) {
-    brpc::URI uri;
-    if (uri.SetHttpURL(uri_str) != 0) {
+bool S3URI::parse(const char* uri_str, const size_t size) {
+    Aws::Crt::Io::Uri uri(Aws::Crt::ByteCursor{size, (uint8_t*)uri_str});
+    if (!uri) {
         return false;
     }
 
-    _scheme = uri.scheme();
-
-    const std::string& host = uri.host();
+    _scheme = Aws::Utils::StringUtils::FromByteCursor(uri.GetScheme());
+    std::transform(_scheme.begin(), _scheme.end(), _scheme.begin(), ::tolower);
+    const std::string& host = Aws::Utils::StringUtils::FromByteCursor(uri.GetHostName());
+    const std::string& aws_path = Aws::Utils::StringUtils::FromByteCursor(uri.GetPath());
     std::string_view path;
 
-    if (!uri.path().empty() && uri.path()[0] == '/') {
-        path = std::string_view(uri.path().data() + 1, uri.path().size() - 1);
+    if (!aws_path.empty() && aws_path[0] == '/') {
+        path = std::string_view(aws_path.data() + 1, aws_path.size() - 1);
     } else {
-        path = uri.path();
+        path = aws_path;
     }
 
-    if (host.find('.') == std::string::npos) {
+    if (_scheme == "s3" || _scheme == "s3a" || _scheme == "s3n") {
+        // s3 style format: https://docs.aws.amazon.com/solutions/latest/media2cloud-on-aws/file-paths-in-amazon-s3.html
         // URL like S3://bucket-name/key-name
+        _bucket = host;
+        _key = path;
+    } else if (host.find('.') == std::string::npos) {
+        // TODO We need to check each cloud vendor's path style, like ks3, tos, ..., etc
+        // OSS's path format: https://help.aliyun.com/document_detail/154985.html and https://help.aliyun.com/document_detail/415351.html
+        // URL like oss://bucket-name/key-name
         _bucket = host;
         _key = path;
     } else if (HasPrefixString(host, "s3.") && HasSuffixString(host, ".amazonaws.com")) {

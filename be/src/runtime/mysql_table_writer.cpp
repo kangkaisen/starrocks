@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/mysql_table_writer.cpp
 
@@ -21,22 +34,19 @@
 
 #include <mariadb/mysql.h>
 
-#include <memory>
 #include <string_view>
 #include <type_traits>
 #include <variant>
 
+#include "column/chunk.h"
 #include "column/column_helper.h"
 #include "column/json_column.h"
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "fmt/compile.h"
 #include "fmt/core.h"
-#include "runtime/primitive_type.h"
-#include "runtime/primitive_type_infra.h"
-#include "storage/null_predicate.h"
-#include "util/radix_sort.h"
-#include "util/slice.h"
+#include "types/logical_type.h"
+#include "types/logical_type_infra.h"
 
 #define __StarRocksMysql MYSQL
 #include <sstream>
@@ -91,17 +101,17 @@ Status MysqlTableWriter::open(const MysqlConnInfo& conn_info, const std::string&
 }
 
 struct ViewerBuilder {
-    template <PrimitiveType ptype>
-    void operator()(std::vector<MysqlTableWriter::VariantViewer>* _viewers, vectorized::ColumnPtr* column) {
-        if constexpr (ptype == PrimitiveType::TYPE_TIME) {
-            *column = vectorized::ColumnHelper::convert_time_column_from_double_to_str(*column);
+    template <LogicalType ltype>
+    void operator()(std::vector<MysqlTableWriter::VariantViewer>* _viewers, ColumnPtr* column) {
+        if constexpr (ltype == LogicalType::TYPE_TIME) {
+            *column = ColumnHelper::convert_time_column_from_double_to_str(*column);
         } else {
-            _viewers->emplace_back(vectorized::ColumnViewer<ptype>(*column));
+            _viewers->emplace_back(ColumnViewer<ltype>(*column));
         }
     }
 };
 
-Status MysqlTableWriter::_build_viewers(vectorized::Columns& columns) {
+Status MysqlTableWriter::_build_viewers(Columns& columns) {
     _viewers.clear();
     DCHECK_EQ(columns.size(), _output_expr_ctxs.size());
 
@@ -110,7 +120,7 @@ Status MysqlTableWriter::_build_viewers(vectorized::Columns& columns) {
     for (int i = 0; i < num_cols; ++i) {
         auto* ctx = _output_expr_ctxs[i];
         const auto& type = ctx->root()->type();
-        if (!is_scalar_primitive_type(type.type)) {
+        if (!is_scalar_logical_type(type.type)) {
             return Status::InternalError(fmt::format("unsupported type in mysql sink:{}", type.type));
         }
 
@@ -123,7 +133,7 @@ Status MysqlTableWriter::_build_viewers(vectorized::Columns& columns) {
 Status MysqlTableWriter::_build_insert_sql(int from, int to, std::string_view* sql) {
     _stmt_buffer.clear();
     int num_cols = _viewers.size();
-    fmt::format_to(_stmt_buffer, "INSERT INTO {} VALUES ", _mysql_tbl);
+    fmt::format_to(std::back_inserter(_stmt_buffer), "INSERT INTO {} VALUES ", _mysql_tbl);
 
     for (int i = from; i < to; ++i) {
         if (i != from) {
@@ -133,29 +143,29 @@ Status MysqlTableWriter::_build_insert_sql(int from, int to, std::string_view* s
         for (size_t col = 0; col < num_cols; col++) {
             std::visit(
                     [&](auto&& viewer) {
-                        using ViewerType = decay_t<decltype(viewer)>;
-                        constexpr PrimitiveType type = ViewerType::TYPE;
+                        using ViewerType = std::decay_t<decltype(viewer)>;
+                        constexpr LogicalType type = ViewerType::TYPE;
 
                         if (viewer.is_null(i)) {
-                            fmt::format_to(_stmt_buffer, "NULL");
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "NULL");
                             return;
                         }
 
                         if constexpr (type == TYPE_DECIMALV2) {
-                            fmt::format_to(_stmt_buffer, "{}", viewer.value(i).to_string());
-                        } else if constexpr (pt_is_decimal<type>) {
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "{}", viewer.value(i).to_string());
+                        } else if constexpr (lt_is_decimal<type>) {
                             const auto& data_type = _output_expr_ctxs[col]->root()->type();
-                            using CppType = vectorized::RunTimeCppType<type>;
-                            fmt::format_to(_stmt_buffer, "{}",
+                            using CppType = RunTimeCppType<type>;
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "{}",
                                            DecimalV3Cast::to_string<CppType>(viewer.value(i), data_type.precision,
                                                                              data_type.scale));
-                        } else if constexpr (pt_is_date<type>) {
+                        } else if constexpr (lt_is_date<type>) {
                             int y, m, d;
                             viewer.value(i).to_date(&y, &m, &d);
-                            fmt::format_to(_stmt_buffer, "'{}'", vectorized::date::to_string(y, m, d));
-                        } else if constexpr (pt_is_datetime<type>) {
-                            fmt::format_to(_stmt_buffer, "'{}'", viewer.value(i).to_string());
-                        } else if constexpr (pt_is_binary<type>) {
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "'{}'", date::to_string(y, m, d));
+                        } else if constexpr (lt_is_datetime<type>) {
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "'{}'", viewer.value(i).to_string());
+                        } else if constexpr (lt_is_string<type>) {
                             auto slice = viewer.value(i);
                             _escape_buffer.resize(slice.size * 2 + 1);
 
@@ -165,11 +175,11 @@ Status MysqlTableWriter::_build_insert_sql(int from, int to, std::string_view* s
                             _stmt_buffer.append(_escape_buffer.data(), _escape_buffer.data() + sz);
                             _stmt_buffer.push_back('"');
                         } else if constexpr (type == TYPE_TINYINT || type == TYPE_BOOLEAN) {
-                            fmt::format_to(_stmt_buffer, "{}", (int32_t)viewer.value(i));
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "{}", (int32_t)viewer.value(i));
                         } else if constexpr (type == TYPE_JSON) {
-                            fmt::format_to(_stmt_buffer, "{}", *viewer.value(i));
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "{}", *viewer.value(i));
                         } else {
-                            fmt::format_to(_stmt_buffer, "{}", viewer.value(i));
+                            fmt::format_to(std::back_inserter(_stmt_buffer), "{}", viewer.value(i));
                         }
                     },
                     _viewers[col]);
@@ -185,15 +195,15 @@ Status MysqlTableWriter::_build_insert_sql(int from, int to, std::string_view* s
     return Status::OK();
 }
 
-Status MysqlTableWriter::append(vectorized::Chunk* chunk) {
+Status MysqlTableWriter::append(Chunk* chunk) {
     if (chunk == nullptr || chunk->is_empty()) {
         return Status::OK();
     }
 
     // eval output expr
-    vectorized::Columns result_columns(_output_expr_ctxs.size());
+    Columns result_columns(_output_expr_ctxs.size());
     for (int i = 0; i < _output_expr_ctxs.size(); ++i) {
-        result_columns[i] = _output_expr_ctxs[i]->evaluate(chunk);
+        ASSIGN_OR_RETURN(result_columns[i], _output_expr_ctxs[i]->evaluate(chunk));
     }
 
     RETURN_IF_ERROR(_build_viewers(result_columns));

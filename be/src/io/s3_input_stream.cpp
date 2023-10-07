@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "io/s3_input_stream.h"
 
@@ -8,25 +20,28 @@
 #include <aws/s3/model/HeadObjectRequest.h>
 #include <fmt/format.h>
 
+#ifdef USE_STAROS
+#include "fslib/metric_key.h"
+#include "metrics/metrics.h"
+#endif
+
 namespace starrocks::io {
 
-StatusOr<int64_t> S3InputStream::read(void* data, int64_t count) {
-    ASSIGN_OR_RETURN(auto nread, S3InputStream::read_at(_offset, data, count));
-    _offset += nread;
-    return nread;
+inline Status make_error_status(const Aws::S3::S3Error& error) {
+    return Status::IOError(fmt::format(
+            "BE access S3 file failed, SdkResponseCode={}, SdkErrorType={}, SdkErrorMessage={}",
+            static_cast<int>(error.GetResponseCode()), static_cast<int>(error.GetErrorType()), error.GetMessage()));
 }
 
-StatusOr<int64_t> S3InputStream::read_at(int64_t offset, void* out, int64_t count) {
+StatusOr<int64_t> S3InputStream::read(void* out, int64_t count) {
     if (UNLIKELY(_size == -1)) {
         ASSIGN_OR_RETURN(_size, S3InputStream::get_size());
     }
-    if (offset < 0) {
-        return Status::InvalidArgument(fmt::format("Invalid offset {}", offset));
-    }
-    if (offset >= _size) {
+    if (_offset >= _size) {
         return 0;
     }
-    auto range = fmt::format("bytes={}-{}", offset, std::min<int64_t>(offset + count, _size));
+
+    auto range = fmt::format("bytes={}-{}", _offset, std::min<int64_t>(_offset + count, _size));
     Aws::S3::Model::GetObjectRequest request;
     request.SetBucket(_bucket);
     request.SetKey(_object);
@@ -36,32 +51,17 @@ StatusOr<int64_t> S3InputStream::read_at(int64_t offset, void* out, int64_t coun
     if (outcome.IsSuccess()) {
         Aws::IOStream& body = outcome.GetResult().GetBody();
         body.read(static_cast<char*>(out), count);
+        _offset += body.gcount();
         return body.gcount();
     } else {
-        return Status::IOError(outcome.GetError().GetMessage());
+        return make_error_status(outcome.GetError());
     }
 }
 
-Status S3InputStream::skip(int64_t count) {
-    if (UNLIKELY(_size == -1)) {
-        ASSIGN_OR_RETURN(_size, S3InputStream::get_size());
-    }
-    _offset = std::min(_offset + count, _size);
+Status S3InputStream::seek(int64_t offset) {
+    if (offset < 0) return Status::InvalidArgument(fmt::format("Invalid offset {}", offset));
+    _offset = offset;
     return Status::OK();
-}
-
-StatusOr<int64_t> S3InputStream::seek(int64_t offset, int whence) {
-    if (whence == SEEK_CUR) {
-        _offset = _offset + offset;
-    } else if (whence == SEEK_SET) {
-        _offset = offset;
-    } else if (whence == SEEK_END) {
-        ASSIGN_OR_RETURN(auto length, S3InputStream::get_size());
-        _offset = length + offset;
-    } else {
-        return Status::InvalidArgument("Invalid `whence` passed to seek");
-    }
-    return _offset;
 }
 
 StatusOr<int64_t> S3InputStream::position() {
@@ -77,10 +77,14 @@ StatusOr<int64_t> S3InputStream::get_size() {
         if (outcome.IsSuccess()) {
             _size = outcome.GetResult().GetContentLength();
         } else {
-            return Status::IOError(outcome.GetError().GetMessage());
+            return make_error_status(outcome.GetError());
         }
     }
     return _size;
+}
+
+void S3InputStream::set_size(int64_t value) {
+    _size = value;
 }
 
 } // namespace starrocks::io

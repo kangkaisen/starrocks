@@ -1,9 +1,22 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.planner;
 
-import com.clearspring.analytics.util.Lists;
-import com.clearspring.analytics.util.Preconditions;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 import com.starrocks.thrift.TDataSink;
 import com.starrocks.thrift.TDataSinkType;
 import com.starrocks.thrift.TDataStreamSink;
@@ -44,8 +57,7 @@ public class MultiCastDataSink extends DataSink {
 
     @Override
     protected TDataSink toThrift() {
-        List<TDataStreamSink> streamSinkList = dataStreamSinks.stream()
-                .map(s -> new TDataStreamSink(s.getExchNodeId().asInt(), s.getOutputPartition().toThrift()))
+        List<TDataStreamSink> streamSinkList = dataStreamSinks.stream().map(d -> d.toThrift().getStream_sink())
                 .collect(Collectors.toList());
         TMultiCastDataStreamSink sink = new TMultiCastDataStreamSink(streamSinkList, destinations);
 
@@ -75,7 +87,7 @@ public class MultiCastDataSink extends DataSink {
     }
 
     @Override
-    public boolean canUsePipeLine() {
+    public boolean canUseRuntimeAdaptiveDop() {
         return true;
     }
 }

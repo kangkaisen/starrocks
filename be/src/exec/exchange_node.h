@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exec/exchange_node.h
 
@@ -52,7 +65,7 @@ public:
     Status open(RuntimeState* state) override;
     Status get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) override;
     Status collect_query_statistics(QueryStatistics* statistics) override;
-    Status close(RuntimeState* state) override;
+    void close(RuntimeState* state) override;
 
     // the number of senders needs to be set after the c'tor, because it's not
     // recorded in TPlanNode, and before calling prepare()
@@ -79,12 +92,13 @@ private:
     // our input rows are a prefix of the rows we produce
     RowDescriptor _input_row_desc;
 
-    std::unique_ptr<vectorized::Chunk> _input_chunk;
+    std::unique_ptr<Chunk> _input_chunk;
     bool _is_finished = false;
 
     // True if this is a merging exchange node. If true, GetNext() is delegated to the
     // underlying _stream_recvr, and _input_batch is not used/valid.
     bool _is_merging;
+    bool _is_parallel_merge;
 
     // Sort expressions and parameters passed to the merging receiver..
     SortExecExprs _sort_exec_exprs;

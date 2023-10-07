@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exec/pipeline/set/intersect_context.h"
 
@@ -20,6 +32,7 @@ Status IntersectContext::prepare(RuntimeState* state, const std::vector<ExprCont
 }
 
 void IntersectContext::close(RuntimeState* state) {
+    _hash_set.reset();
     if (_build_pool != nullptr) {
         _build_pool->free_all();
     }
@@ -36,7 +49,7 @@ Status IntersectContext::refine_chunk_from_ht(RuntimeState* state, const ChunkPt
     return _hash_set->refine_intersect_row(state, chunk, dst_exprs, hit_times);
 }
 
-StatusOr<vectorized::ChunkPtr> IntersectContext::pull_chunk(RuntimeState* state) {
+StatusOr<ChunkPtr> IntersectContext::pull_chunk(RuntimeState* state) {
     // 1. Get at most *state->chunk_size()* remained keys from ht.
     size_t num_remained_keys = 0;
     _remained_keys.resize(state->chunk_size());
@@ -47,13 +60,13 @@ StatusOr<vectorized::ChunkPtr> IntersectContext::pull_chunk(RuntimeState* state)
         ++_next_processed_iter;
     }
 
-    ChunkPtr dst_chunk = std::make_shared<vectorized::Chunk>();
+    ChunkPtr dst_chunk = std::make_shared<Chunk>();
     if (num_remained_keys > 0) {
         // 2. Create dest columns.
-        vectorized::Columns dst_columns(_dst_nullables.size());
+        Columns dst_columns(_dst_nullables.size());
         for (size_t i = 0; i < _dst_nullables.size(); ++i) {
             const auto& slot = _dst_tuple_desc->slots()[i];
-            dst_columns[i] = vectorized::ColumnHelper::create_column(slot->type(), _dst_nullables[i]);
+            dst_columns[i] = ColumnHelper::create_column(slot->type(), _dst_nullables[i]);
             dst_columns[i]->reserve(num_remained_keys);
         }
 

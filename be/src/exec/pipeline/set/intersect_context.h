@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -7,9 +19,9 @@
 #include "column/column_helper.h"
 #include "column/type_traits.h"
 #include "common/statusor.h"
+#include "exec/intersect_hash_set.h"
 #include "exec/olap_common.h"
 #include "exec/pipeline/context_with_dependency.h"
-#include "exec/vectorized/intersect_hash_set.h"
 #include "exprs/expr_context.h"
 #include "gutil/casts.h"
 #include "runtime/mem_pool.h"
@@ -30,11 +42,14 @@ class IntersectContext final : public ContextWithDependency {
 public:
     IntersectContext(const int dst_tuple_id, const size_t intersect_times)
             : _dst_tuple_id(dst_tuple_id), _intersect_times(intersect_times) {}
+    ~IntersectContext() override = default;
 
-    bool is_ht_empty() const { return _hash_set->empty(); }
+    bool is_ht_empty() const { return _is_hash_set_empty; }
 
     void finish_build_ht() {
+        _is_hash_set_empty = _hash_set->empty();
         _next_processed_iter = _hash_set->begin();
+        _hash_set_end_iter = _hash_set->end();
         _finished_dependency_index.fetch_add(1, std::memory_order_release);
     }
 
@@ -44,7 +59,7 @@ public:
         return _finished_dependency_index.load(std::memory_order_acquire) == dependency_index;
     }
 
-    bool is_output_finished() const { return _next_processed_iter == _hash_set->end(); }
+    bool is_output_finished() const { return _next_processed_iter == _hash_set_end_iter; }
 
     // Called in the preparation phase of IntersectBuildSinkOperator.
     Status prepare(RuntimeState* state, const std::vector<ExprContext*>& build_exprs);
@@ -56,11 +71,10 @@ public:
     Status refine_chunk_from_ht(RuntimeState* state, const ChunkPtr& chunk,
                                 const std::vector<ExprContext*>& child_exprs, int hit_times);
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state);
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state);
 
 private:
-    std::unique_ptr<vectorized::IntersectHashSerializeSet> _hash_set =
-            std::make_unique<vectorized::IntersectHashSerializeSet>();
+    std::unique_ptr<IntersectHashSerializeSet> _hash_set = std::make_unique<IntersectHashSerializeSet>();
 
     const int _dst_tuple_id;
     // Cache the dest tuple descriptor in the preparation phase of IntersectBuildSinkOperatorFactory.
@@ -76,10 +90,12 @@ private:
     // when IntersectOutputSourceOperator is finished by calling close().
     std::unique_ptr<MemPool> _build_pool = nullptr;
 
-    vectorized::IntersectHashSerializeSet::KeyVector _remained_keys;
+    IntersectHashSerializeSet::KeyVector _remained_keys;
     // Used for traversal on the hash set to get the undeleted keys to dest chunk.
     // Init when the hash set is finished building in finish_build_ht().
-    vectorized::IntersectHashSerializeSet::Iterator _next_processed_iter;
+    IntersectHashSerializeSet::Iterator _next_processed_iter;
+    IntersectHashSerializeSet::Iterator _hash_set_end_iter;
+    bool _is_hash_set_empty = false;
 
     // The BUILD, PROBES, and OUTPUT operators execute sequentially.
     // BUILD -> 1-th PROBE -> 2-th PROBE -> ... -> n-th PROBE -> OUTPUT.

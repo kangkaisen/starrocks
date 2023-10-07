@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/backup/BackupJobInfo.java
 
@@ -25,7 +38,9 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.backup.RestoreFileMapping.IdChain;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.OlapTable;
@@ -35,6 +50,7 @@ import com.starrocks.catalog.Tablet;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.server.GlobalStateMgr;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.json.JSONArray;
@@ -65,18 +81,26 @@ import java.util.stream.Collectors;
 public class BackupJobInfo implements Writable {
     private static final Logger LOG = LogManager.getLogger(BackupJobInfo.class);
 
+    @SerializedName(value = "name")
     public String name;
+    @SerializedName(value = "dbName")
     public String dbName;
+    @SerializedName(value = "dbId")
     public long dbId;
+    @SerializedName(value = "backupTime")
     public long backupTime;
+    @SerializedName(value = "tables")
     public Map<String, BackupTableInfo> tables = Maps.newHashMap();
     public boolean success;
 
+    @SerializedName(value = "metaVersion")
     public int metaVersion;
+    @SerializedName(value = "starrocksMetaVersion")
     public int starrocksMetaVersion;
 
     // This map is used to save the table alias mapping info when processing a restore job.
     // origin -> alias
+    @SerializedName(value = "tblAlias")
     public Map<String, String> tblAlias = Maps.newHashMap();
 
     public boolean containsTbl(String tblName) {
@@ -114,8 +138,13 @@ public class BackupJobInfo implements Writable {
     }
 
     public static class BackupTableInfo {
+        @SerializedName(value = "name")
         public String name;
+        @SerializedName(value = "id")
         public long id;
+        @SerializedName(value = "autoIncrementId")
+        public Long autoIncrementId;
+        @SerializedName(value = "partitions")
         public Map<String, BackupPartitionInfo> partitions = Maps.newHashMap();
 
         public boolean containsPart(String partName) {
@@ -139,6 +168,14 @@ public class BackupJobInfo implements Writable {
             }
         }
 
+        public void checkAndRecoverAutoIncrementId(Table tbl) {
+            Long newId = tbl.getId();
+    
+            if (autoIncrementId != null) {
+                GlobalStateMgr.getCurrentState().addOrReplaceAutoIncrementIdByTableId(newId, autoIncrementId);
+            }
+        }
+
         @Override
         public String toString() {
             StringBuilder sb = new StringBuilder();
@@ -149,9 +186,13 @@ public class BackupJobInfo implements Writable {
     }
 
     public static class BackupPartitionInfo {
+        @SerializedName(value = "name")
         public String name;
+        @SerializedName(value = "id")
         public long id;
+        @SerializedName(value = "version")
         public long version;
+        @SerializedName(value = "indexes")
         public Map<String, BackupIndexInfo> indexes = Maps.newHashMap();
 
         public BackupIndexInfo getIdx(String idxName) {
@@ -160,9 +201,13 @@ public class BackupJobInfo implements Writable {
     }
 
     public static class BackupIndexInfo {
+        @SerializedName(value = "name")
         public String name;
+        @SerializedName(value = "id")
         public long id;
+        @SerializedName(value = "schema")
         public int schemaHash;
+        @SerializedName(value = "BackupTabletInfo")
         public List<BackupTabletInfo> tablets = Lists.newArrayList();
 
         public BackupTabletInfo getTablet(long tabletId) {
@@ -176,7 +221,9 @@ public class BackupJobInfo implements Writable {
     }
 
     public static class BackupTabletInfo {
+        @SerializedName(value = "id")
         public long id;
+        @SerializedName(value = "files")
         public List<String> files = Lists.newArrayList();
     }
 
@@ -236,8 +283,8 @@ public class BackupJobInfo implements Writable {
         jobInfo.dbName = dbName;
         jobInfo.dbId = dbId;
         jobInfo.success = true;
-        jobInfo.metaVersion = FeConstants.meta_version;
-        jobInfo.starrocksMetaVersion = FeConstants.starrocks_meta_version;
+        jobInfo.metaVersion = FeConstants.META_VERSION;
+        jobInfo.starrocksMetaVersion = FeConstants.STARROCKS_META_VERSION;
 
         // tbls
         for (Table tbl : tbls) {
@@ -247,6 +294,7 @@ public class BackupJobInfo implements Writable {
             tableInfo.name = tbl.getName();
             jobInfo.tables.put(tableInfo.name, tableInfo);
             // partitions
+            // TODO(meegoo): support sub partition
             for (Partition partition : olapTbl.getPartitions()) {
                 BackupPartitionInfo partitionInfo = new BackupPartitionInfo();
                 partitionInfo.id = partition.getId();
@@ -264,9 +312,20 @@ public class BackupJobInfo implements Writable {
                     for (Tablet tablet : index.getTablets()) {
                         BackupTabletInfo tabletInfo = new BackupTabletInfo();
                         tabletInfo.id = tablet.getId();
-                        tabletInfo.files.addAll(snapshotInfos.get(tablet.getId()).getFiles());
+                        if (tbl.isOlapTable()) {
+                            tabletInfo.files.addAll(snapshotInfos.get(tablet.getId()).getFiles());
+                        }
                         idxInfo.tablets.add(tabletInfo);
                     }
+                }
+            }
+
+            tableInfo.autoIncrementId = null;
+            Long id = GlobalStateMgr.getCurrentState().getCurrentAutoIncrementIdByTableId(tbl.getId());
+            for (Column col : tbl.getBaseSchema()) {
+                if (col.isAutoIncrement() && id != null) {
+                    tableInfo.autoIncrementId = id;
+                    break;
                 }
             }
         }
@@ -304,7 +363,7 @@ public class BackupJobInfo implements Writable {
          *                               "10008": ["__10029_seg1.dat", "__10029_seg2.dat"],
          *                               "10007": ["__10029_seg1.dat", "__10029_seg2.dat"]
          *                           },
-         *                           "tablets_order": ["10029", "10030"]
+         *                           "tablets_order": ["10007", "10008"]
          *                       },
          *                       "table1": {
          *                           "id": 10008,
@@ -313,7 +372,7 @@ public class BackupJobInfo implements Writable {
          *                               "10004": ["__10027_seg1.dat", "__10027_seg2.dat"],
          *                               "10005": ["__10028_seg1.dat", "__10028_seg2.dat"]
          *                           },
-         *                           "tablets_order": ["10027, "10028"]
+         *                           "tablets_order": ["10004, "10005"]
          *                       }
          *                   },
          *                   "id": 10007
@@ -321,6 +380,7 @@ public class BackupJobInfo implements Writable {
          *               },
          *           },
          *           "id": 10001
+         *           "autoIncrementId": 10000
          *       }
          *   }
          * }
@@ -335,13 +395,13 @@ public class BackupJobInfo implements Writable {
             jobInfo.metaVersion = root.getInt("meta_version");
         } catch (JSONException e) {
             // meta_version does not exist
-            jobInfo.metaVersion = FeConstants.meta_version;
+            jobInfo.metaVersion = FeConstants.META_VERSION;
         }
         try {
             jobInfo.starrocksMetaVersion = root.getInt("starrocks_meta_version");
         } catch (JSONException e) {
             // starrocks_meta_version does not exist
-            jobInfo.starrocksMetaVersion = FeConstants.starrocks_meta_version;
+            jobInfo.starrocksMetaVersion = FeConstants.STARROCKS_META_VERSION;
         }
 
         JSONObject backupObjs = root.getJSONObject("backup_objects");
@@ -351,6 +411,11 @@ public class BackupJobInfo implements Writable {
             tblInfo.name = tblName;
             JSONObject tbl = backupObjs.getJSONObject(tblName);
             tblInfo.id = tbl.getLong("id");
+            try {
+                tblInfo.autoIncrementId = tbl.getLong("autoIncrementId");
+            } catch (Exception e) {
+                tblInfo.autoIncrementId = null;
+            }
             JSONObject parts = tbl.getJSONObject("partitions");
             String[] partsNames = JSONObject.getNames(parts);
             for (String partName : partsNames) {
@@ -409,7 +474,9 @@ public class BackupJobInfo implements Writable {
             tmpList.sort((o1, o2) -> Long.valueOf(o1).compareTo(Long.valueOf(o2)));
             return tmpList.toArray(new String[0]);
         } else {
-            return (String[]) tabletsOrder.toList().toArray(new String[0]);
+            // StarRocks uses string to deserialize tablets_order and apache doris uses long to deserialize.
+            // for compatibility with apache doris.
+            return tabletsOrder.toList().stream().map(Object::toString).toArray(String[]::new);
         }
     }
 
@@ -438,14 +505,15 @@ public class BackupJobInfo implements Writable {
         root.put("backup_time", backupTime);
         JSONObject backupObj = new JSONObject();
         root.put("backup_objects", backupObj);
-        root.put("meta_version", FeConstants.meta_version);
-        root.put("starrocks_meta_version", FeConstants.starrocks_meta_version);
+        root.put("meta_version", FeConstants.META_VERSION);
+        root.put("starrocks_meta_version", FeConstants.STARROCKS_META_VERSION);
 
         for (BackupTableInfo tblInfo : tables.values()) {
             JSONObject tbl = new JSONObject();
             if (verbose) {
                 tbl.put("id", tblInfo.id);
             }
+            tbl.put("autoIncrementId", tblInfo.autoIncrementId);
             JSONObject parts = new JSONObject();
             tbl.put("partitions", parts);
             for (BackupPartitionInfo partInfo : tblInfo.partitions.values()) {
@@ -462,8 +530,9 @@ public class BackupJobInfo implements Writable {
                         idx.put("id", idxInfo.id);
                         idx.put("schema_hash", idxInfo.schemaHash);
                         JSONObject tablets = new JSONObject();
-                        JSONArray tabletsOrder = new JSONArray();
                         idx.put("tablets", tablets);
+                        JSONArray tabletsOrder = new JSONArray();
+                        idx.put("tablets_order", tabletsOrder);
                         for (BackupTabletInfo tabletInfo : idxInfo.tablets) {
                             JSONArray files = new JSONArray();
                             tablets.put(String.valueOf(tabletInfo.id), files);

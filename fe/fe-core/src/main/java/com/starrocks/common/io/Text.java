@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/io/Text.java
 
@@ -21,19 +34,23 @@
 
 package com.starrocks.common.io;
 
+import com.starrocks.meta.LimitExceededException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
 import java.io.DataOutput;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.CheckedInputStream;
+import java.util.zip.CheckedOutputStream;
 
 /**
  * This class stores text using standard UTF8 encoding. It provides methods to
@@ -47,25 +64,11 @@ import java.nio.charset.CodingErrorAction;
  * length of an encoded string.
  */
 public class Text implements Writable {
+
     private static final Logger LOG = LogManager.getLogger(Text.class);
-
-    private static ThreadLocal<CharsetEncoder> ENCODER_FACTORY = new ThreadLocal<CharsetEncoder>() {
-        protected CharsetEncoder initialValue() {
-            return Charset.forName("UTF-8").newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT);
-        }
-    };
-
-    private static ThreadLocal<CharsetDecoder> DECODER_FACTORY = new ThreadLocal<CharsetDecoder>() {
-        protected CharsetDecoder initialValue() {
-            return Charset.forName("UTF-8").newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT);
-        }
-    };
-
     private static final byte[] EMPTY_BYTES = new byte[0];
+
+    public static final int MAX_BYTES_TO_WRITE = Integer.MAX_VALUE / 2 - 1;
 
     private byte[] bytes;
     private int length;
@@ -99,12 +102,11 @@ public class Text implements Writable {
     public void setLength(int len) {
         if (len < 0) {
             return;
-        } else if (this.length >= len) {
-            this.length = len;
-        } else {
-            setCapacity(len, true);
-            this.length = len;
         }
+        if (this.length < len) {
+            setCapacity(len, true);
+        }
+        this.length = len;
     }
 
     /**
@@ -175,7 +177,7 @@ public class Text implements Writable {
             return -1; // not found
         } catch (CharacterCodingException e) {
             // can't get here
-            e.printStackTrace();
+            LOG.warn(e);
             return -1;
         }
     }
@@ -187,8 +189,7 @@ public class Text implements Writable {
             bytes = bb.array();
             length = bb.limit();
         } catch (CharacterCodingException e) {
-            throw new RuntimeException("Should not have happened "
-                    + e.toString());
+            throw new RuntimeException("Should not have happened " + e);
         }
     }
 
@@ -263,8 +264,7 @@ public class Text implements Writable {
         try {
             return decode(bytes, 0, length);
         } catch (CharacterCodingException e) {
-            throw new RuntimeException("Should not have happened "
-                    + e.toString());
+            throw new RuntimeException("Should not have happened " + e);
         }
     }
 
@@ -283,7 +283,7 @@ public class Text implements Writable {
 
     public static void skipFully(DataInput in, int len) throws IOException {
         int total = 0;
-        int cur = 0;
+        int cur;
 
         while ((total < len) && ((cur = in.skipBytes(len - total)) > 0)) {
             total += cur;
@@ -328,7 +328,9 @@ public class Text implements Writable {
      */
     private static String decode(ByteBuffer utf8, boolean replace)
             throws CharacterCodingException {
-        CharsetDecoder decoder = DECODER_FACTORY.get();
+        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
         if (replace) {
             decoder.onMalformedInput(java.nio.charset.CodingErrorAction.REPLACE);
             decoder.onUnmappableCharacter(CodingErrorAction.REPLACE);
@@ -366,7 +368,9 @@ public class Text implements Writable {
      */
     public static ByteBuffer encode(String string, boolean replace)
             throws CharacterCodingException {
-        CharsetEncoder encoder = ENCODER_FACTORY.get();
+        CharsetEncoder encoder = StandardCharsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
         if (replace) {
             encoder.onMalformedInput(CodingErrorAction.REPLACE);
             encoder.onUnmappableCharacter(CodingErrorAction.REPLACE);
@@ -387,8 +391,14 @@ public class Text implements Writable {
         int length = in.readInt();
         byte[] bytes = new byte[length];
         in.readFully(bytes, 0, length);
-        String res = decode(bytes);
-        return res;
+        return decode(bytes);
+    }
+
+    public static byte[] readBinary(DataInput in) throws IOException {
+        int length = in.readInt();
+        byte[] bytes = new byte[length];
+        in.readFully(bytes);
+        return bytes;
     }
 
     /**
@@ -397,9 +407,51 @@ public class Text implements Writable {
     public static int writeString(DataOutput out, String s) throws IOException {
         ByteBuffer bytes = encode(s);
         int length = bytes.limit();
+        if (length > MAX_BYTES_TO_WRITE) {
+            throw new LimitExceededException("Metadata cannot be written to logs larger than 1GB. " +
+                    "Current size: " + length + " bytes.");
+        }
         out.writeInt(length);
         out.write(bytes.array(), 0, length);
         return length;
+    }
+
+    public static int writeBinary(DataOutput out, byte[] bytes) throws IOException {
+        int length = bytes.length;
+        out.writeInt(length);
+        out.write(bytes, 0, length);
+        return length;
+    }
+
+    /**
+     * Same as writeString(), but to a CheckedOutputStream
+     */
+    public static int writeStringWithChecksum(CheckedOutputStream cos, String s) throws IOException {
+        ByteBuffer byteBuffer = encode(s);
+        int length = byteBuffer.limit();
+        byte[] bytes = ByteBuffer.allocate(4).putInt(length).array();
+        cos.write(bytes);
+        cos.write(byteBuffer.array(), 0, length);
+        return length;
+    }
+
+    private static void readAndCheckEof(CheckedInputStream in, byte[] bytes, int expectLength) throws IOException {
+        int readRet = in.read(bytes, 0, expectLength);
+        if (readRet != expectLength) {
+            throw new EOFException(String.format("reach EOF: read expect %d actual %d!", expectLength, readRet));
+        }
+    }
+
+    /**
+     * Same as readString(), but to a CheckedInputStream
+     */
+    public static String readStringWithChecksum(CheckedInputStream in) throws IOException {
+        byte[] bytes = new byte[4];
+        readAndCheckEof(in, bytes, 4);
+        int length = ByteBuffer.wrap(bytes).getInt();
+        bytes = new byte[length];
+        readAndCheckEof(in, bytes, length);
+        return decode(bytes);
     }
 
     /**
@@ -408,7 +460,7 @@ public class Text implements Writable {
      * values 4 and 5 are presented in this table, even though valid UTF-8
      * cannot include the five and six byte sequences.
      */
-    static final int[] bytesFromUTF8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    static final int[] BYTES_FROM_UTF_8 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -438,7 +490,7 @@ public class Text implements Writable {
         bytes.mark();
         byte b = bytes.get();
         bytes.reset();
-        int extraBytesToRead = bytesFromUTF8[(b & 0xFF)];
+        int extraBytesToRead = BYTES_FROM_UTF_8[(b & 0xFF)];
         if (extraBytesToRead < 0) {
             return -1; // trailing byte!
         }
@@ -463,11 +515,11 @@ public class Text implements Writable {
             case 0:
                 ch += (bytes.get() & 0xFF);
         }
-        ch -= offsetsFromUTF8[extraBytesToRead];
+        ch -= OFFSETS_FROM_UTF_8[extraBytesToRead];
 
         return ch;
     }
 
-    static final int[] offsetsFromUTF8 = {0x00000000, 0x00003080, 0x000E2080,
+    static final int[] OFFSETS_FROM_UTF_8 = {0x00000000, 0x00003080, 0x000E2080,
             0x03C82080, 0xFA082080, 0x82082080};
 }

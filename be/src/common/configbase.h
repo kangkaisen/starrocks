@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/common/configbase.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -22,6 +18,7 @@
 #pragma once
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -29,6 +26,14 @@ namespace starrocks {
 class Status;
 
 namespace config {
+
+struct ConfigInfo {
+    std::string name;
+    std::string value;
+    std::string type;
+    std::string defval;
+    bool valmutable;
+};
 
 class Register {
 public:
@@ -40,6 +45,9 @@ public:
         bool valmutable = false;
         Field(const char* ftype, const char* fname, void* fstorage, const char* fdefval, bool fvalmutable)
                 : type(ftype), name(fname), storage(fstorage), defval(fdefval), valmutable(fvalmutable) {}
+
+        // Get the field value as string
+        std::string value() const;
     };
 
 public:
@@ -79,6 +87,7 @@ public:
 #define CONF_mInt32(name, defaultstr) DEFINE_FIELD(int32_t, name, defaultstr, true)
 #define CONF_mInt64(name, defaultstr) DEFINE_FIELD(int64_t, name, defaultstr, true)
 #define CONF_mDouble(name, defaultstr) DEFINE_FIELD(double, name, defaultstr, true)
+#define CONF_mString(name, defaultstr) DEFINE_FIELD(std::string, name, defaultstr, true)
 #else
 #define CONF_Bool(name, defaultstr) DECLARE_FIELD(bool, name)
 #define CONF_Int16(name, defaultstr) DECLARE_FIELD(int16_t, name)
@@ -97,6 +106,7 @@ public:
 #define CONF_mInt32(name, defaultstr) DECLARE_FIELD(int32_t, name)
 #define CONF_mInt64(name, defaultstr) DECLARE_FIELD(int64_t, name)
 #define CONF_mDouble(name, defaultstr) DECLARE_FIELD(double, name)
+#define CONF_mString(name, defaultstr) DECLARE_FIELD(std::string, name)
 #endif
 
 // Configuration properties load from config file.
@@ -118,6 +128,10 @@ extern std::map<std::string, std::string>* full_conf_map;
 bool init(const char* filename, bool fillconfmap = false);
 
 Status set_config(const std::string& field, const std::string& value);
+
+std::mutex* get_mstring_conf_lock();
+
+std::vector<ConfigInfo> list_configs();
 
 } // namespace config
 } // namespace starrocks

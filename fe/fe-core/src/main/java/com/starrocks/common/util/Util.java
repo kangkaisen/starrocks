@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/util/Util.java
 
@@ -28,6 +41,7 @@ import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.TimeoutException;
+import com.starrocks.sql.analyzer.SemanticException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -35,17 +49,17 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import java.util.zip.Adler32;
 
@@ -54,6 +68,8 @@ public class Util {
     private static final Map<PrimitiveType, String> TYPE_STRING_MAP = new HashMap<PrimitiveType, String>();
 
     private static final long DEFAULT_EXEC_CMD_TIMEOUT_MS = 600000L;
+
+    public static final String AUTO_GENERATED_EXPR_ALIAS_PREFIX = "EXPR$";
 
     private static final String[] ORDINAL_SUFFIX =
             new String[] {"th", "st", "nd", "rd", "th", "th", "th", "th", "th", "th"};
@@ -79,6 +95,7 @@ public class Util {
         TYPE_STRING_MAP.put(PrimitiveType.BITMAP, "bitmap");
         TYPE_STRING_MAP.put(PrimitiveType.PERCENTILE, "percentile");
         TYPE_STRING_MAP.put(PrimitiveType.JSON, "json");
+        TYPE_STRING_MAP.put(PrimitiveType.VARBINARY, "varbinary(%d)");
     }
 
     private static class CmdWorker extends Thread {
@@ -246,52 +263,50 @@ public class Util {
     public static int schemaHash(int schemaVersion, List<Column> columns, Set<String> bfColumns, double bfFpp) {
         Adler32 adler32 = new Adler32();
         adler32.update(schemaVersion);
-        String charsetName = "UTF-8";
-        try {
-            List<String> indexColumnNames = Lists.newArrayList();
-            List<String> bfColumnNames = Lists.newArrayList();
-            // columns
-            for (Column column : columns) {
-                adler32.update(column.getName().getBytes(charsetName));
-                String typeString = columnHashString(column);
-                adler32.update(typeString.getBytes(charsetName));
+        List<String> indexColumnNames = Lists.newArrayList();
+        List<String> bfColumnNames = Lists.newArrayList();
+        // columns
+        for (Column column : columns) {
+            adler32.update(column.getName().getBytes(StandardCharsets.UTF_8));
+            String typeString = columnHashString(column);
+            if (typeString == null) {
+                throw new SemanticException("Type:%s of column:%s does not support",
+                        column.getType().toString(), column.getName());
+            }
+            adler32.update(typeString.getBytes(StandardCharsets.UTF_8));
 
-                String columnName = column.getName();
-                if (column.isKey()) {
-                    indexColumnNames.add(columnName);
-                }
-
-                if (bfColumns != null && bfColumns.contains(columnName)) {
-                    bfColumnNames.add(columnName);
-                }
+            String columnName = column.getName();
+            if (column.isKey()) {
+                indexColumnNames.add(columnName);
             }
 
-            // index column name
-            for (String columnName : indexColumnNames) {
-                adler32.update(columnName.getBytes(charsetName));
+            if (bfColumns != null && bfColumns.contains(columnName)) {
+                bfColumnNames.add(columnName);
+            }
+        }
+
+        // index column name
+        for (String columnName : indexColumnNames) {
+            adler32.update(columnName.getBytes(StandardCharsets.UTF_8));
+        }
+
+        // bloom filter index
+        if (!bfColumnNames.isEmpty()) {
+            // bf column name
+            for (String columnName : bfColumnNames) {
+                adler32.update(columnName.getBytes(StandardCharsets.UTF_8));
             }
 
-            // bloom filter index
-            if (!bfColumnNames.isEmpty()) {
-                // bf column name
-                for (String columnName : bfColumnNames) {
-                    adler32.update(columnName.getBytes(charsetName));
-                }
-
-                // bf fpp
-                String bfFppStr = String.valueOf(bfFpp);
-                adler32.update(bfFppStr.getBytes(charsetName));
-            }
-        } catch (UnsupportedEncodingException e) {
-            LOG.error("encoding error", e);
-            return -1;
+            // bf fpp
+            String bfFppStr = String.valueOf(bfFpp);
+            adler32.update(bfFppStr.getBytes(StandardCharsets.UTF_8));
         }
 
         return Math.abs((int) adler32.getValue());
     }
 
     public static int generateSchemaHash() {
-        return Math.abs(new Random().nextInt());
+        return Math.abs(ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE));
     }
 
     public static String dumpThread(Thread t, int lineNum) {
@@ -342,7 +357,6 @@ public class Util {
                     stream.close();
                 } catch (IOException e) {
                     LOG.warn("failed to close stream when get result from url: {}", urlStr, e);
-                    return null;
                 }
             }
         }
@@ -358,7 +372,7 @@ public class Util {
 
         long result = defaultVal;
         try {
-            result = Long.valueOf(valStr);
+            result = Long.parseLong(valStr);
         } catch (NumberFormatException e) {
             throw new AnalysisException(hintMsg);
         }
@@ -420,6 +434,10 @@ public class Util {
     }
 
     public static void validateMetastoreUris(String uris) {
+        if (uris == null) {
+            throw new IllegalArgumentException("Null hive.metastore.uris, " +
+                    "please check your property's key and value of catalog or resource.");
+        }
         URI[] parsedUris = Arrays.stream(uris.split(",")).map(URI::create).toArray(URI[]::new);
         for (URI uri : parsedUris) {
             if (Strings.isNullOrEmpty(uri.getScheme()) || !uri.getScheme().equals("thrift")) {
@@ -434,5 +452,8 @@ public class Util {
             }
         }
     }
-}
 
+    public static String deriveAliasFromOrdinal(int ordinal) {
+        return AUTO_GENERATED_EXPR_ALIAS_PREFIX + ordinal;
+    }
+}

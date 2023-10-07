@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/index_page.cpp
 
@@ -50,26 +63,13 @@ void IndexPageBuilder::finish(OwnedSlice* body, PageFooterPB* footer) {
     footer->mutable_index_page_footer()->set_type(_is_leaf ? IndexPageFooterPB::LEAF : IndexPageFooterPB::INTERNAL);
 }
 
-Status IndexPageBuilder::get_first_key(Slice* key) const {
-    if (_count == 0) {
-        return Status::NotFound("index page is empty");
-    }
-    Slice input(_buffer);
-    if (get_length_prefixed_slice(&input, key)) {
-        return Status::OK();
-    } else {
-        return Status::Corruption("can't decode first key");
-    }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
-Status IndexPageReader::parse(const Slice& body, const IndexPageFooterPB& footer) {
-    _footer = footer;
-    size_t num_entries = _footer.num_entries();
+Status IndexPageReader::_parse(const Slice& body, const IndexPageFooterPB& footer) {
+    _num_entries = footer.num_entries();
 
     Slice input(body);
-    for (int i = 0; i < num_entries; ++i) {
+    for (int i = 0; i < _num_entries; ++i) {
         Slice key;
         PagePointer value;
         if (!get_length_prefixed_slice(&input, &key)) {
@@ -82,9 +82,26 @@ Status IndexPageReader::parse(const Slice& body, const IndexPageFooterPB& footer
         _values.push_back(value);
     }
 
-    _parsed = true;
     return Status::OK();
 }
+
+Status IndexPageReader::parse(const Slice& body, const IndexPageFooterPB& footer) {
+    Status st = _parse(body, footer);
+    if (!st.ok()) {
+        _reset();
+    } else {
+        _parsed = true;
+    }
+    return st;
+}
+
+void IndexPageReader::_reset() {
+    _parsed = false;
+    _num_entries = 0;
+    std::vector<Slice>().swap(_keys);
+    std::vector<PagePointer>().swap(_values);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // This function has the meaning of interval, in fact, it is to find first possible Page which <=search key

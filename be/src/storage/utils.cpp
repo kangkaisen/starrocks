@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/utils.cpp
 
@@ -21,10 +34,7 @@
 
 #include "storage/utils.h"
 
-DIAGNOSTIC_PUSH
-DIAGNOSTIC_IGNORE("-Wclass-memaccess")
 #include <bvar/bvar.h>
-DIAGNOSTIC_POP
 #include <dirent.h>
 #include <fmt/format.h>
 #include <lz4/lz4.h>
@@ -48,11 +58,11 @@ DIAGNOSTIC_POP
 
 #include "common/logging.h"
 #include "common/status.h"
-#include "env/env.h"
+#include "fs/fs.h"
+#include "fs/fs_util.h"
 #include "gutil/strings/substitute.h"
 #include "storage/olap_define.h"
 #include "util/errno.h"
-#include "util/file_utils.h"
 #include "util/string_parser.hpp"
 
 using std::string;
@@ -104,81 +114,25 @@ Status move_to_trash(const std::filesystem::path& file_path) {
                                            delete_counter.fetch_add(1, std::memory_order_relaxed));
     std::string new_file_path = fmt::format("{}/{}", new_file_dir, old_file_name);
     // 2. create target dir, or the rename() function will fail.
-    if (auto st = Env::Default()->create_dir(new_file_dir); !st.ok()) {
+    if (auto st = FileSystem::Default()->create_dir(new_file_dir); !st.ok()) {
         // May be because the parent directory does not exist, try create directories recursively.
-        RETURN_IF_ERROR(FileUtils::create_dir(new_file_dir));
+        RETURN_IF_ERROR(fs::create_directories(new_file_dir));
     }
 
     // 3. remove file to trash
-    auto st = Env::Default()->rename_file(old_file_path, new_file_path);
+    auto st = FileSystem::Default()->rename_file(old_file_path, new_file_path);
     auto t1 = std::chrono::steady_clock::now();
     g_move_trash << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     return st;
 }
 
-Status copy_file(const string& src, const string& dest) {
-    int src_fd = -1;
-    int dest_fd = -1;
-    char buf[1024 * 1024];
-    Status res = Status::OK();
-
-    src_fd = ::open(src.c_str(), O_RDONLY);
-    if (src_fd < 0) {
-        PLOG(WARNING) << "Not found file: " << src;
-        res = Status::NotFound(fmt::format("Not found file: {}", src));
-        goto COPY_EXIT;
-    }
-
-    dest_fd = ::open(dest.c_str(), O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
-    if (dest_fd < 0) {
-        PLOG(WARNING) << "Not found file: " << dest;
-        res = Status::NotFound(fmt::format("Not found file: {}", dest));
-        goto COPY_EXIT;
-    }
-
-    while (true) {
-        ssize_t rd_size = ::read(src_fd, buf, sizeof(buf));
-        if (rd_size < 0) {
-            res = Status::IOError(fmt::format("Error to read file: {}, error:{} ", src, std::strerror(Errno::no())));
-            goto COPY_EXIT;
-        } else if (0 == rd_size) {
-            break;
-        }
-
-        ssize_t wr_size = ::write(dest_fd, buf, rd_size);
-        if (wr_size != rd_size) {
-            res = Status::IOError(fmt::format("Error to write file: {}, error:{} ", dest, std::strerror(Errno::no())));
-            goto COPY_EXIT;
-        }
-    }
-
-COPY_EXIT:
-    if (src_fd >= 0) {
-        ::close(src_fd);
-    }
-
-    if (dest_fd >= 0) {
-        ::close(dest_fd);
-    }
-
-    VLOG(3) << "copy file success. [src=" << src << " dest=" << dest << "]";
-
-    return res;
-}
-
 Status read_write_test_file(const string& test_file_path) {
-    if (access(test_file_path.c_str(), F_OK) == 0) {
-        if (remove(test_file_path.c_str()) != 0) {
-            return Status::IOError(
-                    fmt::format("Error to remove file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
-        }
-    } else {
-        if (errno != ENOENT) {
-            return Status::IOError(
-                    fmt::format("Error to access file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
-        }
+    ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(test_file_path));
+
+    if (fs->path_exists(test_file_path).ok()) {
+        RETURN_IF_ERROR(fs->delete_file(test_file_path));
     }
-    ASSIGN_OR_RETURN(auto file, Env::Default()->new_random_rw_file(test_file_path));
+
     const size_t TEST_FILE_BUF_SIZE = 4096;
     const size_t DIRECT_IO_ALIGNMENT = 512;
     char* write_test_buff = nullptr;
@@ -194,42 +148,31 @@ Status read_write_test_file(const string& test_file_path) {
     }
     std::unique_ptr<char, decltype(&std::free)> read_buff(read_test_buff, &std::free);
     // generate random numbers
-    uint32_t rand_seed = static_cast<uint32_t>(time(nullptr));
+    auto rand_seed = static_cast<uint32_t>(time(nullptr));
     for (size_t i = 0; i < TEST_FILE_BUF_SIZE; ++i) {
         int32_t tmp_value = rand_r(&rand_seed);
         write_test_buff[i] = static_cast<char>(tmp_value);
     }
-    auto st = file->write_at(0, Slice(write_buff.get(), TEST_FILE_BUF_SIZE));
-    if (!st.ok()) {
-        LOG(WARNING) << "Error to write " << test_file_path << ", error: " << st;
-        return Status::IOError(
-                fmt::format("Error to write file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
-    }
-    st = file->read_at(0, Slice(read_buff.get(), TEST_FILE_BUF_SIZE));
-    if (!st.ok()) {
-        LOG(WARNING) << "Error to read file: " << test_file_path << ", error: " << st;
-        return Status::IOError(
-                fmt::format("Error to read file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
-    }
+
+    WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
+    ASSIGN_OR_RETURN(auto wf, fs->new_writable_file(opts, test_file_path));
+    RETURN_IF_ERROR(wf->append(Slice(write_buff.get(), TEST_FILE_BUF_SIZE)));
+    RETURN_IF_ERROR(wf->close());
+
+    ASSIGN_OR_RETURN(auto rf, fs->new_sequential_file(test_file_path));
+    RETURN_IF_ERROR(rf->read_fully(read_buff.get(), TEST_FILE_BUF_SIZE));
+    rf.reset();
+    RETURN_IF_ERROR(fs->delete_file(test_file_path));
+
     if (memcmp(write_buff.get(), read_buff.get(), TEST_FILE_BUF_SIZE) != 0) {
         LOG(WARNING) << "the test file write_buf and read_buf not equal, [filename = " << test_file_path << "]";
         return Status::InternalError("test file write_buf and read_buf not equal");
-    }
-    st = file->close();
-    if (!st.ok()) {
-        LOG(WARNING) << "Error to close " << test_file_path << ", error: " << st;
-        return Status::IOError(
-                fmt::format("Error to close file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
-    }
-    if (remove(test_file_path.c_str()) != 0) {
-        return Status::IOError(
-                fmt::format("Error to revmoe file: {}, error:{} ", test_file_path, std::strerror(Errno::no())));
     }
     return Status::OK();
 }
 
 bool check_datapath_rw(const string& path) {
-    if (!FileUtils::check_exist(path)) return false;
+    if (!fs::path_exist(path)) return false;
     string file_path = path + "/.read_write_test_file";
     try {
         Status res = read_write_test_file(file_path);
@@ -442,6 +385,16 @@ bool valid_bool(const std::string& value_str) {
     StringParser::ParseResult result;
     StringParser::string_to_bool(value_str.c_str(), value_str.length(), &result);
     return result == StringParser::PARSE_SUCCESS;
+}
+
+std::string parent_name(const std::string& fullpath) {
+    std::filesystem::path path(fullpath);
+    return path.parent_path().string();
+}
+
+std::string file_name(const std::string& fullpath) {
+    std::filesystem::path path(fullpath);
+    return path.filename().string();
 }
 
 } // namespace starrocks

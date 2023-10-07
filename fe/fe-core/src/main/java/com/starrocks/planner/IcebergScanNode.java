@@ -1,21 +1,57 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.planner;
 
 import com.google.common.base.MoreObjects;
-import com.google.common.collect.HashMultimap;
-import com.starrocks.analysis.*;
-import com.starrocks.catalog.Catalog;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Maps;
+import com.starrocks.analysis.Analyzer;
+import com.google.common.collect.BiMap;
+import com.google.common.collect.HashBiMap;
+import com.starrocks.analysis.DescriptorTable;
+import com.starrocks.analysis.SlotDescriptor;
+import com.starrocks.analysis.SlotId;
+import com.starrocks.analysis.TupleDescriptor;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.IcebergTable;
+import com.starrocks.catalog.PartitionKey;
+import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.UserException;
-import com.starrocks.external.PredicateUtils;
-import com.starrocks.external.iceberg.ExpressionConverter;
-import com.starrocks.external.iceberg.IcebergUtil;
-import com.starrocks.system.Backend;
+import com.starrocks.connector.CatalogConnector;
+import com.starrocks.connector.PartitionUtil;
+import com.starrocks.connector.RemoteFileDesc;
+import com.starrocks.connector.RemoteFileInfo;
+import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.connector.iceberg.IcebergApiConverter;
+import com.starrocks.credential.CloudConfiguration;
+import com.starrocks.credential.CloudConfigurationFactory;
+import com.starrocks.credential.CloudType;
+import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.optimizer.base.ColumnRefFactory;
+import com.starrocks.sql.optimizer.operator.physical.PhysicalIcebergScanOperator;
+import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import com.starrocks.sql.plan.ExecPlan;
+import com.starrocks.sql.plan.HDFSScanNodePredicates;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.THdfsScanNode;
 import com.starrocks.thrift.THdfsScanRange;
+import com.starrocks.thrift.TIcebergDeleteFile;
+import com.starrocks.thrift.TIcebergFileContent;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TPlanNode;
 import com.starrocks.thrift.TPlanNodeType;
@@ -23,112 +59,101 @@ import com.starrocks.thrift.TScanRange;
 import com.starrocks.thrift.TScanRangeLocation;
 import com.starrocks.thrift.TScanRangeLocations;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.PartitionField;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Snapshot;
-import org.apache.iceberg.exceptions.ValidationException;
-import org.apache.iceberg.expressions.Binder;
-import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.StructLike;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.isResourceMappingCatalog;
 
 public class IcebergScanNode extends ScanNode {
     private static final Logger LOG = LogManager.getLogger(IcebergScanNode.class);
 
     private IcebergTable srIcebergTable; // table definition in starRocks
 
+    private HDFSScanNodePredicates scanNodePredicates = new HDFSScanNodePredicates();
+
     private List<TScanRangeLocations> result = new ArrayList<>();
 
-    // Exprs in icebergConjuncts converted to Iceberg Expression.
-    private List<Expression> icebergPredicates = null;
+    // Scalar operators to filter iceberg metadata during plan files
+    private ScalarOperator predicate = null;
 
-    // List of conjuncts for min/max values that are used to skip data when scanning Parquet files.
-    private final List<Expr> minMaxConjuncts = new ArrayList<>();
-    private TupleDescriptor minMaxTuple;
+    private Set<String> equalityDeleteColumns = new HashSet<>();
 
-    private final HashMultimap<String, Long> hostToBeId = HashMultimap.create();
     private long totalBytes = 0;
 
     private boolean isFinalized = false;
+    private CloudConfiguration cloudConfiguration = null;
 
     public IcebergScanNode(PlanNodeId id, TupleDescriptor desc, String planNodeName) {
         super(id, desc, planNodeName);
         srIcebergTable = (IcebergTable) desc.getTable();
+        setupCloudCredential();
+    }
+
+    private void setupCloudCredential() {
+        String catalogName = srIcebergTable.getCatalogName();
+        if (catalogName == null) {
+            return;
+        }
+
+        // Hard coding here
+        // Try to get tabular signed temporary credential
+        CloudConfiguration tabularTempCloudConfiguration = CloudConfigurationFactory.
+                buildCloudConfigurationForTabular(srIcebergTable.getNativeTable().io().properties());
+        if (tabularTempCloudConfiguration.getCloudType() != CloudType.DEFAULT) {
+            // If we get CloudConfiguration succeed from iceberg FileIO's properties, we just using it.
+            cloudConfiguration = tabularTempCloudConfiguration;
+        } else {
+            CatalogConnector connector = GlobalStateMgr.getCurrentState().getConnectorMgr().getConnector(catalogName);
+            Preconditions.checkState(connector != null,
+                    String.format("connector of catalog %s should not be null", catalogName));
+            cloudConfiguration = connector.getMetadata().getCloudConfiguration();
+            Preconditions.checkState(cloudConfiguration != null,
+                    String.format("cloudConfiguration of catalog %s should not be null", catalogName));
+        }
     }
 
     @Override
     public void init(Analyzer analyzer) throws UserException {
         super.init(analyzer);
-        getAliveBackends();
-        preProcessConjuncts();
     }
 
-    private void getAliveBackends() throws UserException {
-        for (Backend be : Catalog.getCurrentSystemInfo().getIdToBackend().values()) {
-            if (be.isAlive()) {
-                hostToBeId.put(be.getHost(), be.getId());
-            }
-        }
-        if (hostToBeId.isEmpty()) {
-            throw new UserException("Backend not found. Check if any backend is down or not");
-        }
+    public void preProcessIcebergPredicate(ScalarOperator predicate) {
+        this.predicate = predicate;
     }
 
     /**
-     * Extracts predicates from conjuncts that can be pushed down to Iceberg.
-     *
-     * Since Iceberg will filter data files by metadata instead of scan data files,
-     * we pushdown all predicates to Iceberg to get the minimum data files to scan.
-     * Here are three cases for predicate pushdown:
-     * 1.The column is not part of any Iceberg partition expression
-     * 2.The column is part of all partition keys without any transformation (i.e. IDENTITY)
-     * 3.The column is part of all partition keys with transformation (i.e. MONTH/DAY/HOUR)
-     * We can use case 1 and 3 to filter data files, but also need to evaluate it in the
-     * scan, for case 2 we don't need to evaluate it in the scan. So we evaluate all
-     * predicates in the scan to keep consistency. More details about Iceberg scanning,
-     * please refer: https://iceberg.apache.org/spec/#scan-planning
+     * Append columns need to read for equality delete files
      */
-    private void preProcessConjuncts() {
-        List<Expression> expressions = new ArrayList<>(conjuncts.size());
-        ExpressionConverter convertor = new ExpressionConverter();
-        for (Expr expr : conjuncts) {
-            Expression filterExpr = convertor.convert(expr);
-            if (filterExpr != null) {
-                try {
-                    Binder.bind(srIcebergTable.getIcebergTable().schema().asStruct(), filterExpr, false);
-                    expressions.add(filterExpr);
-                } catch (ValidationException e) {
-                    LOG.debug("binding to the table schema failed, cannot be pushed down expression: {}",
-                            expr.toSql());
-                }
+    public void appendEqualityColumns(PhysicalIcebergScanOperator node,
+                                      ColumnRefFactory columnRefFactory,
+                                      ExecPlan context) {
+        Table referenceTable = node.getTable();
+        Set<String> scanNodeColumns = node.getColRefToColumnMetaMap().values().stream()
+                .map(Column::getName).collect(Collectors.toSet());
+        Set<String> appendEqualityColumns = equalityDeleteColumns.stream()
+                .filter(name -> !scanNodeColumns.contains(name)).collect(Collectors.toSet());
+        Map<String, Column> nameToColumns = referenceTable.getFullSchema().stream()
+                .collect(Collectors.toMap(Column::getName, item -> item));
+        for (String eqName : appendEqualityColumns) {
+            if (nameToColumns.containsKey(eqName)) {
+                throw new StarRocksConnectorException("Iceberg equality delete is not supported");
             }
         }
-        LOG.debug("Number of predicates pushed down / Total number of predicates: {}/{}",
-                expressions.size(), conjuncts.size());
-        icebergPredicates = expressions;
-    }
-
-    @Override
-    public void finalize(Analyzer analyzer) throws UserException {
-        if (isFinalized) {
-            return;
-        }
-
-        LOG.debug("IcebergScanNode finalize. Tuple: {}", desc);
-        try {
-            getScanRangeLocations();
-        } catch (AnalysisException e) {
-            throw new UserException(e.getMessage());
-        }
-
-        // Min max tuple must be computed after analyzer.materializeSlots()
-        DescriptorTable descTbl = analyzer.getDescTbl();
-        minMaxTuple = descTbl.createTupleDescriptor();
-        PredicateUtils.computeMinMaxTupleAndConjuncts(analyzer, minMaxTuple, minMaxConjuncts, conjuncts);
-
-        computeStats(analyzer);
-        isFinalized = true;
     }
 
     @Override
@@ -136,19 +161,107 @@ public class IcebergScanNode extends ScanNode {
         return result;
     }
 
-    public void getScanRangeLocations() throws UserException {
-        Optional<Snapshot> snapshot = IcebergUtil.getCurrentTableSnapshot(
-                srIcebergTable.getIcebergTable(), true);
+    public static BiMap<Integer, PartitionField> getIdentityPartitions(PartitionSpec partitionSpec)
+    {
+
+        // TODO: expose transform information in Iceberg library
+        BiMap<Integer, PartitionField> columns = HashBiMap.create();
+        if (!ConnectContext.get().getSessionVariable().getEnableIcebergIdentityColumnOptimize()) {
+            return columns;
+        }
+        for (int i = 0; i < partitionSpec.fields().size(); i++) {
+            PartitionField field = partitionSpec.fields().get(i);
+            if (field.transform().isIdentity()) {
+                columns.put(i, field);
+            }
+        }
+        return columns;
+    }
+
+    private PartitionKey getPartitionKey(StructLike partition, PartitionSpec spec, List<Integer> indexes,
+                                         BiMap<Integer, PartitionField> indexToField) throws AnalysisException {
+        List<String> partitionValues = new ArrayList<>();
+        List<Column> cols = new ArrayList<>();
+        indexes.forEach((index) -> {
+            PartitionField field = indexToField.get(index);
+            int id = field.sourceId();
+            org.apache.iceberg.types.Type type = spec.schema().findType(id);
+            Class<?> javaClass = type.typeId().javaClass();
+
+            String partitionValue;
+            partitionValue = field.transform().toHumanString(type,
+                    PartitionUtil.getPartitionValue(partition, index, javaClass));
+            partitionValues.add(partitionValue);
+
+            cols.add(srIcebergTable.getColumn(field.name()));
+        });
+
+        return PartitionUtil.createPartitionKey(partitionValues, cols, Table.TableType.ICEBERG);
+    }
+
+    public void setupScanRangeLocations(DescriptorTable descTbl) throws UserException {
+        Optional<Snapshot> snapshot = Optional.ofNullable(srIcebergTable.getNativeTable().currentSnapshot());
         if (!snapshot.isPresent()) {
-            LOG.info(String.format("Table %s has no snapshot!", srIcebergTable.getTable()));
+            LOG.warn(String.format("Table %s has no snapshot!", srIcebergTable.getRemoteTableName()));
             return;
         }
-        preProcessConjuncts();
-        for (FileScanTask task : IcebergUtil.getTableScan(
-                srIcebergTable.getIcebergTable(), snapshot.get(),
-                icebergPredicates, true).planFiles()) {
+
+        String catalogName = srIcebergTable.getCatalogName();
+        long snapshotId = snapshot.get().snapshotId();
+
+        List<RemoteFileInfo> splits = GlobalStateMgr.getCurrentState().getMetadataMgr().getRemoteFileInfos(
+                catalogName, srIcebergTable, null, snapshotId, predicate, null, -1);
+
+        if (splits.isEmpty()) {
+            LOG.warn("There is no scan tasks after planFies on {}.{} and predicate: [{}]",
+                    srIcebergTable.getRemoteDbName(), srIcebergTable.getRemoteTableName(), predicate);
+            return;
+        }
+
+        RemoteFileDesc remoteFileDesc = splits.get(0).getFiles().get(0);
+        if (remoteFileDesc == null) {
+            LOG.warn("There is no scan tasks after planFies on {}.{} and predicate: [{}]",
+                    srIcebergTable.getRemoteDbName(), srIcebergTable.getRemoteTableName(), predicate);
+            return;
+        }
+
+        Map<StructLike, Long> partitionKeyToId = Maps.newHashMap();
+        Map<Long, List<Integer>> idToPartitionSlots = Maps.newHashMap();
+        for (FileScanTask task : remoteFileDesc.getIcebergScanTasks()) {
             DataFile file = task.file();
             LOG.debug("Scan with file " + file.path() + ", file record count " + file.recordCount());
+            if (file.fileSizeInBytes() == 0) {
+                continue;
+            }
+
+            StructLike partition = task.file().partition();
+            long partitionId = 0;
+            if (!partitionKeyToId.containsKey(partition)) {
+                partitionId = srIcebergTable.nextPartitionId();
+                partitionKeyToId.put(partition, partitionId);
+                BiMap<Integer, PartitionField> indexToField = getIdentityPartitions(task.spec());
+                if (!indexToField.isEmpty()) {
+                    List<Integer> partitionSlotIds = task.spec().fields().stream()
+                            .map(x -> desc.getColumnSlot(x.name()))
+                            .filter(Objects::nonNull)
+                            .map(SlotDescriptor::getId)
+                            .map(SlotId::asInt)
+                            .collect(Collectors.toList());
+                    List<Integer> indexes = task.spec().fields().stream()
+                            .filter(x -> desc.getColumnSlot(x.name()) != null)
+                            .map(x -> indexToField.inverse().get(x))
+                            .collect(Collectors.toList());
+                    PartitionKey partitionKey = getPartitionKey(partition, task.spec(), indexes, indexToField);
+
+                    DescriptorTable.ReferencedPartitionInfo partitionInfo =
+                            new DescriptorTable.ReferencedPartitionInfo(partitionId, partitionKey);
+
+                    descTbl.addReferencedPartitions(srIcebergTable, partitionInfo);
+                    idToPartitionSlots.put(partitionId, partitionSlotIds);
+                }
+            }
+
+            partitionId = partitionKeyToId.get(partition);
 
             TScanRangeLocations scanRangeLocations = new TScanRangeLocations();
 
@@ -157,19 +270,49 @@ public class IcebergScanNode extends ScanNode {
             hdfsScanRange.setOffset(task.start());
             hdfsScanRange.setLength(task.length());
             // For iceberg table we do not need partition id
-            hdfsScanRange.setPartition_id(-1);
+            if (!idToPartitionSlots.containsKey(partitionId)) {
+                hdfsScanRange.setPartition_id(-1);
+            } else {
+                hdfsScanRange.setPartition_id(partitionId);
+                hdfsScanRange.setIdentity_partition_slot_ids(idToPartitionSlots.get(partitionId));
+            }
             hdfsScanRange.setFile_length(file.fileSizeInBytes());
-            hdfsScanRange.setFile_format(IcebergUtil.getHdfsFileFormat(file.format()).toThrift());
+            // Iceberg data file cannot be overwritten
+            hdfsScanRange.setModification_time(0);
+            hdfsScanRange.setFile_format(IcebergApiConverter.getHdfsFileFormat(file.format()).toThrift());
+
+            hdfsScanRange.setDelete_files(task.deletes().stream().map(source -> {
+                TIcebergDeleteFile target = new TIcebergDeleteFile();
+                target.setFull_path(source.path().toString());
+                target.setFile_content(
+                        source.content() == FileContent.EQUALITY_DELETES ? TIcebergFileContent.EQUALITY_DELETES :
+                                TIcebergFileContent.POSITION_DELETES);
+                target.setLength(source.fileSizeInBytes());
+
+                if (source.content() == FileContent.EQUALITY_DELETES) {
+                    source.equalityFieldIds().forEach(fieldId -> {
+                        equalityDeleteColumns.add(
+                                srIcebergTable.getNativeTable().schema().findColumnName(fieldId));
+                    });
+                }
+
+                return target;
+            }).collect(Collectors.toList()));
             TScanRange scanRange = new TScanRange();
             scanRange.setHdfs_scan_range(hdfsScanRange);
             scanRangeLocations.setScan_range(scanRange);
 
-            // TODO: get hdfs block location information for scheduling, use iceberg meta cache
             TScanRangeLocation scanRangeLocation = new TScanRangeLocation(new TNetworkAddress("-1", -1));
             scanRangeLocations.addToLocations(scanRangeLocation);
 
             result.add(scanRangeLocations);
         }
+
+        scanNodePredicates.setSelectedPartitionIds(partitionKeyToId.values());
+    }
+
+    public HDFSScanNodePredicates getScanNodePredicates() {
+        return scanNodePredicates;
     }
 
     @Override
@@ -184,7 +327,7 @@ public class IcebergScanNode extends ScanNode {
     protected String getNodeExplainString(String prefix, TExplainLevel detailLevel) {
         StringBuilder output = new StringBuilder();
 
-        output.append(prefix).append("TABLE: ").append(srIcebergTable.getName()).append("\n");
+        output.append(prefix).append("TABLE: ").append(srIcebergTable.getNativeTable()).append("\n");
 
         if (null != sortColumn) {
             output.append(prefix).append("SORT COLUMN: ").append(sortColumn).append("\n");
@@ -192,6 +335,10 @@ public class IcebergScanNode extends ScanNode {
         if (!conjuncts.isEmpty()) {
             output.append(prefix).append("PREDICATES: ").append(
                     getExplainString(conjuncts)).append("\n");
+        }
+        if (!scanNodePredicates.getMinMaxConjuncts().isEmpty()) {
+            output.append(prefix).append("MIN/MAX PREDICATES: ").append(
+                    getExplainString(scanNodePredicates.getMinMaxConjuncts())).append("\n");
         }
 
         output.append(prefix).append(String.format("cardinality=%s", cardinality));
@@ -200,31 +347,25 @@ public class IcebergScanNode extends ScanNode {
         output.append(prefix).append(String.format("avgRowSize=%s", avgRowSize));
         output.append("\n");
 
-        output.append(prefix).append(String.format("numNodes=%s", numNodes));
-        output.append("\n");
-
-        return output.toString();
-    }
-
-    @Override
-    protected String getNodeVerboseExplain(String prefix) {
-        StringBuilder output = new StringBuilder();
-
-        output.append(prefix).append("TABLE: ").append(srIcebergTable.getName()).append("\n");
-
-        if (null != sortColumn) {
-            output.append(prefix).append("SORT COLUMN: ").append(sortColumn).append("\n");
-        }
-        if (!conjuncts.isEmpty()) {
-            output.append(prefix).append("PREDICATES: ").append(
-                    getExplainString(conjuncts)).append("\n");
+        if (detailLevel == TExplainLevel.VERBOSE) {
+            for (SlotDescriptor slotDescriptor : desc.getSlots()) {
+                Type type = slotDescriptor.getOriginType();
+                if (type.isComplexType()) {
+                    output.append(prefix)
+                            .append(String.format("Pruned type: %d <-> [%s]\n", slotDescriptor.getId().asInt(), type));
+                }
+            }
         }
 
-        output.append(prefix).append(String.format("avgRowSize=%s", avgRowSize));
-        output.append("\n");
+        if (detailLevel == TExplainLevel.VERBOSE && !isResourceMappingCatalog(srIcebergTable.getCatalogName())) {
+            List<String> partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr().listPartitionNames(
+                    srIcebergTable.getCatalogName(), srIcebergTable.getRemoteDbName(), srIcebergTable.getRemoteTableName());
 
-        output.append(prefix).append(String.format("numNodes=%s", numNodes));
-        output.append("\n");
+            output.append(prefix).append(
+                    String.format("partitions=%s/%s", scanNodePredicates.getSelectedPartitionIds().size(),
+                            partitionNames.size() == 0 ? 1 : partitionNames.size()));
+            output.append("\n");
+        }
 
         return output.toString();
     }
@@ -241,11 +382,7 @@ public class IcebergScanNode extends ScanNode {
             if (hasLimit()) {
                 cardinality = Math.min(cardinality, limit);
             }
-
-            numNodes = Math.min(hostToBeId.size(), result.size());
         }
-        // even current node scan has no data, at least one backend will be assigned when the fragment actually execute
-        numNodes = numNodes <= 0 ? 1 : numNodes;
         // when node scan has no data, cardinality should be 0 instead of a invalid value after computeStats()
         cardinality = cardinality == -1 ? 0 : cardinality;
     }
@@ -257,24 +394,23 @@ public class IcebergScanNode extends ScanNode {
         tHdfsScanNode.setTuple_id(desc.getId().asInt());
         msg.hdfs_scan_node = tHdfsScanNode;
 
-        if (!minMaxConjuncts.isEmpty()) {
-            for (Expr expr : minMaxConjuncts) {
-                msg.hdfs_scan_node.addToMin_max_conjuncts(expr.treeToThrift());
-            }
-            msg.hdfs_scan_node.setMin_max_tuple_id(minMaxTuple.getId().asInt());
-        }
-    }
+        String sqlPredicates = getExplainString(conjuncts);
+        msg.hdfs_scan_node.setSql_predicates(sqlPredicates);
 
-    public List<Expr> getMinMaxConjuncts() {
-        return minMaxConjuncts;
-    }
+        msg.hdfs_scan_node.setTable_name(srIcebergTable.getRemoteTableName());
 
-    public void setMinMaxTuple(TupleDescriptor tuple) {
-        minMaxTuple = tuple;
+        HdfsScanNode.setScanOptimizeOptionToThrift(tHdfsScanNode, this);
+        HdfsScanNode.setCloudConfigurationToThrift(tHdfsScanNode, cloudConfiguration);
+        HdfsScanNode.setMinMaxConjunctsToThrift(tHdfsScanNode, this, this.getScanNodePredicates());
     }
 
     @Override
-    public boolean canUsePipeLine() {
+    public boolean canUseRuntimeAdaptiveDop() {
         return true;
+    }
+
+    @Override
+    protected boolean supportTopNRuntimeFilter() {
+        return !srIcebergTable.isV2Format();
     }
 }

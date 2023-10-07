@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/indexed_column_reader.cpp
 
@@ -21,6 +34,7 @@
 
 #include "storage/rowset/indexed_column_reader.h"
 
+#include "fs/fs.h"
 #include "gutil/strings/substitute.h" // for Substitute
 #include "storage/key_coder.h"
 #include "storage/rowset/encoding_info.h" // for EncodingInfo
@@ -30,11 +44,8 @@ namespace starrocks {
 
 using strings::Substitute;
 
-Status IndexedColumnReader::load(bool use_page_cache, bool kept_in_memory) {
-    _use_page_cache = use_page_cache;
-    _kept_in_memory = kept_in_memory;
-
-    _type_info = get_type_info((FieldType)_meta.data_type());
+Status IndexedColumnReader::load(const IndexReadOptions& opts) {
+    _type_info = get_type_info((LogicalType)_meta.data_type());
     if (_type_info == nullptr) {
         return Status::NotSupported(strings::Substitute("unsupported type=$0", _meta.data_type()));
     }
@@ -42,15 +53,13 @@ Status IndexedColumnReader::load(bool use_page_cache, bool kept_in_memory) {
     RETURN_IF_ERROR(get_block_compression_codec(_meta.compression(), &_compress_codec));
     _validx_key_coder = get_key_coder(_type_info->type());
 
-    std::unique_ptr<fs::ReadableBlock> rblock;
-    RETURN_IF_ERROR(_block_mgr->open_block(_file_name, &rblock));
     // read and parse ordinal index page when exists
     if (_meta.has_ordinal_index_meta()) {
         if (_meta.ordinal_index_meta().is_root_data_page()) {
             _sole_data_page = PagePointer(_meta.ordinal_index_meta().root_page());
         } else {
-            RETURN_IF_ERROR(load_index_page(rblock.get(), _meta.ordinal_index_meta().root_page(),
-                                            &_ordinal_index_page_handle, &_ordinal_index_reader));
+            RETURN_IF_ERROR(load_index_page(opts, _meta.ordinal_index_meta().root_page(), &_ordinal_index_page_handle,
+                                            &_ordinal_index_reader));
             _has_index_page = true;
         }
     }
@@ -60,8 +69,8 @@ Status IndexedColumnReader::load(bool use_page_cache, bool kept_in_memory) {
         if (_meta.value_index_meta().is_root_data_page()) {
             _sole_data_page = PagePointer(_meta.value_index_meta().root_page());
         } else {
-            RETURN_IF_ERROR(load_index_page(rblock.get(), _meta.value_index_meta().root_page(),
-                                            &_value_index_page_handle, &_value_index_reader));
+            RETURN_IF_ERROR(load_index_page(opts, _meta.value_index_meta().root_page(), &_value_index_page_handle,
+                                            &_value_index_reader));
             _has_index_page = true;
         }
     }
@@ -69,45 +78,37 @@ Status IndexedColumnReader::load(bool use_page_cache, bool kept_in_memory) {
     return Status::OK();
 }
 
-Status IndexedColumnReader::load_index_page(fs::ReadableBlock* rblock, const PagePointerPB& pp, PageHandle* handle,
+Status IndexedColumnReader::load_index_page(const IndexReadOptions& opts, const PagePointerPB& pp, PageHandle* handle,
                                             IndexPageReader* reader) {
     Slice body;
     PageFooterPB footer;
-    RETURN_IF_ERROR(read_page(rblock, PagePointer(pp), handle, &body, &footer));
+    RETURN_IF_ERROR(read_page(opts, PagePointer(pp), handle, &body, &footer));
     RETURN_IF_ERROR(reader->parse(body, footer.index_page_footer()));
     return Status::OK();
 }
 
-Status IndexedColumnReader::read_page(fs::ReadableBlock* rblock, const PagePointer& pp, PageHandle* handle, Slice* body,
-                                      PageFooterPB* footer) const {
-    PageReadOptions opts;
-    opts.rblock = rblock;
-    opts.page_pointer = pp;
-    opts.codec = _compress_codec;
-    OlapReaderStatistics tmp_stats;
-    opts.stats = &tmp_stats;
-    opts.use_page_cache = _use_page_cache;
-    opts.kept_in_memory = _kept_in_memory;
-    opts.encoding_type = _encoding_info->encoding();
-
-    return PageIO::read_and_decompress_page(opts, handle, body, footer);
+Status IndexedColumnReader::read_page(const IndexReadOptions& opts, const PagePointer& pp, PageHandle* handle,
+                                      Slice* body, PageFooterPB* footer) const {
+    PageReadOptions page_opts;
+    page_opts.read_file = opts.read_file;
+    page_opts.page_pointer = pp;
+    page_opts.codec = _compress_codec;
+    page_opts.stats = opts.stats;
+    page_opts.use_page_cache = opts.use_page_cache;
+    page_opts.kept_in_memory = opts.kept_in_memory;
+    page_opts.encoding_type = _encoding_info->encoding();
+    return PageIO::read_and_decompress_page(page_opts, handle, body, footer);
 }
 
-Status IndexedColumnReader::new_iterator(std::unique_ptr<IndexedColumnIterator>* iter) {
-    std::unique_ptr<fs::ReadableBlock> block;
-    Status st = _block_mgr->open_block(_file_name, &block);
-    LOG_IF(WARNING, !st.ok()) << "Fail to open block=" << _file_name << ", " << st.to_string();
-    if (st.ok()) {
-        iter->reset(new IndexedColumnIterator(this, std::move(block)));
-    }
-    return st;
+Status IndexedColumnReader::new_iterator(const IndexReadOptions& opts, std::unique_ptr<IndexedColumnIterator>* iter) {
+    iter->reset(new IndexedColumnIterator(this, opts));
+    return Status::OK();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-IndexedColumnIterator::IndexedColumnIterator(const IndexedColumnReader* reader,
-                                             std::unique_ptr<fs::ReadableBlock> rblock)
+IndexedColumnIterator::IndexedColumnIterator(const IndexedColumnReader* reader, const IndexReadOptions& opts)
         : _reader(reader),
-          _rblock(std::move(rblock)),
+          _opts(opts),
           _ordinal_iter(&reader->_ordinal_index_reader),
           _value_iter(&reader->_value_index_reader) {}
 
@@ -115,7 +116,7 @@ Status IndexedColumnIterator::_read_data_page(const PagePointer& pp) {
     PageHandle handle;
     Slice body;
     PageFooterPB footer;
-    RETURN_IF_ERROR(_reader->read_page(_rblock.get(), pp, &handle, &body, &footer));
+    RETURN_IF_ERROR(_reader->read_page(_opts, pp, &handle, &body, &footer));
     // parse data page
     // note that page_index is not used in IndexedColumnIterator, so we pass 0
     return parse_page(&_data_page, std::move(handle), body, footer.data_page_footer(), _reader->encoding_info(), pp, 0);
@@ -139,7 +140,7 @@ Status IndexedColumnIterator::seek_to_ordinal(ordinal_t idx) {
         // need to read the data page containing row at idx
         if (_reader->_has_index_page) {
             std::string key;
-            KeyCoderTraits<OLAP_FIELD_TYPE_UNSIGNED_BIGINT>::full_encode_ascending(&idx, &key);
+            KeyCoderTraits<TYPE_UNSIGNED_BIGINT>::full_encode_ascending(&idx, &key);
             RETURN_IF_ERROR(_ordinal_iter.seek_at_or_before(key));
             RETURN_IF_ERROR(_read_data_page(_ordinal_iter.current_page_pointer()));
             _current_iter = &_ordinal_iter;
@@ -189,14 +190,14 @@ Status IndexedColumnIterator::seek_at_or_after(const void* key, bool* exact_matc
 
     // seek inside data page
     RETURN_IF_ERROR(_data_page->data_decoder()->seek_at_or_after_value(key, exact_match));
-    _data_page->seek(_data_page->data_decoder()->current_index());
+    RETURN_IF_ERROR(_data_page->seek(_data_page->data_decoder()->current_index()));
     _current_ordinal = _data_page->first_ordinal() + _data_page->offset();
     DCHECK(_data_page->contains(_current_ordinal));
     _seeked = true;
     return Status::OK();
 }
 
-Status IndexedColumnIterator::next_batch(size_t* n, ColumnBlockView* column_view) {
+Status IndexedColumnIterator::next_batch(size_t* n, Column* column) {
     DCHECK(_seeked);
     if (_current_ordinal == _reader->num_values()) {
         *n = 0;
@@ -219,10 +220,9 @@ Status IndexedColumnIterator::next_batch(size_t* n, ColumnBlockView* column_view
 
         size_t rows_to_read = std::min(_data_page->remaining(), remaining);
         size_t rows_read = rows_to_read;
-        RETURN_IF_ERROR(_data_page->read(column_view, &rows_read));
+        RETURN_IF_ERROR(_data_page->read(column, &rows_read));
         DCHECK(rows_to_read == rows_read);
         _current_ordinal += rows_read;
-        column_view->advance(rows_read);
         remaining -= rows_read;
     }
     *n -= remaining;

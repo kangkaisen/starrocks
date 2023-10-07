@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -21,7 +33,7 @@
 #include "arm_acle.h"
 #endif
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 typedef unsigned __int128 uint128_t;
 inline uint64_t umul128(uint64_t a, uint64_t b, uint64_t* high) {
@@ -107,9 +119,9 @@ public:
     }
 };
 
-static uint32_t crc_hash_32(const void* data, int32_t bytes, uint32_t hash) {
+inline uint32_t crc_hash_32(const void* data, int32_t bytes, uint32_t hash) {
 #if defined(__x86_64__) && !defined(__SSE4_2__)
-    return crc32(hash, (const unsigned char*)data, bytes);
+    return static_cast<uint32_t>(crc32(hash, (const unsigned char*)data, bytes));
 #else
     uint32_t words = bytes / sizeof(uint32_t);
     bytes = bytes % 4 /*sizeof(uint32_t)*/;
@@ -131,7 +143,7 @@ static uint32_t crc_hash_32(const void* data, int32_t bytes, uint32_t hash) {
 #if defined(__x86_64__)
         hash = _mm_crc32_u8(hash, *p);
 #elif defined(__aarch64__)
-        hash = __crc32cb(hash, unaligned_load<uint32_t>(p));
+        hash = __crc32cb(hash, *p);
 #else
 #error "Not supported architecture"
 #endif
@@ -145,12 +157,12 @@ static uint32_t crc_hash_32(const void* data, int32_t bytes, uint32_t hash) {
 #endif
 }
 
-static uint64_t crc_hash_64(const void* data, int32_t length, uint64_t hash) {
+inline uint64_t crc_hash_64(const void* data, int32_t length, uint64_t hash) {
 #if defined(__x86_64__) && !defined(__SSE4_2__)
     return crc32(hash, (const unsigned char*)data, length);
 #else
     if (UNLIKELY(length < 8)) {
-        return crc_hash_32(data, length, hash);
+        return crc_hash_32(data, length, static_cast<uint32_t>(hash));
     }
 
     uint64_t words = length / sizeof(uint64_t);
@@ -160,7 +172,7 @@ static uint64_t crc_hash_64(const void* data, int32_t length, uint64_t hash) {
 #if defined(__x86_64__) && defined(__SSE4_2__)
         hash = _mm_crc32_u64(hash, unaligned_load<uint64_t>(p));
 #elif defined(__aarch64__)
-        hash = __crc32cd(hash, unaligned_load<uint32_t>(p));
+        hash = __crc32cd(hash, unaligned_load<uint64_t>(p));
 #else
 #error "Not supported architecture"
 #endif
@@ -171,7 +183,7 @@ static uint64_t crc_hash_64(const void* data, int32_t length, uint64_t hash) {
 #if defined(__x86_64__)
     hash = _mm_crc32_u64(hash, unaligned_load<uint64_t>(p));
 #elif defined(__aarch64__)
-    hash = __crc32cd(hash, unaligned_load<uint32_t>(p));
+    hash = __crc32cd(hash, unaligned_load<uint64_t>(p));
 #else
 #error "Not supported architecture"
 #endif
@@ -215,10 +227,12 @@ public:
 
 #if defined(__SSE2__) && !defined(ADDRESS_SANITIZER)
 
-// NOTE: This function will access 15 excessive bytes after p1 and p2.
+// NOTE: This function will access 15 excessive bytes after p1 and p2, which should has padding bytes when allocating
+// memory. if withoud pad, please use memequal.
 // NOTE: typename T must be uint8_t or int8_t
 template <typename T>
-typename std::enable_if<sizeof(T) == 1, bool>::type memequal(const T* p1, size_t size1, const T* p2, size_t size2) {
+typename std::enable_if<sizeof(T) == 1, bool>::type memequal_padded(const T* p1, size_t size1, const T* p2,
+                                                                    size_t size2) {
     if (size1 != size2) {
         return false;
     }
@@ -237,7 +251,8 @@ typename std::enable_if<sizeof(T) == 1, bool>::type memequal(const T* p1, size_t
 #else
 
 template <typename T>
-typename std::enable_if<sizeof(T) == 1, bool>::type memequal(const T* p1, size_t size1, const T* p2, size_t size2) {
+typename std::enable_if<sizeof(T) == 1, bool>::type memequal_padded(const T* p1, size_t size1, const T* p2,
+                                                                    size_t size2) {
     return (size1 == size2) && (memcmp(p1, p2, size1) == 0);
 }
 #endif
@@ -245,7 +260,7 @@ typename std::enable_if<sizeof(T) == 1, bool>::type memequal(const T* p1, size_t
 static constexpr uint16_t SLICE_MEMEQUAL_OVERFLOW_PADDING = 15;
 class SliceEqual {
 public:
-    bool operator()(const Slice& x, const Slice& y) const { return memequal(x.data, x.size, y.data, y.size); }
+    bool operator()(const Slice& x, const Slice& y) const { return memequal_padded(x.data, x.size, y.data, y.size); }
 };
 
 class SliceNormalEqual {
@@ -284,7 +299,7 @@ inline uint64_t crc_hash_uint128(uint64_t value0, uint64_t value1, uint64_t seed
     uint64_t hash = _mm_crc32_u64(seed, value0);
     hash = _mm_crc32_u64(hash, value1);
 #elif defined(__x86_64__)
-    hash = crc32(seed, (const unsigned char*)&value0, sizeof(uint64_t));
+    uint64_t hash = crc32(seed, (const unsigned char*)&value0, sizeof(uint64_t));
     hash = crc32(hash, (const unsigned char*)&value1, sizeof(uint64_t));
 #elif defined(__aarch64__)
     uint64_t hash = __crc32cd(seed, value0);
@@ -302,8 +317,8 @@ inline void hash_combine(uint64_t& seed, const T& val) {
 }
 
 inline uint64_t hash_128(uint64_t seed, int128_t val) {
-    size_t low = val;
-    size_t high = val >> 64;
+    auto low = static_cast<size_t>(val);
+    auto high = static_cast<size_t>(val >> 64);
     hash_combine(seed, low);
     hash_combine(seed, high);
     return seed;
@@ -316,4 +331,4 @@ struct Hash128WithSeed {
     }
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

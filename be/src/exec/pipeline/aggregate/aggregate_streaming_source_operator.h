@@ -1,18 +1,30 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <utility>
 
+#include "exec/aggregator.h"
 #include "exec/pipeline/source_operator.h"
-#include "exec/vectorized/aggregator.h"
 
 namespace starrocks::pipeline {
 class AggregateStreamingSourceOperator : public SourceOperator {
 public:
     AggregateStreamingSourceOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id,
-                                     AggregatorPtr aggregator)
-            : SourceOperator(factory, id, "aggregate_streaming_source", plan_node_id),
+                                     int32_t driver_sequence, AggregatorPtr aggregator)
+            : SourceOperator(factory, id, "aggregate_streaming_source", plan_node_id, false, driver_sequence),
               _aggregator(std::move(aggregator)) {
         _aggregator->ref();
     }
@@ -21,15 +33,14 @@ public:
 
     bool has_output() const override;
     bool is_finished() const override;
-    Status set_finishing(RuntimeState* state) override;
     Status set_finished(RuntimeState* state) override;
 
     void close(RuntimeState* state) override;
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
-    void _output_chunk_from_hash_map(vectorized::ChunkPtr* chunk, RuntimeState* state);
+    Status _output_chunk_from_hash_map(ChunkPtr* chunk, RuntimeState* state);
 
     // It is used to perform aggregation algorithms shared by
     // AggregateStreamingSinkOperator. It is
@@ -37,8 +48,6 @@ private:
     // - reffed at constructor() of both sink and source operator,
     // - unreffed at close() of both sink and source operator.
     AggregatorPtr _aggregator = nullptr;
-    // Whether prev operator has no output
-    mutable bool _is_finished = false;
 };
 
 class AggregateStreamingSourceOperatorFactory final : public SourceOperatorFactory {
@@ -50,7 +59,7 @@ public:
     ~AggregateStreamingSourceOperatorFactory() override = default;
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
-        return std::make_shared<AggregateStreamingSourceOperator>(this, _id, _plan_node_id,
+        return std::make_shared<AggregateStreamingSourceOperator>(this, _id, _plan_node_id, driver_sequence,
                                                                   _aggregator_factory->get_or_create(driver_sequence));
     }
 

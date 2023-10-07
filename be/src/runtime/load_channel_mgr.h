@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/load_channel_mgr.h
 
@@ -21,12 +34,16 @@
 
 #pragma once
 
+#include <bthread/bthread.h>
+#include <bthread/mutex.h>
+
 #include <ctime>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 
+#include "common/compiler_util.h"
 #include "common/statusor.h"
 #include "gen_cpp/InternalService_types.h"
 #include "gen_cpp/Types_types.h"
@@ -57,31 +74,37 @@ public:
     void open(brpc::Controller* cntl, const PTabletWriterOpenRequest& request, PTabletWriterOpenResult* response,
               google::protobuf::Closure* done);
 
-    void add_chunk(brpc::Controller* cntl, const PTabletWriterAddChunkRequest& request,
-                   PTabletWriterAddBatchResult* response, google::protobuf::Closure* done);
+    void add_chunk(const PTabletWriterAddChunkRequest& request, PTabletWriterAddBatchResult* response);
+
+    void add_chunks(const PTabletWriterAddChunksRequest& request, PTabletWriterAddBatchResult* response);
+
+    void add_segment(brpc::Controller* cntl, const PTabletWriterAddSegmentRequest* request,
+                     PTabletWriterAddSegmentResult* response, google::protobuf::Closure* done);
 
     void cancel(brpc::Controller* cntl, const PTabletWriterCancelRequest& request, PTabletWriterCancelResult* response,
                 google::protobuf::Closure* done);
 
-    scoped_refptr<LoadChannel> remove_load_channel(const UniqueId& load_id);
+    std::shared_ptr<LoadChannel> remove_load_channel(const UniqueId& load_id);
+
+    void close();
 
 private:
-    Status _start_bg_worker();
+    static void* load_channel_clean_bg_worker(void* arg);
 
-    scoped_refptr<LoadChannel> _find_load_channel(const UniqueId& load_id);
+    Status _start_bg_worker();
+    std::shared_ptr<LoadChannel> _find_load_channel(const UniqueId& load_id);
+    void _start_load_channels_clean();
 
     // lock protect the load channel map
-    std::mutex _lock;
+    bthread::Mutex _lock;
     // load id -> load channel
-    std::unordered_map<UniqueId, scoped_refptr<LoadChannel>> _load_channels;
+    std::unordered_map<UniqueId, std::shared_ptr<LoadChannel>> _load_channels;
 
     // check the total load mem consumption of this Backend
-    MemTracker* _mem_tracker = nullptr;
+    MemTracker* _mem_tracker;
 
     // thread to clean timeout load channels
-    std::thread _load_channels_clean_thread;
-    Status _start_load_channels_clean();
-    std::atomic<bool> _is_stopped;
+    bthread_t _load_channels_clean_thread;
 };
 
 } // namespace starrocks

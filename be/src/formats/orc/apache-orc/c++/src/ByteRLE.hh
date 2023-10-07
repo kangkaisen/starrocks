@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/src/ByteRLE.hh
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -24,6 +20,7 @@
 
 #include <memory>
 
+#include "Utils.hh"
 #include "io/InputStream.hh"
 #include "io/OutputStream.hh"
 
@@ -57,6 +54,11 @@ public:
      * @param recorder use the recorder to record current positions
      */
     virtual void recordPosition(PositionRecorder* recorder) const = 0;
+
+    /**
+     * suppress the data and reset to initial state
+     */
+    virtual void suppress() = 0;
 };
 
 class ByteRleDecoder {
@@ -98,8 +100,10 @@ std::unique_ptr<ByteRleEncoder> createBooleanRleEncoder(std::unique_ptr<Buffered
 /**
    * Create a byte RLE decoder.
    * @param input the input stream to read from
+   * @param metrics the metrics of the decoder
    */
-std::unique_ptr<ByteRleDecoder> createByteRleDecoder(std::unique_ptr<SeekableInputStream> input);
+std::unique_ptr<ByteRleDecoder> createByteRleDecoder(std::unique_ptr<SeekableInputStream> input,
+                                                     ReaderMetrics* metrics);
 
 /**
    * Create a boolean RLE decoder.
@@ -108,6 +112,8 @@ std::unique_ptr<ByteRleDecoder> createByteRleDecoder(std::unique_ptr<SeekableInp
    * if the value is masked by notNull. This is required for the notNull stream
    * processing to properly apply multiple masks from nested types.
    * @param input the input stream to read from
+   * @param metrics the metrics of the decoder
    */
-std::unique_ptr<ByteRleDecoder> createBooleanRleDecoder(std::unique_ptr<SeekableInputStream> input);
+std::unique_ptr<ByteRleDecoder> createBooleanRleDecoder(std::unique_ptr<SeekableInputStream> input,
+                                                        ReaderMetrics* metrics);
 } // namespace orc

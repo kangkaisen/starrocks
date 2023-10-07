@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -12,8 +24,8 @@ class RowDescriptor;
 namespace pipeline {
 class ExchangeSourceOperator : public SourceOperator {
 public:
-    ExchangeSourceOperator(OperatorFactory* factory, int32_t driver_sequence, int32_t id, int32_t plan_node_id)
-            : SourceOperator(factory, id, "exchange_source", plan_node_id), _driver_sequence(driver_sequence) {}
+    ExchangeSourceOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id, int32_t driver_sequence)
+            : SourceOperator(factory, id, "exchange_source", plan_node_id, false, driver_sequence) {}
 
     ~ExchangeSourceOperator() override = default;
 
@@ -25,10 +37,9 @@ public:
 
     Status set_finishing(RuntimeState* state) override;
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
-    const int32_t _driver_sequence;
     std::shared_ptr<DataStreamRecvr> _stream_recvr = nullptr;
     std::atomic<bool> _is_finishing = false;
 };
@@ -48,12 +59,17 @@ public:
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
         ++_stream_recvr_cnt;
-        return std::make_shared<ExchangeSourceOperator>(this, driver_sequence, _id, _plan_node_id);
+        return std::make_shared<ExchangeSourceOperator>(this, _id, _plan_node_id, driver_sequence);
     }
+
+    bool could_local_shuffle() const override;
+    TPartitionType::type partition_type() const override;
 
     std::shared_ptr<DataStreamRecvr> create_stream_recvr(RuntimeState* state,
                                                          const std::shared_ptr<RuntimeProfile>& profile);
     void close_stream_recvr();
+
+    SourceOperatorFactory::AdaptiveState adaptive_state() const override { return AdaptiveState::ACTIVE; }
 
 private:
     const TExchangeNode& _texchange_node;

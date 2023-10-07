@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "numeric_column.h"
 
@@ -6,16 +18,20 @@
 #include "gutil/strings/substitute.h"
 #include "util/string_parser.hpp"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 template <typename FromType, typename ToType>
 static inline bool checked_cast(const FromType& from, ToType* to) {
     *to = static_cast<ToType>(from);
-    if constexpr (std::numeric_limits<ToType>::is_integer) {
-        return (from > std::numeric_limits<ToType>::max() || from < std::numeric_limits<ToType>::min());
-    }
 
+    // NOTE: use lowest() because float and double needed.
+    // Needs to covnert long and int128_t to double to compare, so disable compiler's complain
+    DIAGNOSTIC_PUSH
+#if defined(__clang__)
+    DIAGNOSTIC_IGNORE("-Wimplicit-int-float-conversion")
+#endif
     return (from < std::numeric_limits<ToType>::lowest() || from > std::numeric_limits<ToType>::max());
+    DIAGNOSTIC_POP
 }
 
 // The value must be in type simdjson::ondemand::json_type::number;
@@ -39,10 +55,30 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
     }
 
     case simdjson::ondemand::number_type::unsigned_integer: {
-        uint64_t in = value->get_uint64();
         T out{};
+        // When get_uint64 throws an exception here, we need to recheck it with get_int64.
+        // This is because currently there exists a bug in simdjson, for number <= -9223372036854775808,
+        // simdjson will recognized it as unsigned_integer, and use get_uint64() to parse it, which will
+        // raise an exception here. So here we need to recheck by get_int64().
+        // This bug in simdjson is expected to be solved by the following commit, later we can remove
+        // the redundant error handling logic here.
+        // https://github.com/simdjson/simdjson/commit/b169dc2ea71bc8e9296de9749c42d78f80c8a633
+        bool checked_cast_flag = true;
+        uint64_t in = 0;
+        try {
+            in = value->get_uint64();
+            checked_cast_flag = checked_cast(in, &out);
+        } catch (simdjson::simdjson_error& e) {
+            // only needs to handle int64_t::min here, throw exception for any other number
+            // get_int64() itself may also throw exception
+            if (value->get_int64() == std::numeric_limits<int64_t>::min()) {
+                checked_cast_flag = checked_cast(std::numeric_limits<int64_t>::min(), &out);
+            } else {
+                throw simdjson::simdjson_error(simdjson::error_code::NUMBER_OUT_OF_RANGE);
+            }
+        }
 
-        if (!checked_cast(in, &out)) {
+        if (!checked_cast_flag) {
             column->append_numbers(&out, sizeof(out));
         } else {
             auto err_msg = strings::Substitute("Value is overflow. column=$0, value=$1", name, in);
@@ -147,4 +183,4 @@ template Status add_numeric_column<double>(Column* column, const TypeDescriptor&
 template Status add_numeric_column<float>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                                           simdjson::ondemand::value* value);
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

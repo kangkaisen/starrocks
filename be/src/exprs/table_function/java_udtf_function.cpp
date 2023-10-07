@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exprs/table_function/java_udtf_function.h"
 
@@ -10,19 +22,16 @@
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
 #include "exprs/table_function/table_function.h"
-#include "gen_cpp/Types_types.h"
 #include "gutil/casts.h"
 #include "jni.h"
 #include "runtime/types.h"
 #include "runtime/user_function_cache.h"
+#include "udf/java/java_data_converter.h"
 #include "udf/java/java_udf.h"
 #include "udf/java/utils.h"
+#include "util/defer_op.h"
 
-namespace starrocks::vectorized {
-template <bool handle_null>
-jvalue cast_to_jvalue(MethodTypeDescriptor method_type_desc, const Column* col, int row_num);
-void release_jvalue(MethodTypeDescriptor method_type_desc, jvalue val);
-void append_jvalue(MethodTypeDescriptor method_type_desc, Column* col, jvalue val);
+namespace starrocks {
 
 const TableFunction* getJavaUDTFFunction() {
     static JavaUDTFFunction java_table_function;
@@ -33,11 +42,7 @@ class JavaUDTFState : public TableFunctionState {
 public:
     JavaUDTFState(std::string libpath, std::string symbol, const TTypeDesc& desc)
             : _libpath(std::move(libpath)), _symbol(std::move(symbol)), _ret_type(TypeDescriptor::from_thrift(desc)) {}
-    ~JavaUDTFState() {
-        if (_udtf_handle) {
-            JVMFunctionHelper::getInstance().getEnv()->DeleteLocalRef(_udtf_handle);
-        }
-    }
+    ~JavaUDTFState() override = default;
 
     Status open();
     void close();
@@ -45,7 +50,7 @@ public:
     const TypeDescriptor& type_desc() { return _ret_type; }
     JavaMethodDescriptor* method_process() { return _process.get(); }
     jclass get_udtf_clazz() { return _udtf_class.clazz(); }
-    jobject handle() { return _udtf_handle; }
+    jobject handle() { return _udtf_handle.handle(); }
 
 private:
     std::string _libpath;
@@ -54,22 +59,19 @@ private:
     std::unique_ptr<ClassLoader> _class_loader;
     std::unique_ptr<ClassAnalyzer> _analyzer;
     JVMClass _udtf_class = nullptr;
-    jobject _udtf_handle = nullptr;
+    JavaGlobalRef _udtf_handle = nullptr;
     std::unique_ptr<JavaMethodDescriptor> _process;
     TypeDescriptor _ret_type;
 };
 
 Status JavaUDTFState::open() {
+    RETURN_IF_ERROR(detect_java_runtime());
     _class_loader = std::make_unique<ClassLoader>(std::move(_libpath));
     RETURN_IF_ERROR(_class_loader->init());
     _analyzer = std::make_unique<ClassAnalyzer>();
 
-    _udtf_class = _class_loader->getClass(_symbol);
-    if (_udtf_class.clazz() == nullptr) {
-        return Status::InternalError(fmt::format("Not found symbol:{}", _symbol));
-    }
-
-    RETURN_IF_ERROR(_udtf_class.newInstance(&_udtf_handle));
+    ASSIGN_OR_RETURN(_udtf_class, _class_loader->getClass(_symbol));
+    ASSIGN_OR_RETURN(_udtf_handle, _udtf_class.newInstance());
 
     auto* analyzer = _analyzer.get();
     auto add_method = [&](const std::string& name, jclass clazz, std::unique_ptr<JavaMethodDescriptor>* res) {
@@ -121,7 +123,7 @@ Status JavaUDTFFunction::close(RuntimeState* runtime_state, TableFunctionState* 
     return Status::OK();
 }
 
-std::pair<Columns, ColumnPtr> JavaUDTFFunction::process(TableFunctionState* state, bool* eos) const {
+std::pair<Columns, UInt32Column::Ptr> JavaUDTFFunction::process(TableFunctionState* state) const {
     Columns res;
     const Columns& cols = state->get_columns();
     auto* stateUDTF = down_cast<JavaUDTFState*>(state);
@@ -134,21 +136,31 @@ std::pair<Columns, ColumnPtr> JavaUDTFFunction::process(TableFunctionState* stat
 
     std::vector<jvalue> call_stack;
     std::vector<jobject> rets;
+    DeferOp defer = DeferOp([&]() {
+        // clean up arrays
+        for (auto& ret : rets) {
+            if (ret) {
+                env->DeleteLocalRef(ret);
+            }
+        }
+    });
     size_t num_rows = cols[0]->size();
     size_t num_cols = cols.size();
+    state->set_processed_rows(num_rows);
 
     call_stack.reserve(num_cols);
     rets.resize(num_rows);
     for (int i = 0; i < num_rows; ++i) {
         for (int j = 0; j < num_cols; ++j) {
-            jvalue val = cast_to_jvalue<true>(stateUDTF->method_process()->method_desc[j + 1], cols[j].get(), i);
+            auto method_type = stateUDTF->method_process()->method_desc[j + 1];
+            jvalue val = cast_to_jvalue<true>(method_type.type, method_type.is_box, cols[j].get(), i);
             call_stack.push_back(val);
         }
 
         rets[i] = env->CallObjectMethodA(stateUDTF->handle(), methodID, call_stack.data());
 
         for (int j = 0; j < num_cols; ++j) {
-            release_jvalue(stateUDTF->method_process()->method_desc[j + 1], call_stack[j]);
+            release_jvalue(stateUDTF->method_process()->method_desc[j + 1].is_box, call_stack[j]);
         }
 
         call_stack.clear();
@@ -171,8 +183,9 @@ std::pair<Columns, ColumnPtr> JavaUDTFFunction::process(TableFunctionState* stat
         // update for col
         for (int j = 0; j < len; ++j) {
             jobject vi = env->GetObjectArrayElement((jobjectArray)rets[i], j);
+            LOCAL_REF_GUARD_ENV(env, vi);
             append_jvalue(method_desc, col.get(), {.l = vi});
-            release_jvalue(method_desc, {.l = vi});
+            release_jvalue(method_desc.is_box, {.l = vi});
         }
     }
 
@@ -188,4 +201,4 @@ std::pair<Columns, ColumnPtr> JavaUDTFFunction::process(TableFunctionState* stat
     return std::make_pair(std::move(res), std::move(offsets_col));
 }
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

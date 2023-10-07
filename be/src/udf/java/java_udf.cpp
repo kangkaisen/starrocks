@@ -1,8 +1,19 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021 StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "udf/java/java_udf.h"
 
-#include <algorithm>
 #include <iterator>
 #include <memory>
 #include <sstream>
@@ -10,18 +21,26 @@
 
 #include "column/binary_column.h"
 #include "column/column.h"
-#include "column/fixed_length_column.h"
-#include "column/vectorized_fwd.h"
 #include "common/status.h"
-#include "fmt/compile.h"
 #include "fmt/core.h"
 #include "jni.h"
-#include "runtime/primitive_type.h"
+#include "types/logical_type.h"
+#include "udf/java/java_native_method.h"
+#include "udf/java/utils.h"
 #include "util/defer_op.h"
+
+// find a jclass and return a global jclass ref
+#define JNI_FIND_CLASS(clazz_name)                \
+    [](const char* name) {                        \
+        auto clazz = _env->FindClass(name);       \
+        auto g_clazz = _env->NewGlobalRef(clazz); \
+        _env->DeleteLocalRef(clazz);              \
+        return (jclass)g_clazz;                   \
+    }(clazz_name)
 
 #define ADD_NUMBERIC_CLASS(prim_clazz, clazz, sign)                                                           \
     {                                                                                                         \
-        _class_##prim_clazz = _env->FindClass("java/lang/" #clazz);                                           \
+        _class_##prim_clazz = JNI_FIND_CLASS("java/lang/" #clazz);                                            \
         CHECK(_class_##prim_clazz);                                                                           \
         _value_of_##prim_clazz =                                                                              \
                 _env->GetStaticMethodID(_class_##prim_clazz, "valueOf", "(" #sign ")Ljava/lang/" #clazz ";"); \
@@ -39,37 +58,48 @@
         return _env->Call##CallType##Method(obj, _val_##prim_clazz);                             \
     }
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 constexpr const char* CLASS_UDF_HELPER_NAME = "com.starrocks.udf.UDFHelper";
+constexpr const char* CLASS_NATIVE_METHOD_HELPER_NAME = "com.starrocks.utils.NativeMethodHelper";
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wwrite-strings"
+static JNINativeMethod java_native_methods[] = {
+        {"resizeStringData", "(JI)J", (void*)&JavaNativeMethods::resizeStringData},
+        {"getAddrs", "(J)[J", (void*)&JavaNativeMethods::getAddrs},
+        {"memoryTrackerMalloc", "(J)J", (void*)&JavaNativeMethods::memory_malloc},
+        {"memoryTrackerFree", "(J)V", (void*)&JavaNativeMethods::memory_free},
+};
+#pragma GCC diagnostic pop
 
 JVMFunctionHelper& JVMFunctionHelper::getInstance() {
-    static thread_local std::unique_ptr<JVMFunctionHelper> helper;
-    if (helper == nullptr) {
-        JNIEnv* env = getJNIEnv();
-        CHECK(env != nullptr) << "couldn't got a JNIEnv";
-        helper.reset(new JVMFunctionHelper(env));
-        helper->_add_class_path(getenv("STARROCKS_HOME") + std::string("/lib/udf-class-loader.jar"));
-        helper->_add_class_path(getenv("STARROCKS_HOME") +
-                                std::string("/lib/starrocks-jdbc-bridge-jar-with-dependencies.jar"));
-        helper->_init();
+    if (_env == nullptr) {
+        _env = getJNIEnv();
+        CHECK(_env != nullptr) << "couldn't got a JNIEnv";
     }
-    return *helper;
+    static JVMFunctionHelper helper;
+    return helper;
+}
+
+std::pair<JNIEnv*, JVMFunctionHelper&> JVMFunctionHelper::getInstanceWithEnv() {
+    auto& instance = getInstance();
+    return {instance.getEnv(), instance};
 }
 
 void JVMFunctionHelper::_init() {
-    _object_class = _env->FindClass("java/lang/Object");
-    _object_array_class = _env->FindClass("[Ljava/lang/Object;");
-    _string_class = _env->FindClass("java/lang/String");
-    _throwable_class = _env->FindClass("java/lang/Throwable");
-    _jarrays_class = _env->FindClass("java/util/Arrays");
-    _list_class = _env->FindClass("java/util/List");
+    _object_class = JNI_FIND_CLASS("java/lang/Object");
+    _object_array_class = JNI_FIND_CLASS("[Ljava/lang/Object;");
+    _string_class = JNI_FIND_CLASS("java/lang/String");
+    _jarrays_class = JNI_FIND_CLASS("java/util/Arrays");
+    _list_class = JNI_FIND_CLASS("java/util/List");
+    _exception_util_class = JNI_FIND_CLASS("org/apache/commons/lang3/exception/ExceptionUtils");
 
     CHECK(_object_class);
     CHECK(_string_class);
-    CHECK(_throwable_class);
     CHECK(_jarrays_class);
     CHECK(_list_class);
+    CHECK(_exception_util_class);
 
     ADD_NUMBERIC_CLASS(boolean, Boolean, Z);
     ADD_NUMBERIC_CLASS(byte, Byte, B);
@@ -79,58 +109,67 @@ void JVMFunctionHelper::_init() {
     ADD_NUMBERIC_CLASS(float, Float, F);
     ADD_NUMBERIC_CLASS(double, Double, D);
 
-    jclass charsets = _env->FindClass("java/nio/charset/StandardCharsets");
+    jclass charsets = JNI_FIND_CLASS("java/nio/charset/StandardCharsets");
     DCHECK(charsets != nullptr);
     auto fieldId = _env->GetStaticFieldID(charsets, "UTF_8", "Ljava/nio/charset/Charset;");
     DCHECK(fieldId != nullptr);
-    _utf8_charsets = _env->GetStaticObjectField(charsets, fieldId);
+
+    auto charset = _env->GetStaticObjectField(charsets, fieldId);
+    _utf8_charsets = _env->NewGlobalRef(charset);
+    _env->DeleteLocalRef(charset);
+
     DCHECK(_utf8_charsets != nullptr);
     _string_construct_with_bytes = _env->GetMethodID(_string_class, "<init>", "([BLjava/nio/charset/Charset;)V");
     DCHECK(_string_construct_with_bytes != nullptr);
 
     std::string name = JVMFunctionHelper::to_jni_class_name(CLASS_UDF_HELPER_NAME);
-    _udf_helper_class = _env->FindClass(name.c_str());
+    _udf_helper_class = JNI_FIND_CLASS(name.c_str());
+    DCHECK(_udf_helper_class != nullptr);
+
+    std::string native_method_name = JVMFunctionHelper::to_jni_class_name(CLASS_NATIVE_METHOD_HELPER_NAME);
+    jclass _native_method_class = JNI_FIND_CLASS(native_method_name.c_str());
+    DCHECK(_native_method_class != nullptr);
+    int res = _env->RegisterNatives(_native_method_class, java_native_methods,
+                                    sizeof(java_native_methods) / sizeof(java_native_methods[0]));
+    DCHECK_EQ(res, 0);
     _create_boxed_array = _env->GetStaticMethodID(_udf_helper_class, "createBoxedArray",
                                                   "(IIZ[Ljava/nio/ByteBuffer;)[Ljava/lang/Object;");
 
-    _batch_update_single = _env->GetStaticMethodID(
-            _udf_helper_class, "batchUpdateSingle",
-            "(Ljava/lang/Object;Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)V");
-    _batch_update = _env->GetStaticMethodID(_udf_helper_class, "batchUpdate",
-                                            "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)V");
+    _batch_update = _env->GetStaticMethodID(
+            _udf_helper_class, "batchUpdate",
+            "(Ljava/lang/Object;Ljava/lang/reflect/Method;Lcom/starrocks/udf/FunctionStates;[I[Ljava/lang/Object;)V");
     _batch_call = _env->GetStaticMethodID(
             _udf_helper_class, "batchCall",
             "(Ljava/lang/Object;Ljava/lang/reflect/Method;I[Ljava/lang/Object;)[Ljava/lang/Object;");
     _batch_call_no_args = _env->GetStaticMethodID(_udf_helper_class, "batchCall",
                                                   "(Ljava/lang/Object;Ljava/lang/reflect/Method;I)[Ljava/lang/Object;");
+    _batch_update_state = _env->GetStaticMethodID(_udf_helper_class, "batchUpdateState",
+                                                  "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)V");
+    _batch_update_if_not_null = _env->GetStaticMethodID(
+            _udf_helper_class, "batchUpdateIfNotNull",
+            "(Ljava/lang/Object;Ljava/lang/reflect/Method;Lcom/starrocks/udf/FunctionStates;[I[Ljava/lang/Object;)V");
+
     _int_batch_call = _env->GetStaticMethodID(_udf_helper_class, "batchCall",
                                               "([Ljava/lang/Object;Ljava/lang/reflect/Method;I)[I");
-    _direct_buffer_class = _env->FindClass("java/nio/ByteBuffer");
+    _get_boxed_result =
+            _env->GetStaticMethodID(_udf_helper_class, "getResultFromBoxedArray", "(IILjava/lang/Object;J)V");
+    _direct_buffer_class = JNI_FIND_CLASS("java/nio/ByteBuffer");
     _direct_buffer_clear = _env->GetMethodID(_direct_buffer_class, "clear", "()Ljava/nio/Buffer;");
     DCHECK(_batch_call);
     DCHECK(_batch_call_no_args);
+    DCHECK(_batch_update_state);
+    DCHECK(_batch_update_if_not_null);
+    DCHECK(_get_boxed_result);
     DCHECK(_direct_buffer_clear);
 
     _list_get = _env->GetMethodID(_list_class, "get", "(I)Ljava/lang/Object;");
     DCHECK(_list_get != nullptr);
     _list_size = _env->GetMethodID(_list_class, "size", "()I");
     DCHECK(_list_size != nullptr);
-}
 
-// https://stackoverflow.com/questions/45232522/how-to-set-classpath-of-a-running-jvm-in-cjni
-void JVMFunctionHelper::_add_class_path(const std::string& path) {
-    const std::string urlPath = "file://" + path;
-    LOG(INFO) << "add class path:" << urlPath;
-    jclass classLoaderCls = _env->FindClass("java/lang/ClassLoader");
-    jmethodID getSystemClassLoaderMethod =
-            _env->GetStaticMethodID(classLoaderCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject classLoaderInstance = _env->CallStaticObjectMethod(classLoaderCls, getSystemClassLoaderMethod);
-    jclass urlClassLoaderCls = _env->FindClass("java/net/URLClassLoader");
-    jmethodID addUrlMethod = _env->GetMethodID(urlClassLoaderCls, "addURL", "(Ljava/net/URL;)V");
-    jclass urlCls = _env->FindClass("java/net/URL");
-    jmethodID urlConstructor = _env->GetMethodID(urlCls, "<init>", "(Ljava/lang/String;)V");
-    jobject urlInstance = _env->NewObject(urlCls, urlConstructor, _env->NewStringUTF(urlPath.c_str()));
-    _env->CallVoidMethod(classLoaderInstance, addUrlMethod, urlInstance);
+    name = JVMFunctionHelper::to_jni_class_name(UDAFStateList::clazz_name);
+    jclass loaded_clazz = JNI_FIND_CLASS(name.c_str());
+    _function_states_clazz = new JVMClass(std::move(loaded_clazz));
 }
 
 jobjectArray JVMFunctionHelper::_build_object_array(jclass clazz, jobject* arr, int sz) {
@@ -141,32 +180,48 @@ jobjectArray JVMFunctionHelper::_build_object_array(jclass clazz, jobject* arr, 
     return res_arr;
 }
 
-void JVMFunctionHelper::_check_call_exception(FunctionContext* ctx) {
-    if (auto e = _env->ExceptionOccurred()) {
-        std::string msg = this->dumpExceptionString(e);
-        LOG(WARNING) << "Exception: " << msg;
-        ctx->set_error(msg.c_str());
-        _env->ExceptionClear();
-    }
+JVMClass& JVMFunctionHelper::function_state_clazz() {
+    return *_function_states_clazz;
 }
 
+#define CHECK_FUNCTION_EXCEPTION(_env, name)                  \
+    if (auto e = _env->ExceptionOccurred()) {                 \
+        LOCAL_REF_GUARD(e);                                   \
+        _env->ExceptionClear();                               \
+        LOG(WARNING) << "Exception happend when call " #name; \
+        return "";                                            \
+    }
+
+#define RETURN_ERROR_IF_EXCEPTION(env, errmsg)                                   \
+    if (jthrowable jthr = env->ExceptionOccurred()) {                            \
+        LOCAL_REF_GUARD(jthr);                                                   \
+        std::string msg = fmt::format(errmsg, helper.dumpExceptionString(jthr)); \
+        LOG(WARNING) << msg;                                                     \
+        env->ExceptionClear();                                                   \
+        return Status::RuntimeError(msg);                                        \
+    }
+
 std::string JVMFunctionHelper::array_to_string(jobject object) {
+    _env->ExceptionClear();
     std::string value;
     jmethodID arrayToStringMethod =
             _env->GetStaticMethodID(_jarrays_class, "toString", "([Ljava/lang/Object;)Ljava/lang/String;");
     DCHECK(arrayToStringMethod != nullptr);
     jobject jstr = _env->CallStaticObjectMethod(_jarrays_class, arrayToStringMethod, object);
+    LOCAL_REF_GUARD(jstr);
+    CHECK_FUNCTION_EXCEPTION(_env, "array_to_string")
     value = to_cxx_string((jstring)jstr);
-    _env->DeleteLocalRef(jstr);
     return value;
 }
 
 std::string JVMFunctionHelper::to_string(jobject obj) {
+    _env->ExceptionClear();
     std::string value;
     auto method = getToStringMethod(_object_class);
     auto res = _env->CallObjectMethod(obj, method);
+    LOCAL_REF_GUARD(res);
+    CHECK_FUNCTION_EXCEPTION(_env, "to_string")
     value = to_cxx_string((jstring)res);
-    _env->DeleteLocalRef(res);
     return value;
 }
 
@@ -179,19 +234,13 @@ std::string JVMFunctionHelper::to_cxx_string(jstring str) {
 }
 
 std::string JVMFunctionHelper::dumpExceptionString(jthrowable throwable) {
-    std::stringstream ss;
     // toString
-    jmethodID toString = getToStringMethod(_throwable_class);
-    CHECK(toString != nullptr) << "Not Found JNI method toString";
-    ss << to_string(throwable);
-
-    // e.getStackTrace()
-    jmethodID getStackTrace = _env->GetMethodID(_throwable_class, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
-    CHECK(getStackTrace != nullptr) << "Not Found JNI method getStackTrace";
-    jobject stack_traces = _env->CallObjectMethod((jobject)throwable, getStackTrace);
-    ss << array_to_string(stack_traces);
-    _env->DeleteLocalRef(stack_traces);
-    return ss.str();
+    auto get_stack_trace = _env->GetStaticMethodID(_exception_util_class, "getStackTrace",
+                                                   "(Ljava/lang/Throwable;)Ljava/lang/String;");
+    CHECK(get_stack_trace != nullptr) << "Not Found JNI method getStackTrace";
+    jobject stack_traces = _env->CallStaticObjectMethod(_exception_util_class, get_stack_trace, (jobject)throwable);
+    LOCAL_REF_GUARD(stack_traces);
+    return to_cxx_string((jstring)stack_traces);
 }
 
 jmethodID JVMFunctionHelper::getToStringMethod(jclass clazz) {
@@ -216,6 +265,7 @@ jobject JVMFunctionHelper::create_array(int sz) {
 
 jobject JVMFunctionHelper::create_boxed_array(int type, int num_rows, bool nullable, DirectByteBuffer* buffs, int sz) {
     jobjectArray input_arr = _env->NewObjectArray(sz, _direct_buffer_class, nullptr);
+    LOCAL_REF_GUARD(input_arr);
     for (int i = 0; i < sz; ++i) {
         _env->SetObjectArrayElement(input_arr, i, buffs[i].handle());
     }
@@ -225,7 +275,6 @@ jobject JVMFunctionHelper::create_boxed_array(int type, int num_rows, bool nulla
         LOG(WARNING) << "fail to create array " << this->dumpExceptionString(_env->ExceptionOccurred());
         _env->ExceptionClear();
     }
-    _env->DeleteLocalRef(input_arr);
     return res;
 }
 
@@ -234,40 +283,77 @@ jobject JVMFunctionHelper::create_object_array(jobject o, int num_rows) {
     return res_arr;
 }
 
-void JVMFunctionHelper::batch_update_single(FunctionContext* ctx, jobject udaf, jobject update, jobject state,
-                                            jobject* input, int cols) {
-    jobjectArray input_arr = _build_object_array(_object_array_class, input, cols);
-    _env->CallStaticVoidMethod(_udf_helper_class, _batch_update_single, udaf, update, state, input_arr);
-    _check_call_exception(ctx);
-    _env->DeleteLocalRef(input_arr);
+void JVMFunctionHelper::batch_update_single(AggBatchCallStub* stub, int state, jobject* input, int cols, int rows) {
+    auto obj = convert_handle_to_jobject(stub->ctx(), state);
+    LOCAL_REF_GUARD(obj);
+    stub->batch_update_single(rows, obj, input, cols);
 }
 
-void JVMFunctionHelper::batch_update(FunctionContext* ctx, jobject udaf, jobject update, jobject* input, int cols) {
+void JVMFunctionHelper::batch_update(FunctionContext* ctx, jobject udaf, jobject update, jobject states, jobject* input,
+                                     int cols) {
     jobjectArray input_arr = _build_object_array(_object_array_class, input, cols);
-    _env->CallStaticVoidMethod(_udf_helper_class, _batch_update, udaf, update, input_arr);
-    _check_call_exception(ctx);
-    _env->DeleteLocalRef(input_arr);
+    LOCAL_REF_GUARD(input_arr);
+    _env->CallStaticVoidMethod(_udf_helper_class, _batch_update, udaf, update, ctx->udaf_ctxs()->states->handle(),
+                               states, input_arr);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
 }
 
-jobject JVMFunctionHelper::batch_call(FunctionContext* ctx, jobject udf, jobject evaluate, jobject* input, int cols,
+void JVMFunctionHelper::batch_update_state(FunctionContext* ctx, jobject udaf, jobject update, jobject* input,
+                                           int cols) {
+    jobjectArray input_arr = _build_object_array(_object_array_class, input, cols);
+    LOCAL_REF_GUARD(input_arr);
+    _env->CallStaticVoidMethod(_udf_helper_class, _batch_update_state, udaf, update, input_arr);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
+}
+
+void JVMFunctionHelper::batch_update_if_not_null(FunctionContext* ctx, jobject udaf, jobject update, jobject states,
+                                                 jobject* input, int cols) {
+    jobjectArray input_arr = _build_object_array(_object_array_class, input, cols);
+    LOCAL_REF_GUARD(input_arr);
+    _env->CallStaticVoidMethod(_udf_helper_class, _batch_update_if_not_null, udaf, update,
+                               ctx->udaf_ctxs()->states->handle(), states, input_arr);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
+}
+
+jobject JVMFunctionHelper::batch_call(BatchEvaluateStub* stub, jobject* input, int cols, int rows) {
+    return stub->batch_evaluate(rows, input, cols);
+}
+
+jobject JVMFunctionHelper::batch_call(FunctionContext* ctx, jobject caller, jobject method, jobject* input, int cols,
                                       int rows) {
     jobjectArray input_arr = _build_object_array(_object_array_class, input, cols);
-    auto res = _env->CallStaticObjectMethod(_udf_helper_class, _batch_call, udf, evaluate, rows, input_arr);
-    _check_call_exception(ctx);
-    _env->DeleteLocalRef(input_arr);
+    LOCAL_REF_GUARD(input_arr);
+    auto res = _env->CallStaticObjectMethod(_udf_helper_class, _batch_call, caller, method, rows, input_arr);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
     return res;
 }
 
 jobject JVMFunctionHelper::batch_call(FunctionContext* ctx, jobject caller, jobject method, int rows) {
     auto res = _env->CallStaticObjectMethod(_udf_helper_class, _batch_call_no_args, caller, method, rows);
-    _check_call_exception(ctx);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
     return res;
 }
 
 jobject JVMFunctionHelper::int_batch_call(FunctionContext* ctx, jobject callers, jobject method, int rows) {
     auto res = _env->CallStaticObjectMethod(_udf_helper_class, _int_batch_call, callers, method, rows);
-    _check_call_exception(ctx);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
     return res;
+}
+
+void JVMFunctionHelper::get_result_from_boxed_array(FunctionContext* ctx, int type, Column* col, jobject jcolumn,
+                                                    int rows) {
+    col->resize(rows);
+    _env->CallStaticVoidMethod(_udf_helper_class, _get_boxed_result, type, rows, jcolumn,
+                               reinterpret_cast<int64_t>(col));
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
+}
+
+Status JVMFunctionHelper::get_result_from_boxed_array(int type, Column* col, jobject jcolumn, int rows) {
+    col->resize(rows);
+    _env->CallStaticVoidMethod(_udf_helper_class, _get_boxed_result, type, rows, jcolumn,
+                               reinterpret_cast<int64_t>(col));
+    RETURN_ERROR_IF_JNI_EXCEPTION(_env);
+    return Status::OK();
 }
 
 jobject JVMFunctionHelper::list_get(jobject obj, int idx) {
@@ -276,6 +362,17 @@ jobject JVMFunctionHelper::list_get(jobject obj, int idx) {
 
 int JVMFunctionHelper::list_size(jobject obj) {
     return static_cast<int>(_env->CallIntMethod(obj, _list_size));
+}
+
+// convert UDAF ctx to jobject
+jobject JVMFunctionHelper::convert_handle_to_jobject(FunctionContext* ctx, int state) {
+    auto* states = ctx->udaf_ctxs()->states.get();
+    return states->get_state(ctx, _env, state);
+}
+
+jobject JVMFunctionHelper::convert_handles_to_jobjects(FunctionContext* ctx, jobject state_ids) {
+    auto* states = ctx->udaf_ctxs()->states.get();
+    return states->get_state(ctx, _env, state_ids);
 }
 
 DEFINE_NEW_BOX(boolean, uint8_t, Boolean, Boolean);
@@ -289,9 +386,9 @@ DEFINE_NEW_BOX(double, double, Double, Double);
 // TODO:
 jobject JVMFunctionHelper::newString(const char* data, size_t size) {
     auto bytesArr = _env->NewByteArray(size);
+    LOCAL_REF_GUARD(bytesArr);
     _env->SetByteArrayRegion(bytesArr, 0, size, reinterpret_cast<const jbyte*>(data));
     jobject nstr = _env->NewObject(_string_class, _string_construct_with_bytes, bytesArr, _utf8_charsets);
-    _env->DeleteLocalRef(bytesArr);
     return nstr;
 }
 
@@ -303,11 +400,11 @@ Slice JVMFunctionHelper::sliceVal(jstring jstr, std::string* buffer) {
     size_t length = this->string_length(jstr);
     buffer->resize(length);
     _env->GetStringUTFRegion(jstr, 0, length, buffer->data());
-    return Slice(buffer->data(), buffer->length());
+    return {buffer->data(), buffer->length()};
 }
 
 Slice JVMFunctionHelper::sliceVal(jstring jstr) {
-    return Slice(_env->GetStringUTFChars(jstr, NULL));
+    return {_env->GetStringUTFChars(jstr, nullptr)};
 }
 
 std::string JVMFunctionHelper::to_jni_class_name(const std::string& name) {
@@ -322,47 +419,95 @@ std::string JVMFunctionHelper::to_jni_class_name(const std::string& name) {
     return jni_class_name;
 }
 
-void JVMFunctionHelper::clear(DirectByteBuffer* buffer) {
-    _env->CallNonvirtualVoidMethod(buffer->handle(), _direct_buffer_class, _direct_buffer_clear);
+void JVMFunctionHelper::clear(DirectByteBuffer* buffer, FunctionContext* ctx) {
+    auto res = _env->CallNonvirtualObjectMethod(buffer->handle(), _direct_buffer_class, _direct_buffer_clear);
+    LOCAL_REF_GUARD(res);
+    CHECK_UDF_CALL_EXCEPTION(_env, ctx);
 }
 
 DirectByteBuffer::DirectByteBuffer(void* ptr, int capacity) {
     auto& helper = JVMFunctionHelper::getInstance();
     auto* env = helper.getEnv();
-    _handle = env->NewDirectByteBuffer(ptr, capacity);
+    auto lref = env->NewDirectByteBuffer(ptr, capacity);
+    LOCAL_REF_GUARD(lref);
+    _handle = env->NewGlobalRef(lref);
     _capacity = capacity;
     _data = ptr;
 }
 
 DirectByteBuffer::~DirectByteBuffer() {
     if (_handle != nullptr) {
-        auto& helper = JVMFunctionHelper::getInstance();
-        JNIEnv* env = helper.getEnv();
-        env->DeleteLocalRef(_handle);
+        auto ret = call_hdfs_scan_function_in_pthread([this]() {
+            auto& helper = JVMFunctionHelper::getInstance();
+            JNIEnv* env = helper.getEnv();
+            env->DeleteGlobalRef(_handle);
+            _handle = nullptr;
+            return Status::OK();
+        });
+        ret->get_future().get();
     }
 }
 
-JVMClass::~JVMClass() {
-    if (_clazz) {
-        JNIEnv* env = getJNIEnv();
-        env->DeleteLocalRef(_clazz);
+JavaGlobalRef::~JavaGlobalRef() {
+    clear();
+}
+
+void JavaGlobalRef::clear() {
+    if (_handle) {
+        auto ret = call_hdfs_scan_function_in_pthread([this]() {
+            JVMFunctionHelper::getInstance().getEnv()->DeleteGlobalRef(_handle);
+            _handle = nullptr;
+            return Status::OK();
+        });
+        ret->get_future().get();
     }
 }
 
-Status JVMClass::newInstance(jobject* object) const {
+StatusOr<JavaGlobalRef> JVMClass::newInstance() const {
     JNIEnv* env = getJNIEnv();
     // get default constructor
-    jmethodID constructor = env->GetMethodID((jclass)_clazz, "<init>", "()V");
+    jmethodID constructor = env->GetMethodID((jclass)_clazz.handle(), "<init>", "()V");
     if (constructor == nullptr) {
         return Status::InternalError("couldn't found default constructor for Java Object");
     }
-    *object = env->NewObject((jclass)_clazz, constructor);
-    return Status::OK();
+    auto local_ref = env->NewObject((jclass)_clazz.handle(), constructor);
+    LOCAL_REF_GUARD(local_ref);
+    return env->NewGlobalRef(local_ref);
+}
+
+UDAFStateList::UDAFStateList(JavaGlobalRef&& handle, JavaGlobalRef&& get, JavaGlobalRef&& batch_get,
+                             JavaGlobalRef&& add)
+        : _handle(std::move(handle)),
+          _get_method(std::move(get)),
+          _batch_get_method(std::move(batch_get)),
+          _add_method(std::move(add)) {
+    auto* env = JVMFunctionHelper::getInstance().getEnv();
+    _get_method_id = env->FromReflectedMethod(_get_method.handle());
+    _batch_get_method_id = env->FromReflectedMethod(_batch_get_method.handle());
+    _add_method_id = env->FromReflectedMethod(_add_method.handle());
+}
+
+jobject UDAFStateList::get_state(FunctionContext* ctx, JNIEnv* env, int state_handle) {
+    auto obj = env->CallObjectMethod(_handle.handle(), _get_method_id, state_handle);
+    CHECK_UDF_CALL_EXCEPTION(env, ctx);
+    return obj;
+}
+
+jobject UDAFStateList::get_state(FunctionContext* ctx, JNIEnv* env, jobject state_ids) {
+    auto obj = env->CallObjectMethod(_handle.handle(), _batch_get_method_id, state_ids);
+    CHECK_UDF_CALL_EXCEPTION(env, ctx);
+    return obj;
+}
+
+int UDAFStateList::add_state(FunctionContext* ctx, JNIEnv* env, jobject state) {
+    auto res = env->CallIntMethod(_handle.handle(), _add_method_id, state);
+    CHECK_UDF_CALL_EXCEPTION(env, ctx);
+    return res;
 }
 
 ClassLoader::~ClassLoader() {
-    JNIEnv* env = getJNIEnv();
-    env->DeleteLocalRef(_handle);
+    _handle.clear();
+    _clazz.clear();
 }
 
 constexpr const char* CLASS_LOADER_NAME = "com.starrocks.udf.UDFClassLoader";
@@ -375,6 +520,9 @@ Status ClassLoader::init() {
     }
     std::string name = JVMFunctionHelper::to_jni_class_name(CLASS_LOADER_NAME);
     jclass clazz = env->FindClass(name.c_str());
+    LOCAL_REF_GUARD(clazz);
+    _clazz = env->NewGlobalRef(clazz);
+
     if (clazz == nullptr) {
         return Status::InternalError(fmt::format("ClassLoader Not Found: {}", CLASS_LOADER_NAME));
     }
@@ -386,32 +534,35 @@ Status ClassLoader::init() {
 
     // create class loader instance
     jstring jstr = env->NewStringUTF(_path.c_str());
-    _handle = env->NewObject(clazz, udf_loader_contructor, jstr);
-    env->DeleteLocalRef(jstr);
+    LOCAL_REF_GUARD(jstr);
 
-    if (_handle == nullptr) {
-        jthrowable throwable = env->ExceptionOccurred();
-        std::string err_msg = fmt::format("Error: couldn't create class loader {} ", CLASS_LOADER_NAME);
-        if (throwable) {
-            err_msg = JVMFunctionHelper::getInstance().dumpExceptionString(throwable);
-            env->DeleteLocalRef(throwable);
-        }
+    auto handle = env->NewObject(clazz, udf_loader_contructor, jstr);
+    LOCAL_REF_GUARD(handle);
+    _handle = env->NewGlobalRef(handle);
+
+    if (jthrowable jthr = env->ExceptionOccurred()) {
+        LOCAL_REF_GUARD(jthr);
+        std::string err_msg = fmt::format("Error: couldn't create class loader {},{} ", CLASS_LOADER_NAME,
+                                          JVMFunctionHelper::getInstance().dumpExceptionString(jthr));
         LOG(WARNING) << err_msg;
         return Status::InternalError(err_msg);
     }
 
     // init method id
-    _get_class = env->GetMethodID(clazz, "findClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    _get_class = env->GetMethodID((jclass)_clazz.handle(), "findClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    _get_call_stub =
+            env->GetMethodID((jclass)_clazz.handle(), "generateCallStubV",
+                             "(Ljava/lang/String;Ljava/lang/Class;Ljava/lang/reflect/Method;I)Ljava/lang/Class;");
 
     // init method
-    if (_get_class == nullptr) {
+    if (_get_class == nullptr || _get_call_stub == nullptr) {
         return Status::InternalError("couldn't get method for classloader");
     }
 
     return Status::OK();
 }
 
-JVMClass ClassLoader::getClass(const std::string& className) {
+StatusOr<JVMClass> ClassLoader::getClass(const std::string& className) {
     auto& helper = JVMFunctionHelper::getInstance();
     JNIEnv* env = helper.getEnv();
     CHECK(env != nullptr) << "couldn't got a JNIEnv";
@@ -420,30 +571,39 @@ JVMClass ClassLoader::getClass(const std::string& className) {
     std::string jni_class_name = JVMFunctionHelper::to_jni_class_name(className);
     // invoke class loader
     jstring jstr_name = helper.to_jstring(jni_class_name);
+    LOCAL_REF_GUARD(jstr_name);
 
-    auto loaded_clazz = env->CallObjectMethod(_handle, _get_class, jstr_name);
+    auto loaded_clazz = env->CallObjectMethod(_handle.handle(), _get_class, jstr_name);
+    LOCAL_REF_GUARD(loaded_clazz);
 
-    env->DeleteLocalRef(jstr_name);
     // check exception
-    jthrowable jthr = env->ExceptionOccurred();
-    if (jthr) {
-        LOG(WARNING) << "exception happened when get class:" << helper.dumpExceptionString(jthr);
-        env->ExceptionClear();
-        return JVMClass(nullptr);
-    }
+    RETURN_ERROR_IF_EXCEPTION(env, "exception happened when get class: {}");
     // no exception happened, class exists
     DCHECK(loaded_clazz != nullptr);
-    return loaded_clazz;
+
+    auto res = env->NewGlobalRef(loaded_clazz);
+    return res;
 }
 
-JavaMethodDescriptor::~JavaMethodDescriptor() {
-    if (method) {
-        JVMFunctionHelper::getInstance().getEnv()->DeleteLocalRef(method);
-    }
+StatusOr<JVMClass> ClassLoader::genCallStub(const std::string& stubClassName, jclass clazz, jobject method, int type) {
+    auto& helper = JVMFunctionHelper::getInstance();
+    JNIEnv* env = helper.getEnv();
+
+    std::string jni_class_name = JVMFunctionHelper::to_jni_class_name(stubClassName);
+    jstring jstr_name = helper.to_jstring(jni_class_name);
+    LOCAL_REF_GUARD(jstr_name);
+
+    // generate call stub
+    auto loaded_clazz = env->CallObjectMethod(_handle.handle(), _get_call_stub, jstr_name, clazz, method, type);
+    LOCAL_REF_GUARD(loaded_clazz);
+    RETURN_ERROR_IF_EXCEPTION(env, "exception happened when gen call stub: {}");
+
+    auto res = env->NewGlobalRef(loaded_clazz);
+    return res;
 }
 
 jmethodID JavaMethodDescriptor::get_method_id() const {
-    return JVMFunctionHelper::getInstance().getEnv()->FromReflectedMethod(method);
+    return JVMFunctionHelper::getInstance().getEnv()->FromReflectedMethod(method.handle());
 }
 
 Status ClassAnalyzer::has_method(jclass clazz, const std::string& method, bool* has) {
@@ -455,6 +615,8 @@ Status ClassAnalyzer::has_method(jclass clazz, const std::string& method, bool* 
 
     std::string anlyzer_clazz_name = JVMFunctionHelper::to_jni_class_name(CLASS_ANALYZER_NAME);
     jclass class_analyzer = env->FindClass(anlyzer_clazz_name.c_str());
+    LOCAL_REF_GUARD(class_analyzer);
+
     if (class_analyzer == nullptr) {
         return Status::InternalError(fmt::format("ClassAnalyzer Not Found: {}", CLASS_ANALYZER_NAME));
     }
@@ -466,12 +628,15 @@ Status ClassAnalyzer::has_method(jclass clazz, const std::string& method, bool* 
     }
 
     jstring method_name = helper.to_jstring(method.c_str());
+    LOCAL_REF_GUARD(method_name);
+
     *has = env->CallStaticBooleanMethod(class_analyzer, hasMethod, method_name, (jobject)clazz);
 
     if (jthrowable jthr = env->ExceptionOccurred(); jthr) {
+        LOCAL_REF_GUARD(jthr);
+
         std::string err = helper.dumpExceptionString(jthr);
         env->ExceptionClear();
-        env->DeleteLocalRef(jthr);
         return Status::InternalError(fmt::format("call hasMemberMethod failed: {} err:{}", method, err));
     }
 
@@ -485,6 +650,8 @@ Status ClassAnalyzer::get_signature(jclass clazz, const std::string& method, std
     JNIEnv* env = helper.getEnv();
     std::string anlyzer_clazz_name = JVMFunctionHelper::to_jni_class_name(CLASS_ANALYZER_NAME);
     jclass class_analyzer = env->FindClass(anlyzer_clazz_name.c_str());
+    LOCAL_REF_GUARD(class_analyzer);
+
     if (class_analyzer == nullptr) {
         return Status::InternalError(fmt::format("ClassAnalyzer Not Found: {}", CLASS_ANALYZER_NAME));
     }
@@ -495,11 +662,15 @@ Status ClassAnalyzer::get_signature(jclass clazz, const std::string& method, std
     }
 
     jstring method_name = helper.to_jstring(method.c_str());
+    LOCAL_REF_GUARD(method_name);
+
     jobject result_sign = env->CallStaticObjectMethod(class_analyzer, getSign, method_name, (jobject)clazz);
+    LOCAL_REF_GUARD(result_sign);
+
     if (jthrowable thr = env->ExceptionOccurred(); thr != nullptr) {
+        LOCAL_REF_GUARD(thr);
         std::string err = helper.dumpExceptionString(thr);
         env->ExceptionClear();
-        env->DeleteLocalRef(thr);
         return Status::InternalError(fmt::format("could't found method {} err:{}", method, err));
     }
     if (result_sign == nullptr) {
@@ -512,25 +683,33 @@ Status ClassAnalyzer::get_signature(jclass clazz, const std::string& method, std
 StatusOr<jobject> ClassAnalyzer::get_method_object(jclass clazz, const std::string& method) {
     auto& helper = JVMFunctionHelper::getInstance();
     JNIEnv* env = helper.getEnv();
+
     std::string anlyzer_clazz_name = JVMFunctionHelper::to_jni_class_name(CLASS_ANALYZER_NAME);
     jclass class_analyzer = env->FindClass(anlyzer_clazz_name.c_str());
+    LOCAL_REF_GUARD(class_analyzer);
     DCHECK(class_analyzer);
+
     jmethodID getMethodObject = env->GetStaticMethodID(
             class_analyzer, "getMethodObject", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/reflect/Method;");
     DCHECK(getMethodObject);
     jstring method_name = helper.to_jstring(method.c_str());
+    LOCAL_REF_GUARD(method_name);
+
     jobject method_object = env->CallStaticObjectMethod(class_analyzer, getMethodObject, method_name, (jobject)clazz);
+    LOCAL_REF_GUARD(method_object);
+    env->ExceptionClear();
     if (method_object == nullptr) {
         return Status::InternalError(fmt::format("couldn't found method:{}", method));
     }
-    return method_object;
+    auto res = env->NewGlobalRef(method_object);
+    return res;
 }
 
 Status ClassAnalyzer::get_method_desc(const std::string& sign, std::vector<MethodTypeDescriptor>* desc) {
     RETURN_IF_ERROR(get_udaf_method_desc(sign, desc));
     // return type may be a void type
     for (int i = 1; i < desc->size(); ++i) {
-        if (desc->at(i).type == INVALID_TYPE) {
+        if (desc->at(i).type == TYPE_UNKNOWN) {
             return Status::InternalError(fmt::format("unknown type sign:{}", sign));
         }
     }
@@ -557,7 +736,7 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
                 i++;
             }
             // return Status::NotSupported("Not support Array Type");
-            desc->emplace_back(MethodTypeDescriptor{INVALID_TYPE, true});
+            desc->emplace_back(MethodTypeDescriptor{TYPE_UNKNOWN, true});
         }
         if (sign[i] == 'L') {
             int st = i + 1;
@@ -578,7 +757,7 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
             } else if (type == "java/lang/String") {
                 desc->emplace_back(MethodTypeDescriptor{TYPE_VARCHAR, true});
             } else {
-                desc->emplace_back(MethodTypeDescriptor{INVALID_TYPE, true});
+                desc->emplace_back(MethodTypeDescriptor{TYPE_UNKNOWN, true});
             }
             continue;
         }
@@ -593,9 +772,9 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
         ADD_PRIM_METHOD_TYPE_DESC('D', TYPE_DOUBLE)
             // clang-format on
         } else if (sign[i] == 'V') {
-            desc->emplace_back(MethodTypeDescriptor{INVALID_TYPE, false});
+            desc->emplace_back(MethodTypeDescriptor{TYPE_UNKNOWN, false});
         } else {
-            desc->emplace_back(MethodTypeDescriptor{INVALID_TYPE, false});
+            desc->emplace_back(MethodTypeDescriptor{TYPE_UNKNOWN, false});
         }
     }
 
@@ -606,75 +785,119 @@ Status ClassAnalyzer::get_udaf_method_desc(const std::string& sign, std::vector<
     return Status::OK();
 }
 
-JavaUDFContext::~JavaUDFContext() {
-    auto& helper = JVMFunctionHelper::getInstance();
-    if (udf_handle) {
-        helper.getEnv()->DeleteLocalRef(udf_handle);
-    }
-}
+JavaUDFContext::~JavaUDFContext() = default;
 
-jobject UDAFFunction::create() {
-    JNIEnv* env = getJNIEnv();
+int UDAFFunction::create() {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
     jmethodID create = _ctx->create->get_method_id();
-    return env->CallObjectMethod(_udaf_handle, create);
+    auto obj = env->CallObjectMethod(_udaf_handle, create);
+    LOCAL_REF_GUARD(obj);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
+    return _ctx->states->add_state(_function_context, env, obj);
 }
 
-void UDAFFunction::destroy(jobject state) {
-    JNIEnv* env = getJNIEnv();
+void UDAFFunction::destroy(int state) {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
     jmethodID destory = _ctx->destory->get_method_id();
-    env->CallVoidMethod(_udaf_handle, destory, state);
-    env->DeleteLocalRef(state);
+    // call destroy
+    env->CallVoidMethod(_udaf_handle, destory, obj);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
 }
 
-jvalue UDAFFunction::finalize(jobject state) {
+jvalue UDAFFunction::finalize(int state) {
     auto& helper = JVMFunctionHelper::getInstance();
     JNIEnv* env = helper.getEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
     jmethodID finalize = _ctx->finalize->get_method_id();
     jvalue res;
-    res.l = env->CallObjectMethod(_udaf_handle, finalize, state);
+    res.l = env->CallObjectMethod(_udaf_handle, finalize, obj);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
+    return res;
+}
+
+void AggBatchCallStub::batch_update_single(int num_rows, jobject state, jobject* input, int cols) {
+    jvalue jni_inputs[3 + cols];
+    jni_inputs[0].i = num_rows;
+    jni_inputs[1].l = _caller;
+    jni_inputs[2].l = state;
+    for (int i = 0; i < cols; ++i) {
+        jni_inputs[3 + i].l = input[i];
+    }
+    auto* env = JVMFunctionHelper::getInstance().getEnv();
+    env->CallStaticVoidMethodA(_stub_clazz.clazz(), env->FromReflectedMethod(_stub_method.handle()), jni_inputs);
+    CHECK_UDF_CALL_EXCEPTION(env, this->_ctx);
+}
+
+jobject BatchEvaluateStub::batch_evaluate(int num_rows, jobject* input, int cols) {
+    jvalue jni_inputs[2 + cols];
+    jni_inputs[0].i = num_rows;
+    jni_inputs[1].l = _caller;
+    for (int i = 0; i < cols; ++i) {
+        jni_inputs[2 + i].l = input[i];
+    }
+    auto* env = JVMFunctionHelper::getInstance().getEnv();
+    auto res = env->CallStaticObjectMethodA(_stub_clazz.clazz(), env->FromReflectedMethod(_stub_method.handle()),
+                                            jni_inputs);
+    CHECK_UDF_CALL_EXCEPTION(env, this->_ctx);
     return res;
 }
 
 void UDAFFunction::update(jvalue* val) {
-    auto& helper = JVMFunctionHelper::getInstance();
-    JNIEnv* env = helper.getEnv();
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
     jmethodID update = _ctx->update->get_method_id();
     env->CallVoidMethodA(_udaf_handle, update, val);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
 }
 
-void UDAFFunction::merge(jobject state, jobject buffer) {
-    JNIEnv* env = getJNIEnv();
+void UDAFFunction::merge(int state, jobject buffer) {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
     jmethodID merge = _ctx->merge->get_method_id();
-    env->CallVoidMethod(_udaf_handle, merge, state, buffer);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    }
+    env->CallVoidMethod(_udaf_handle, merge, obj, buffer);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
 }
 
-void UDAFFunction::serialize(jobject state, jobject buffer) {
-    JNIEnv* env = getJNIEnv();
-    jmethodID merge = _ctx->serialize->get_method_id();
-    env->CallVoidMethod(_udaf_handle, merge, state, buffer);
+void UDAFFunction::serialize(int state, jobject buffer) {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
+    jmethodID serialize = _ctx->serialize->get_method_id();
+    env->CallVoidMethod(_udaf_handle, serialize, obj, buffer);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
 }
 
-int UDAFFunction::serialize_size(jobject state) {
-    JNIEnv* env = getJNIEnv();
+int UDAFFunction::serialize_size(int state) {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
     jmethodID serialize_size = _ctx->serialize_size->get_method_id();
-    return env->CallIntMethod(state, serialize_size);
+    int sz = env->CallIntMethod(obj, serialize_size);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
+    return sz;
 }
 
-void UDAFFunction::reset(jobject state) {
-    JNIEnv* env = getJNIEnv();
+void UDAFFunction::reset(int state) {
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
     jmethodID reset = _ctx->reset->get_method_id();
-    env->CallVoidMethod(_udaf_handle, reset, state);
+    env->CallVoidMethod(_udaf_handle, reset, obj);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
 }
 
-jobject UDAFFunction::window_update_batch(jobject state, int peer_group_start, int peer_group_end, int frame_start,
+jobject UDAFFunction::window_update_batch(int state, int peer_group_start, int peer_group_end, int frame_start,
                                           int frame_end, int col_sz, jobject* cols) {
-    JNIEnv* env = getJNIEnv();
+    auto [env, helper] = JVMFunctionHelper::getInstanceWithEnv();
+    auto obj = helper.convert_handle_to_jobject(_function_context, state);
+    LOCAL_REF_GUARD(obj);
+
     jmethodID window_update = _ctx->window_update->get_method_id();
     jvalue jvalues[5 + col_sz];
-    jvalues[0].l = state;
+    jvalues[0].l = obj;
     jvalues[1].j = peer_group_start;
     jvalues[2].j = peer_group_end;
     jvalues[3].j = frame_start;
@@ -684,7 +907,17 @@ jobject UDAFFunction::window_update_batch(jobject state, int peer_group_start, i
         jvalues[i + 5].l = cols[i];
     }
 
-    return env->CallObjectMethodA(_udaf_handle, window_update, jvalues);
+    jobject res = env->CallObjectMethodA(_udaf_handle, window_update, jvalues);
+    CHECK_UDF_CALL_EXCEPTION(env, _function_context);
+    return res;
 }
 
-} // namespace starrocks::vectorized
+Status detect_java_runtime() {
+    const char* p = std::getenv("JAVA_HOME");
+    if (p == nullptr) {
+        return Status::RuntimeError("env 'JAVA_HOME' is not set");
+    }
+    return Status::OK();
+}
+
+} // namespace starrocks

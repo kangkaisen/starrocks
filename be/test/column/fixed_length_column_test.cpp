@@ -1,35 +1,28 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/test/column/fixed_length_column_test.cpp
-
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
 //
-//   http://www.apache.org/licenses/LICENSE-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "column/fixed_length_column.h"
 
 #include <gtest/gtest.h>
 
-#include "column/binary_column.h"
 #include "column/column_helper.h"
 #include "column/const_column.h"
 #include "column/nullable_column.h"
-#include "exec/vectorized/sorting/sorting.h"
+#include "column/vectorized_fwd.h"
+#include "exec/sorting/sorting.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 // NOLINTNEXTLINE
 TEST(FixedLengthColumnTest, test_basic) {
@@ -67,7 +60,7 @@ TEST(FixedLengthColumnTest, test_basic) {
             column->append(i);
         }
 
-        Column::Filter filter;
+        Filter filter;
         for (int i = 0; i < 100; ++i) {
             filter.push_back(i % 2);
         }
@@ -125,7 +118,6 @@ TEST(FixedLengthColumnTest, test_nullable) {
     for (int i = 0; i < 100; i++) {
         if (i % 3) {
             ASSERT_EQ(true, column->is_null(i));
-            ASSERT_EQ(0, data[i]);
         } else {
             ASSERT_EQ(false, column->is_null(i));
             ASSERT_EQ(i, data[i]);
@@ -145,7 +137,7 @@ TEST(FixedLengthColumnTest, test_nullable) {
             }
         }
 
-        Column::Filter filter;
+        Filter filter;
         for (int k = 0; k < 50; ++k) {
             filter.push_back(0);
         }
@@ -531,7 +523,7 @@ TEST(FixedLengthColumnTest, test_update_rows) {
     }
 
     std::vector<uint32_t> replace_idxes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    ASSERT_TRUE(column->update_rows(*replace_column.get(), replace_idxes.data()).ok());
+    column->update_rows(*replace_column.get(), replace_idxes.data());
 
     for (int i = 0; i < 10; i++) {
         ASSERT_EQ(column->get_data()[i], i + 100);
@@ -563,17 +555,93 @@ TEST(FixedLengthColumnTest, test_compare_row) {
     CompareVector cmp_vector(column->size());
 
     // ascending
-    EXPECT_EQ(1, compare_column(column, cmp_vector, {30}, 1, 1));
+    EXPECT_EQ(1, compare_column(column, cmp_vector, {30}, SortDesc(1, 1)));
     EXPECT_EQ(30, std::count(cmp_vector.begin(), cmp_vector.end(), -1));
     EXPECT_EQ(70, std::count(cmp_vector.begin(), cmp_vector.end(), 1));
     EXPECT_EQ(1, std::count(cmp_vector.begin(), cmp_vector.end(), 0));
 
     // descending
     std::fill(cmp_vector.begin(), cmp_vector.end(), 0);
-    EXPECT_EQ(1, compare_column(column, cmp_vector, {30}, -1, 1));
+    EXPECT_EQ(1, compare_column(column, cmp_vector, {30}, SortDesc(-1, 1)));
     EXPECT_EQ(70, std::count(cmp_vector.begin(), cmp_vector.end(), -1));
     EXPECT_EQ(30, std::count(cmp_vector.begin(), cmp_vector.end(), 1));
     EXPECT_EQ(1, std::count(cmp_vector.begin(), cmp_vector.end(), 0));
 }
 
-} // namespace starrocks::vectorized
+// NOLINTNEXTLINE
+TEST(FixedLengthColumnTest, test_upgrade_if_overflow) {
+    auto column = FixedLengthColumn<uint32_t>::create();
+    for (int i = 0; i < 10; i++) {
+        column->append(i);
+    }
+
+    auto ret = column->upgrade_if_overflow();
+    ASSERT_TRUE(ret.ok());
+    ASSERT_TRUE(ret.value() == nullptr);
+    ASSERT_EQ(column->size(), 10);
+    for (int i = 0; i < 10; i++) {
+        ASSERT_EQ(column->get(i).get_uint32(), i);
+    }
+
+#ifdef NDEBUG
+    // This case will alloc a lot of memory and run slowly
+    auto large_column = FixedLengthColumn<uint8_t>::create();
+    large_column->resize(Column::MAX_CAPACITY_LIMIT + 5);
+    ret = large_column->upgrade_if_overflow();
+    ASSERT_FALSE(ret.ok());
+#endif
+}
+
+// NOLINTNEXTLINE
+TEST(FixedLengthColumnTest, test_fixed_length_column_downgrade) {
+    auto column = FixedLengthColumn<uint32_t>::create();
+    column->append(1);
+    auto ret = column->downgrade();
+    ASSERT_TRUE(ret.ok());
+    ASSERT_TRUE(ret.value() == nullptr);
+    ASSERT_FALSE(column->has_large_column());
+}
+
+// NOLINTNEXTLINE
+TEST(FixedLengthColumnTest, test_replicate) {
+    auto column = FixedLengthColumn<int32_t>::create();
+    column->append(7);
+    column->append(3);
+
+    Offsets offsets;
+    offsets.push_back(0);
+    offsets.push_back(3);
+    offsets.push_back(5);
+
+    auto c2 = column->replicate(offsets);
+    ASSERT_EQ(5, c2->size());
+    ASSERT_EQ(c2->get(0).get_int32(), 7);
+    ASSERT_EQ(c2->get(1).get_int32(), 7);
+    ASSERT_EQ(c2->get(2).get_int32(), 7);
+    ASSERT_EQ(c2->get(3).get_int32(), 3);
+    ASSERT_EQ(c2->get(4).get_int32(), 3);
+}
+
+// NOLINTNEXTLINE
+TEST(FixedLengthColumnTest, test_fill_range) {
+    std::vector<int64_t> values{1, 2, 3, 4, 5};
+    void* buff = values.data();
+    size_t length = values.size() * sizeof(values[0]);
+
+    auto c1 = Int64Column::create();
+    ASSERT_EQ(values.size(), c1->append_numbers(buff, length));
+    ASSERT_EQ(values.size(), c1->size());
+
+    std::vector<int64_t> ids{0, 0, 0};
+    std::vector<uint8_t> filter{1, 0, 1, 0, 1};
+    ASSERT_TRUE(c1->fill_range(ids, filter).ok());
+
+    auto* p = reinterpret_cast<const int64_t*>(c1->raw_data());
+    ASSERT_EQ(0, p[0]);
+    ASSERT_EQ(values[1], p[1]);
+    ASSERT_EQ(0, p[2]);
+    ASSERT_EQ(values[3], p[3]);
+    ASSERT_EQ(0, p[4]);
+}
+
+} // namespace starrocks

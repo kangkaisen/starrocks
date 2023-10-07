@@ -1,38 +1,60 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.ast;
 
-import com.starrocks.analysis.TableName;
+import com.starrocks.analysis.Expr;
+import com.starrocks.sql.analyzer.FieldId;
+import com.starrocks.sql.parser.NodePosition;
 
-public class SubqueryRelation extends Relation {
-    private String name;
-    private final QueryRelation query;
+import java.util.List;
+import java.util.Map;
 
-    public SubqueryRelation(String name, QueryRelation query) {
-        this.name = name;
-        if (name != null) {
-            this.alias = new TableName(null, name);
-        } else {
-            this.alias = null;
-        }
-        this.query = query;
+public class SubqueryRelation extends QueryRelation {
+    private final QueryStatement queryStatement;
+
+    public SubqueryRelation(QueryStatement queryStatement) {
+        this(queryStatement, queryStatement.getPos());
+    }
+
+    public SubqueryRelation(QueryStatement queryStatement, NodePosition pos) {
+        super(pos);
+        this.queryStatement = queryStatement;
+        QueryRelation queryRelation = this.queryStatement.getQueryRelation();
         // The order by is meaningless in subquery
-        if (this.query instanceof SelectRelation && !((SelectRelation) this.query).hasLimit()) {
-            SelectRelation qs = (SelectRelation) this.query;
-            qs.clearOrder();
+        if (!queryRelation.hasLimit()) {
+            queryRelation.clearOrder();
         }
     }
 
-    public String getName() {
-        return name;
+    @Override
+    public Map<Expr, FieldId> getColumnReferences() {
+        return queryStatement.getQueryRelation().getColumnReferences();
     }
 
-    public QueryRelation getQuery() {
-        return query;
+    public QueryStatement getQueryStatement() {
+        return queryStatement;
     }
 
     @Override
     public String toString() {
         return alias == null ? "anonymous" : alias.toString();
+    }
+
+    @Override
+    public List<Expr> getOutputExpression() {
+        return this.queryStatement.getQueryRelation().getOutputExpression();
     }
 
     @Override

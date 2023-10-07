@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/persist/ReplicaPersistInfoTest.java
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -21,8 +17,6 @@
 
 package com.starrocks.persist;
 
-import com.starrocks.common.FeConstants;
-import com.starrocks.meta.MetaContext;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -35,10 +29,6 @@ import java.io.FileOutputStream;
 public class ReplicaPersistInfoTest {
     @Test
     public void testSerialization() throws Exception {
-        MetaContext metaContext = new MetaContext();
-        metaContext.setMetaVersion(FeConstants.meta_version);
-        metaContext.setThreadLocalInfo();
-
         // 1. Write objects to file
         File file = new File("./replicaInfo");
         file.createNewFile();

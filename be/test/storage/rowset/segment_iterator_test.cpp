@@ -1,177 +1,241 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#include "storage/rowset/vectorized/segment_iterator.h"
+#include "storage/rowset/segment_iterator.h"
 
+#include <fmt/core.h>
+
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <unordered_map>
 
 #include "common/object_pool.h"
-#include "env/env_memory.h"
+#include "fs/fs_memory.h"
+#include "gen_cpp/tablet_schema.pb.h"
 #include "gtest/gtest.h"
-#include "storage/fs/block_manager.h"
-#include "storage/fs/file_block_manager.h"
+#include "storage/chunk_helper.h"
 #include "storage/olap_common.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/segment.h"
+#include "storage/rowset/segment_options.h"
 #include "storage/rowset/segment_writer.h"
-#include "storage/rowset/vectorized/segment_options.h"
 #include "storage/tablet_schema_helper.h"
-#include "storage/vectorized/chunk_helper.h"
-#include "storage/vectorized/chunk_iterator.h"
 #include "testutil/assert.h"
-#include "util/defer_op.h"
+#include "types/logical_type.h"
 
 namespace starrocks {
 
 class SegmentIteratorTest : public ::testing::Test {
 public:
     void SetUp() override {
-        _env = std::make_shared<EnvMemory>();
-        _block_mgr = std::make_shared<fs::FileBlockManager>(_env, fs::BlockManagerOptions());
-        ASSERT_TRUE(_env->create_dir(kSegmentDir).ok());
+        _fs = std::make_shared<MemoryFileSystem>();
+        ASSERT_TRUE(_fs->create_dir(kSegmentDir).ok());
         _page_cache_mem_tracker = std::make_unique<MemTracker>();
-        _tablet_meta_mem_tracker = std::make_unique<MemTracker>();
         StoragePageCache::create_global_cache(_page_cache_mem_tracker.get(), 1000000000);
     }
 
     void TearDown() override { StoragePageCache::release_global_cache(); }
 
-    TabletSchema create_schema(const std::vector<TabletColumn>& columns, int num_short_key_columns = -1) {
-        TabletSchema res;
-        int num_key_columns = 0;
-        for (auto& col : columns) {
-            if (col.is_key()) {
-                num_key_columns++;
-            }
-            res._cols.push_back(col);
-        }
-        res._num_key_columns = num_key_columns;
-        res._num_short_key_columns = num_short_key_columns != -1 ? num_short_key_columns : num_key_columns;
-        return res;
-    }
-
     const std::string kSegmentDir = "/segment_test";
-    std::shared_ptr<EnvMemory> _env = nullptr;
-    std::shared_ptr<fs::FileBlockManager> _block_mgr = nullptr;
+    std::shared_ptr<MemoryFileSystem> _fs = nullptr;
     std::unique_ptr<MemTracker> _page_cache_mem_tracker = nullptr;
-    std::unique_ptr<MemTracker> _tablet_meta_mem_tracker = nullptr;
 };
 
-TEST_F(SegmentIteratorTest, TestGlobalDictNotSuperSet) {
-    const int slice_num = 64;
-    std::string prefix = "lowcard-";
-    std::vector<std::string> values;
-    for (int i = 0; i < slice_num; ++i) {
-        values.push_back(prefix + std::to_string(i));
+namespace test {
+struct TabletSchemaBuilder {
+private:
+    std::vector<ColumnPB> _column_pbs;
+    ColumnPB _create_pb(int32_t id, std::string name, bool nullable, LogicalType type, bool key) {
+        ColumnPB col;
+
+        col.set_unique_id(id);
+        col.set_name(name);
+        col.set_is_key(key);
+        col.set_is_nullable(nullable);
+
+        if (type == TYPE_INT) {
+            col.set_type("INT");
+            col.set_length(4);
+            col.set_index_length(4);
+        } else if (type == TYPE_VARCHAR) {
+            col.set_type("VARCHAR");
+            col.set_length(128);
+            col.set_index_length(16);
+        }
+
+        col.set_default_value("0");
+        col.set_aggregation("NONE");
+        col.set_is_bf_column(false);
+        col.set_has_bitmap_index(false);
+        return col;
     }
 
-    std::sort(values.begin(), values.end());
-
-    std::vector<Slice> data_strs;
-    for (const auto& data : values) {
-        data_strs.push_back(data);
+public:
+    TabletSchemaBuilder& create(int32_t id, bool nullable, LogicalType type, bool key = false) {
+        if (type == TYPE_INT) {
+            _column_pbs.emplace_back(_create_pb(id, std::to_string(id), nullable, type, key));
+        } else if (type == TYPE_VARCHAR) {
+            _column_pbs.emplace_back(_create_pb(id, std::to_string(id), nullable, type, key));
+        } else {
+            __builtin_unreachable();
+        }
+        return *this;
+    }
+    TabletSchemaBuilder& set_length(size_t length) {
+        _column_pbs.back().set_length(length);
+        return *this;
     }
 
-    TabletColumn c1 = create_int_key(1);
-    TabletColumn c2 = create_with_default_value<OLAP_FIELD_TYPE_VARCHAR>("");
+    std::unique_ptr<TabletSchema> build() { return TabletSchemaHelper::create_tablet_schema(_column_pbs); }
+};
 
-    TabletSchema tablet_schema = create_schema({c1, c2});
+struct TabletDataBuilder {
+    TabletDataBuilder(SegmentWriter& writer_, std::shared_ptr<TabletSchema> schema, size_t chunk_size_,
+                      size_t num_rows_)
+            : writer(writer_), _schema(schema), chunk_size(chunk_size_), num_rows(num_rows_) {}
 
-    SegmentWriterOptions opts;
-    opts.num_rows_per_block = 10;
+    template <class Provider>
+    Status append(int32_t idx, Provider&& provider) {
+        std::vector<uint32_t> column_indexes = {static_cast<unsigned int>(idx)};
 
-    std::string file_name = kSegmentDir + "/low_card_cols";
-    std::unique_ptr<fs::WritableBlock> wblock;
-    fs::CreateBlockOptions wblock_opts({file_name});
-    ASSERT_OK(_block_mgr->create_block(wblock_opts, &wblock));
+        RETURN_IF_ERROR(writer.init(column_indexes, true));
 
-    SegmentWriter writer(std::move(wblock), 0, &tablet_schema, opts);
+        auto schema = ChunkHelper::convert_schema(_schema, column_indexes);
+        auto chunk = ChunkHelper::new_chunk(schema, chunk_size);
+        for (auto i = 0; i < num_rows % chunk_size; ++i) {
+            chunk->reset();
+            auto& cols = chunk->columns();
+            for (auto j = 0; j < chunk_size && i * chunk_size + j < num_rows; ++j) {
+                cols[0]->append_datum(provider(static_cast<int32_t>(i * chunk_size + j)));
+            }
+            RETURN_IF_ERROR(writer.append_chunk(*chunk));
+        }
 
-    int32_t chunk_size = config::vector_chunk_size;
-    size_t num_rows = 10000;
+        RETURN_IF_ERROR(writer.finalize_columns(&index_size));
+        return Status::OK();
+    }
+
+    Status finalize_footer() { return writer.finalize_footer(&file_size); }
+
+private:
+    SegmentWriter& writer;
+    std::shared_ptr<TabletSchema> _schema;
+    const size_t chunk_size;
+    const size_t num_rows;
+
     uint64_t file_size = 0;
     uint64_t index_size = 0;
+};
 
-    {
-        // col0
-        std::vector<uint32_t> column_indexes = {0};
-        ASSERT_OK(writer.init(column_indexes, true));
-        auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema, column_indexes);
-        auto chunk = vectorized::ChunkHelper::new_chunk(schema, chunk_size);
-        for (auto i = 0; i < num_rows % chunk_size; ++i) {
-            chunk->reset();
-            auto& cols = chunk->columns();
-            for (auto j = 0; j < chunk_size; ++j) {
-                if (i * chunk_size + j >= num_rows) {
-                    break;
-                }
-                cols[0]->append_datum(vectorized::Datum(static_cast<int32_t>(i * chunk_size + j)));
-            }
-            ASSERT_OK(writer.append_chunk(*chunk));
-        }
-        ASSERT_OK(writer.finalize_columns(&index_size));
+struct VecSchemaBuilder {
+    VecSchemaBuilder& add(int32_t id, std::string name, LogicalType type, bool nullable = false) {
+        auto f = std::make_shared<Field>(id, name, type, -1, -1, nullable);
+        f->set_uid(id);
+        vec_schema.append(f);
+        return *this;
     }
-    {
-        // col1
-        std::vector<uint32_t> column_indexes{1};
-        ASSERT_OK(writer.init(column_indexes, false));
-        auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema, column_indexes);
-        auto chunk = vectorized::ChunkHelper::new_chunk(schema, chunk_size);
-        for (auto i = 0; i < num_rows % chunk_size; ++i) {
-            chunk->reset();
-            auto& cols = chunk->columns();
-            for (auto j = 0; j < chunk_size; ++j) {
-                if (i * chunk_size + j >= num_rows) {
-                    break;
-                }
-                cols[0]->append_datum(vectorized::Datum(data_strs[j % slice_num]));
-            }
-            ASSERT_OK(writer.append_chunk(*chunk));
-        }
-        ASSERT_OK(writer.finalize_columns(&index_size));
-    }
-    ASSERT_OK(writer.finalize_footer(&file_size));
+    Schema build() { return std::move(vec_schema); }
 
-    auto segment = *Segment::open(_tablet_meta_mem_tracker.get(), _block_mgr, file_name, 0, &tablet_schema);
+private:
+    Schema vec_schema;
+};
+
+} // namespace test
+
+// This case is only triggered by dictionary inconsistencies.
+// NOLINTNEXTLINE
+TEST_F(SegmentIteratorTest, TestGlobalDictNotSuperSetWithUnusedColumn) {
+    using namespace starrocks::test;
+
+    std::string file_name = kSegmentDir + "/low_card_cols_unused_column";
+    ASSIGN_OR_ABORT(auto wfile, _fs->new_writable_file(file_name));
+    SegmentWriterOptions opts;
+    opts.num_rows_per_block = 10;
+    TabletSchemaBuilder builder;
+    std::shared_ptr<TabletSchema> tablet_schema = builder.create(1, false, TYPE_INT, true)
+                                                          .create(2, false, TYPE_VARCHAR)
+                                                          .create(3, false, TYPE_INT)
+                                                          .create(4, false, TYPE_INT)
+                                                          .create(5, false, TYPE_VARCHAR)
+                                                          .build();
+    SegmentWriter writer(std::move(wfile), 0, tablet_schema, opts);
+
+    const int32_t chunk_size = config::vector_chunk_size;
+    const size_t num_rows = 10000;
+
+    auto i32_provider = [](int32_t i) { return i; };
+    std::vector<std::string> values(64);
+    for (int i = 0; i < values.size(); ++i) {
+        values[i] = fmt::format("prefix-{}", i);
+    }
+    auto slice_provider = [&values](int32_t i) { return Slice(values[i % values.size()]); };
+
+    // tablet data builder
+    TabletDataBuilder segment_data_builder(writer, tablet_schema, chunk_size, num_rows);
+    ASSERT_OK(segment_data_builder.append(0, i32_provider));
+    ASSERT_OK(segment_data_builder.append(1, slice_provider));
+    ASSERT_OK(segment_data_builder.append(2, i32_provider));
+    ASSERT_OK(segment_data_builder.append(3, i32_provider));
+    ASSERT_OK(segment_data_builder.append(4, slice_provider));
+    ASSERT_OK(segment_data_builder.finalize_footer());
+
+    //
+    auto segment = *Segment::open(_fs, file_name, 0, tablet_schema);
     ASSERT_EQ(segment->num_rows(), num_rows);
 
-    vectorized::SegmentReadOptions seg_options;
+    SegmentReadOptions seg_options;
     OlapReaderStatistics stats;
-    seg_options.block_mgr = _block_mgr;
+    seg_options.fs = _fs;
     seg_options.stats = &stats;
-
-    auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema);
-    auto res = segment->new_iterator(schema, seg_options);
-
-    vectorized::Schema vec_schema;
-    vec_schema.append(std::make_shared<vectorized::Field>(0, "c1", OLAP_FIELD_TYPE_INT, -1, -1, false));
-    vec_schema.append(std::make_shared<vectorized::Field>(1, "c2", OLAP_FIELD_TYPE_VARCHAR, -1, -1, false));
-
+    VecSchemaBuilder schema_builder;
+    schema_builder.add(0, "c0", TYPE_INT)
+            .add(1, "c1", TYPE_VARCHAR)
+            .add(2, "c2", TYPE_INT)
+            .add(3, "c3", TYPE_INT)
+            .add(4, "c4", TYPE_VARCHAR);
+    auto vec_schema = schema_builder.build();
     ObjectPool pool;
-    vectorized::SegmentReadOptions seg_opts;
-    seg_opts.block_mgr = _block_mgr;
+    SegmentReadOptions seg_opts;
+    seg_opts.fs = _fs;
     seg_opts.stats = &stats;
 
-    auto* con = pool.add(new vectorized::ConjunctivePredicates());
-    auto type_varchar = get_type_info(OLAP_FIELD_TYPE_VARCHAR);
-    con->add(pool.add(vectorized::new_column_ge_predicate(type_varchar, 1, Slice(values[8]))));
-    seg_opts.delete_predicates.add(*con);
-
-    vectorized::ColumnIdToGlobalDictMap dict_map;
-    vectorized::GlobalDictMap g_dict;
-    for (int i = 0; i < 8; ++i) {
-        g_dict[Slice(values[i])] = i;
+    //
+    ColumnIdToGlobalDictMap dict_map;
+    GlobalDictMap g_dict1;
+    GlobalDictMap g_dict2;
+    for (int i = 0; i < values.size() - 1; ++i) {
+        g_dict1[Slice(values[i])] = i;
+        g_dict2[Slice(values[i])] = i;
     }
-    dict_map[1] = &g_dict;
-
+    g_dict2[Slice(values[values.size() - 1])] = values.size() - 1;
+    dict_map[1] = &g_dict1;
+    dict_map[4] = &g_dict2;
     seg_opts.global_dictmaps = &dict_map;
+    seg_opts.tablet_schema = tablet_schema;
+
+    std::unique_ptr<ColumnPredicate> predicate;
+    predicate.reset(new_column_ge_predicate(get_type_info(TYPE_VARCHAR), 1, "prefix"));
+    seg_opts.predicates[1].push_back(predicate.get());
 
     auto chunk_iter = new_segment_iterator(segment, vec_schema, seg_opts);
-    chunk_iter->init_encoded_schema(dict_map);
-    chunk_iter->init_output_schema(std::unordered_set<uint32_t>());
+    ASSERT_OK(chunk_iter->init_encoded_schema(dict_map));
+    std::unordered_set<uint32_t> set;
+    set.insert(1);
+    ASSERT_OK(chunk_iter->init_output_schema(set));
 
-    auto res_chunk = vectorized::ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
+    auto res_chunk = ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
 
     ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
     res_chunk->reset();
@@ -181,7 +245,9 @@ TEST_F(SegmentIteratorTest, TestGlobalDictNotSuperSet) {
     res_chunk->reset();
 }
 
-TEST_F(SegmentIteratorTest, TestGlobalDictNoLocalDict) {
+// NOLINTNEXTLINE
+TEST_F(SegmentIteratorTest, TestGlobalDictNoLocalDictWithUnusedColumn) {
+    // prepare dict data
     const int slice_num = 2;
     std::vector<std::string> values;
     const int overflow_sz = 1024 * 1024 + 10; // 1M
@@ -199,105 +265,253 @@ TEST_F(SegmentIteratorTest, TestGlobalDictNoLocalDict) {
 
     std::vector<Slice> data_strs;
     for (const auto& data : values) {
-        data_strs.push_back(data);
+        data_strs.emplace_back(data);
     }
 
-    TabletColumn c1 = create_int_key(1);
-    TabletColumn c2 = create_with_default_value<OLAP_FIELD_TYPE_VARCHAR>("");
+    using namespace starrocks::test;
 
-    TabletSchema tablet_schema = create_schema({c1, c2});
+    std::string file_name = kSegmentDir + "/no_dict_unused_column";
+    ASSIGN_OR_ABORT(auto wfile, _fs->new_writable_file(file_name));
+    TabletSchemaBuilder builder;
+    std::shared_ptr<TabletSchema> tablet_schema = builder.create(1, false, TYPE_INT, true)
+                                                          .create(2, false, TYPE_VARCHAR)
+                                                          .set_length(overflow_sz + 10)
+                                                          .build();
 
     SegmentWriterOptions opts;
     opts.num_rows_per_block = 1024;
-
-    std::string file_name = kSegmentDir + "/no_dict";
-    std::unique_ptr<fs::WritableBlock> wblock;
-    fs::CreateBlockOptions wblock_opts({file_name});
-    ASSERT_OK(_block_mgr->create_block(wblock_opts, &wblock));
-
-    SegmentWriter writer(std::move(wblock), 0, &tablet_schema, opts);
+    SegmentWriter writer(std::move(wfile), 0, tablet_schema, opts);
 
     int32_t chunk_size = config::vector_chunk_size;
     size_t num_rows = slice_num;
-    uint64_t file_size = 0;
-    uint64_t index_size = 0;
 
-    {
-        // col0
-        std::vector<uint32_t> column_indexes = {0};
-        ASSERT_OK(writer.init(column_indexes, true));
-        auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema, column_indexes);
-        auto chunk = vectorized::ChunkHelper::new_chunk(schema, chunk_size);
-        for (auto i = 0; i < num_rows % chunk_size; ++i) {
-            chunk->reset();
-            auto& cols = chunk->columns();
-            for (auto j = 0; j < chunk_size; ++j) {
-                if (i * chunk_size + j >= num_rows) {
-                    break;
-                }
-                cols[0]->append_datum(vectorized::Datum(static_cast<int32_t>(i * chunk_size + j)));
-            }
-            ASSERT_OK(writer.append_chunk(*chunk));
-        }
-        ASSERT_OK(writer.finalize_columns(&index_size));
-    }
-    {
-        // col1
-        std::vector<uint32_t> column_indexes{1};
-        ASSERT_OK(writer.init(column_indexes, false));
-        auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema, column_indexes);
-        auto chunk = vectorized::ChunkHelper::new_chunk(schema, chunk_size);
-        for (auto i = 0; i < num_rows % chunk_size; ++i) {
-            chunk->reset();
-            auto& cols = chunk->columns();
-            for (auto j = 0; j < chunk_size; ++j) {
-                if (i * chunk_size + j >= num_rows) {
-                    break;
-                }
-                cols[0]->append_datum(vectorized::Datum(data_strs[j % slice_num]));
-            }
-            ASSERT_OK(writer.append_chunk(*chunk));
-        }
-        ASSERT_OK(writer.finalize_columns(&index_size));
-    }
-    ASSERT_OK(writer.finalize_footer(&file_size));
+    auto i32_provider = [](int32_t i) { return i; };
+    auto slice_provider = [&data_strs](int32_t i) { return data_strs[i % data_strs.size()]; };
 
-    auto segment = *Segment::open(_tablet_meta_mem_tracker.get(), _block_mgr, file_name, 0, &tablet_schema);
+    // tablet data builder
+    TabletDataBuilder segment_data_builder(writer, tablet_schema, chunk_size, num_rows);
+    ASSERT_OK(segment_data_builder.append(0, i32_provider));
+    ASSERT_OK(segment_data_builder.append(1, slice_provider));
+    ASSERT_OK(segment_data_builder.finalize_footer());
+
+    auto segment = *Segment::open(_fs, file_name, 0, tablet_schema);
     ASSERT_EQ(segment->num_rows(), num_rows);
 
-    vectorized::SegmentReadOptions seg_options;
+    SegmentReadOptions seg_options;
     OlapReaderStatistics stats;
-    seg_options.block_mgr = _block_mgr;
+    seg_options.fs = _fs;
     seg_options.stats = &stats;
+    seg_options.tablet_schema = tablet_schema;
 
-    auto schema = vectorized::ChunkHelper::convert_schema_to_format_v2(tablet_schema);
-    auto res = segment->new_iterator(schema, seg_options);
-
-    ColumnIterator* scalar_iter = nullptr;
-    DeferOp defer([&]() { delete scalar_iter; });
     ColumnIteratorOptions iter_opts;
-    std::unique_ptr<fs::ReadableBlock> rblock;
-    ASSERT_OK(_block_mgr->open_block(segment->file_name(), &rblock));
+    ASSIGN_OR_ABORT(auto read_file, _fs->new_random_access_file(segment->file_name()));
     iter_opts.stats = &stats;
     iter_opts.use_page_cache = false;
-    iter_opts.rblock = rblock.get();
+    iter_opts.read_file = read_file.get();
     iter_opts.check_dict_encoding = true;
     iter_opts.reader_type = READER_QUERY;
-    ASSERT_OK(segment->new_column_iterator(1, &scalar_iter));
+
+    ASSIGN_OR_ABORT(auto scalar_iter, segment->new_column_iterator(1));
     ASSERT_OK(scalar_iter->init(iter_opts));
     ASSERT_FALSE(scalar_iter->all_page_dict_encoded());
 
-    vectorized::Schema vec_schema;
-    vec_schema.append(std::make_shared<vectorized::Field>(0, "c1", OLAP_FIELD_TYPE_INT, -1, -1, false));
-    vec_schema.append(std::make_shared<vectorized::Field>(1, "c2", OLAP_FIELD_TYPE_VARCHAR, -1, -1, false));
+    VecSchemaBuilder schema_builder;
+    schema_builder.add(0, "c0", TYPE_INT).add(1, "c1", TYPE_VARCHAR);
+    auto vec_schema = schema_builder.build();
 
     ObjectPool pool;
-    vectorized::SegmentReadOptions seg_opts;
-    seg_opts.block_mgr = _block_mgr;
+    SegmentReadOptions seg_opts;
+    seg_opts.fs = _fs;
+    seg_opts.stats = &stats;
+    seg_opts.tablet_schema = tablet_schema;
+
+    ColumnIdToGlobalDictMap dict_map;
+    GlobalDictMap g_dict;
+    for (int i = 0; i < slice_num; ++i) {
+        g_dict[Slice(values[i])] = i;
+    }
+    dict_map[1] = &g_dict;
+
+    seg_opts.global_dictmaps = &dict_map;
+    std::unique_ptr<ColumnPredicate> predicate;
+    predicate.reset(new_column_ge_predicate(get_type_info(TYPE_VARCHAR), 1, values[0].c_str()));
+    seg_opts.predicates[1].push_back(predicate.get());
+
+    auto chunk_iter = new_segment_iterator(segment, vec_schema, seg_opts);
+    ASSERT_OK(chunk_iter->init_encoded_schema(dict_map));
+    std::unordered_set<uint32_t> set;
+    set.insert(1);
+    ASSERT_OK(chunk_iter->init_output_schema(set));
+
+    auto res_chunk = ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
+
+    ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
+    res_chunk->reset();
+}
+
+// NOLINTNEXTLINE
+TEST_F(SegmentIteratorTest, TestGlobalDictNotSuperSet) {
+    using namespace starrocks::test;
+
+    std::string file_name = kSegmentDir + "/low_card_cols";
+    ASSIGN_OR_ABORT(auto wfile, _fs->new_writable_file(file_name));
+    SegmentWriterOptions opts;
+    opts.num_rows_per_block = 10;
+    TabletSchemaBuilder builder;
+    std::shared_ptr<TabletSchema> tablet_schema =
+            builder.create(1, false, TYPE_INT, true).create(2, false, TYPE_VARCHAR).build();
+    SegmentWriter writer(std::move(wfile), 0, tablet_schema, opts);
+
+    const int32_t chunk_size = config::vector_chunk_size;
+    const size_t num_rows = 10000;
+
+    const int slice_num = 64;
+    std::string prefix = "lowcard-";
+    std::vector<std::string> values;
+    for (int i = 0; i < slice_num; ++i) {
+        values.push_back(prefix + std::to_string(i));
+    }
+
+    std::sort(values.begin(), values.end());
+
+    std::vector<Slice> data_strs;
+    for (const auto& data : values) {
+        data_strs.emplace_back(data);
+    }
+
+    auto i32_provider = [](int32_t i) { return i; };
+    auto slice_provider = [&data_strs](int32_t i) { return data_strs[i % data_strs.size()]; };
+
+    // tablet data builder
+    TabletDataBuilder segment_data_builder(writer, tablet_schema, chunk_size, num_rows);
+    ASSERT_OK(segment_data_builder.append(0, i32_provider));
+    ASSERT_OK(segment_data_builder.append(1, slice_provider));
+    ASSERT_OK(segment_data_builder.finalize_footer());
+
+    auto segment = *Segment::open(_fs, file_name, 0, tablet_schema);
+    ASSERT_EQ(segment->num_rows(), num_rows);
+
+    SegmentReadOptions seg_options;
+    OlapReaderStatistics stats;
+    seg_options.fs = _fs;
+    seg_options.stats = &stats;
+
+    VecSchemaBuilder schema_builder;
+    schema_builder.add(0, "c0", TYPE_INT).add(1, "c1", TYPE_VARCHAR);
+    auto vec_schema = schema_builder.build();
+
+    ObjectPool pool;
+    SegmentReadOptions seg_opts;
+    seg_opts.fs = _fs;
     seg_opts.stats = &stats;
 
-    vectorized::ColumnIdToGlobalDictMap dict_map;
-    vectorized::GlobalDictMap g_dict;
+    auto* con = pool.add(new ConjunctivePredicates());
+    auto type_varchar = get_type_info(TYPE_VARCHAR);
+    con->add(pool.add(new_column_ge_predicate(type_varchar, 1, Slice(values[8]))));
+    seg_opts.delete_predicates.add(*con);
+
+    ColumnIdToGlobalDictMap dict_map;
+    GlobalDictMap g_dict;
+    for (int i = 0; i < 8; ++i) {
+        g_dict[Slice(values[i])] = i;
+    }
+    dict_map[1] = &g_dict;
+
+    seg_opts.global_dictmaps = &dict_map;
+
+    auto chunk_iter = new_segment_iterator(segment, vec_schema, seg_opts);
+    ASSERT_OK(chunk_iter->init_encoded_schema(dict_map));
+    ASSERT_OK(chunk_iter->init_output_schema(std::unordered_set<uint32_t>()));
+
+    auto res_chunk = ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
+
+    ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
+    res_chunk->reset();
+    ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
+    res_chunk->reset();
+    ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
+    res_chunk->reset();
+}
+
+// NOLINTNEXTLINE
+TEST_F(SegmentIteratorTest, TestGlobalDictNoLocalDict) {
+    // prepare dict data
+    const int slice_num = 2;
+    std::vector<std::string> values;
+    const int overflow_sz = 1024 * 1024 + 10; // 1M
+    for (int i = 0; i < slice_num; ++i) {
+        std::string bigstr;
+        bigstr.reserve(overflow_sz);
+        for (int j = 0; j < overflow_sz; ++j) {
+            bigstr.push_back(j);
+        }
+        bigstr.push_back(i);
+        values.emplace_back(std::move(bigstr));
+    }
+
+    std::sort(values.begin(), values.end());
+
+    std::vector<Slice> data_strs;
+    for (const auto& data : values) {
+        data_strs.emplace_back(data);
+    }
+
+    using namespace starrocks::test;
+
+    std::string file_name = kSegmentDir + "/no_dict";
+    ASSIGN_OR_ABORT(auto wfile, _fs->new_writable_file(file_name));
+    TabletSchemaBuilder builder;
+    std::shared_ptr<TabletSchema> tablet_schema = builder.create(1, false, TYPE_INT, true)
+                                                          .create(2, false, TYPE_VARCHAR)
+                                                          .set_length(overflow_sz + 10)
+                                                          .build();
+
+    SegmentWriterOptions opts;
+    opts.num_rows_per_block = 1024;
+    SegmentWriter writer(std::move(wfile), 0, tablet_schema, opts);
+
+    int32_t chunk_size = config::vector_chunk_size;
+    size_t num_rows = slice_num;
+
+    auto i32_provider = [](int32_t i) { return i; };
+    auto slice_provider = [&data_strs](int32_t i) { return data_strs[i % data_strs.size()]; };
+
+    // tablet data builder
+    TabletDataBuilder segment_data_builder(writer, tablet_schema, chunk_size, num_rows);
+    ASSERT_OK(segment_data_builder.append(0, i32_provider));
+    ASSERT_OK(segment_data_builder.append(1, slice_provider));
+    ASSERT_OK(segment_data_builder.finalize_footer());
+
+    auto segment = *Segment::open(_fs, file_name, 0, tablet_schema);
+    ASSERT_EQ(segment->num_rows(), num_rows);
+
+    SegmentReadOptions seg_options;
+    OlapReaderStatistics stats;
+    seg_options.fs = _fs;
+    seg_options.stats = &stats;
+
+    ColumnIteratorOptions iter_opts;
+    ASSIGN_OR_ABORT(auto read_file, _fs->new_random_access_file(segment->file_name()));
+    iter_opts.stats = &stats;
+    iter_opts.use_page_cache = false;
+    iter_opts.read_file = read_file.get();
+    iter_opts.check_dict_encoding = true;
+    iter_opts.reader_type = READER_QUERY;
+    ASSIGN_OR_ABORT(auto scalar_iter, segment->new_column_iterator(1));
+    ASSERT_OK(scalar_iter->init(iter_opts));
+    ASSERT_FALSE(scalar_iter->all_page_dict_encoded());
+
+    VecSchemaBuilder schema_builder;
+    schema_builder.add(0, "c0", TYPE_INT).add(1, "c1", TYPE_VARCHAR);
+    auto vec_schema = schema_builder.build();
+
+    ObjectPool pool;
+    SegmentReadOptions seg_opts;
+    seg_opts.fs = _fs;
+    seg_opts.stats = &stats;
+
+    ColumnIdToGlobalDictMap dict_map;
+    GlobalDictMap g_dict;
     for (int i = 0; i < slice_num; ++i) {
         g_dict[Slice(values[i])] = i;
     }
@@ -306,10 +520,10 @@ TEST_F(SegmentIteratorTest, TestGlobalDictNoLocalDict) {
     seg_opts.global_dictmaps = &dict_map;
 
     auto chunk_iter = new_segment_iterator(segment, vec_schema, seg_opts);
-    chunk_iter->init_encoded_schema(dict_map);
-    chunk_iter->init_output_schema(std::unordered_set<uint32_t>());
+    ASSERT_TRUE(chunk_iter->init_encoded_schema(dict_map).ok());
+    ASSERT_OK(chunk_iter->init_output_schema(std::unordered_set<uint32_t>()));
 
-    auto res_chunk = vectorized::ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
+    auto res_chunk = ChunkHelper::new_chunk(chunk_iter->output_schema(), chunk_size);
 
     ASSERT_OK(chunk_iter->get_next(res_chunk.get()));
     res_chunk->reset();

@@ -65,7 +65,6 @@ HASH_PARTITIONED: 6: O_ORDERPRIORITY
 |
 5:HASH JOIN
 |  join op: RIGHT SEMI JOIN (BUCKET_SHUFFLE)
-|  hash predicates:
 |  colocate: false, reason:
 |  equal join conjunct: 11: L_ORDERKEY = 1: O_ORDERKEY
 |
@@ -84,7 +83,6 @@ tabletRatio=20/20
 tabletList=10213,10215,10217,10219,10221,10223,10225,10227,10229,10231 ...
 cardinality=300000000
 avgRowSize=16.0
-numNodes=0
 
 PLAN FRAGMENT 3
 OUTPUT EXPRS:
@@ -108,6 +106,5 @@ tabletRatio=10/10
 tabletList=10139,10141,10143,10145,10147,10149,10151,10153,10155,10157
 cardinality=5675676
 avgRowSize=27.0
-numNodes=0
 [end]
 

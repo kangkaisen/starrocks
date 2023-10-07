@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/catalog/PrimitiveType.java
 
@@ -66,15 +79,20 @@ public enum PrimitiveType {
 
     JSON("JSON", 16, TPrimitiveType.JSON),
 
-    // Unsupported scalar types.
-    BINARY("BINARY", -1, TPrimitiveType.BINARY);
+    FUNCTION("FUNCTION", 8, TPrimitiveType.FUNCTION),
+
+    BINARY("BINARY", -1, TPrimitiveType.BINARY),
+    VARBINARY("VARBINARY", 16, TPrimitiveType.VARBINARY),
+
+    // If external table column type is unsupported, it will be converted to UNKNOWN_TYPE
+    UNKNOWN_TYPE("UNKNOWN_TYPE", -1, TPrimitiveType.INVALID_TYPE);
 
     private static final int DATE_INDEX_LEN = 3;
     private static final int DATETIME_INDEX_LEN = 8;
     private static final int VARCHAR_INDEX_LEN = 20;
     private static final int DECIMAL_INDEX_LEN = 12;
 
-    private static final ImmutableSetMultimap<PrimitiveType, PrimitiveType> implicitCastMap;
+    private static final ImmutableSetMultimap<PrimitiveType, PrimitiveType> IMPLICIT_CAST_MAP;
 
     public static final ImmutableList<PrimitiveType> INTEGER_TYPE_LIST =
             ImmutableList.of(TINYINT, SMALLINT, INT, BIGINT, LARGEINT);
@@ -99,10 +117,12 @@ public enum PrimitiveType {
                     .build();
     // TODO(mofei) support them
     public static final ImmutableList<PrimitiveType> JSON_UNCOMPATIBLE_TYPE =
-            ImmutableList.of(DATE, DATETIME, TIME, HLL, BITMAP, PERCENTILE);
+            ImmutableList.of(DATE, DATETIME, TIME, HLL, BITMAP, PERCENTILE, FUNCTION, VARBINARY);
 
     private static final ImmutableList<PrimitiveType> TIME_TYPE_LIST =
             ImmutableList.of(TIME, DATE, DATETIME);
+
+    private static final ImmutableList<PrimitiveType> BINARY_TYPE_LIST = ImmutableList.of(VARBINARY);
 
     private static final ImmutableList<PrimitiveType> BASIC_TYPE_LIST =
             ImmutableList.<PrimitiveType>builder()
@@ -111,8 +131,17 @@ public enum PrimitiveType {
                     .addAll(NUMBER_TYPE_LIST)
                     .addAll(TIME_TYPE_LIST)
                     .addAll(STRING_TYPE_LIST)
+                    .addAll(BINARY_TYPE_LIST)
                     .build();
 
+    public static final ImmutableList<PrimitiveType> BINARY_INCOMPATIBLE_TYPE_LIST =
+            ImmutableList.<PrimitiveType>builder()
+                    .add(NULL_TYPE)
+                    .add(BOOLEAN)
+                    .addAll(NUMBER_TYPE_LIST)
+                    .addAll(TIME_TYPE_LIST)
+                    .addAll(STRING_TYPE_LIST)
+                    .build();
     private static final ImmutableSortedSet<String> VARIABLE_TYPE_SET =
             ImmutableSortedSet.orderedBy(String.CASE_INSENSITIVE_ORDER)
                     .add(PrimitiveType.CHAR.toString())
@@ -135,7 +164,7 @@ public enum PrimitiveType {
     static {
         ImmutableSetMultimap.Builder<PrimitiveType, PrimitiveType> builder = ImmutableSetMultimap.builder();
         builder.putAll(NULL_TYPE, BASIC_TYPE_LIST);
-        builder.putAll(NULL_TYPE, ImmutableList.of(HLL, BITMAP, PERCENTILE, JSON));
+        builder.putAll(NULL_TYPE, ImmutableList.of(HLL, BITMAP, PERCENTILE, JSON, VARBINARY));
 
         builder.putAll(BOOLEAN, BASIC_TYPE_LIST);
         builder.putAll(TINYINT, BASIC_TYPE_LIST);
@@ -165,16 +194,21 @@ public enum PrimitiveType {
         builder.put(BITMAP, BITMAP);
         builder.put(PERCENTILE, PERCENTILE);
 
+        // BINARY
+        builder.putAll(VARBINARY, BASIC_TYPE_LIST);
+
         // JSON
         builder.putAll(JSON, JSON);
         builder.putAll(JSON, NULL_TYPE);
+
+        builder.putAll(FUNCTION, FUNCTION);
 
         for (PrimitiveType type : JSON_COMPATIBLE_TYPE) {
             builder.put(type, JSON);
             builder.put(JSON, type);
         }
 
-        implicitCastMap = builder.build();
+        IMPLICIT_CAST_MAP = builder.build();
     }
 
     private final String description;
@@ -197,7 +231,7 @@ public enum PrimitiveType {
         if (type.equals(target)) {
             return true;
         }
-        return implicitCastMap.get(type).contains(target);
+        return IMPLICIT_CAST_MAP.get(type).contains(target);
     }
 
     public static PrimitiveType fromThrift(TPrimitiveType tPrimitiveType) {
@@ -242,10 +276,12 @@ public enum PrimitiveType {
                 return DATETIME;
             case TIME:
                 return TIME;
-            case BINARY:
-                return BINARY;
+            case VARBINARY:
+                return VARBINARY;
             case JSON:
                 return JSON;
+            case FUNCTION:
+                return FUNCTION;
             default:
                 return INVALID_TYPE;
         }
@@ -317,6 +353,19 @@ public enum PrimitiveType {
         }
     }
 
+    public static PrimitiveType getDecimalPrimitiveType(int precision) {
+        PrimitiveType type = INVALID_TYPE;
+        if (precision > 0 && precision <= getMaxPrecisionOfDecimal(DECIMAL32)) {
+            return DECIMAL32;
+        } else if (precision <= getMaxPrecisionOfDecimal(DECIMAL64)) {
+            return DECIMAL64;
+        } else if (precision <= getMaxPrecisionOfDecimal(DECIMAL128)) {
+            return DECIMAL128;
+        }
+        Preconditions.checkState(type.isDecimalOfAnyVersion());
+        return type;
+    }
+
     public void setTimeType() {
         isTimeType = true;
     }
@@ -337,6 +386,11 @@ public enum PrimitiveType {
     public int getTypeSize() {
         int typeSize = 0;
         switch (this) {
+            case INVALID_TYPE:
+            case BINARY:
+            case UNKNOWN_TYPE:
+            case FUNCTION:
+                break;
             case NULL_TYPE:
             case BOOLEAN:
             case TINYINT:
@@ -365,6 +419,7 @@ public enum PrimitiveType {
                 break;
             case CHAR:
             case VARCHAR:
+            case VARBINARY:
                 // use 16 as char type estimate size
                 typeSize = 16;
                 break;
@@ -377,6 +432,11 @@ public enum PrimitiveType {
                 // 1MB
                 typeSize = 1024 * 1024;
                 break;
+            case JSON:
+                typeSize = 1024;
+                break;
+            default:
+                Preconditions.checkState(false, "unknown type " + this);
         }
         return typeSize;
     }
@@ -387,6 +447,17 @@ public enum PrimitiveType {
                 || this == INT
                 || this == BIGINT
                 || this == LARGEINT;
+    }
+
+    public boolean isVariableLengthType() {
+        switch (this) {
+            case CHAR:
+            case VARCHAR:
+            case VARBINARY:
+            case HLL:
+                return true;
+        }
+        return false;
     }
 
     public boolean isFloatingPointType() {
@@ -423,6 +494,18 @@ public enum PrimitiveType {
 
     public boolean isStringType() {
         return (this == VARCHAR || this == CHAR || this == HLL);
+    }
+
+    public boolean isJsonType() {
+        return this == JSON;
+    }
+
+    public boolean isFunctionType() {
+        return this == FUNCTION;
+    }
+
+    public boolean isBinaryType() {
+        return this == BINARY || this == VARBINARY;
     }
 
     public boolean isCharFamily() {
@@ -469,6 +552,8 @@ public enum PrimitiveType {
                 return MysqlColType.MYSQL_TYPE_NEWDECIMAL;
             case VARCHAR:
                 return MysqlColType.MYSQL_TYPE_VAR_STRING;
+            case VARBINARY:
+                return MysqlColType.MYSQL_TYPE_BLOB;
             default:
                 return MysqlColType.MYSQL_TYPE_STRING;
         }

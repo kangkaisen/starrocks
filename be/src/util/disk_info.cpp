@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/util/disk_info.cpp
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -24,17 +20,14 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
-#include <sys/vfs.h>
 #include <unistd.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/algorithm/string/join.hpp>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 
+#include "fs/fs_util.h"
 #include "gutil/strings/split.h"
-#include "util/file_utils.h"
 
 namespace starrocks {
 
@@ -81,7 +74,7 @@ void DiskInfo::get_device_names() {
         DCHECK(_s_device_id_to_disk_id.find(dev) == _s_device_id_to_disk_id.end());
 
         int disk_id = -1;
-        std::map<std::string, int>::iterator it = _s_disk_name_to_disk_id.find(name);
+        auto it = _s_disk_name_to_disk_id.find(name);
 
         if (it == _s_disk_name_to_disk_id.end()) {
             // First time seeing this disk
@@ -134,7 +127,7 @@ void DiskInfo::init() {
 int DiskInfo::disk_id(const char* path) {
     struct stat s;
     stat(path, &s);
-    std::map<dev_t, int>::iterator it = _s_device_id_to_disk_id.find(s.st_dev);
+    auto it = _s_device_id_to_disk_id.find(s.st_dev);
 
     if (it == _s_device_id_to_disk_id.end()) {
         return -1;
@@ -165,7 +158,7 @@ Status DiskInfo::get_disk_devices(const std::vector<std::string>& paths, std::se
     std::vector<std::string> real_paths;
     for (auto& path : paths) {
         std::string p;
-        WARN_IF_ERROR(FileUtils::canonicalize(path, &p),
+        WARN_IF_ERROR(fs::canonicalize(path, &p),
                       "canonicalize path " + path + " failed, skip disk monitoring of this path");
         real_paths.emplace_back(std::move(p));
     }

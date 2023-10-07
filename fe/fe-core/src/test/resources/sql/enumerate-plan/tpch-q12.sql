@@ -27,6 +27,8 @@ group by
     l_shipmode
 order by
     l_shipmode ;
+[planCount]
+4
 [plan-1]
 TOP-N (order by [[25: L_SHIPMODE ASC NULLS FIRST]])
     TOP-N (order by [[25: L_SHIPMODE ASC NULLS FIRST]])

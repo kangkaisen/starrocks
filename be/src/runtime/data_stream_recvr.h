@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/data_stream_recvr.h
 
@@ -24,6 +37,7 @@
 #include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
 #include "common/status.h"
+#include "exec/sorting/merge_path.h"
 #include "gen_cpp/Types_types.h" // for TUniqueId
 #include "runtime/descriptors.h"
 #include "runtime/local_pass_through_buffer.h"
@@ -36,9 +50,9 @@ class Closure;
 
 namespace starrocks {
 
-namespace vectorized {
 class SortedChunksMerger;
-}
+class CascadeChunkMerger;
+class ChunkMerger;
 
 class DataStreamMgr;
 class MemTracker;
@@ -77,8 +91,8 @@ public:
 public:
     ~DataStreamRecvr();
 
-    Status get_chunk(std::unique_ptr<vectorized::Chunk>* chunk);
-    Status get_chunk_for_pipeline(std::unique_ptr<vectorized::Chunk>* chunk, const int32_t driver_sequence);
+    Status get_chunk(std::unique_ptr<Chunk>* chunk);
+    Status get_chunk_for_pipeline(std::unique_ptr<Chunk>* chunk, const int32_t driver_sequence);
 
     // Deregister from DataStreamMgr instance, which shares ownership of this instance.
     void close();
@@ -91,17 +105,21 @@ public:
     Status create_merger_for_pipeline(RuntimeState* state, const SortExecExprs* exprs, const std::vector<bool>* is_asc,
                                       const std::vector<bool>* is_null_first);
 
+    std::vector<merge_path::MergePathChunkProvider> create_merge_path_chunk_providers();
+
     // Fill output_batch with the next batch of rows obtained by merging the per-sender
     // input streams. Must only be called if _is_merging is true.
-    Status get_next(vectorized::ChunkPtr* chunk, bool* eos);
-    Status get_next_for_pipeline(vectorized::ChunkPtr* chunk, std::atomic<bool>* eos, bool* should_exit);
+    Status get_next(ChunkPtr* chunk, bool* eos);
+    Status get_next_for_pipeline(ChunkPtr* chunk, std::atomic<bool>* eos, bool* should_exit);
 
     const TUniqueId& fragment_instance_id() const { return _fragment_instance_id; }
     PlanNodeId dest_node_id() const { return _dest_node_id; }
     const RowDescriptor& row_desc() const { return _row_desc; }
 
     void add_sub_plan_statistics(const PQueryStatistics& statistics, int sender_id) {
-        _sub_plan_query_statistics_recvr->insert(statistics, sender_id);
+        if (_sub_plan_query_statistics_recvr) {
+            _sub_plan_query_statistics_recvr->insert(statistics, sender_id);
+        }
     }
 
     void short_circuit_for_pipeline(const int32_t driver_sequence);
@@ -112,9 +130,13 @@ public:
 
     bool is_data_ready();
 
+    bool get_encode_level() const { return _encode_level; }
+
 private:
     friend class DataStreamMgr;
     class SenderQueue;
+    class NonPipelineSenderQueue;
+    class PipelineSenderQueue;
 
     DataStreamRecvr(DataStreamMgr* stream_mgr, RuntimeState* runtime_state, const RowDescriptor& row_desc,
                     const TUniqueId& fragment_instance_id, PlanNodeId dest_node_id, int num_senders, bool is_merging,
@@ -146,7 +168,7 @@ private:
     // soft upper limit on the total amount of buffering allowed for this stream across
     // all sender queues. we stop acking incoming data once the amount of buffered data
     // exceeds this value
-    int _total_buffer_limit;
+    size_t _total_buffer_limit;
 
     // Row schema, copied from the caller of CreateRecvr().
     RowDescriptor _row_desc;
@@ -156,7 +178,7 @@ private:
     bool _is_merging;
 
     // total number of bytes held across all sender queues.
-    std::atomic<int> _num_buffered_bytes{0};
+    std::atomic<size_t> _num_buffered_bytes{0};
 
     // One or more queues of row batches received from senders. If _is_merging is true,
     // there is one SenderQueue for each sender. Otherwise, row batches from all senders
@@ -164,8 +186,9 @@ private:
     // receiver and placed in _sender_queue_pool.
     std::vector<SenderQueue*> _sender_queues;
 
-    // vectorized::SortedChunksMerger merges chunks from different senders.
-    std::unique_ptr<vectorized::SortedChunksMerger> _chunks_merger;
+    // SortedChunksMerger merges chunks from different senders.
+    std::unique_ptr<SortedChunksMerger> _chunks_merger;
+    std::unique_ptr<ChunkMerger> _cascade_merger;
 
     // Pool of sender queues.
     ObjectPool _sender_queue_pool;
@@ -184,13 +207,24 @@ private:
 
     // Time series of number of bytes received, samples _bytes_received_counter
     // RuntimeProfile::TimeSeriesCounter* _bytes_received_time_series_counter;
-    RuntimeProfile::Counter* _deserialize_row_batch_timer;
-    RuntimeProfile::Counter* _decompress_row_batch_timer;
+    RuntimeProfile::Counter* _deserialize_chunk_timer;
+    RuntimeProfile::Counter* _decompress_chunk_timer;
     RuntimeProfile::Counter* _request_received_counter;
 
+    // Average time of closure stayed in the buffer
+    // Formula is: cumulative_time / _degree_of_parallelism, so the estimation may
+    // not be that accurate, but enough to expose problems in profile analysis
+    RuntimeProfile::Counter* _closure_block_timer;
+    RuntimeProfile::Counter* _closure_block_counter;
+    RuntimeProfile::Counter* _process_total_timer = nullptr;
+
     // Total spent for senders putting data in the queue
+    // TODO(hcf) remove these two metrics after non-pipeline offlined
     RuntimeProfile::Counter* _sender_total_timer = nullptr;
     RuntimeProfile::Counter* _sender_wait_lock_timer = nullptr;
+
+    RuntimeProfile::Counter* _buffer_unplug_counter = nullptr;
+    RuntimeProfile::HighWaterMarkCounter* _peak_buffer_mem_bytes = nullptr;
 
     // Sub plan query statistics receiver.
     std::shared_ptr<QueryStatisticsRecvr> _sub_plan_query_statistics_recvr;
@@ -203,6 +237,9 @@ private:
     // if _keep_order is set to true, then receiver will keep the order according sequence
     bool _keep_order;
     PassThroughContext _pass_through_context;
+
+    int _encode_level;
+    bool _close = false;
 };
 
 } // end namespace starrocks

@@ -1,15 +1,36 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.sql.plan;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
+import com.starrocks.analysis.BinaryType;
 import com.starrocks.analysis.CastExpr;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.IntLiteral;
+import com.starrocks.analysis.SlotRef;
+import com.starrocks.analysis.TupleId;
 import com.starrocks.catalog.Type;
 import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.LambdaFunctionExpr;
+import com.starrocks.sql.common.StarRocksPlannerException;
+import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CastOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
+import com.starrocks.sql.optimizer.operator.scalar.LambdaFunctionOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.utframe.UtFrameUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -41,11 +62,22 @@ public class ExpressionTest extends PlanTestBase {
     }
 
     @Test
+    public void testDateVariableCast() throws Exception {
+        String sql = "select t1a, t1b from test_all_type where id_date > 2000";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "PREDICATES: 9: id_date > CAST(2000 AS DATE)");
+
+        sql = "select t1a, t1b from test_all_type where id_datetime > 2000";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "PREDICATES: 8: id_datetime > CAST(2000 AS DATETIME)");
+    }
+
+    @Test
     public void testExpression1() throws Exception {
         String sql = "select sum(v1 + v2) from t0";
         String planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("  1:Project\n"
-                + "  |  <slot 4> : 1: v1 + 2: v2"));
+        Assert.assertTrue(planFragment.contains("  2:AGGREGATE (update finalize)\n" +
+                "  |  output: sum(1: v1 + 2: v2)"));
     }
 
     @Test
@@ -136,7 +168,8 @@ public class ExpressionTest extends PlanTestBase {
         String sql = "select cast(v1 as decimal64(7,2)) + cast(v2 as decimal64(9,3)) from t0";
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL64(7,2)) AS DECIMAL64(18,2)) + CAST(CAST(2: v2 AS DECIMAL64(9,3)) AS DECIMAL64(18,3))\n"));
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL64(7,2)) AS DECIMAL64(10,2)) + " +
+                "CAST(CAST(2: v2 AS DECIMAL64(9,3)) AS DECIMAL64(10,3))\n"));
     }
 
     @Test
@@ -144,7 +177,8 @@ public class ExpressionTest extends PlanTestBase {
         String sql = "select cast(v1 as decimal128(27,2)) - cast(v2 as decimal64(10,3)) from t0";
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(27,2)) AS DECIMAL128(38,2)) - CAST(CAST(2: v2 AS DECIMAL64(10,3)) AS DECIMAL128(38,3))\n"));
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(27,2)) AS DECIMAL128(38,2)) - " +
+                "CAST(CAST(2: v2 AS DECIMAL64(10,3)) AS DECIMAL128(38,3))\n"));
     }
 
     @Test
@@ -152,7 +186,8 @@ public class ExpressionTest extends PlanTestBase {
         String sql = "select cast(v1 as decimal128(10,5)) * cast(v2 as decimal64(9,7)) from t0";
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("1:Project\n" +
-                        "  |  <slot 4> : CAST(1: v1 AS DECIMAL128(10,5)) * CAST(CAST(2: v2 AS DECIMAL64(9,7)) AS DECIMAL128(9,7))"));
+                "  |  <slot 4> : CAST(1: v1 AS DECIMAL128(10,5)) * " +
+                "CAST(CAST(2: v2 AS DECIMAL64(9,7)) AS DECIMAL128(9,7))"));
     }
 
     @Test
@@ -160,7 +195,8 @@ public class ExpressionTest extends PlanTestBase {
         String sql = "select cast(v1 as decimal128(18,5)) / cast(v2 as decimal32(9,7)) from t0";
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(18,5)) AS DECIMAL128(38,5)) / CAST(CAST(2: v2 AS DECIMAL32(9,7)) AS DECIMAL128(38,7))\n"));
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(18,5)) AS DECIMAL128(38,5)) / " +
+                "CAST(CAST(2: v2 AS DECIMAL32(9,7)) AS DECIMAL128(38,7))\n"));
     }
 
     @Test
@@ -203,6 +239,31 @@ public class ExpressionTest extends PlanTestBase {
         Expr castExpression = ScalarOperatorToExpr.buildExecExpression(castColumnRef, context);
 
         Assert.assertTrue(castExpression instanceof CastExpr);
+
+        // lambda functions
+        ScalarOperator lambdaExpr = new BinaryPredicateOperator(BinaryType.EQ,
+                new ColumnRefOperator(100000, Type.INT, "x", true),
+                ConstantOperator.createInt(1));
+        ColumnRefOperator colRef = new ColumnRefOperator(100000, Type.INT, "x", true);
+        LambdaFunctionOperator lambda =
+                new LambdaFunctionOperator(Lists.newArrayList(colRef), lambdaExpr, Type.BOOLEAN);
+        variableToSlotRef.clear();
+        projectMap.clear();
+        context = new ScalarOperatorToExpr.FormatterContext(variableToSlotRef, projectMap);
+
+        Expr lambdaFunc = ScalarOperatorToExpr.buildExecExpression(lambda, context);
+
+        Assert.assertTrue(lambdaFunc instanceof LambdaFunctionExpr);
+        Assert.assertEquals("<slot 100000> -> <slot 100000> = 1", lambdaFunc.toSql());
+
+        LambdaFunctionExpr lexpr = ((LambdaFunctionExpr) lambdaFunc);
+        Assert.assertTrue(lexpr.getChildren().size() == 2 && lexpr.getChild(1) instanceof SlotRef);
+
+        SlotRef slotRef = ((SlotRef) lexpr.getChild(1));
+        Assert.assertTrue(slotRef.isFromLambda());
+
+        List<TupleId> tids = ImmutableList.of(new TupleId(111));
+        Assert.assertTrue(lexpr.getChild(1).isBoundByTupleIds(tids));
     }
 
     @Test
@@ -219,14 +280,21 @@ public class ExpressionTest extends PlanTestBase {
                 + " as j "
                 + "where j.x3 > 1;";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  2:Project\n"
-                + "  |  <slot 1> : 1: v1\n"
-                + "  |  \n"
-                + "  1:SELECT\n"
-                + "  |  predicates: 3: v3 > 1\n"
-                + "  |  \n"
-                + "  0:OlapScanNode\n"
-                + "     TABLE: t0\n"));
+        Assert.assertTrue(plan.contains("  2:SELECT\n" +
+                "  |  predicates: 3: v3 > 1\n" +
+                "  |  \n" +
+                "  1:EXCHANGE\n" +
+                "     limit: 10\n" +
+                "\n" +
+                "PLAN FRAGMENT 1\n" +
+                " OUTPUT EXPRS:\n" +
+                "  PARTITION: RANDOM\n" +
+                "\n" +
+                "  STREAM DATA SINK\n" +
+                "    EXCHANGE ID: 01\n" +
+                "    UNPARTITIONED\n" +
+                "\n" +
+                "  0:OlapScanNode"));
     }
 
     @Test(expected = SemanticException.class)
@@ -247,7 +315,7 @@ public class ExpressionTest extends PlanTestBase {
     public void testCaseWhen() throws Exception {
         String sql = "SELECT v1 FROM t0 WHERE CASE WHEN (v1 IS NOT NULL) THEN NULL END";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("PREDICATES: if(1: v1 IS NOT NULL, NULL, NULL)"));
+        Assert.assertTrue(plan.contains("0:EMPTYSET"));
     }
 
     @Test
@@ -273,7 +341,8 @@ public class ExpressionTest extends PlanTestBase {
                 "(((CASE WHEN false THEN -843579223 ELSE -1859488192 END)+(((-406527105)+(540481936))))) ;";
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains(
-                "PREDICATES: CAST(if(CAST(1: v1 AS BOOLEAN), -345600.0, NULL) AS DOUBLE) >= 1.341067345E9, CAST(if(CAST(1: v1 AS BOOLEAN), -345600.0, NULL) AS DOUBLE) <= -1.725533361E9"));
+                "PREDICATES: CAST(if(CAST(1: v1 AS BOOLEAN), -345600.0, NULL) AS DOUBLE) >= 1.341067345E9, " +
+                        "CAST(if(CAST(1: v1 AS BOOLEAN), -345600.0, NULL) AS DOUBLE) <= -1.725533361E9"));
     }
 
     @Test
@@ -306,53 +375,43 @@ public class ExpressionTest extends PlanTestBase {
     @Test
     public void testDateDateTimeFunctionMatch() throws Exception {
         String sql = "select if(3, date('2021-01-12'), STR_TO_DATE('2020-11-02', '%Y-%m-%d %H:%i:%s'));";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         if(CAST(3 AS BOOLEAN), '2021-01-12 00:00:00', str_to_date('2020-11-02', '%Y-%m-%d %H:%i:%s'))");
+        starRocksAssert.query(sql).explainContains("if(CAST(3 AS BOOLEAN), '2021-01-12 00:00:00', " +
+                "str_to_date('2020-11-02', '%Y-%m-%d %H:%i:%s'))");
 
         sql = "select nullif(date('2021-01-12'), date('2021-01-11'));";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         nullif('2021-01-12', '2021-01-11')");
+        starRocksAssert.query(sql).explainContains("nullif('2021-01-12', '2021-01-11')");
 
         sql = "select nullif(date('2021-01-12'), STR_TO_DATE('2020-11-02', '%Y-%m-%d %H:%i:%s'));";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         nullif('2021-01-12 00:00:00', str_to_date('2020-11-02', '%Y-%m-%d %H:%i:%s'))");
+        starRocksAssert.query(sql)
+                .explainContains("nullif('2021-01-12 00:00:00', str_to_date('2020-11-02', '%Y-%m-%d %H:%i:%s'))");
 
         sql = "select if(3, 4, 5);";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         if(CAST(3 AS BOOLEAN), 4, 5)");
+        starRocksAssert.query(sql).explainContains("if(CAST(3 AS BOOLEAN), 4, 5)");
 
         sql = "select ifnull(date('2021-01-12'), 123);";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         ifnull(CAST('2021-01-12' AS INT), 123)");
+        starRocksAssert.query(sql).explainContains("ifnull(CAST('2021-01-12' AS INT), 123)");
 
         sql = "select ifnull(date('2021-01-12'), 'kks');";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         '2021-01-12'");
+        starRocksAssert.query(sql).explainContains("'2021-01-12'");
 
         sql = "select ifnull(1234, 'kks');";
-        starRocksAssert.query(sql).explainContains("  0:UNION\n" +
-                "     constant exprs: \n" +
-                "         '1234'");
+        starRocksAssert.query(sql).explainContains("'1234'");
     }
 
     @Test
     public void testCaseWhenOperatorReuse() throws Exception {
         String sql =
-                "select max(case when SUBSTR(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v1 else v2 end),"
+                "select max(case when STRLEFT(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v1 else v2 end),"
                         +
-                        "min(case when SUBSTR(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v2 else v1 end),"
+                        "min(case when STRLEFT(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v2 else v1 end),"
                         +
-                        "count(case when SUBSTR(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v3 else v2 "
+                        "count(case when STRLEFT(DATE_FORMAT('2020-09-02 23:59:59', '%Y-%m'), 6) > 0 then v3 else v2 "
                         + "end) from t0";
         String planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("<slot 10> : substr('2020-09', 6)"));
-        Assert.assertTrue(planFragment.contains("  |  <slot 4> : if(12: expr, 1: v1, 2: v2)"));
+        assertContains(planFragment, "  2:AGGREGATE (update finalize)\n" +
+                "  |  output: max(if(12: expr, 1: v1, 2: v2)), min(if(12: expr, 2: v2, 1: v1)), " +
+                "count(if(12: expr, 3: v3, 2: v2))");
+        Assert.assertTrue(planFragment.contains("<slot 10> : strleft('2020-09', 6)"));
     }
 
     @Test
@@ -381,12 +440,12 @@ public class ExpressionTest extends PlanTestBase {
 
     @Test
     public void testDateTypeReduceCast() throws Exception {
-        String sql =
-                "select * from test_all_type_distributed_by_datetime where cast(cast(id_datetime as date) as datetime) >= '1970-01-01 12:00:00' " +
-                        "and cast(cast(id_datetime as date) as datetime) <= '1970-01-01 18:00:00'";
+        String sql = "select * from test_all_type_distributed_by_datetime " +
+                "where cast(cast(id_datetime as date) as datetime) >= '1970-01-01 12:00:00' " +
+                "and cast(cast(id_datetime as date) as datetime) <= '1970-01-02 18:00:00'";
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(
-                plan.contains("8: id_datetime >= '1970-01-02 00:00:00', 8: id_datetime < '1970-01-02 00:00:00'"));
+                plan.contains("8: id_datetime >= '1970-01-02 00:00:00', 8: id_datetime < '1970-01-03 00:00:00'"));
     }
 
     @Test
@@ -409,9 +468,9 @@ public class ExpressionTest extends PlanTestBase {
     public void testFunctionNullable() throws Exception {
         String sql = "select UNIX_TIMESTAMP(\"2015-07-28 19:41:12\", \"22\");";
         String plan = getThriftPlan(sql);
-        Assert.assertTrue(
-                plan.contains("signature:unix_timestamp(VARCHAR, VARCHAR), scalar_fn:TScalarFunction(symbol:), " +
-                        "id:0, fid:50303, could_apply_dict_optimize:false), has_nullable_child:false, is_nullable:true"));
+        Assert.assertTrue(plan, plan.contains("scalar_fn:TScalarFunction(symbol:), " +
+                "id:50287, fid:50287, could_apply_dict_optimize:false, ignore_nulls:false), " +
+                "has_nullable_child:false, is_nullable:true"));
     }
 
     @Test
@@ -467,6 +526,189 @@ public class ExpressionTest extends PlanTestBase {
     }
 
     @Test
+    public void testLambdaReduce() throws Exception {
+        starRocksAssert.withTable("create table test_lambda" +
+                "(c0 INT, c2 array<int>) " +
+                " duplicate key(c0) distributed by hash(c0) buckets 1 " +
+                "properties('replication_num'='1');");
+        String sql = "select * from test_lambda where array_map(x -> x, c2) is not null";
+        String plan = getFragmentPlan(sql);
+        Assert.assertFalse(plan.contains("array_map"));
+
+        sql = "select array_map(x -> x, c2) from test_lambda";
+        plan = getFragmentPlan(sql);
+        Assert.assertFalse(plan.contains("array_map"));
+    }
+
+    @Test
+    public void testLambdaPredicateOnScan() throws Exception {
+        starRocksAssert.withTable("create table test_lambda_on_scan" +
+                "(c0 INT, c2 array<int>) " +
+                " duplicate key(c0) distributed by hash(c0) buckets 1 " +
+                "properties('replication_num'='1');");
+        String sql = "select * from test_lambda_on_scan where array_map(x -> x + 1, c2) is not null";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("array_map"));
+    }
+
+    @Test
+    public void testLambdaReuseSubExpression() throws Exception {
+        starRocksAssert.withTable("create table if not exists test_array" +
+                "(c0 INT,c1 int, c2 array<int>) " +
+                " duplicate key(c0) distributed by hash(c0) buckets 1 " +
+                "properties('replication_num'='1');");
+        // without lambda arguments
+        String sql = "select b, array_map(x->x+b, arr) from (select array_map(x->x+1, [1,2]) as arr, 3*c1 as b " +
+                "from test_array)T";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("common expressions"));
+        Assert.assertTrue(plan.contains("array_map(<slot 7> -> CAST(<slot 7> AS BIGINT) + 10: multiply"));
+
+        sql = "select b, array_map(x->x+ 3 *c1, arr) from (select array_map(x->x+1, [1,2]) as arr, 3*c1 as b,c1 " +
+                "from test_array)T";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("common expressions"));
+        Assert.assertTrue(plan.contains("array_map(<slot 7> -> CAST(<slot 7> AS BIGINT) + 10: multiply"));
+
+        sql = "select 3*c1, array_map(x->x+ 3 *c1, c2) from test_array";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("common expressions"));
+        Assert.assertTrue(plan.contains("array_map(<slot 5> -> CAST(<slot 5> AS BIGINT) + 8: multiply"));
+
+        sql = "select arr,array_length(arr) from (select array_map(x->x+1, [1,2]) as arr)T";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("common expressions"));
+        Assert.assertTrue(plan.contains("array_length(6: array_map)"));
+
+        sql = "select array_map(x->x+ 3 *c1 + 3*c1, c2) from test_array";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("common expressions"));
+        Assert.assertTrue(plan.contains(
+                "array_map(<slot 4> -> CAST(<slot 4> AS BIGINT) + 7: multiply + 7: multiply"));
+
+        // with lambda arguments
+        sql = "select array_map(x -> x*2 + x*2, [1,3])";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("lambda common expressions:{<slot 5> <-> CAST(<slot 2> AS SMALLINT)}" +
+                "{<slot 6> <-> <slot 5> * 2}{<slot 7> <-> CAST(<slot 6> AS INT)}"));
+
+        sql = "select array_map((x,y) -> x*2 + y  + x*2, [1,3],[4,5])";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("lambda common expressions:{<slot 6> <-> CAST(<slot 2> AS SMALLINT)}" +
+                "{<slot 7> <-> <slot 6> * 2}"));
+
+        sql = "select array_map((x,y) -> x*2 + y  + x*2, [1,3],[4,5]) from test_array";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("lambda common expressions:{<slot 8> <-> CAST(<slot 4> AS SMALLINT)}{<slot 9>" +
+                " <-> <slot 8> * 2}"));
+
+        sql = "select array_map(x -> x*2  + abs(c1) + x*2+ abs(c1), c2) from test_array";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("lambda common expressions:{<slot 8> <-> CAST(<slot 4> AS BIGINT)}" +
+                "{<slot 9> <-> <slot 8> * 2}"));
+
+        sql = "select array_map(x -> x*2  + abs(c1) + (x*2+ abs(c1)), c2) from test_array";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("lambda common expressions:{<slot 8> <-> CAST(<slot 4> AS BIGINT)}{<slot 9> " +
+                "<-> <slot 8> * 2}{<slot 10> <-> <slot 9> + 6: abs}"));
+    }
+
+    @Test
+    public void testReuseNestedHighOrderLambdaFunctions() throws Exception {
+        starRocksAssert.withTable("CREATE TABLE action1(uid int(11), event_type varchar(65533), time datetime)" +
+                " duplicate key(uid, event_type) distributed by hash(uid) buckets 1 " +
+                "properties('replication_num'='1');");
+        starRocksAssert.withTable("create table test_array23(c0 INT, c1 array<varchar(65533)>, c2 array<int>) " +
+                " duplicate key(c0) distributed by hash(c0) buckets 1 " +
+                "properties('replication_num'='1');");
+        String sql = "WITH `CASE_006` AS\n" +
+                "  (SELECT array_map((arg_001) -> (arg_001), `c1`) AS `argument_003`,\n" +
+                "          array_map((arg_002) -> (CAST(1 AS BIGINT)), `c1`) AS `argument_004`\n" +
+                "   FROM test_array23)\n" +
+                "\n" +
+                "select argument_004, ARRAY_FILTER((x, y) -> y IS NOT NULL, " +
+                "`argument_003`, `argument_004`) AS `source_target_005` from CASE_006;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  |  common expressions:\n" +
+                "  |  <slot 14> : array_map(<slot 5> -> 1, 8: c1)");
+
+        sql = "WITH `CASE_006` AS\n" +
+                "  (SELECT array_map((arg_001) -> (arg_001), `c1`) AS `argument_003`,\n" +
+                "          array_map((arg_002) -> (arg_002 + 1), `c1`) AS `argument_004`\n" +
+                "   FROM test_array23)\n" +
+                "\n" +
+                "select argument_004, ARRAY_FILTER((x, y) -> y IS NOT NULL, " +
+                "`argument_003`, `argument_004`) AS `source_target_005` from CASE_006;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  |  common expressions:\n" +
+                "  |  <slot 14> : array_map(<slot 5> -> CAST(<slot 5> AS DOUBLE) + 1.0, 8: c1)");
+
+        sql = "SELECT uid, times, actions, step0_time, step1_time, array_filter((x, y)->(y = '支付' AND (x BETWEEN " +
+                "step1_time AND date_add(step1_time, INTERVAL 90 MINUTE)) AND (step1_time <> '2020-01-01 00:00:00')" +
+                " ), times, actions)[1] AS step2_time FROM (SELECT uid, times, actions, step0_time, array_filter( " +
+                "(x, y)-> (y = '下单' AND (x BETWEEN step0_time AND date_add(step0_time, INTERVAL 90 MINUTE)) AND " +
+                "(step0_time <> '2020-01-01 00:00:00' ) ), times, actions)[1] AS step1_time FROM (SELECT uid, times" +
+                ", actions, array_filter((x, y) -> (y= '浏览' AND x BETWEEN '2020-01-02 00:00:00' AND " +
+                "'2020-01-02 23:59:59'), times, actions)[1] AS step0_time FROM (SELECT uid, " +
+                "array_sort(array_agg(time)) AS times, array_sortby(array_agg(event_type), array_agg(time)) " +
+                "AS actions FROM action1 GROUP BY uid) AS t ) AS t1) AS t2;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  |  common expressions:\n" +
+                "  |  <slot 22> : array_sort(4: array_agg)\n" +
+                "  |  <slot 23> : array_sortby(5: array_agg, 4: array_agg)\n" +
+                "  |  <slot 24> : array_map((<slot 8>, <slot 9>) -> (<slot 9> = '浏览') " +
+                "AND ((<slot 8> >= '2020-01-02 00:00:00') " +
+                "AND (<slot 8> <= '2020-01-02 23:59:59')), 22: array_sort, 23: array_sortby)\n" +
+                "  |  <slot 25> : array_filter(22: array_sort, 24: array_map)\n" +
+                "  |  <slot 26> : 25: array_filter[1]\n" +
+                "  |  <slot 27> : minutes_add(26: expr, 90)\n" +
+                "  |  <slot 28> : 26: expr != '2020-01-01 00:00:00'\n" +
+                "  |  <slot 29> : array_map((<slot 11>, <slot 12>) -> ((<slot 12> = '下单') " +
+                "AND ((<slot 11> >= 26: expr) AND (<slot 11> <= 27: minutes_add))) " +
+                "AND (28: expr), 22: array_sort, 23: array_sortby)\n" +
+                "  |  <slot 30> : array_filter(22: array_sort, 29: array_map)\n" +
+                "  |  <slot 31> : 30: array_filter[1]");
+    }
+
+    @Test
+    public void testLambdaWithAggAndWindowFunctions() throws Exception {
+        starRocksAssert.withTable("create table if not exists test_array12 " +
+                "(c0 INT,c1 int, c2 array<int>) " +
+                " duplicate key(c0) distributed by hash(c0) buckets 1 " +
+                "properties('replication_num'='1');");
+        // aggregations
+        String sql = "select array_agg(array_length(array_map(x->x*2, c2))) from test_array12";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("  2:AGGREGATE (update finalize)\n" +
+                "  |  output: array_agg(array_length(array_map(<slot 4> -> CAST(<slot 4> AS BIGINT) * 2, 3: c2)))"));
+        Assert.assertTrue(plan.contains("  1:Project\n" +
+                "  |  <slot 3> : 3: c2"));
+
+        sql = "select array_map(x->x > count(c1), c2) from test_array12 group by c2";
+        plan = getFragmentPlan(sql);
+
+        Assert.assertTrue(plan.contains("  2:Project\n" +
+                "  |  <slot 6> : array_map(<slot 5> -> CAST(<slot 5> AS BIGINT) > 4: count, 3: c2)\n"));
+        Assert.assertTrue(plan.contains("  1:AGGREGATE (update finalize)\n" +
+                "  |  output: count(2: c1)\n" +
+                "  |  group by: 3: c2"));
+
+        // window functions
+        sql = "select count(c1) over (partition by array_sum(array_map(x->x+1, [1]))) from test_array12";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("  3:ANALYTIC\n" +
+                "  |  functions: [, count(6: c1), ]\n" +
+                "  |  partition by: 8: array_sum"));
+        Assert.assertTrue(plan.contains("  2:SORT\n" +
+                "  |  order by: <slot 8> 8: array_sum ASC\n" +
+                "  |  offset:"));
+        Assert.assertTrue(plan, plan.contains("  1:Project\n" +
+                "  |  <slot 6> : 2: c1\n" +
+                "  |  <slot 8> : array_sum(array_map(<slot 4> -> " +
+                "CAST(<slot 4> AS SMALLINT) + 1, [1]))"));
+    }
+
+    @Test
     public void testInPredicateNormalize() throws Exception {
         starRocksAssert.withTable("create table test_in_pred_norm" +
                 "(c0 INT, c1 INT, c2 INT, c3 INT, c4 DATE, c5 DATE) " +
@@ -506,7 +748,7 @@ public class ExpressionTest extends PlanTestBase {
                         "c5 IN ('292278994-08-17', '1970-02-01') AND " +
                         "c5 IN ('292278994-08-17', '1970-02-01')  " +
                         " FROM test_in_pred_norm",
-                "<slot 7> : ((5: c4 = 8: cast) OR (5: c4 = '1970-02-01')) AND ((6: c5 = 8: cast) OR (6: c5 = '1970-02-01'))");
+                "<slot 7> : ((5: c4 = '1970-02-01') OR (5: c4 = 8: cast)) AND ((6: c5 = '1970-02-01') OR (6: c5 = 8: cast))");
 
         String plan = getFragmentPlan("SELECT " +
                 "c4 IN ('292278994-08-17', '1970-02-01') AND c4 IN ('292278994-08-18', '1970-02-01') AND " +
@@ -522,15 +764,20 @@ public class ExpressionTest extends PlanTestBase {
     public void testLargeIntMod() throws Exception {
         String sql = "select -123 % 100000000000000000000000000000000000";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("     constant exprs: \n" +
-                "         -123 % 100000000000000000000000000000000000"));
+        Assert.assertTrue(plan.contains("  1:Project\n" +
+                "  |  <slot 2> : -123\n" +
+                "  |  "));
     }
 
     @Test
     public void testCastDecimalZero() throws Exception {
         String sql = "select (CASE WHEN CAST(t0.v1 AS BOOLEAN ) THEN 0.00 END) BETWEEN (0.07) AND (0.04) from t0;";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  |  <slot 7> : CAST(6: if AS DECIMAL32(2,2))\n"));
+        Assert.assertTrue(plan.contains("  1:Project\n" +
+                "  |  <slot 4> : (6: if >= 0.07) AND (6: if <= 0.04)\n" +
+                "  |  common expressions:\n" +
+                "  |  <slot 5> : CAST(1: v1 AS BOOLEAN)\n" +
+                "  |  <slot 6> : if(5: cast, 0.00, NULL)"));
     }
 
     @Test
@@ -567,13 +814,19 @@ public class ExpressionTest extends PlanTestBase {
     public void testEmptyProjectCountStar() throws Exception {
         String sql = "select count(*) from test_all_type a, test_all_type b where a.t1a is not null";
         String plan = getCostExplain(sql);
-        Assert.assertTrue(plan.contains("  3:CROSS JOIN\n" +
-                "  |  cross join:\n" +
-                "  |  predicates is NULL.\n" +
+        Assert.assertTrue(plan, plan.contains("6:Project\n" +
+                "  |  output columns:\n" +
+                "  |  25 <-> 1\n" +
                 "  |  cardinality: 1\n" +
                 "  |  column statistics: \n" +
-                "  |  * t1a-->[-Infinity, Infinity, 0.0, 1.0, 1.0] UNKNOWN\n" +
-                "  |  * t1b-->[-Infinity, Infinity, 0.0, 1.0, 1.0] UNKNOWN"));
+                "  |  * auto_fill_col-->[1.0, 1.0, 0.0, 1.0, 1.0] ESTIMATE\n" +
+                "  |  \n" +
+                "  5:NESTLOOP JOIN\n" +
+                "  |  join op: CROSS JOIN\n" +
+                "  |  cardinality: 1\n" +
+                "  |  column statistics: \n" +
+                "  |  * auto_fill_col-->[1.0, 1.0, 0.0, 1.0, 1.0] ESTIMATE\n" +
+                "  |  * auto_fill_col-->[1.0, 1.0, 0.0, 1.0, 1.0] ESTIMATE"));
     }
 
     @Test
@@ -592,55 +845,55 @@ public class ExpressionTest extends PlanTestBase {
 
         sql = "select v1 from t0 where  v1 / 2 <=> 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: CAST(1: v1 AS DOUBLE) <=> 6.0"));
+        assertContains(planFragment, "PREDICATES: 1: v1 <=> 6");
 
         sql = "select v1 from t0 where  v1 / -2 > 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: CAST(1: v1 AS DOUBLE) < -6.0"));
+        assertContains(planFragment, "PREDICATES: 1: v1 < -6");
 
         sql = "select v1 from t0 where  v1 / abs(-2) > 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: CAST(1: v1 AS DOUBLE) / CAST(abs(-2) AS DOUBLE) > 3.0"));
+        assertContains(planFragment, "PREDICATES: CAST(1: v1 AS DOUBLE) / CAST(abs(-2) AS DOUBLE) > 3.0");
 
         sql = "select v1 from t0 where  v1 / -2 != 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: CAST(1: v1 AS DOUBLE) != -6.0"));
+        assertContains(planFragment, "PREDICATES: 1: v1 != -6");
 
         sql = "select v1 from t0 where  v1 / abs(-2) = 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: CAST(1: v1 AS DOUBLE) = 3.0 * CAST(abs(-2) AS DOUBLE)"));
+        assertContains(planFragment, "PREDICATES: CAST(1: v1 AS DOUBLE) = 3.0 * CAST(abs(-2) AS DOUBLE)");
 
         sql = "select v1 from t0 where 2 + v1 <= 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 1: v1 <= 1"));
+        assertContains(planFragment, "PREDICATES: 1: v1 <= 1");
 
         sql = "select v1 from t0 where 2 - v1 <= 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 1: v1 >= -1"));
+        assertContains(planFragment, "PREDICATES: 1: v1 >= -1");
 
         sql = "select k5 from bigtable where k5 * 2 <= 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 5: k5 * 2 <= 3"));
+        assertContains(planFragment, "PREDICATES: 5: k5 * 2 <= 3");
 
         sql = "select k5 from bigtable where 2 / k5 <= 3";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 2 / CAST(5: k5 AS DECIMAL128(38,3)) <= 3"));
+        assertContains(planFragment, "PREDICATES: 2 / CAST(5: k5 AS DECIMAL128(38,3)) <= 3");
 
         sql = "select t1a from test_all_type where date_add(id_datetime, 2) = '2020-12-21'";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 8: id_datetime = '2020-12-19 00:00:00'"));
+        assertContains(planFragment, "PREDICATES: 8: id_datetime = '2020-12-19 00:00:00'");
 
         sql = "select t1a from test_all_type where date_sub(id_datetime, 2) = '2020-12-21'";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 8: id_datetime = '2020-12-23 00:00:00'"));
+        assertContains(planFragment, "PREDICATES: 8: id_datetime = '2020-12-23 00:00:00'");
 
         sql = "select t1a from test_all_type where years_sub(id_datetime, 2) = '2020-12-21'";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 8: id_datetime = '2022-12-21 00:00:00'"));
+        assertContains(planFragment, "PREDICATES: 8: id_datetime = '2022-12-21 00:00:00'");
 
         sql = "select t1a from test_all_type where years_add(id_datetime, 2) = '2020-12-21'";
         planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PREDICATES: 8: id_datetime = '2018-12-21 00:00:00'"));
+        assertContains(planFragment, "PREDICATES: 8: id_datetime = '2018-12-21 00:00:00'");
     }
 
     @Test
@@ -689,9 +942,9 @@ public class ExpressionTest extends PlanTestBase {
     }
 
     @Test
-    public void TestGISConstantConjunct() throws Exception {
-        String sql =
-                "select * from  test.join1 where ST_Contains(\"\", APPEND_TRAILING_CHAR_IF_ABSENT(-1338745708, \"RDBLIQK\") )";
+    public void testGISConstantConjunct() throws Exception {
+        String sql = "select * from  test.join1 where ST_Contains(\"\", " +
+                "APPEND_TRAILING_CHAR_IF_ABSENT(-1338745708, \"RDBLIQK\") )";
         String explainString = getFragmentPlan(sql);
         Assert.assertTrue(explainString
                 .contains("PREDICATES: st_contains('', append_trailing_char_if_absent('-1338745708', 'RDBLIQK'))"));
@@ -718,14 +971,14 @@ public class ExpressionTest extends PlanTestBase {
         String caseWhenSql = "select "
                 + "case when date_format(now(),'%H%i')  < 123 then 1 else 0 end as col "
                 + "from test.baseall "
-                +
-                "where k11 = case when date_format(now(),'%H%i') < 123 then date_format(date_sub(now(),2),'%Y%m%d') else date_format(date_sub(now(),1),'%Y%m%d') end";
+                + "where k11 = case when date_format(now(),'%H%i') < 123 " +
+                "then date_format(date_sub(now(),2),'%Y%m%d') else date_format(date_sub(now(),1),'%Y%m%d') end";
         Assert.assertFalse(StringUtils.containsIgnoreCase(getFragmentPlan(caseWhenSql), "CASE WHEN"));
 
         // test 1: case when then
         // 1.1 multi when in on `case when` and can be converted to constants
         String sql11 = "select case when false then 2 when true then 3 else 0 end as col11;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql11), "constant exprs: \n         3"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql11), "|  <slot 2> : 3"));
 
         // 1.2 multi `when expr` in on `case when` ,`when expr` can not be converted to constants
         String sql121 =
@@ -741,30 +994,30 @@ public class ExpressionTest extends PlanTestBase {
 
         // 1.2.3 test return `then expr` in the middle
         String sql124 = "select case when false then 1 when true then 2 when false then 3 else 'other' end as col124";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql124), "constant exprs: \n         '2'"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql124), "'2'"));
 
         // 1.3 test return null
         String sql3 = "select case when false then 2 end as col3";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql3), "constant exprs: \n         NULL"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql3), "NULL"));
 
         // 1.3.1 test return else expr
         String sql131 = "select case when false then 2 when false then 3 else 4 end as col131";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql131), "constant exprs: \n         4"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql131), "4"));
 
         // 1.4 nest `case when` and can be converted to constants
         String sql14 =
                 "select case when (case when true then true else false end) then 2 when false then 3 else 0 end as col";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql14), "constant exprs: \n         2"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql14), "2"));
 
         // 1.5 nest `case when` and can not be converted to constants
-        String sql15 =
-                "select case when case when substr(k7,2,1) then true else false end then 2 when false then 3 else 0 end as col from test.baseall";
+        String sql15 = "select case when case when substr(k7,2,1) then true else false end " +
+                "then 2 when false then 3 else 0 end as col from test.baseall";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql15),
                 "if(if(CAST(substr(9: k7, 2, 1) AS BOOLEAN), TRUE, FALSE), 2, 0)"));
 
         // 1.6 test when expr is null
         String sql16 = "select case when null then 1 else 2 end as col16;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql16), "constant exprs: \n         2"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql16), "2"));
 
         // 1.7 test when true in first return directly
         String sql17 = "select case when true then 1 when substr(k7,2,1) then 3 else 2 end as col16 from test.baseall;";
@@ -776,102 +1029,103 @@ public class ExpressionTest extends PlanTestBase {
                 "CASE WHEN CAST(substr(9: k7, 2, 1) AS BOOLEAN) THEN 3 WHEN TRUE THEN 1 ELSE 2 END"));
 
         // 1.9 test remove when clause when is false/null
-        String sql19 =
-                "select case when substr(k7,2,1) then 3 when false then 1 when null then 5 else 2 end as col16 from test.baseall;";
+        String sql19 = "select case when substr(k7,2,1) then 3 " +
+                "when false then 1 when null then 5 else 2 end as col16 from test.baseall;";
         Assert.assertTrue(StringUtils
                 .containsIgnoreCase(getFragmentPlan(sql19), "if(CAST(substr(9: k7, 2, 1) AS BOOLEAN), 3, 2)"));
 
         // test 2: case xxx when then
         // 2.1 test equal
         String sql2 = "select case 1 when 1 then 'a' when 2 then 'b' else 'other' end as col2;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql2), "constant exprs: \n         'a'"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql2), "'a'"));
 
         // FIXME(yan): following cases are correct, we have to fix for them.
         // 2.1.2 test not equal
         String sql212 = "select case 'a' when 1 then 'a' when 'a' then 'b' else 'other' end as col212;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql212), "constant exprs: \n         'b'"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql212), "'b'"));
 
         // 2.2 test return null
         String sql22 = "select case 'a' when 1 then 'a' when 'b' then 'b' end as col22;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql22), "constant exprs: \n         NULL"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql22), "NULL"));
 
         // 2.2.2 test return else
         String sql222 = "select case 1 when 2 then 'a' when 3 then 'b' else 'other' end as col222;";
         Assert.assertTrue(
-                StringUtils.containsIgnoreCase(getFragmentPlan(sql222), "constant exprs: \n         'other'"));
+                StringUtils.containsIgnoreCase(getFragmentPlan(sql222), "'other'"));
 
         // 2.3 test can not convert to constant,middle when expr is not constant
-        String sql23 =
-                "select case 'a' when 'b' then 'a' when substr(k7,2,1) then 2 when false then 3 else 0 end as col23 from test.baseall";
+        String sql23 = "select case 'a' when 'b' then 'a' " +
+                "when substr(k7,2,1) then 2 when false then 3 else 0 end as col23 from test.baseall";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql23),
                 "if(substr(9: k7, 2, 1) = 'a', '2', '0')"));
 
         // 2.3.1  first when expr is not constant
-        String sql231 =
-                "select case 'a' when substr(k7,2,1) then 2 when 1 then 'a' when false then 3 else 0 end as col231 from test.baseall";
+        String sql231 = "select case 'a' when substr(k7,2,1) then 2 " +
+                "when 1 then 'a' when false then 3 else 0 end as col231 from test.baseall";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql231),
                 "if(substr(9: k7, 2, 1) = 'a', '2', '0')"));
 
         // 2.3.2 case expr is not constant
-        String sql232 =
-                "select case k1 when substr(k7,2,1) then 2 when 1 then 'a' when false then 3 else 0 end as col232 from test.baseall";
+        String sql232 = "select case k1 when substr(k7,2,1) then 2 when 1 " +
+                "then 'a' when false then 3 else 0 end as col232 from test.baseall";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql232),
-                "CASE CAST(1: k1 AS VARCHAR) WHEN substr(9: k7, 2, 1) THEN '2' WHEN '1' THEN 'a' WHEN '0' THEN '3' ELSE '0' END"));
+                "CASE CAST(1: k1 AS VARCHAR) " +
+                        "WHEN substr(9: k7, 2, 1) THEN '2' WHEN '1' THEN 'a' WHEN '0' THEN '3' ELSE '0' END"));
 
         // 2.4 when expr has true but not equals case expr
         String sql24 = "select case 10 when true then 'a' when 2 then 'b' else 'other' end as col2;";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql24),
-                "constant exprs: \n         'other'"));
+                "'other'"));
 
         // 2.5 when expr has true but equals case expr
         String sql25 = "select case 1 when true then 'a' when 2 then 'b' else 'other' end as col2;";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql25),
-                "constant exprs: \n         'a'"));
+                "'a'"));
 
         // 2.6 when expr equals case expr in middle
-        String sql26 =
-                "select case 'a' when substr(k7,2,1) then 2 when 'a' then 'b' else 'other' end as col2 from test.baseall;";
+        String sql26 = "select case 'a' when substr(k7,2,1) then 2 " +
+                "when 'a' then 'b' else 'other' end as col2 from test.baseall;";
         Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql26),
                 "CASE 'a' WHEN substr(9: k7, 2, 1) THEN '2' WHEN 'a' THEN 'b' ELSE 'other' END"));
 
         // 2.7 test remove when clause not equals case expr
-        String sql27 =
-                "select case 'a' when substr(k7,2,1) then 3 when false then 1 when null then 5 else 2 end as col16 from test.baseall;";
+        String sql27 = "select case 'a' when substr(k7,2,1) then 3 " +
+                "when false then 1 when null then 5 else 2 end as col16 from test.baseall;";
         Assert.assertTrue(
                 StringUtils.containsIgnoreCase(getFragmentPlan(sql27), "if(substr(9: k7, 2, 1) = 'a', 3, 2)"));
 
         // 3.1 test float,float in case expr
         String sql31 = "select case cast(100 as float) when 1 then 'a' when 2 then 'b' else 'other' end as col31;";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql31), "constant exprs: \n         'other'"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql31), "'other'"));
 
         // 4.1 test null in case expr return else
         String sql41 = "select case null when 1 then 'a' when 2 then 'b' else 'other' end as col41";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql41), "constant exprs: \n         'other'"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql41), "'other'"));
 
         // 4.1.2 test null in case expr return null
         String sql412 = "select case null when 1 then 'a' when 2 then 'b' end as col41";
-        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql412), "constant exprs: \n         NULL"));
+        Assert.assertTrue(StringUtils.containsIgnoreCase(getFragmentPlan(sql412), "NULL"));
 
         // 4.2.1 test null in when expr
         String sql421 = "select case 'a' when null then 'a' else 'other' end as col421";
         Assert.assertTrue(
-                StringUtils.containsIgnoreCase(getFragmentPlan(sql421), "constant exprs: \n         'other'"));
+                StringUtils.containsIgnoreCase(getFragmentPlan(sql421), "'other'"));
 
         // 4.2.2 test null/false in when expr
         String sql422 = "select case 'a' when null then 'a' when false then 'b' else 'other' end as col421";
         Assert.assertTrue(
-                StringUtils.containsIgnoreCase(getFragmentPlan(sql422), "constant exprs: \n         'other'"));
+                StringUtils.containsIgnoreCase(getFragmentPlan(sql422), "'other'"));
 
         // 4.2.3 test null false in when expr return null
         String sql423 = "select case 'a' when null then 'a' when false then 'b' end as col421";
         Assert.assertTrue(
-                StringUtils.containsIgnoreCase(getFragmentPlan(sql423), "constant exprs: \n         NULL"));
+                StringUtils.containsIgnoreCase(getFragmentPlan(sql423), "NULL"));
     }
 
     @Test
     public void testLargeIntLiteralCompare() throws Exception {
-        String sql =
-                "select k2 from baseall group by ((10800861)/(((NULL)%(((-1114980787)+(-1182952114)))))), ((10800861)*(-9223372036854775808)), k2";
+        String sql = "select k2 from baseall group by ((10800861)/(((NULL)%(((-1114980787)+(-1182952114)))))), " +
+                "((10800861)*(-9223372036854775808)), k2";
         starRocksAssert.query(sql).explainContains("group by: 2: k2");
     }
 
@@ -911,8 +1165,8 @@ public class ExpressionTest extends PlanTestBase {
     public void testProjectUsingConstantArgs() throws Exception {
         String sql = "select months_diff(\"2074-03-04T17:43:24\", \"2074-03-04T17:43:24\") from test_all_type";
         String planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("1:Project\n"
-                + "  |  <slot 11> : months_diff(12: cast, 12: cast)"));
+        Assert.assertTrue(planFragment, planFragment.contains("1:Project\n"
+                + "  |  <slot 11> : months_diff('2074-03-04 17:43:24', '2074-03-04 17:43:24')\n"));
     }
 
     @Test
@@ -945,6 +1199,107 @@ public class ExpressionTest extends PlanTestBase {
     }
 
     @Test
+    public void testVarcharAsBitmapCast() throws Exception {
+        String sql = "select cast(t1a as BITMAP) from test_all_type;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "CAST(1: t1a AS BITMAP)");
+    }
+
+    @Test
+    public void testTimeSlicePlan() throws Exception {
+        String sql = "select time_slice(th, interval 1 year) from tall;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "time_slice(8: th, 1, 'year', 'floor')");
+
+        sql = "select time_slice(th, interval 1 year, CEIL) from tall;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "time_slice(8: th, 1, 'year', 'ceil')");
+    }
+
+    @Test
+    public void testQualifyForWindowFunction() throws Exception {
+        // for '='
+        String sql = "select tc from tall qualify row_number() OVER(PARTITION by ta order by tg) = 1;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: row_number() = 1");
+
+        sql = "select tc from tall qualify rank() OVER(PARTITION by ta order by tg) = 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: rank() = 1");
+
+        sql = "select tc from tall qualify dense_rank() OVER(PARTITION by ta order by tg) = 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: dense_rank() = 1");
+
+        sql = "select tc from tall qualify cume_dist() OVER(PARTITION by ta order by tg) = 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: cume_dist() = 1");
+
+        sql = "select tc from tall qualify percent_rank() OVER(PARTITION by ta order by tg) = 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: percent_rank() = 1");
+
+        // for '<'
+        sql = "select tc from tall qualify row_number() OVER(PARTITION by ta order by tg) < 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: row_number() < 1");
+
+        sql = "select tc from tall qualify rank() OVER(PARTITION by ta order by tg) < 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: rank() < 1");
+
+        sql = "select tc from tall qualify dense_rank() OVER(PARTITION by ta order by tg) < 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: dense_rank() < 1");
+
+        sql = "select tc from tall qualify cume_dist() OVER(PARTITION by ta order by tg) < 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: cume_dist() < 1");
+
+        sql = "select tc from tall qualify percent_rank() OVER(PARTITION by ta order by tg) < 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: percent_rank() < 1");
+
+        // for '>'
+        sql = "select tc from tall qualify row_number() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: row_number() > 1");
+
+        sql = "select tc from tall qualify rank() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: rank() > 1");
+
+        sql = "select tc from tall qualify dense_rank() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: dense_rank() > 1");
+
+        sql = "select tc from tall qualify cume_dist() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: cume_dist() > 1");
+
+        sql = "select tc from tall qualify percent_rank() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: percent_rank() > 1");
+
+        // for alias
+        sql = "select ta as col1 from tall qualify dense_rank() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: dense_rank() > 1");
+
+        // for where and having
+        sql = "select tc from tall WHERE tb <> '' HAVING tc > 3\n" +
+                "qualify dense_rank() OVER(PARTITION by ta order by tg) > 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: dense_rank() > 1");
+        assertContains(plan, "PREDICATES: 3: tc > 3, CAST(2: tb AS VARCHAR(1048576)) != ''");
+
+        sql = "select tc from tall qualify qualify row_number() OVER(PARTITION by ta order by tg) = 1;";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "predicates: 11: row_number() = 1");
+
+    }
+
+    @Test
     public void testReduceNumberCast() throws Exception {
         String sql;
         String plan;
@@ -967,5 +1322,358 @@ public class ExpressionTest extends PlanTestBase {
         sql = "select cast(cast(id_bool as boolean) as string) from test_bool;";
         plan = getFragmentPlan(sql);
         assertContains(plan, "CAST(11: id_bool AS VARCHAR(65533))");
+    }
+
+    @Test
+    public void testDecimalReuse() throws Exception {
+        String sql = "select id_decimal + 1, id_decimal + 2 from test_all_type";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "common expressions:\n" +
+                "  |  <slot 13> : CAST(10: id_decimal AS DECIMAL64(12,2))");
+
+        sql = "select concat(cast(t1c as varchar(10)), 'a'), concat(cast(t1c as varchar(10)), 'b') from test_all_type";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "common expressions:\n" +
+                "  |  <slot 13> : CAST(3: t1c AS VARCHAR(10))");
+    }
+
+    @Test
+    public void testTableFunctionNull() throws Exception {
+        String sql = "select * from test_all_type, json_each(null)";
+        try {
+            getFragmentPlan(sql);
+            Assert.fail();
+        } catch (StarRocksPlannerException e) {
+            Assert.assertEquals("table function not support null parameter", e.getMessage());
+        }
+
+        String sql2 = "select * from test_all_type, json_each(parse_json(null))";
+        try {
+            getFragmentPlan(sql2);
+            Assert.fail();
+        } catch (StarRocksPlannerException e) {
+            Assert.assertEquals("table function not support null parameter", e.getMessage());
+        }
+
+        // normal case
+        String sql3 = "select * from test_all_type, json_each(parse_json('{}'))";
+        getFragmentPlan(sql3);
+    }
+
+    @Test
+    public void testTimestampadd() throws Exception {
+        String sql = "select timestampadd(YEAR,1,'2022-04-02 13:21:03')";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("<slot 2> : '2023-04-02 13:21:03'"));
+    }
+
+    @Test
+    public void testDaysSub() throws Exception {
+        String sql = "select days_sub('2010-11-30 23:59:59', 0)";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("<slot 2> : '2010-11-30 23:59:59'"));
+    }
+
+    @Test
+    public void testMultiStarItem() throws Exception {
+        String sql = "select *,v1,* from t0";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("OUTPUT EXPRS:1: v1 | 2: v2 | 3: v3 | 1: v1 | 1: v1 | 2: v2 | 3: v3"));
+
+        sql = "select *,* from t0";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("OUTPUT EXPRS:1: v1 | 2: v2 | 3: v3 | 1: v1 | 2: v2 | 3: v3"));
+    }
+
+    @Test
+    public void testAssertTrue() throws Exception {
+        {
+            String sql = "select assert_true(null, 'a')";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : assert_true(NULL, 'a')");
+        }
+        {
+            String sql = "select assert_true(true, 'a')";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : assert_true(TRUE, 'a')");
+        }
+        {
+            String sql = "select assert_true(false, 'a')";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : assert_true(FALSE, 'a')");
+        }
+    }
+
+    @Test
+    public void testBitShift() throws Exception {
+        {
+            String sql = "select BIT_SHIFT_LEFT(cast(-100 as largeint), 3)";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : -100 BITSHIFTLEFT 3");
+        }
+        {
+            String sql = "select BIT_SHIFT_RIGHT(cast(-100 as largeint), 3)";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : -100 BITSHIFTRIGHT 3");
+        }
+        {
+            String sql = "select BIT_SHIFT_RIGHT_LOGICAL(cast(-100 as largeint), 3)";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : -100 BITSHIFTRIGHTLOGICAL 3");
+        }
+        {
+            String sql = "select cast(-11 as smallint) BITSHIFTLEFT 3";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : -88");
+        }
+        {
+            String sql = "select cast(-11 as smallint) BITSHIFTRIGHT 3";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : -2");
+        }
+        {
+            String sql = "select cast(-11 as smallint) BITSHIFTRIGHTLOGICAL 3";
+            String plan = getFragmentPlan(sql);
+            assertContains(plan, "<slot 2> : 8190");
+        }
+    }
+
+    @Test
+    public void testArithmeticExpressions() throws Exception {
+        String sql = "select multiply(400, 500);";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 2> : 200000");
+
+        sql = "select subtract(-30000, 40000);";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 2> : -70000");
+
+        sql = "select int_divide(128, 100);";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 2> : 1");
+
+        sql = "select multiply(200, 50);";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 2> : 10000");
+
+        sql = "select multiply(429496, 429496);";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 2> : 184466814016");
+    }
+
+    @Test
+    public void testInPredicate() throws Exception {
+        String sql = "select * from t0 where v1 in (v2, v3, 3, 4, 5) ";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "PREDICATES: ((1: v1 IN (3, 4, 5)) OR (1: v1 = 2: v2)) OR (1: v1 = 3: v3)");
+    }
+
+    @Test
+    public void testBitNotLargeInt() throws Exception {
+        String sql = "select bitnot(cast(power(-2,127) as largeint)+1);";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "~ CAST(power(-2.0, 127.0) AS LARGEINT) + 1");
+    }
+
+    @Test
+    public void testConstantFoldInLikeFunction() throws Exception {
+        String sql1 = "select like('AA', concat('a', 'A'))";
+        String plan1 = getFragmentPlan(sql1);
+        assertContains(plan1, "<slot 2> : like('AA', 'aA')");
+
+        String sql2 = "select ilike('AA', concat('a', 'A'))";
+        String plan2 = getFragmentPlan(sql2);
+        assertContains(plan2, "<slot 2> : like(lower('AA'), lower('aA'))");
+    }
+
+    @Test
+    public void testStructExpression() throws Exception {
+        String sql = "select struct('a', 1, 2, 10000)";
+        String plan = getVerboseExplain(sql);
+        assertCContains(plan, "struct<col1 varchar, col2 tinyint(4), col3 tinyint(4), col4 smallint(6)>");
+
+        sql = "select row('a', 1, 2, 10000, [1, 2, 3], NULL, map{'a': 1, 'b': 2})";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "struct<col1 varchar, col2 tinyint(4), col3 tinyint(4), col4 smallint(6), " +
+                "col5 array<tinyint(4)>, col6 boolean, col7 map<varchar,tinyint(4)>>");
+
+        sql = "select named_struct('a', 1, 'b', 2)";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "struct<a tinyint(4), b tinyint(4)>");
+
+        try {
+            sql = "select named_struct('a', 1, 'b', 2, 3, 6)";
+            plan = getVerboseExplain(sql);
+        } catch (Exception e) {
+            assertCContains(e.getMessage(), "The 5-th input of named_struct must be string literal");
+        }
+
+        try {
+            sql = "select named_struct('a', 1, 'b', 2, 3, 'x', 6)";
+            plan = getVerboseExplain(sql);
+        } catch (Exception e) {
+            assertCContains(e.getMessage(), "named_struct arguments must be in name/value pairs");
+        }
+
+        try {
+            sql = "select named_struct('a', 1, 'a', 2)";
+            plan = getVerboseExplain(sql);
+        } catch (Exception e) {
+            assertCContains(e.getMessage(), "named_struct contains duplicate subfield name: a at 3-th input");
+        }
+    }
+
+    @Test
+    public void testStructRow() throws Exception {
+        String sql = "select row('a', 1, 'a', 2).col1";
+        String plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col1");
+    }
+
+    @Test
+    public void testStructCollection() throws Exception {
+        String sql = "select row('a', 1, 'a', 2)[1]";
+        String plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col1");
+
+        sql = "select row('a', 1, 'a', 2)[4]";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col4");
+
+        sql = "select row('a', 1, 'a', 2)[4]";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col4");
+
+        sql = "select row('a', 1, 'a', 2)[-1]";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col4");
+
+        sql = "select row('a', 1, 'a', 2)[-4]";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "row('a', 1, 'a', 2).col1");
+    }
+
+    @Test
+    public void testJsonArray() throws Exception {
+        String sql = "select array_distinct([PARSE_JSON('{1: 2}')])";
+        String plan = getVerboseExplain(sql);
+        assertCContains(plan, "array_distinct[([parse_json('{1: 2}')]); args: INVALID_TYPE; result: ARRAY<JSON>;");
+
+        sql = "select array_distinct([NULL])";
+        plan = getVerboseExplain(sql);
+        assertCContains(plan, "array_distinct[([NULL]); args: INVALID_TYPE; result: ARRAY<BOOLEAN>;");
+    }
+
+    @Test
+    public void testDoubleCastToString() throws Exception {
+        String sql = "select concat(substr(DATE_SUB(CURDATE(), INTERVAL 1 DAY), 1, 4) -1, '-');";
+        String plan = getVerboseExplain(sql);
+        assertContains(plan, "2022-");
+
+        sql = "select cast(cast(20.00 as double) as string);";
+        plan = getVerboseExplain(sql);
+        assertContains(plan, "'20'");
+    }
+
+    @Test
+    public void testCastTDatetime() throws Exception {
+        String sql = "select cast('2020-05-01T13:45:57' as date);";
+        String plan = getVerboseExplain(sql);
+        assertContains(plan, "'2020-05-01'");
+
+        sql = "select cast('2020-05-01T13:45:57' as datetime);";
+        plan = getVerboseExplain(sql);
+        assertContains(plan, "2020-05-01 13:45:57");
+    }
+
+    @Test
+    public void testDecimalCastString() throws Exception {
+        String sql = "select cast(cast('1.10000' as decimal(27,9)) as string)";
+        String plan = getVerboseExplain(sql);
+        assertContains(plan, "1.100000000");
+    }
+
+    @Test
+    public void testDecimalV2Cast1() throws Exception {
+        String sql = "select length(cast('12.3567' as decimalV2(9,1)) * 200)";
+        String plan = getVerboseExplain(sql);
+        assertContains(plan, "2 <-> length[('2471.34'); args: VARCHAR; result: INT;");
+        sql = "select length(col) from (select cast('12.3567' as decimalV2(9,1)) * 200 as col) t";
+        plan = getVerboseExplain(sql);
+        assertContains(plan, "3 <-> length[('2471.34'); args: VARCHAR; result: INT;");
+
+        sql = "select length(col) from (select cast('12.3567' as decimal(9,1)) * 200 as col) t";
+        plan = getVerboseExplain(sql);
+        assertContains(plan, "3 <-> length[('2480.0'); args: VARCHAR; result: INT;");
+    }
+
+    @Test
+    public void testCoalesce() throws Exception {
+        String sql = "select Coalesce(null, 1, 2, null)";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "1:Project\n" +
+                "  |  <slot 2> : 1");
+
+        sql = "select Coalesce(1, 2, null)";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "1:Project\n" +
+                "  |  <slot 2> : 1");
+    }
+
+    @Test
+    public void testCoalesceJoin() throws Exception {
+        String sql = "select * from t0 left outer join t1 on t0.v2 = t1.v5 where coalesce(t1.v6, 2) = 3";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  3:HASH JOIN\n" +
+                "  |  join op: INNER JOIN (BROADCAST)\n" +
+                "  |  colocate: false, reason: \n" +
+                "  |  equal join conjunct: 2: v2 = 5: v5");
+    }
+
+    @Test
+    public void testDateAddReduce() throws Exception {
+        String sql = "select date_add(date_add(date_add(v2, 1), 2), 3) from t0";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "days_add(CAST(2: v2 AS DATETIME), 6)");
+
+        sql = "select date_add(date_add(date_add(v2, -1), -2), -3) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "days_sub(CAST(2: v2 AS DATETIME), 6)");
+
+        sql = "select years_add(years_sub(years_sub(v2, -1), -2), -3) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "<slot 4> : CAST(2: v2 AS DATETIME)");
+
+        sql = "select date_add(date_add(date_sub(v2, -1), -2), -3) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "days_sub(CAST(2: v2 AS DATETIME), 4)");
+
+        sql = "select date_add(weeks_add(date_sub(v2, -1), -2), 3) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "days_add(weeks_add(days_sub(CAST(2: v2 AS DATETIME), -1), -2), 3)");
+
+        sql = "select adddate(subdate(adddate(v2, -1), 2), -3) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "days_sub(CAST(2: v2 AS DATETIME), 6)");
+
+        sql = "select months_add(months_add(months_sub(v2, -1), 2), NULL) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "<slot 4> : NULL");
+    }
+
+    @Test
+    public void testDateTrunc() throws Exception {
+        String sql = "select date_trunc('day', cast(v2 as date)) from t0";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "<slot 4> : CAST(2: v2 AS DATE)");
+
+        sql = "select date_trunc('day', cast(v2 as datetime)) from t0";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "<slot 4> : date_trunc('day', CAST(2: v2 AS DATETIME))");
     }
 }

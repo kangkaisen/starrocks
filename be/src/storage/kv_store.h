@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/olap_meta.h
 
@@ -58,17 +71,23 @@ public:
     Status remove(ColumnFamilyIndex column_family_index, const std::string& key);
 
     Status iterate(ColumnFamilyIndex column_family_index, const std::string& prefix,
-                   std::function<bool(std::string_view, std::string_view)> const& func);
+                   std::function<bool(std::string_view, std::string_view)> const& func, int64_t timeout_sec = -1);
 
     Status iterate_range(ColumnFamilyIndex column_family_index, const std::string& lower_bound,
                          const std::string& upper_bound,
                          std::function<bool(std::string_view, std::string_view)> const& func);
 
-    Status compact(uint64_t* size_before, uint64_t* size_after);
+    const std::string& root_path() const { return _root_path; }
 
-    Status flush();
+    Status compact();
+
+    Status flushWAL();
+
+    Status flushMemTable();
 
     std::string get_stats();
+
+    bool get_live_sst_files_size(uint64_t* live_sst_files_size);
 
     std::string get_root_path();
 

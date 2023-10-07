@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/src/ByteRLE.cc
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -24,9 +20,9 @@
 
 #include <algorithm>
 #include <cstring>
-#include <iostream>
 #include <utility>
 
+#include "Utils.hh"
 #include "orc/Exceptions.hh"
 
 namespace orc {
@@ -65,6 +61,13 @@ public:
 
     void recordPosition(PositionRecorder* recorder) const override;
 
+    void suppress() override;
+
+    /**
+     * Reset to initial state
+     */
+    void reset();
+
 protected:
     std::unique_ptr<BufferedOutputStream> outputStream;
     char* literals;
@@ -82,12 +85,7 @@ protected:
 
 ByteRleEncoderImpl::ByteRleEncoderImpl(std::unique_ptr<BufferedOutputStream> output) : outputStream(std::move(output)) {
     literals = new char[MAX_LITERAL_SIZE];
-    numLiterals = 0;
-    tailRunLength = 0;
-    repeat = false;
-    bufferPosition = 0;
-    bufferLength = 0;
-    buffer = nullptr;
+    reset();
 }
 
 ByteRleEncoderImpl::~ByteRleEncoderImpl() {
@@ -187,7 +185,7 @@ uint64_t ByteRleEncoderImpl::getBufferSize() const {
 
 void ByteRleEncoderImpl::recordPosition(PositionRecorder* recorder) const {
     uint64_t flushedSize = outputStream->getSize();
-    uint64_t unflushedSize = static_cast<uint64_t>(bufferPosition);
+    auto unflushedSize = static_cast<uint64_t>(bufferPosition);
     if (outputStream->isCompressed()) {
         // start of the compression chunk in the stream
         recorder->add(flushedSize);
@@ -199,6 +197,21 @@ void ByteRleEncoderImpl::recordPosition(PositionRecorder* recorder) const {
         recorder->add(flushedSize + unflushedSize);
     }
     recorder->add(static_cast<uint64_t>(numLiterals));
+}
+
+void ByteRleEncoderImpl::reset() {
+    numLiterals = 0;
+    tailRunLength = 0;
+    repeat = false;
+    bufferPosition = 0;
+    bufferLength = 0;
+    buffer = nullptr;
+}
+
+void ByteRleEncoderImpl::suppress() {
+    // written data can be just ignored because they are only flushed in memory
+    outputStream->suppress();
+    reset();
 }
 
 std::unique_ptr<ByteRleEncoder> createByteRleEncoder(std::unique_ptr<BufferedOutputStream> output) {
@@ -277,7 +290,7 @@ void BooleanRleEncoderImpl::recordPosition(PositionRecorder* recorder) const {
 }
 
 std::unique_ptr<ByteRleEncoder> createBooleanRleEncoder(std::unique_ptr<BufferedOutputStream> output) {
-    BooleanRleEncoderImpl* encoder = new BooleanRleEncoderImpl(std::move(output));
+    auto* encoder = new BooleanRleEncoderImpl(std::move(output));
     return std::unique_ptr<ByteRleEncoder>(reinterpret_cast<ByteRleEncoder*>(encoder));
 }
 
@@ -287,7 +300,7 @@ ByteRleDecoder::~ByteRleDecoder() {
 
 class ByteRleDecoderImpl : public ByteRleDecoder {
 public:
-    ByteRleDecoderImpl(std::unique_ptr<SeekableInputStream> input);
+    ByteRleDecoderImpl(std::unique_ptr<SeekableInputStream> input, ReaderMetrics* metrics);
 
     ~ByteRleDecoderImpl() override;
 
@@ -307,9 +320,11 @@ public:
     void next(char* data, uint64_t numValues, char* notNull) override;
 
 protected:
+    void nextInternal(char* data, uint64_t numValues, char* notNull);
     inline void nextBuffer();
     inline signed char readByte();
     inline void readHeader();
+    inline void reset();
 
     std::unique_ptr<SeekableInputStream> inputStream;
     size_t remainingValues;
@@ -317,9 +332,11 @@ protected:
     const char* bufferStart;
     const char* bufferEnd;
     bool repeating;
+    ReaderMetrics* metrics;
 };
 
 void ByteRleDecoderImpl::nextBuffer() {
+    SCOPED_MINUS_STOPWATCH(metrics, ByteDecodingLatencyUs);
     int bufferLength;
     const void* bufferPointer;
     bool result = inputStream->Next(&bufferPointer, &bufferLength);
@@ -349,13 +366,18 @@ void ByteRleDecoderImpl::readHeader() {
     }
 }
 
-ByteRleDecoderImpl::ByteRleDecoderImpl(std::unique_ptr<SeekableInputStream> input) {
-    inputStream = std::move(input);
+void ByteRleDecoderImpl::reset() {
     repeating = false;
     remainingValues = 0;
     value = 0;
     bufferStart = nullptr;
     bufferEnd = nullptr;
+}
+
+ByteRleDecoderImpl::ByteRleDecoderImpl(std::unique_ptr<SeekableInputStream> input, ReaderMetrics* _metrics)
+        : metrics(_metrics) {
+    inputStream = std::move(input);
+    reset();
 }
 
 ByteRleDecoderImpl::~ByteRleDecoderImpl() {
@@ -365,15 +387,14 @@ ByteRleDecoderImpl::~ByteRleDecoderImpl() {
 void ByteRleDecoderImpl::seek(PositionProvider& location) {
     // move the input stream
     inputStream->seek(location);
-    // force a re-read from the stream
-    bufferEnd = bufferStart;
-    // read a new header
-    readHeader();
+    // reset the decoder status and lazily call readHeader()
+    reset();
     // skip ahead the given number of records
     ByteRleDecoderImpl::skip(location.next());
 }
 
 void ByteRleDecoderImpl::skip(uint64_t numValues) {
+    SCOPED_STOPWATCH(metrics, ByteDecodingLatencyUs, ByteDecodingCall);
     while (numValues > 0) {
         if (remainingValues == 0) {
             readHeader();
@@ -399,6 +420,11 @@ void ByteRleDecoderImpl::skip(uint64_t numValues) {
 }
 
 void ByteRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) {
+    SCOPED_STOPWATCH(metrics, ByteDecodingLatencyUs, ByteDecodingCall);
+    nextInternal(data, numValues, notNull);
+}
+
+void ByteRleDecoderImpl::nextInternal(char* data, uint64_t numValues, char* notNull) {
     uint64_t position = 0;
     // skip over null values
     while (notNull && position < numValues && !notNull[position]) {
@@ -456,14 +482,14 @@ void ByteRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) {
     }
 }
 
-std::unique_ptr<ByteRleDecoder> createByteRleDecoder(std::unique_ptr<SeekableInputStream> input) {
-    return std::unique_ptr<ByteRleDecoder>(new ByteRleDecoderImpl(std::move(input)));
+std::unique_ptr<ByteRleDecoder> createByteRleDecoder(std::unique_ptr<SeekableInputStream> input,
+                                                     ReaderMetrics* metrics) {
+    return std::unique_ptr<ByteRleDecoder>(new ByteRleDecoderImpl(std::move(input), metrics));
 }
 
 class BooleanRleDecoderImpl : public ByteRleDecoderImpl {
 public:
-    BooleanRleDecoderImpl(std::unique_ptr<SeekableInputStream> input);
-
+    BooleanRleDecoderImpl(std::unique_ptr<SeekableInputStream> input, ReaderMetrics* metrics);
     ~BooleanRleDecoderImpl() override;
 
     /**
@@ -486,8 +512,8 @@ protected:
     char lastByte;
 };
 
-BooleanRleDecoderImpl::BooleanRleDecoderImpl(std::unique_ptr<SeekableInputStream> input)
-        : ByteRleDecoderImpl(std::move(input)) {
+BooleanRleDecoderImpl::BooleanRleDecoderImpl(std::unique_ptr<SeekableInputStream> input, ReaderMetrics* _metrics)
+        : ByteRleDecoderImpl(std::move(input), _metrics) {
     remainingBits = 0;
     lastByte = 0;
 }
@@ -526,6 +552,7 @@ void BooleanRleDecoderImpl::skip(uint64_t numValues) {
 }
 
 void BooleanRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) {
+    SCOPED_STOPWATCH(metrics, ByteDecodingLatencyUs, ByteDecodingCall);
     // next spot to fill in
     uint64_t position = 0;
 
@@ -565,7 +592,7 @@ void BooleanRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) 
     } else if (position < numValues) {
         // read the new bytes into the array
         uint64_t bytesRead = (nonNulls + 7) / 8;
-        ByteRleDecoderImpl::next(data + position, bytesRead, nullptr);
+        ByteRleDecoderImpl::nextInternal(data + position, bytesRead, nullptr);
         lastByte = data[position + bytesRead - 1];
         remainingBits = bytesRead * 8 - nonNulls;
         // expand the array backwards so that we don't clobber the data
@@ -573,7 +600,7 @@ void BooleanRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) 
         if (notNull) {
             for (int64_t i = static_cast<int64_t>(numValues) - 1; i >= static_cast<int64_t>(position); --i) {
                 if (notNull[i]) {
-                    uint64_t shiftPosn = (-bitsLeft) % 8;
+                    uint64_t shiftPosn = (~bitsLeft + 1) % 8;
                     data[i] = (data[position + (bitsLeft - 1) / 8] >> shiftPosn) & 0x1;
                     bitsLeft -= 1;
                 } else {
@@ -583,15 +610,16 @@ void BooleanRleDecoderImpl::next(char* data, uint64_t numValues, char* notNull) 
         } else {
             for (int64_t i = static_cast<int64_t>(numValues) - 1; i >= static_cast<int64_t>(position);
                  --i, --bitsLeft) {
-                uint64_t shiftPosn = (-bitsLeft) % 8;
+                uint64_t shiftPosn = (~bitsLeft + 1) % 8;
                 data[i] = (data[position + (bitsLeft - 1) / 8] >> shiftPosn) & 0x1;
             }
         }
     }
 }
 
-std::unique_ptr<ByteRleDecoder> createBooleanRleDecoder(std::unique_ptr<SeekableInputStream> input) {
-    BooleanRleDecoderImpl* decoder = new BooleanRleDecoderImpl(std::move(input));
+std::unique_ptr<ByteRleDecoder> createBooleanRleDecoder(std::unique_ptr<SeekableInputStream> input,
+                                                        ReaderMetrics* metrics) {
+    auto* decoder = new BooleanRleDecoderImpl(std::move(input), metrics);
     return std::unique_ptr<ByteRleDecoder>(reinterpret_cast<ByteRleDecoder*>(decoder));
 }
 } // namespace orc

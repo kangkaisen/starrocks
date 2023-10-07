@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/http/http_channel.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -40,7 +36,7 @@ public:
     static void send_error(HttpRequest* request, HttpStatus status);
 
     // send 200(OK) reply with content
-    static inline void send_reply(HttpRequest* request, const std::string& content) {
+    static void send_reply(HttpRequest* request, const std::string& content) {
         send_reply(request, HttpStatus::OK, content);
     }
 

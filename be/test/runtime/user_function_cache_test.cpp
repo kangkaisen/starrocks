@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/test/runtime/user_function_cache_test.cpp
 
@@ -28,11 +41,11 @@
 
 #include "common/logging.h"
 #include "fmt/core.h"
+#include "fs/fs_util.h"
 #include "http/ev_http_server.h"
 #include "http/http_channel.h"
 #include "http/http_handler.h"
 #include "http/http_request.h"
-#include "util/file_utils.h"
 #include "util/md5.h"
 
 int main(int argc, char* argv[]);
@@ -90,8 +103,8 @@ static std::string compute_md5(const std::string& file) {
 }
 class UserFunctionCacheTest : public testing::Test {
 public:
-    UserFunctionCacheTest() {}
-    virtual ~UserFunctionCacheTest() {}
+    UserFunctionCacheTest() = default;
+    ~UserFunctionCacheTest() override = default;
     static void SetUpTestCase() {
         s_server = new EvHttpServer(0);
         s_server->register_handler(GET, "/{FILE}", &s_test_handler);
@@ -101,20 +114,23 @@ public:
         hostname = "http://127.0.0.1:" + std::to_string(real_port);
 
         // compile code to so
-        system("g++ -shared ./be/test/runtime/test_data/user_function_cache/lib/my_add.cc -o "
-               "./be/test/runtime/test_data/user_function_cache/lib/my_add.so");
+        [[maybe_unused]] auto res =
+                system("g++ -shared ./be/test/runtime/test_data/user_function_cache/lib/my_add.cc -o "
+                       "./be/test/runtime/test_data/user_function_cache/lib/my_add.so");
 
-        system("touch ./be/test/runtime/test_data/user_function_cache/lib/my_udf.jar");
+        res = system("touch ./be/test/runtime/test_data/user_function_cache/lib/my_udf.jar");
 
         my_add_md5sum = compute_md5("./be/test/runtime/test_data/user_function_cache/lib/my_add.so");
 
         jar_md5sum = compute_md5("./be/test/runtime/test_data/user_function_cache/lib/my_udf.jar");
     }
     static void TearDownTestCase() {
+        s_server->stop();
+        s_server->join();
         delete s_server;
-        system("rm -rf ./be/test/runtime/test_data/user_function_cache/lib/my_add.so");
-        system("rm -rf ./be/test/runtime/test_data/user_function_cache/lib/my_udf.jar");
-        system("rm -rf ./be/test/runtime/test_data/user_function_cache/download/");
+        [[maybe_unused]] auto res = system("rm -rf ./be/test/runtime/test_data/user_function_cache/lib/my_add.so");
+        res = system("rm -rf ./be/test/runtime/test_data/user_function_cache/lib/my_udf.jar");
+        res = system("rm -rf ./be/test/runtime/test_data/user_function_cache/download/");
     }
     void SetUp() override { k_is_downloaded = false; }
 };
@@ -135,21 +151,17 @@ TEST_F(UserFunctionCacheTest, test_function_type) {
 TEST_F(UserFunctionCacheTest, download_normal) {
     UserFunctionCache cache;
     std::string lib_dir = "./be/test/runtime/test_data/user_function_cache/download";
-    FileUtils::remove_all(lib_dir);
+    fs::remove_all(lib_dir);
     auto st = cache.init(lib_dir);
-    ASSERT_TRUE(st.ok());
+    ASSERT_TRUE(st.ok()) << st;
 
     {
         std::string libpath;
         int fid = 0;
         std::string URL = fmt::format("http://127.0.0.1:{}/test.jar", real_port);
-        cache.get_libpath(fid, URL, jar_md5sum, &libpath);
+        st = cache.get_libpath(fid, URL, jar_md5sum, &libpath);
+        st.permit_unchecked_error();
     }
 }
 
 } // namespace starrocks
-
-int main(int argc, char* argv[]) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}

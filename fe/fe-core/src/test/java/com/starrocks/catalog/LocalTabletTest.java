@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/catalog/TabletTest.java
 
@@ -21,8 +34,12 @@
 
 package com.starrocks.catalog;
 
+import com.google.common.collect.Sets;
 import com.starrocks.catalog.Replica.ReplicaState;
-import com.starrocks.common.FeConstants;
+import com.starrocks.persist.gson.GsonUtils;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.system.Backend;
+import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TStorageMedium;
 import mockit.Expectations;
 import mockit.Mocked;
@@ -45,23 +62,21 @@ public class LocalTabletTest {
 
     private TabletInvertedIndex invertedIndex;
 
+    private SystemInfoService infoService;
+
     @Mocked
-    private Catalog catalog;
+    private GlobalStateMgr globalStateMgr;
 
     @Before
     public void makeTablet() {
         invertedIndex = new TabletInvertedIndex();
-        new Expectations(catalog) {
+        new Expectations(globalStateMgr) {
             {
-                Catalog.getCurrentCatalogJournalVersion();
-                minTimes = 0;
-                result = FeConstants.meta_version;
-
-                Catalog.getCurrentInvertedIndex();
+                GlobalStateMgr.getCurrentInvertedIndex();
                 minTimes = 0;
                 result = invertedIndex;
 
-                Catalog.isCheckpointThread();
+                GlobalStateMgr.isCheckpointThread();
                 minTimes = 0;
                 result = false;
             }
@@ -76,6 +91,11 @@ public class LocalTabletTest {
         tablet.addReplica(replica1);
         tablet.addReplica(replica2);
         tablet.addReplica(replica3);
+
+        infoService = GlobalStateMgr.getCurrentSystemInfo();
+        infoService.addBackend(new Backend(10001L, "host1", 9050));
+        infoService.addBackend(new Backend(10002L, "host2", 9050));
+
     }
 
     @Test
@@ -84,7 +104,7 @@ public class LocalTabletTest {
         Assert.assertEquals(replica2, tablet.getReplicaById(replica2.getId()));
         Assert.assertEquals(replica3, tablet.getReplicaById(replica3.getId()));
 
-        Assert.assertEquals(3, tablet.getReplicas().size());
+        Assert.assertEquals(3, tablet.getImmutableReplicas().size());
         Assert.assertEquals(replica1, tablet.getReplicaByBackendId(replica1.getBackendId()));
         Assert.assertEquals(replica2, tablet.getReplicaByBackendId(replica2.getBackendId()));
         Assert.assertEquals(replica3, tablet.getReplicaByBackendId(replica3.getBackendId()));
@@ -107,11 +127,11 @@ public class LocalTabletTest {
 
         // delete replica2
         Assert.assertTrue(tablet.deleteReplica(replica2));
-        Assert.assertEquals(1, tablet.getReplicas().size());
+        Assert.assertEquals(1, tablet.getImmutableReplicas().size());
 
         // clear replicas
         tablet.clearReplica();
-        Assert.assertEquals(0, tablet.getReplicas().size());
+        Assert.assertEquals(0, tablet.getImmutableReplicas().size());
     }
 
     @Test
@@ -123,12 +143,13 @@ public class LocalTabletTest {
         dos.flush();
         dos.close();
 
-        // 2. Read a object from file
+        // Read an object from file
         DataInputStream dis = new DataInputStream(new FileInputStream(file));
         LocalTablet rTablet1 = LocalTablet.read(dis);
         Assert.assertEquals(1, rTablet1.getId());
-        Assert.assertEquals(3, rTablet1.getReplicas().size());
-        Assert.assertEquals(rTablet1.getReplicas().get(0).getVersion(), rTablet1.getReplicas().get(1).getVersion());
+        Assert.assertEquals(3, rTablet1.getImmutableReplicas().size());
+        Assert.assertEquals(rTablet1.getImmutableReplicas().get(0).getVersion(),
+                rTablet1.getImmutableReplicas().get(1).getVersion());
 
         Assert.assertTrue(rTablet1.equals(tablet));
         Assert.assertTrue(rTablet1.equals(rTablet1));
@@ -152,5 +173,42 @@ public class LocalTabletTest {
 
         dis.close();
         file.delete();
+
+        // Read an object from json
+        String jsonStr = GsonUtils.GSON.toJson(tablet);
+        LocalTablet jTablet = GsonUtils.GSON.fromJson(jsonStr, LocalTablet.class);
+        Assert.assertEquals(1, jTablet.getId());
+        Assert.assertEquals(3, jTablet.getImmutableReplicas().size());
+        Assert.assertEquals(jTablet.getImmutableReplicas().get(0).getVersion(),
+                jTablet.getImmutableReplicas().get(1).getVersion());
+    }
+
+    @Test
+    public void testGetColocateHealthStatus() throws Exception {
+        LocalTablet tablet = new LocalTablet();
+        Replica versionIncompleteReplica = new Replica(1L, 10001L, 8,
+                -1, 10, 10, ReplicaState.NORMAL, 9, 8);
+        Replica normalReplica = new Replica(1L, 10002L, 9,
+                -1, 10, 10, ReplicaState.NORMAL, -1, 9);
+        tablet.addReplica(versionIncompleteReplica, false);
+        tablet.addReplica(normalReplica, false);
+        Assert.assertEquals(LocalTablet.TabletStatus.COLOCATE_REDUNDANT,
+                tablet.getColocateHealthStatus(9, 1, Sets.newHashSet(10002L)));
+    }
+
+
+    @Test
+    public void testGetBackends() throws Exception {
+        LocalTablet tablet = new LocalTablet();
+
+        Replica replica1 = new Replica(1L, 10001L, 8,
+                -1, 10, 10, ReplicaState.NORMAL, 9, 8);
+        Replica replica2 = new Replica(1L, 10002L, 9,
+                -1, 10, 10, ReplicaState.NORMAL, -1, 9);
+        tablet.addReplica(replica1, false);
+        tablet.addReplica(replica2, false);
+
+        Assert.assertEquals(tablet.getBackends().size(), 2);
+
     }
 }

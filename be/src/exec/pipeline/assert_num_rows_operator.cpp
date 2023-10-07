@@ -1,22 +1,36 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exec/pipeline/assert_num_rows_operator.h"
 
 #include "column/chunk.h"
 #include "gutil/strings/substitute.h"
 
-using namespace starrocks::vectorized;
+using namespace starrocks;
 
 namespace starrocks::pipeline {
 Status AssertNumRowsOperator::prepare(RuntimeState* state) {
-    Operator::prepare(state);
+    RETURN_IF_ERROR(Operator::prepare(state));
 
-    // assert num rows node only use for un-correlate scalar subquery, return empty chunk is error, least fill one rows
-    vectorized::ChunkPtr chunk = std::make_shared<vectorized::Chunk>();
+    // AssertNumRows should return exactly one row, report error if more than one row, return null if empty input
+    ChunkPtr chunk = std::make_shared<Chunk>();
 
     for (const auto& desc : _factory->row_desc()->tuple_descriptors()) {
         for (const auto& slot : desc->slots()) {
-            chunk->append_column(ColumnHelper::create_column(slot->type(), true, false, 1), slot->id());
+            ColumnPtr column = ColumnHelper::create_column(slot->type(), true);
+            column->append_nulls(1);
+            chunk->append_column(column, slot->id());
         }
     }
 
@@ -25,10 +39,11 @@ Status AssertNumRowsOperator::prepare(RuntimeState* state) {
 }
 
 void AssertNumRowsOperator::close(RuntimeState* state) {
+    _cur_chunk.reset();
     Operator::close(state);
 }
 
-StatusOr<vectorized::ChunkPtr> AssertNumRowsOperator::pull_chunk(RuntimeState* state) {
+StatusOr<ChunkPtr> AssertNumRowsOperator::pull_chunk(RuntimeState* state) {
     return std::move(_cur_chunk);
 }
 
@@ -40,7 +55,7 @@ bool AssertNumRowsOperator::need_input() const {
     return !_input_finished;
 }
 
-Status AssertNumRowsOperator::push_chunk(RuntimeState* state, const vectorized::ChunkPtr& chunk) {
+Status AssertNumRowsOperator::push_chunk(RuntimeState* state, const ChunkPtr& chunk) {
     _actual_num_rows += chunk->num_rows();
     if (_actual_num_rows > 1) {
         auto iter = _TAssertion_VALUES_TO_NAMES.find(_assertion);

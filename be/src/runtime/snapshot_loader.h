@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/snapshot_loader.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -45,36 +41,37 @@ struct FileStat {
  * Upload:
  * upload() will upload the specified snapshot
  * to remote storage via broker.
- * Each call of upload() is reponsible for severval tablet snapshots.
+ * Each call of upload() is responsible for several tablet snapshots.
  *
  * It will try to get the existing files in remote storage,
  * and only upload the incremental part of files.
  *
  * Download:
- * download() will download the romote tablet snapshot files 
+ * download() will download the remote tablet snapshot files
  * to local snapshot dir via broker.
  * It will also only download files which does not exist in local dir.
  *
  * Move:
  * move() is the final step of restore process. it will replace the 
  * old tablet data dir with the newly downloaded snapshot dir.
- * and reload the tablet header to take this tablet on line.
+ * and reload the tablet header to take this tablet online.
  * 
  */
 class SnapshotLoader {
 public:
     SnapshotLoader(ExecEnv* env, int64_t job_id, int64_t task_id);
 
-    ~SnapshotLoader();
+    ~SnapshotLoader() = default;
 
-    Status upload(const std::map<std::string, std::string>& src_to_dest_path, const TNetworkAddress& broker_addr,
-                  const std::map<std::string, std::string>& broker_prop,
+    Status upload(const std::map<std::string, std::string>& src_to_dest_path, const TUploadReq& upload,
                   std::map<int64_t, std::vector<std::string>>* tablet_files);
 
-    Status download(const std::map<std::string, std::string>& src_to_dest_path, const TNetworkAddress& broker_addr,
-                    const std::map<std::string, std::string>& broker_prop, std::vector<int64_t>* downloaded_tablet_ids);
+    Status download(const std::map<std::string, std::string>& src_to_dest_path, const TDownloadReq& download,
+                    std::vector<int64_t>* downloaded_tablet_ids);
 
     Status move(const std::string& snapshot_path, const TabletSharedPtr& tablet, bool overwrite);
+
+    Status primary_key_move(const std::string& snapshot_path, const TabletSharedPtr& tablet, bool overwrite);
 
 private:
     Status _get_tablet_id_and_schema_hash_from_file_path(const std::string& src_path, int64_t* tablet_id,
@@ -82,14 +79,21 @@ private:
 
     Status _check_local_snapshot_paths(const std::map<std::string, std::string>& src_to_dest_path, bool check_src);
 
+    Status _get_existing_files_from_local(const std::string& local_path, std::vector<std::string>* local_files);
+
     Status _get_existing_files_from_remote(BrokerServiceConnection& client, const std::string& remote_path,
                                            const std::map<std::string, std::string>& broker_prop,
                                            std::map<std::string, FileStat>* files);
 
-    Status _get_existing_files_from_local(const std::string& local_path, std::vector<std::string>* local_files);
+    Status _get_existing_files_from_remote_without_broker(const std::unique_ptr<FileSystem>& fs,
+                                                          const std::string& remote_path,
+                                                          std::map<std::string, FileStat>* files);
 
     Status _rename_remote_file(BrokerServiceConnection& client, const std::string& orig_name,
                                const std::string& new_name, const std::map<std::string, std::string>& broker_prop);
+
+    Status _rename_remote_file_without_broker(const std::unique_ptr<FileSystem>& fs, const std::string& orig_name,
+                                              const std::string& new_name);
 
     bool _end_with(const std::string& str, const std::string& match);
 

@@ -1,9 +1,27 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.sql.plan;
 
+import com.starrocks.catalog.LocalTablet;
+import com.starrocks.catalog.MaterializedIndex;
+import com.starrocks.catalog.OlapTable;
+import com.starrocks.catalog.Replica;
 import com.starrocks.common.FeConstants;
 import com.starrocks.qe.SessionVariable;
+import com.starrocks.server.GlobalStateMgr;
+import mockit.Expectations;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -13,23 +31,33 @@ public class LimitTest extends PlanTestBase {
     public void testLimit() throws Exception {
         String sql = "select v1 from t0 limit 1";
         String planFragment = getFragmentPlan(sql);
-        Assert.assertTrue(planFragment.contains("PLAN FRAGMENT 0\n"
-                + " OUTPUT EXPRS:1: v1\n"
-                + "  PARTITION: RANDOM\n"
-                + "\n"
-                + "  RESULT SINK\n"
-                + "\n"
-                + "  0:OlapScanNode\n"
-                + "     TABLE: t0\n"
-                + "     PREAGGREGATION: ON\n"
-                + "     partitions=0/1\n"
-                + "     rollup: t0\n"
-                + "     tabletRatio=0/0\n"
-                + "     tabletList=\n"
-                + "     cardinality=1\n"
-                + "     avgRowSize=1.0\n"
-                + "     numNodes=0\n"
-                + "     limit: 1"));
+        assertContains(planFragment, ("PLAN FRAGMENT 0\n" +
+                " OUTPUT EXPRS:1: v1\n" +
+                "  PARTITION: UNPARTITIONED\n" +
+                "\n" +
+                "  RESULT SINK\n" +
+                "\n" +
+                "  1:EXCHANGE\n" +
+                "     limit: 1\n" +
+                "\n" +
+                "PLAN FRAGMENT 1\n" +
+                " OUTPUT EXPRS:\n" +
+                "  PARTITION: RANDOM\n" +
+                "\n" +
+                "  STREAM DATA SINK\n" +
+                "    EXCHANGE ID: 01\n" +
+                "    UNPARTITIONED\n" +
+                "\n" +
+                "  0:OlapScanNode\n" +
+                "     TABLE: t0\n" +
+                "     PREAGGREGATION: ON\n" +
+                "     partitions=0/1\n" +
+                "     rollup: t0\n" +
+                "     tabletRatio=0/0\n" +
+                "     tabletList=\n" +
+                "     cardinality=1\n" +
+                "     avgRowSize=1.0\n" +
+                "     limit: 1"));
     }
 
     @Test
@@ -62,7 +90,6 @@ public class LimitTest extends PlanTestBase {
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("3:HASH JOIN\n" +
                 "  |  join op: INNER JOIN (BUCKET_SHUFFLE)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 4: v4 = 2: v2\n" +
                 "  |  limit: 2"));
@@ -95,12 +122,12 @@ public class LimitTest extends PlanTestBase {
     public void testExceptLimit() throws Exception {
         String queryStr = "select 1 from (select 1, 3 from t0 except select 2, 3 ) as a limit 3";
         String explainString = getFragmentPlan(queryStr);
-        Assert.assertTrue(explainString.contains("  6:Project\n"
-                + "  |  <slot 10> : 1\n"
-                + "  |  limit: 3\n"
-                + "  |  \n"
-                + "  0:EXCEPT\n"
-                + "  |  limit: 3\n"));
+        Assert.assertTrue(explainString.contains("  7:Project\n" +
+                "  |  <slot 11> : 1\n" +
+                "  |  limit: 3\n" +
+                "  |  \n" +
+                "  0:EXCEPT\n" +
+                "  |  limit: 3"));
 
         Assert.assertTrue(explainString.contains("  2:Project\n"
                 + "  |  <slot 4> : 1\n"
@@ -113,12 +140,12 @@ public class LimitTest extends PlanTestBase {
     public void testIntersectLimit() throws Exception {
         String queryStr = "select 1 from (select 1, 3 from t0 intersect select 2, 3 ) as a limit 3";
         String explainString = getFragmentPlan(queryStr);
-        Assert.assertTrue(explainString.contains("  6:Project\n"
-                + "  |  <slot 10> : 1\n"
-                + "  |  limit: 3\n"
-                + "  |  \n"
-                + "  0:INTERSECT\n"
-                + "  |  limit: 3\n"));
+        Assert.assertTrue(explainString.contains("  7:Project\n" +
+                "  |  <slot 11> : 1\n" +
+                "  |  limit: 3\n" +
+                "  |  \n" +
+                "  0:INTERSECT\n" +
+                "  |  limit: 3"));
 
         Assert.assertTrue(explainString.contains("  2:Project\n"
                 + "  |  <slot 4> : 1\n"
@@ -132,7 +159,7 @@ public class LimitTest extends PlanTestBase {
         connectContext.getSessionVariable().setNewPlanerAggStage(2);
         String sql = "select count(*) from (select v1 from t0 order by v2 limit 10,20) t;";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("3:AGGREGATE (update finalize)"));
+        Assert.assertTrue(plan, plan.contains("4:AGGREGATE (update finalize)"));
         connectContext.getSessionVariable().setNewPlanerAggStage(0);
     }
 
@@ -219,9 +246,8 @@ public class LimitTest extends PlanTestBase {
         String sql = "select * from (select v1, v2 from t0 limit 10) a join [broadcast] " +
                 "(select v1, v2 from t0 limit 1) b on a.v1 = b.v1";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("    EXCHANGE ID: 03\n" +
-                "    UNPARTITIONED"));
-
+        assertContains(plan, "    EXCHANGE ID: 04\n" +
+                "    UNPARTITIONED");
     }
 
     @Test
@@ -239,10 +265,16 @@ public class LimitTest extends PlanTestBase {
         String sql = "select * from (select v1, v2 from t0 limit 10) a join [shuffle] " +
                 "(select v1, v2 from t0 limit 1) b on a.v1 = b.v1";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("join op: INNER JOIN (PARTITIONED)"));
-        Assert.assertTrue(plan.contains("  |----5:EXCHANGE\n" +
-                "  |       limit: 1"));
-        Assert.assertTrue(plan.contains("  2:EXCHANGE\n" +
+        assertContains(plan, ("join op: INNER JOIN (PARTITIONED)"));
+        assertContains(plan, ("  6:SELECT\n" +
+                "  |  predicates: 4: v1 IS NOT NULL\n" +
+                "  |  \n" +
+                "  5:EXCHANGE\n" +
+                "     limit: 1"));
+        assertContains(plan, ("  2:SELECT\n" +
+                "  |  predicates: 1: v1 IS NOT NULL\n" +
+                "  |  \n" +
+                "  1:EXCHANGE\n" +
                 "     limit: 10"));
     }
 
@@ -267,15 +299,15 @@ public class LimitTest extends PlanTestBase {
         String sql = "select v1, v2 from t0 union all " +
                 "select v1, v2 from t0 limit 1 ";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("    EXCHANGE ID: 02\n" +
-                "    UNPARTITIONED"));
-        Assert.assertTrue(plan.contains("    EXCHANGE ID: 05\n" +
+        assertContains(plan, ("    EXCHANGE ID: 02\n" +
+                "    RANDOM"));
+        assertContains(plan, ("    EXCHANGE ID: 05\n" +
                 "    UNPARTITIONED"));
 
         sql = "select v1, v2 from t0 union all " +
                 "select a.v1, a.v2 from (select v1, v2 from t0 limit 1) a ";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("    EXCHANGE ID: 04\n" +
+        assertContains(plan, ("    EXCHANGE ID: 04\n" +
                 "    UNPARTITIONED"));
     }
 
@@ -286,7 +318,6 @@ public class LimitTest extends PlanTestBase {
         sql = "select * from t0 inner join t1 on t0.v1 = t1.v4 limit 10";
         plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("  |  join op: INNER JOIN (BROADCAST)\n"
-                + "  |  hash predicates:\n"
                 + "  |  colocate: false, reason: \n"
                 + "  |  equal join conjunct: 1: v1 = 4: v4\n"
                 + "  |  limit: 10\n"
@@ -299,7 +330,6 @@ public class LimitTest extends PlanTestBase {
         sql = "select * from t0 left anti join t1 on t0.v1 = t1.v4 limit 10";
         plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("  |  join op: LEFT ANTI JOIN (BROADCAST)\n"
-                + "  |  hash predicates:\n"
                 + "  |  colocate: false, reason: \n"
                 + "  |  equal join conjunct: 1: v1 = 4: v4\n"
                 + "  |  limit: 10\n"
@@ -312,7 +342,6 @@ public class LimitTest extends PlanTestBase {
         sql = "select * from t0 right semi join t1 on t0.v1 = t1.v4 limit 10";
         plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("  |  join op: LEFT SEMI JOIN (BROADCAST)\n"
-                + "  |  hash predicates:\n"
                 + "  |  colocate: false, reason: \n"
                 + "  |  equal join conjunct: 4: v4 = 1: v1\n"
                 + "  |  limit: 10\n"
@@ -328,7 +357,6 @@ public class LimitTest extends PlanTestBase {
         String sql = "select * from t0 left outer join t1 on t0.v1 = t1.v4 limit 10";
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("  |  join op: LEFT OUTER JOIN (BROADCAST)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 1: v1 = 4: v4\n" +
                 "  |  limit: 10\n" +
@@ -344,7 +372,6 @@ public class LimitTest extends PlanTestBase {
                 + "     tabletList=\n"
                 + "     cardinality=1\n"
                 + "     avgRowSize=3.0\n"
-                + "     numNodes=0\n"
                 + "     limit: 10"));
     }
 
@@ -354,24 +381,22 @@ public class LimitTest extends PlanTestBase {
         String plan;
         sql = "select * from t0 full outer join t1 on t0.v1 = t1.v4 limit 10";
         plan = getFragmentPlan(sql);
+        System.out.println(plan);
         Assert.assertTrue(plan.contains("  4:HASH JOIN\n"
                 + "  |  join op: FULL OUTER JOIN (PARTITIONED)\n"
-                + "  |  hash predicates:\n"
                 + "  |  colocate: false, reason: \n"
                 + "  |  equal join conjunct: 1: v1 = 4: v4\n"
                 + "  |  limit: 10\n"
                 + "  |  \n"
                 + "  |----3:EXCHANGE\n"
-                + "  |       limit: 10\n"
                 + "  |    \n"
-                + "  1:EXCHANGE\n"
-                + "     limit: 10\n"));
+                + "  1:EXCHANGE\n"));
 
         sql = "select * from t0, t1 limit 10";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("3:CROSS JOIN\n" +
-                "  |  cross join:\n" +
-                "  |  predicates is NULL.\n" +
+        Assert.assertTrue(plan, plan.contains("3:NESTLOOP JOIN\n" +
+                "  |  join op: CROSS JOIN\n" +
+                "  |  colocate: false, reason: \n" +
                 "  |  limit: 10\n" +
                 "  |  \n" +
                 "  |----2:EXCHANGE\n" +
@@ -405,7 +430,7 @@ public class LimitTest extends PlanTestBase {
         Assert.assertTrue(plan.contains("limit: 8888"));
         connectContext.getSessionVariable().setSqlSelectLimit(SessionVariable.DEFAULT_SELECT_LIMIT);
 
-        connectContext.getSessionVariable().setSqlSelectLimit(-100);
+        connectContext.getSessionVariable().setSqlSelectLimit(0);
         sql = "select * from test_all_type";
         plan = getFragmentPlan(sql);
         Assert.assertFalse(plan.contains("limit"));
@@ -421,11 +446,10 @@ public class LimitTest extends PlanTestBase {
     public void testLimitRightJoin() throws Exception {
         String sql = "select v1 from t0 right outer join t1 on t0.v1 = t1.v4 limit 100";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  |  join op: RIGHT OUTER JOIN (PARTITIONED)\n" +
-                "  |  hash predicates:\n" +
+        assertContains(plan, "  |  join op: RIGHT OUTER JOIN (PARTITIONED)\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 1: v1 = 4: v4\n" +
-                "  |  limit: 100"));
+                "  |  limit: 100");
         Assert.assertTrue(plan.contains("  |----3:EXCHANGE\n" +
                 "  |       limit: 100"));
 
@@ -440,7 +464,6 @@ public class LimitTest extends PlanTestBase {
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains(" 5:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (PARTITIONED)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 1: v1 = 4: v4\n" +
                 "  |  \n" +
@@ -451,16 +474,16 @@ public class LimitTest extends PlanTestBase {
 
         sql = "select v1 from (select * from t0 limit 10) x0 left outer join t1 on x0.v1 = t1.v4 limit 1";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  3:HASH JOIN\n" +
+        Assert.assertTrue(plan.contains("4:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (BROADCAST)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 1: v1 = 4: v4\n" +
                 "  |  limit: 1\n" +
                 "  |  \n" +
-                "  |----2:EXCHANGE\n" +
+                "  |----3:EXCHANGE\n" +
                 "  |    \n" +
-                "  0:OlapScanNode"));
+                "  1:EXCHANGE\n" +
+                "     limit: 1"));
         Assert.assertTrue(plan.contains("  0:OlapScanNode\n" +
                 "     TABLE: t0\n" +
                 "     PREAGGREGATION: ON\n" +
@@ -470,14 +493,12 @@ public class LimitTest extends PlanTestBase {
                 "     tabletList=\n" +
                 "     cardinality=1\n" +
                 "     avgRowSize=1.0\n" +
-                "     numNodes=0\n" +
                 "     limit: 1"));
 
         sql = "select v1 from (select * from t0 limit 10) x0 left outer join[shuffle] t1 on x0.v1 = t1.v4 limit 100";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("5:HASH JOIN\n" +
+        assertContains(plan, "5:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (PARTITIONED)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 1: v1 = 4: v4\n" +
                 "  |  limit: 100\n" +
@@ -485,8 +506,8 @@ public class LimitTest extends PlanTestBase {
                 "  |----4:EXCHANGE\n" +
                 "  |    \n" +
                 "  2:EXCHANGE\n" +
-                "     limit: 10"));
-        Assert.assertTrue(plan.contains("PLAN FRAGMENT 2\n" +
+                "     limit: 10");
+        assertContains(plan, ("PLAN FRAGMENT 3\n" +
                 " OUTPUT EXPRS:\n" +
                 "  PARTITION: UNPARTITIONED\n" +
                 "\n" +
@@ -497,30 +518,29 @@ public class LimitTest extends PlanTestBase {
                 "  1:EXCHANGE\n" +
                 "     limit: 10"));
 
-        sql =
-                "select v1 from (select * from t0 limit 10) x0 left outer join (select * from t1 limit 5) x1 on x0.v1 = x1.v4 limit 7";
+        sql = "select v1 from (select * from t0 limit 10) x0 left outer " +
+                "join (select * from t1 limit 5) x1 on x0.v1 = x1.v4 limit 7";
         plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("5:HASH JOIN\n" +
-                "  |  join op: RIGHT OUTER JOIN (PARTITIONED)\n" +
-                "  |  hash predicates:\n" +
+                "  |  join op: LEFT OUTER JOIN (BROADCAST)\n" +
                 "  |  colocate: false, reason: \n" +
-                "  |  equal join conjunct: 4: v4 = 1: v1\n" +
+                "  |  equal join conjunct: 1: v1 = 4: v4\n" +
                 "  |  limit: 7\n" +
                 "  |  \n" +
                 "  |----4:EXCHANGE\n" +
-                "  |       limit: 7\n" +
+                "  |       limit: 5\n" +
                 "  |    \n" +
-                "  2:EXCHANGE\n" +
-                "     limit: 5"));
-        Assert.assertTrue(plan.contains("PLAN FRAGMENT 2\n" +
+                "  1:EXCHANGE\n" +
+                "     limit: 7"));
+        assertContains(plan, ("PLAN FRAGMENT 1\n" +
                 " OUTPUT EXPRS:\n" +
                 "  PARTITION: UNPARTITIONED\n" +
                 "\n" +
                 "  STREAM DATA SINK\n" +
-                "    EXCHANGE ID: 02\n" +
-                "    HASH_PARTITIONED: 4: v4\n" +
+                "    EXCHANGE ID: 04\n" +
+                "    UNPARTITIONED\n" +
                 "\n" +
-                "  1:EXCHANGE\n" +
+                "  3:EXCHANGE\n" +
                 "     limit: 5"));
     }
 
@@ -528,9 +548,10 @@ public class LimitTest extends PlanTestBase {
     public void testCrossJoinPushLimit() throws Exception {
         String sql = "select * from t0 cross join t1 on t0.v2 != t1.v5 limit 10";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  3:CROSS JOIN\n" +
-                "  |  cross join:\n" +
-                "  |  predicates: 2: v2 != 5: v5\n" +
+        Assert.assertTrue(plan, plan.contains("  3:NESTLOOP JOIN\n" +
+                "  |  join op: INNER JOIN\n" +
+                "  |  colocate: false, reason: \n" +
+                "  |  other join predicates: 2: v2 != 5: v5\n" +
                 "  |  limit: 10\n" +
                 "  |  \n" +
                 "  |----2:EXCHANGE\n" +
@@ -539,9 +560,10 @@ public class LimitTest extends PlanTestBase {
 
         sql = "select * from t0 inner join t1 on t0.v2 != t1.v5 limit 10";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("3:CROSS JOIN\n" +
-                "  |  cross join:\n" +
-                "  |  predicates: 2: v2 != 5: v5\n" +
+        Assert.assertTrue(plan, plan.contains("3:NESTLOOP JOIN\n" +
+                "  |  join op: INNER JOIN\n" +
+                "  |  colocate: false, reason: \n" +
+                "  |  other join predicates: 2: v2 != 5: v5\n" +
                 "  |  limit: 10\n" +
                 "  |  \n" +
                 "  |----2:EXCHANGE\n" +
@@ -569,7 +591,6 @@ public class LimitTest extends PlanTestBase {
         String sql = "select * from t0 left join[shuffle] t1 on t0.v2 = t1.v5 where t1.v6 is null limit 2";
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("  |  join op: LEFT OUTER JOIN (PARTITIONED)\n" +
-                "  |  hash predicates:\n" +
                 "  |  colocate: false, reason: \n" +
                 "  |  equal join conjunct: 2: v2 = 5: v5\n" +
                 "  |  other predicates: 6: v6 IS NULL\n" +
@@ -581,8 +602,7 @@ public class LimitTest extends PlanTestBase {
                 "     tabletRatio=0/0\n" +
                 "     tabletList=\n" +
                 "     cardinality=1\n" +
-                "     avgRowSize=3.0\n" +
-                "     numNodes=0\n"));
+                "     avgRowSize=3.0\n"));
     }
 
     @Test
@@ -600,9 +620,7 @@ public class LimitTest extends PlanTestBase {
     public void testMergeLimitForFilterNode() throws Exception {
         String sql =
                 "SELECT CAST(nullif(subq_0.c1, subq_0.c1) AS INTEGER) AS c0, subq_0.c0 AS c1, 42 AS c2, subq_0.c0 AS "
-                        + "c3, subq_0.c1 AS c4\n"
-                        +
-                        "\t, subq_0.c0 AS c5, subq_0.c0 AS c6\n" +
+                        + "c3, subq_0.c1 AS c4, subq_0.c0 AS c5, subq_0.c0 AS c6\n" +
                         "FROM (\n" +
                         "\tSELECT ref_2.v8 AS c0, ref_2.v8 AS c1\n" +
                         "\tFROM t2 ref_0\n" +
@@ -614,9 +632,227 @@ public class LimitTest extends PlanTestBase {
                         "WHERE CAST(coalesce(true, true) AS BOOLEAN) < true\n" +
                         "LIMIT 157";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("10:SELECT\n" +
-                "  |  predicates: coalesce(TRUE, TRUE) < TRUE\n" +
-                "  |  limit: 157"));
+        assertContains(plan, ("EMPTYSET"));
     }
 
+    @Test
+    public void testWhereLimitSubquery() throws Exception {
+        String sql = "select * from (select * from t0 limit 2) xx where xx.v1 = 1";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  2:SELECT\n" +
+                "  |  predicates: 1: v1 = 1\n" +
+                "  |  \n" +
+                "  1:EXCHANGE\n" +
+                "     limit: 2");
+    }
+
+    @Test
+    public void testGroupingSetLimitSubquery() throws Exception {
+        String sql = "select v1, v2, v3 from (select * from t0 limit 2) xx group by cube(v1, v2, v3)";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  2:REPEAT_NODE\n" +
+                "  |  repeat: repeat 7 lines [[], [1], [2], [1, 2], [3], [1, 3], [2, 3], [1, 2, 3]]\n" +
+                "  |  \n" +
+                "  1:EXCHANGE\n" +
+                "     limit: 2");
+    }
+
+    @Test
+    public void testProjectLimitSubquery() throws Exception {
+        String sql = "select v1 + 1, v2 + 2, v3 + 3 from (select * from t0 limit 2) xx ";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:Project\n" +
+                "  |  <slot 4> : 1: v1 + 1\n" +
+                "  |  <slot 5> : 2: v2 + 2\n" +
+                "  |  <slot 6> : 3: v3 + 3\n" +
+                "  |  limit: 2\n" +
+                "  |  \n" +
+                "  0:OlapScanNode\n" +
+                "     TABLE: t0");
+    }
+
+    @Test
+    public void testSubqueryLimit() throws Exception {
+        String sql = "SELECT \n" +
+                "  `s0`.`S_NATIONKEY`, \n" +
+                "  `s0`.`S_NAME`, \n" +
+                "  `s0`.`S_ADDRESS` \n" +
+                "FROM \n" +
+                "  (\n" +
+                "    SELECT \n" +
+                "      `S_NAME`, \n" +
+                "      `S_ADDRESS`, \n" +
+                "      `S_NATIONKEY` \n" +
+                "    FROM \n" +
+                "      `supplier` \n" +
+                "    GROUP BY \n" +
+                "      `S_NAME`, \n" +
+                "      `S_ADDRESS`, \n" +
+                "      `S_NATIONKEY`\n" +
+                "  ) AS `s0`, \n" +
+                "  (\n" +
+                "    SELECT \n" +
+                "      * \n" +
+                "    FROM \n" +
+                "      (\n" +
+                "        SELECT \n" +
+                "          `S_SUPPKEY`, \n" +
+                "          `S_NAME`, \n" +
+                "          `S_ADDRESS`, \n" +
+                "          `S_NATIONKEY`, \n" +
+                "          `S_PHONE`, \n" +
+                "          `S_ACCTBAL`, \n" +
+                "          `S_COMMENT` \n" +
+                "        FROM \n" +
+                "          `supplier` \n" +
+                "        ORDER BY \n" +
+                "          `S_NATIONKEY` IS NULL, \n" +
+                "          `S_NATIONKEY` \n" +
+                "        LIMIT \n" +
+                "          15 OFFSET 6\n" +
+                "      ) AS `t0`\n" +
+                "  ) AS `t1` \n" +
+                "LIMIT \n" +
+                "  61202;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "5:MERGING-EXCHANGE\n" +
+                "     offset: 6\n" +
+                "     limit: 15");
+        assertContains(plan, "4:TOP-N\n" +
+                "  |  order by: <slot 17> 17: expr ASC, <slot 12> 12: S_NATIONKEY ASC\n" +
+                "  |  offset: 0\n" +
+                "  |  limit: 21");
+
+        sql = "SELECT \n" +
+                "      * \n" +
+                "    FROM \n" +
+                "      (\n" +
+                "        SELECT \n" +
+                "          `S_SUPPKEY`, \n" +
+                "          `S_NAME`, \n" +
+                "          `S_ADDRESS`, \n" +
+                "          `S_NATIONKEY`, \n" +
+                "          `S_PHONE`, \n" +
+                "          `S_ACCTBAL`, \n" +
+                "          `S_COMMENT` \n" +
+                "        FROM \n" +
+                "          `supplier` \n" +
+                "        ORDER BY \n" +
+                "          `S_NATIONKEY` IS NULL, \n" +
+                "          `S_NATIONKEY` \n" +
+                "        LIMIT \n" +
+                "          15 OFFSET 6\n" +
+                "      ) AS `t0` limit 100";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "2:TOP-N\n" +
+                "  |  order by: <slot 9> 9: expr ASC, <slot 4> 4: S_NATIONKEY ASC\n" +
+                "  |  offset: 0\n" +
+                "  |  limit: 21");
+        assertContains(plan, "3:MERGING-EXCHANGE\n" +
+                "     offset: 6\n" +
+                "     limit: 15");
+    }
+
+    // LimitPruneTabletsRule shouldn't prune tablets when totalRow less than limit
+    @Test
+    public void testLimitPrune() throws Exception {
+        GlobalStateMgr globalStateMgr = connectContext.getGlobalStateMgr();
+
+        // We need to let some tablets have data, some tablets don't data
+        OlapTable t0 = (OlapTable) globalStateMgr.getDb("test").getTable("t0");
+        MaterializedIndex index = t0.getPartitions().stream().findFirst().get().getBaseIndex();
+        LocalTablet tablets = (LocalTablet) index.getTablets().get(0);
+        Replica replica = tablets.getSingleReplica();
+        new Expectations(replica) {
+            {
+                replica.getRowCount();
+                result = 10;
+                minTimes = 0;
+            }
+        };
+
+        boolean flag = FeConstants.runningUnitTest;
+        FeConstants.runningUnitTest = true;
+        String sql = "select * from t0 limit 1000";
+        String planFragment = getFragmentPlan(sql);
+        // Shouldn't prune tablets
+        assertNotContains(planFragment, "tabletRatio=1/3");
+        assertContains(planFragment, "tabletRatio=3/3");
+        FeConstants.runningUnitTest = flag;
+    }
+
+    @Test
+    public void testConstantOrderByLimit() throws Exception {
+        String sql = "select * from t0 order by 'abc' limit 100, 100 ";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:MERGING-EXCHANGE\n" +
+                "     offset: 100\n" +
+                "     limit: 100");
+    }
+
+    @Test
+    public void testOrderByConstant() throws Exception {
+        String sql = "select * from t0 limit 100, 100";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:MERGING-EXCHANGE\n" +
+                "     offset: 100\n" +
+                "     limit: 100");
+    }
+
+    @Test
+    public void testMergeLimit() throws Exception {
+        String sql = "select * from (select * from t0 limit 100, 100) x limit 1, 2";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:MERGING-EXCHANGE\n" +
+                "     offset: 101\n" +
+                "     limit: 2");
+
+        sql = "select * from (select * from t0 limit 1, 2) x limit 100, 100";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "0:EMPTYSET");
+
+        sql = "select * from (select * from t0 limit 1, 5) x limit 1, 100";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:MERGING-EXCHANGE\n" +
+                "     offset: 2\n" +
+                "     limit: 4");
+
+        sql = "select * from (select * from t0 limit 1, 5) x limit 3";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:MERGING-EXCHANGE\n" +
+                "     offset: 1\n" +
+                "     limit: 3");
+
+        sql = "select * from (select * from t0 limit 100) x limit 5";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "  1:EXCHANGE\n" +
+                "     limit: 5");
+    }
+
+    @Test
+    public void testLimitAgg() throws Exception {
+        String sql = "select count(*) from (select * from t0 limit 50, 20) xx;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "  2:MERGING-EXCHANGE\n" +
+                "     offset: 50\n" +
+                "     limit: 20");
+    }
+
+    @Test
+    public void testLimitValues() throws Exception {
+        connectContext.getSessionVariable().setOptimizerExecuteTimeout(-1);
+        String sql = "select count(*) from (select * from TABLE(generate_series(1, 100000)) limit 50000, 10) x;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "4:MERGING-EXCHANGE\n" +
+                "     offset: 50000\n" +
+                "     limit: 10");
+    }
+
+    @Test
+    public void testLimitValues2() throws Exception {
+        connectContext.getSessionVariable().setOptimizerExecuteTimeout(-1);
+        String sql = "select count(*) from (select * from (select * from t0 limit 10) x limit 10, 10) xx;";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "0:EMPTYSET");
+    }
 }

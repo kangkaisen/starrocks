@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/util/threadpool.h
 
@@ -21,6 +34,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <boost/intrusive/list.hpp>
 #include <boost/intrusive/list_hook.hpp>
 #include <condition_variable>
@@ -35,6 +49,7 @@
 #include "common/status.h"
 #include "gutil/ref_counted.h"
 #include "util/monotime.h"
+#include "util/priority_queue.h"
 
 namespace starrocks {
 
@@ -105,7 +120,7 @@ public:
     ThreadPoolBuilder& set_idle_timeout(const MonoDelta& idle_timeout);
 
     // Instantiate a new ThreadPool with the existing builder arguments.
-    Status build(std::unique_ptr<ThreadPool>* pool) const;
+    [[nodiscard]] Status build(std::unique_ptr<ThreadPool>* pool) const;
 
 private:
     friend class ThreadPool;
@@ -156,28 +171,37 @@ private:
 //    thread_pool->SubmitFunc(std::bind(&Func, 10));
 class ThreadPool {
 public:
-    ~ThreadPool();
+    enum Priority {
+        LOW_PRIORITY = 0,
+        HIGH_PRIORITY,
+        NUM_PRIORITY,
+    };
+
+    ~ThreadPool() noexcept;
 
     // Wait for the running tasks to complete and then shutdown the threads.
     // All the other pending tasks in the queue will be removed.
     // NOTE: That the user may implement an external abort logic for the
-    //       runnables, that must be called before Shutdown(), if the system
+    //       runnable, that must be called before Shutdown(), if the system
     //       should know about the non-execution of these tasks, or the runnable
-    //       require an explicit "abort" notification to exit from the run loop.
+    //       required an explicit "abort" notification to exit from the run loop.
     void shutdown();
 
     // Submits a Runnable class.
-    Status submit(std::shared_ptr<Runnable> r);
+    [[nodiscard]] Status submit(std::shared_ptr<Runnable> r, Priority pri = LOW_PRIORITY);
 
     // Submits a function bound using std::bind(&FuncName, args...).
-    Status submit_func(std::function<void()> f);
+    [[nodiscard]] Status submit_func(std::function<void()> f, Priority pri = LOW_PRIORITY);
 
     // Waits until all the tasks are completed.
     void wait();
 
     // Waits for the pool to reach the idle state, or until 'delta' time elapses.
     // Returns true if the pool reached the idle state, false otherwise.
-    bool wait_for(const MonoDelta& delta);
+    [[nodiscard]] bool wait_for(const MonoDelta& delta);
+
+    // dynamic update max threads num
+    [[nodiscard]] Status update_max_threads(int max_threads);
 
     // Allocates a new token for use in token-based task submission. All tokens
     // must be destroyed before their ThreadPool is destroyed.
@@ -190,6 +214,7 @@ public:
         // Tasks submitted via this token may be executed concurrently.
         CONCURRENT,
     };
+
     std::unique_ptr<ThreadPoolToken> new_token(ExecutionMode mode);
 
     // Return the number of threads currently running (or in the process of starting up)
@@ -197,6 +222,21 @@ public:
     int num_threads() const {
         std::lock_guard l(_lock);
         return _num_threads + _num_threads_pending_start;
+    }
+
+    int num_queued_tasks() const {
+        std::lock_guard l(_lock);
+        return _total_queued_tasks;
+    }
+
+    MonoTime last_active_timestamp() const {
+        std::lock_guard l(_lock);
+        return _last_active_timestamp;
+    }
+
+    int active_threads() const {
+        std::lock_guard l(_lock);
+        return _active_threads;
     }
 
 private:
@@ -230,14 +270,14 @@ private:
     void check_not_pool_thread_unlocked();
 
     // Submits a task to be run via token.
-    Status do_submit(std::shared_ptr<Runnable> r, ThreadPoolToken* token);
+    Status do_submit(std::shared_ptr<Runnable> r, ThreadPoolToken* token, ThreadPool::Priority pri);
 
     // Releases token 't' and invalidates it.
     void release_token(ThreadPoolToken* t);
 
     const std::string _name;
     const int _min_threads;
-    const int _max_threads;
+    std::atomic<int> _max_threads;
     const int _max_queue_size;
     const MonoDelta _idle_timeout;
 
@@ -280,6 +320,9 @@ private:
     //
     // Protected by _lock.
     int _total_queued_tasks;
+
+    // Last task executed timestamp
+    MonoTime _last_active_timestamp;
 
     // All allocated tokens.
     //
@@ -337,11 +380,11 @@ public:
     // called first to take care of them.
     ~ThreadPoolToken();
 
-    // Submits a Runnable class.
-    Status submit(std::shared_ptr<Runnable> r);
+    // Submits a Runnable class with specified priority.
+    [[nodiscard]] Status submit(std::shared_ptr<Runnable> r, ThreadPool::Priority pri = ThreadPool::LOW_PRIORITY);
 
-    // Submits a function bound using std::bind(&FuncName, args...).
-    Status submit_func(std::function<void()> f);
+    // Submits a function bound using std::bind(&FuncName, args...)  with specified priority.
+    [[nodiscard]] Status submit_func(std::function<void()> f, ThreadPool::Priority pri = ThreadPool::LOW_PRIORITY);
 
     // Marks the token as unusable for future submissions. Any queued tasks not
     // yet running are destroyed. If tasks are in flight, Shutdown() will wait
@@ -355,7 +398,7 @@ public:
     // time elapses.
     //
     // Returns true if all submissions are complete, false otherwise.
-    bool wait_for(const MonoDelta& delta);
+    [[nodiscard]] bool wait_for(const MonoDelta& delta);
 
 private:
     // All possible token states. Legal state transitions:
@@ -420,7 +463,7 @@ private:
     State _state;
 
     // Queued client tasks.
-    std::deque<ThreadPool::Task> _entries;
+    PriorityQueue<ThreadPool::NUM_PRIORITY, ThreadPool::Task> _entries;
 
     // Condition variable for "token is idle". Waiters wake up when the token
     // transitions to IDLE or QUIESCED.

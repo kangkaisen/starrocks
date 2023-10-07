@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.ast;
 
 import com.starrocks.analysis.AnalyticExpr;
@@ -7,11 +20,13 @@ import com.starrocks.analysis.FunctionCallExpr;
 import com.starrocks.analysis.GroupByClause;
 import com.starrocks.analysis.LimitElement;
 import com.starrocks.analysis.OrderByElement;
-import com.starrocks.analysis.SelectList;
+import com.starrocks.analysis.SlotRef;
 import com.starrocks.sql.analyzer.AnalyzeState;
 import com.starrocks.sql.analyzer.FieldId;
 import com.starrocks.sql.analyzer.Scope;
+import com.starrocks.sql.parser.NodePosition;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,6 +69,8 @@ public class SelectRelation extends QueryRelation {
      */
     private List<Expr> orderSourceExpressions;
 
+    private List<Integer> outputExprInOrderByScope;
+
     /**
      * Relations referenced in From clause. The Relation can be a CTE/table
      * reference a subquery or two relation joined together.
@@ -62,12 +79,28 @@ public class SelectRelation extends QueryRelation {
 
     private Map<Expr, FieldId> columnReferences;
 
+    /**
+     *  materializeExpressionToColumnRef stores the mapping relationship
+     *  between generated expressions and generated columns
+     */
+    private Map<Expr, SlotRef> generatedExprToColumnRef = new HashMap<>();
+
     public SelectRelation(
             SelectList selectList,
             Relation fromRelation,
             Expr predicate,
             GroupByClause groupByClause,
             Expr having) {
+        this(selectList, fromRelation, predicate, groupByClause, having, NodePosition.ZERO);
+    }
+
+    public SelectRelation(
+            SelectList selectList,
+            Relation fromRelation,
+            Expr predicate,
+            GroupByClause groupByClause,
+            Expr having, NodePosition pos) {
+        super(pos);
         this.selectList = selectList;
         this.relation = fromRelation;
         this.predicate = predicate;
@@ -75,7 +108,7 @@ public class SelectRelation extends QueryRelation {
         this.having = having;
     }
 
-    public SelectRelation(List<Expr> outputExpr, List<String> columnOutputNames, boolean isDistinct,
+    public SelectRelation(List<Expr> outputExpr, boolean isDistinct,
                           Scope orderScope, List<Expr> orderSourceExpressions,
                           Relation relation, Expr predicate, LimitElement limit,
                           List<Expr> groupBy, List<FunctionCallExpr> aggregate, List<List<Expr>> groupingSetsList,
@@ -120,17 +153,16 @@ public class SelectRelation extends QueryRelation {
 
         this.sortClause = analyzeState.getOrderBy();
         this.orderSourceExpressions = analyzeState.getOrderSourceExpressions();
+        this.outputExprInOrderByScope = analyzeState.getOutputExprInOrderByScope();
 
         this.outputAnalytic = analyzeState.getOutputAnalytic();
         this.orderByAnalytic = analyzeState.getOrderByAnalytic();
 
         this.columnReferences = analyzeState.getColumnReferences();
 
-        this.setScope(analyzeState.getOutputScope());
-    }
+        this.generatedExprToColumnRef = analyzeState.getGeneratedExprToColumnRef();
 
-    public List<Expr> getOutputExpr() {
-        return outputExpr;
+        this.setScope(analyzeState.getOutputScope());
     }
 
     public Expr getPredicate() {
@@ -181,8 +213,12 @@ public class SelectRelation extends QueryRelation {
         return orderSourceExpressions;
     }
 
+    public List<Integer> getOutputExprInOrderByScope() {
+        return outputExprInOrderByScope;
+    }
+
     public boolean hasAggregation() {
-        return !(groupBy.isEmpty() && aggregate.isEmpty());
+        return !(groupBy.isEmpty() && aggregate.isEmpty()) || isDistinct;
     }
 
     public List<AnalyticExpr> getOutputAnalytic() {
@@ -271,5 +307,8 @@ public class SelectRelation extends QueryRelation {
     public List<Expr> getOutputExpression() {
         return outputExpr;
     }
-}
 
+    public Map<Expr, SlotRef> getGeneratedExprToColumnRef() {
+        return generatedExprToColumnRef;
+    }
+}

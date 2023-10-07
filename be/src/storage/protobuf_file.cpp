@@ -1,10 +1,22 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "storage/protobuf_file.h"
 
 #include <google/protobuf/message.h>
 
-#include "env/env.h"
+#include "fs/fs.h"
 #include "gutil/strings/substitute.h"
 #include "storage/olap_define.h"
 #include "storage/utils.h"
@@ -25,7 +37,8 @@ typedef struct _FixedFileHeader {
     uint32_t protobuf_checksum;
 } __attribute__((packed)) FixedFileHeader;
 
-ProtobufFile::ProtobufFile(std::string path, Env* env) : _path(std::move(path)), _env(env ? env : Env::Default()) {}
+ProtobufFile::ProtobufFile(std::string path, FileSystem* fs)
+        : _path(std::move(path)), _fs(fs ? fs : FileSystem::Default()) {}
 
 Status ProtobufFile::save(const ::google::protobuf::Message& message, bool sync) {
     uint32_t unused_flag = 0;
@@ -38,8 +51,8 @@ Status ProtobufFile::save(const ::google::protobuf::Message& message, bool sync)
     header.version = OLAP_DATA_VERSION_APPLIED;
     header.magic_number = OLAP_FIX_HEADER_MAGIC_NUMBER;
 
-    std::unique_ptr<WritableFile> output_file;
-    ASSIGN_OR_RETURN(output_file, _env->new_writable_file(_path));
+    WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
+    ASSIGN_OR_RETURN(auto output_file, _fs->new_writable_file(opts, _path));
     RETURN_IF_ERROR(output_file->append(Slice((const char*)(&header), sizeof(header))));
     RETURN_IF_ERROR(output_file->append(Slice((const char*)(&unused_flag), sizeof(unused_flag))));
     RETURN_IF_ERROR(output_file->append(serialized_message));
@@ -47,7 +60,7 @@ Status ProtobufFile::save(const ::google::protobuf::Message& message, bool sync)
 }
 
 Status ProtobufFile::load(::google::protobuf::Message* message) {
-    ASSIGN_OR_RETURN(auto input_file, _env->new_sequential_file(_path));
+    ASSIGN_OR_RETURN(auto input_file, _fs->new_sequential_file(_path));
 
     FixedFileHeader header;
     ASSIGN_OR_RETURN(auto nread, input_file->read(&header, sizeof(header)));

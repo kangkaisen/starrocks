@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/parsed_page.h
 
@@ -23,20 +36,15 @@
 
 #include <memory>
 
+#include "storage/range.h"
 #include "storage/rowset/common.h" // ordinal_t
 #include "storage/rowset/page_decoder.h"
 #include "storage/rowset/page_pointer.h"
-#include "storage/vectorized/range.h"
 
 namespace starrocks {
-class ColumnBlockView;
 class Slice;
 class Status;
-
-namespace vectorized {
 class Column;
-}
-
 class DataPageFooterPB;
 class EncodingInfo;
 class PageHandle;
@@ -44,7 +52,7 @@ class PagePointer;
 
 class ParsedPage {
 public:
-    ParsedPage() {}
+    ParsedPage() = default;
 
     virtual ~ParsedPage() = default;
 
@@ -84,18 +92,11 @@ public:
     // |count|, the page offset is advanced by this number too. This number is the minimum value
     // of |*count| and |remaining()|.
     // On error, the value of |*count| is undefined.
-    virtual Status read(vectorized::Column* column, size_t* count) = 0;
+    virtual Status read(Column* column, size_t* count) = 0;
 
-    virtual Status read(vectorized::Column* column, const vectorized::SparseRange& range) {
+    virtual Status read(Column* column, const SparseRange<>& range) {
         return Status::NotSupported("Read by range Not Support");
     }
-
-    // Attempts to read up to |*count| records from this page into the |block|.
-    // On success, `Status::OK` is returned, and the number of records read will be updated to
-    // |count|, the page offset is advanced by this number too. This number is the minimum value
-    // of |*count| and |remaining()|.
-    // On error, the value of |*count| is undefined.
-    virtual Status read(ColumnBlockView* block, size_t* count) = 0;
 
     // prerequisite: encoding_type() is `DICT_ENCODING`.
     // Attempts to read up to |*count| dictionary codes from this page into the |column|.
@@ -107,9 +108,9 @@ public:
     // codes are arbitrary, but it's guaranteed that those codes are within the valid range of
     // dictionary page, i.e, using these codes to lookup the dictionary page is safe.
     // On error, the value of |*count| is undefined.
-    virtual Status read_dict_codes(vectorized::Column* column, size_t* count) = 0;
+    virtual Status read_dict_codes(Column* column, size_t* count) = 0;
 
-    virtual Status read_dict_codes(vectorized::Column* column, const vectorized::SparseRange& range) = 0;
+    virtual Status read_dict_codes(Column* column, const SparseRange<>& range) = 0;
 
 protected:
     uint32_t _page_index{0};

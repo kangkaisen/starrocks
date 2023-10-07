@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.optimizer.rule.transformation;
 
@@ -46,7 +59,7 @@ public class PushDownPredicateRepeatRule extends TransformationRule {
 
         for (ScalarOperator predicate : predicates) {
             // push down predicate
-            if (canPushDownPredicate(predicate.clone(), repeatColumns)) {
+            if (canPushDownPredicate(predicate, repeatColumns)) {
                 pushDownPredicates.add(predicate);
             }
         }
@@ -73,14 +86,14 @@ public class PushDownPredicateRepeatRule extends TransformationRule {
      * 1: replace the column of nullColumns in  expression to NULL literal
      * 2: Call the ScalarOperatorRewriter function to perform constant folding
      * 3: If the result of constant folding is true or can't reduction,
-     *    it proves that the expression may contains null value, can not push down
+     * it proves that the expression may contains null value, can not push down
      */
     private boolean canPushDownPredicate(ScalarOperator predicate, Set<ColumnRefOperator> repeatColumns) {
         Map<ColumnRefOperator, ScalarOperator> m =
                 repeatColumns.stream().map(col -> new ColumnRefOperator(col.getId(), Type.INVALID, "", true))
                         .collect(Collectors.toMap(identity(), col -> ConstantOperator.createNull(col.getType())));
 
-        ScalarOperator nullEval = new ReplaceColumnRefRewriter(m).visit(predicate, null);
+        ScalarOperator nullEval = new ReplaceColumnRefRewriter(m).rewrite(predicate);
 
         ScalarOperatorRewriter scalarRewriter = new ScalarOperatorRewriter();
         // The calculation of the null value is in the constant fold

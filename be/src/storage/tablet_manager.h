@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/tablet_manager.h
 
@@ -35,6 +48,7 @@
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/BackendService_types.h"
 #include "gen_cpp/MasterService_types.h"
+#include "gutil/macros.h"
 #include "storage/kv_store.h"
 #include "storage/olap_common.h"
 #include "storage/olap_define.h"
@@ -46,6 +60,26 @@ namespace starrocks {
 
 class Tablet;
 class DataDir;
+struct TabletBasicInfo;
+
+// RowsetsAcqRel is a RAII wrapper for invocation of Rowset::acquire_readers and Rowset::release_readers
+class RowsetsAcqRel;
+using RowsetsAcqRelPtr = std::shared_ptr<RowsetsAcqRel>;
+class RowsetsAcqRel {
+private:
+public:
+    explicit RowsetsAcqRel(const std::vector<RowsetSharedPtr>& rowsets) : _rowsets(rowsets) {
+        Rowset::acquire_readers(_rowsets);
+    }
+    ~RowsetsAcqRel() { Rowset::release_readers(_rowsets); }
+
+private:
+    DISALLOW_COPY_AND_MOVE(RowsetsAcqRel);
+    std::vector<RowsetSharedPtr> _rowsets;
+};
+
+using TabletAndRowsets = std::tuple<TabletSharedPtr, std::vector<RowsetSharedPtr>, RowsetsAcqRelPtr>;
+using TabletAndScore = std::pair<TabletSharedPtr, double>;
 
 enum TabletDropFlag {
     kMoveFilesToTrash = 0,
@@ -58,7 +92,7 @@ enum TabletDropFlag {
 // please uniformly name the method in "xxx_unlocked()" mode
 class TabletManager {
 public:
-    explicit TabletManager(MemTracker* mem_tracker, int32_t tablet_map_lock_shard_size);
+    explicit TabletManager(int64_t tablet_map_lock_shard_size);
     ~TabletManager() = default;
 
     // The param stores holds all candidate data_dirs for this tablet.
@@ -74,12 +108,16 @@ public:
 
     Status drop_tablets_on_error_root_path(const std::vector<TabletInfo>& tablet_info_vec);
 
-    TabletSharedPtr find_best_tablet_to_compaction(CompactionType compaction_type, DataDir* data_dir);
+    TabletSharedPtr find_best_tablet_to_compaction(CompactionType compaction_type, DataDir* data_dir,
+                                                   std::pair<int32_t, int32_t> tablet_shards_range);
 
     TabletSharedPtr find_best_tablet_to_do_update_compaction(DataDir* data_dir);
 
     // TODO: pass |include_deleted| as an enum instead of boolean to avoid unexpected implicit cast.
     TabletSharedPtr get_tablet(TTabletId tablet_id, bool include_deleted = false, std::string* err = nullptr);
+
+    StatusOr<TabletAndRowsets> capture_tablet_and_rowsets(TTabletId tablet_id, int64_t from_version,
+                                                          int64_t to_version);
 
     TabletSharedPtr get_tablet(TTabletId tablet_id, const TabletUid& tablet_uid, bool include_deleted = false,
                                std::string* err = nullptr);
@@ -105,9 +143,8 @@ public:
     //   where we should change tablet status from shutdown back to running
     //
     // return NotFound if the tablet path has been deleted or the tablet statue is SHUTDOWN.
-    Status load_tablet_from_meta(DataDir* data_dir, TTabletId tablet_id, TSchemaHash schema_hash,
-                                 const std::string& header, bool update_meta, bool force = false, bool restore = false,
-                                 bool check_path = true);
+    Status load_tablet_from_meta(DataDir* data_dir, TTabletId tablet_id, TSchemaHash schema_hash, std::string_view meta,
+                                 bool update_meta, bool force = false, bool restore = false, bool check_path = true);
 
     Status load_tablet_from_dir(DataDir* data_dir, TTabletId tablet_id, SchemaHash schema_hash,
                                 const std::string& schema_hash_path, bool force = false, bool restore = false);
@@ -131,19 +168,33 @@ public:
 
     void update_root_path_info(std::map<std::string, DataDirInfo>* path_map, size_t* tablet_counter);
 
-    void get_partition_related_tablets(int64_t partition_id, std::set<TabletInfo>* tablet_infos);
-
     void do_tablet_meta_checkpoint(DataDir* data_dir);
 
     void register_clone_tablet(int64_t tablet_id);
     void unregister_clone_tablet(int64_t tablet_id);
+    bool check_clone_tablet(int64_t tablet_id);
 
     size_t shutdown_tablets() const {
         std::shared_lock l(_shutdown_tablets_lock);
         return _shutdown_tablets.size();
     }
 
-    MemTracker* tablet_meta_mem_tracker() { return _mem_tracker; }
+    Status delete_shutdown_tablet(int64_t tablet_id);
+
+    Status delete_shutdown_tablet_before_clone(int64_t tablet_id);
+
+    // return true if all tablets visited
+    bool get_next_batch_tablets(size_t batch_size, std::vector<TabletSharedPtr>* tablets);
+
+    // return map<TabletId, vector<pair<rowsetid, segment file num>>>
+    std::unordered_map<TTabletId, std::vector<std::pair<uint32_t, uint32_t>>> get_tablets_need_repair_compaction();
+
+    void get_tablets_by_partition(int64_t partition_id, std::vector<TabletInfo>& tablet_infos);
+
+    void get_tablets_basic_infos(int64_t table_id, int64_t partition_id, int64_t tablet_id,
+                                 std::vector<TabletBasicInfo>& tablet_infos);
+
+    std::vector<TabletAndScore> pick_tablets_to_do_pk_index_major_compaction();
 
 private:
     using TabletMap = std::unordered_map<int64_t, TabletSharedPtr>;
@@ -169,7 +220,7 @@ private:
     private:
         constexpr static int kNumShard = 128;
 
-        int _shard(int64_t tablet_id) { return tablet_id % kNumShard; }
+        int64_t _shard(int64_t tablet_id) { return tablet_id % kNumShard; }
 
         SpinLock _latches[kNumShard];
         std::unordered_set<int64_t> _locks[kNumShard];
@@ -184,9 +235,7 @@ private:
 
     Status _update_tablet_map_and_partition_info(const TabletSharedPtr& tablet);
 
-    Status _create_inital_rowset_unlocked(const TCreateTabletReq& request, Tablet* tablet);
-
-    Status _drop_tablet_directly_unlocked(TTabletId tablet_id, TabletDropFlag flag);
+    static Status _create_inital_rowset_unlocked(const TCreateTabletReq& request, Tablet* tablet);
 
     Status _drop_tablet_unlocked(TTabletId tablet_id, TabletDropFlag flag);
 
@@ -214,14 +263,14 @@ private:
 
     TabletsShard& _get_tablets_shard(TTabletId tabletId);
 
-    Status _remove_tablet_meta(const TabletSharedPtr& tablet);
-    Status _remove_tablet_directories(const TabletSharedPtr& tablet);
-    Status _move_tablet_directories_to_trash(const TabletSharedPtr& tablet);
+    int64_t _get_tablets_shard_idx(TTabletId tabletId) const { return tabletId & _tablets_shards_mask; }
 
-    MemTracker* _mem_tracker = nullptr;
+    static Status _remove_tablet_meta(const TabletSharedPtr& tablet);
+    static Status _remove_tablet_directories(const TabletSharedPtr& tablet);
+    static Status _move_tablet_directories_to_trash(const TabletSharedPtr& tablet);
 
     std::vector<TabletsShard> _tablets_shards;
-    const int32_t _tablets_shards_mask;
+    const int64_t _tablets_shards_mask;
     LockTable _schema_change_lock_tbl;
 
     // Protect _partition_tablet_map, should not be obtained before _tablet_map_lock to avoid deadlock
@@ -238,6 +287,10 @@ private:
     std::map<int64_t, TTabletStat> _tablet_stat_cache;
     // last update time of tablet stat cache
     int64_t _last_update_stat_ms;
+
+    // context for compaction checker
+    size_t _cur_shard = 0;
+    std::unordered_set<int64_t> _shard_visited_tablet_ids;
 };
 
 inline bool TabletManager::LockTable::is_locked(int64_t tablet_id) {

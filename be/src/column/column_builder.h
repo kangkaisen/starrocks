@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -10,9 +22,8 @@
 #include "util/raw_container.h"
 
 namespace starrocks {
-namespace vectorized {
 
-template <PrimitiveType Type>
+template <LogicalType Type>
 class ColumnBuilder {
 public:
     using DataColumnPtr = typename RunTimeColumnType<Type>::Ptr;
@@ -21,7 +32,7 @@ public:
     using MovableType = RunTimeCppMovableType<Type>;
 
     ColumnBuilder(int32_t chunk_size) {
-        static_assert(!pt_is_decimal<Type>, "Not support Decimal32/64/128 types");
+        static_assert(!lt_is_decimal<Type>, "Not support Decimal32/64/128 types");
         _has_null = false;
         _column = RunTimeColumnType<Type>::create();
         _null_column = NullColumn::create();
@@ -34,7 +45,7 @@ public:
         _null_column = NullColumn::create();
         reserve(chunk_size);
 
-        if constexpr (pt_is_decimal<Type>) {
+        if constexpr (lt_is_decimal<Type>) {
             static constexpr auto max_precision = decimal_precision_limit<DatumType>;
             DCHECK(0 <= scale && scale <= precision && precision <= max_precision);
             auto raw_column = ColumnHelper::cast_to_raw<Type>(_column);
@@ -76,6 +87,14 @@ public:
         _column->append_default();
     }
 
+    void append_nulls(int count) {
+        _has_null = true;
+        for (int i = 0; i < count; i++) {
+            _null_column->append(DATUM_NULL);
+        }
+        _column->append_default(count);
+    }
+
     ColumnPtr build(bool is_const) {
         if (is_const && _has_null) {
             return ColumnHelper::create_const_null_column(_column->size());
@@ -92,12 +111,19 @@ public:
 
     ColumnPtr build_nullable_column() { return NullableColumn::create(_column, _null_column); }
 
-    void reserve(int size) {
+    void reserve(size_t size) {
         _column->reserve(size);
         _null_column->reserve(size);
     }
 
+    void resize_uninitialized(size_t size) {
+        _column->resize_uninitialized(size);
+        _null_column->resize_uninitialized(size);
+    }
+
     DataColumnPtr data_column() { return _column; }
+    NullColumnPtr null_column() { return _null_column; }
+    void set_has_null(bool v) { _has_null = v; }
 
 protected:
     DataColumnPtr _column;
@@ -191,5 +217,4 @@ public:
 
 private:
 };
-} // namespace vectorized
 } // namespace starrocks

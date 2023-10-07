@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/task/AgentBatchTask.java
 
@@ -22,20 +35,22 @@
 package com.starrocks.task;
 
 import com.google.common.collect.Lists;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.common.ClientPool;
-import com.starrocks.system.Backend;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.RunMode;
+import com.starrocks.system.ComputeNode;
 import com.starrocks.thrift.BackendService;
 import com.starrocks.thrift.TAgentServiceVersion;
 import com.starrocks.thrift.TAgentTaskRequest;
-import com.starrocks.thrift.TAlterTabletReq;
 import com.starrocks.thrift.TAlterTabletReqV2;
 import com.starrocks.thrift.TCheckConsistencyReq;
 import com.starrocks.thrift.TClearAlterTaskRequest;
 import com.starrocks.thrift.TClearTransactionTaskRequest;
 import com.starrocks.thrift.TCloneReq;
+import com.starrocks.thrift.TCompactionReq;
 import com.starrocks.thrift.TCreateTabletReq;
 import com.starrocks.thrift.TDownloadReq;
+import com.starrocks.thrift.TDropAutoIncrementMapReq;
 import com.starrocks.thrift.TDropTabletReq;
 import com.starrocks.thrift.TMoveDirReq;
 import com.starrocks.thrift.TNetworkAddress;
@@ -81,6 +96,14 @@ public class AgentBatchTask implements Runnable {
         long backendId = agentTask.getBackendId();
         List<AgentTask> tasks = backendIdToTasks.computeIfAbsent(backendId, k -> new ArrayList<>());
         tasks.add(agentTask);
+    }
+
+    public void addTasks(Long backendId, List<AgentTask> agentTasks) {
+        if (agentTasks == null) {
+            return;
+        }
+        List<AgentTask> tasks = backendIdToTasks.computeIfAbsent(backendId, k -> new ArrayList<>());
+        tasks.addAll(agentTasks);
     }
 
     public List<AgentTask> getAllTasks() {
@@ -149,13 +172,21 @@ public class AgentBatchTask implements Runnable {
             TNetworkAddress address = null;
             boolean ok = false;
             try {
-                Backend backend = Catalog.getCurrentSystemInfo().getBackend(backendId);
-                if (backend == null || !backend.isAlive()) {
+                ComputeNode computeNode = GlobalStateMgr.getCurrentSystemInfo().getBackend(backendId);
+                if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA && computeNode == null) {
+                    computeNode = GlobalStateMgr.getCurrentSystemInfo().getComputeNode(backendId);
+                }
+
+                if (computeNode == null || !computeNode.isAlive()) {
                     continue;
                 }
+
+                String host = computeNode.getHost();
+                int port = computeNode.getBePort();
+
                 List<AgentTask> tasks = this.backendIdToTasks.get(backendId);
                 // create AgentClient
-                address = new TNetworkAddress(backend.getHost(), backend.getBePort());
+                address = new TNetworkAddress(host, port);
                 client = ClientPool.backendPool.borrowObject(address);
                 List<TAgentTaskRequest> agentTaskRequests = new LinkedList<TAgentTaskRequest>();
                 for (AgentTask task : tasks) {
@@ -175,10 +206,11 @@ public class AgentBatchTask implements Runnable {
                 if (ok) {
                     ClientPool.backendPool.returnObject(address, client);
                 } else {
+                    // TODO: notify tasks rpc failed in trace
                     ClientPool.backendPool.invalidateObject(address, client);
                 }
             }
-        } // end for backend
+        } // end for compute node
     }
 
     private TAgentTaskRequest toAgentTaskRequest(AgentTask task) {
@@ -207,8 +239,7 @@ public class AgentBatchTask implements Runnable {
                 tAgentTaskRequest.setDrop_tablet_req(request);
                 return tAgentTaskRequest;
             }
-            case REALTIME_PUSH:
-            case PUSH: {
+            case REALTIME_PUSH: {
                 PushTask pushTask = (PushTask) task;
                 TPushReq request = pushTask.toThrift();
                 if (LOG.isDebugEnabled()) {
@@ -227,26 +258,9 @@ public class AgentBatchTask implements Runnable {
                 tAgentTaskRequest.setClone_req(request);
                 return tAgentTaskRequest;
             }
-            case ROLLUP: {
-                CreateRollupTask rollupTask = (CreateRollupTask) task;
-                TAlterTabletReq request = rollupTask.toThrift();
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug(request.toString());
-                }
-                tAgentTaskRequest.setAlter_tablet_req(request);
-                tAgentTaskRequest.setResource_info(rollupTask.getResourceInfo());
-                return tAgentTaskRequest;
-            }
-            case SCHEMA_CHANGE: {
-                SchemaChangeTask schemaChangeTask = (SchemaChangeTask) task;
-                TAlterTabletReq request = schemaChangeTask.toThrift();
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug(request.toString());
-                }
-                tAgentTaskRequest.setAlter_tablet_req(request);
-                tAgentTaskRequest.setResource_info(schemaChangeTask.getResourceInfo());
-                return tAgentTaskRequest;
-            }
+            case ROLLUP:
+            case SCHEMA_CHANGE:
+                throw new RuntimeException("Old alter job is not supported.");
             case STORAGE_MEDIUM_MIGRATE: {
                 StorageMediaMigrationTask migrationTask = (StorageMediaMigrationTask) task;
                 TStorageMediumMigrateReq request = migrationTask.toThrift();
@@ -346,6 +360,17 @@ public class AgentBatchTask implements Runnable {
                 tAgentTaskRequest.setUpdate_tablet_meta_info_req(request);
                 return tAgentTaskRequest;
             }
+            case DROP_AUTO_INCREMENT_MAP: {
+                LOG.info("DROP_AUTO_INCREMENT_MAP begin");
+                DropAutoIncrementMapTask dropAutoIncrementMapTask = (DropAutoIncrementMapTask) task;
+                TDropAutoIncrementMapReq request = dropAutoIncrementMapTask.toThrift();
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(request.toString());
+                }
+                tAgentTaskRequest.setDrop_auto_increment_map_req(request);
+                LOG.info("DROP_AUTO_INCREMENT_MAP end");
+                return tAgentTaskRequest;
+            }
             case ALTER: {
                 AlterReplicaTask createRollupTask = (AlterReplicaTask) task;
                 TAlterTabletReqV2 request = createRollupTask.toThrift();
@@ -353,6 +378,12 @@ public class AgentBatchTask implements Runnable {
                     LOG.debug(request.toString());
                 }
                 tAgentTaskRequest.setAlter_tablet_req_v2(request);
+                return tAgentTaskRequest;
+            }
+            case COMPACTION: {
+                CompactionTask compactionTask = (CompactionTask) task;
+                TCompactionReq req = compactionTask.toThrift();
+                tAgentTaskRequest.setCompaction_req(req);
                 return tAgentTaskRequest;
             }
             default:

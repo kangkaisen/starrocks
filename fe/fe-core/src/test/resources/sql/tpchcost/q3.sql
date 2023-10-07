@@ -21,7 +21,6 @@ group by
 order by
     revenue desc,
     o_orderdate limit 10;
-
 [fragment statistics]
 PLAN FRAGMENT 0(F05)
 Output Exprs:20: L_ORDERKEY | 38: sum | 14: O_ORDERDATE | 17: O_SHIPPRIORITY
@@ -29,13 +28,14 @@ Input Partition: UNPARTITIONED
 RESULT SINK
 
 13:MERGING-EXCHANGE
+distribution type: GATHER
 limit: 10
 cardinality: 10
 column statistics:
 * O_ORDERDATE-->[6.941952E8, 7.948512E8, 0.0, 4.0, 2406.0] ESTIMATE
 * O_SHIPPRIORITY-->[0.0, 0.0, 0.0, 4.0, 1.0] ESTIMATE
 * L_ORDERKEY-->[1.0, 6.0E8, 0.0, 8.0, 2.1799208766687468E7] ESTIMATE
-* sum-->[810.9, 104949.5, 0.0, 8.0, 932377.0] ESTIMATE
+* sum-->[810.9, 5290372.920961436, 0.0, 8.0, 932377.0] ESTIMATE
 
 PLAN FRAGMENT 1(F00)
 
@@ -52,17 +52,17 @@ OutPut Exchange Id: 13
 |  * O_ORDERDATE-->[6.941952E8, 7.948512E8, 0.0, 4.0, 2406.0] ESTIMATE
 |  * O_SHIPPRIORITY-->[0.0, 0.0, 0.0, 4.0, 1.0] ESTIMATE
 |  * L_ORDERKEY-->[1.0, 6.0E8, 0.0, 8.0, 2.1799208766687468E7] ESTIMATE
-|  * sum-->[810.9, 104949.5, 0.0, 8.0, 932377.0] ESTIMATE
+|  * sum-->[810.9, 5290372.920961436, 0.0, 8.0, 932377.0] ESTIMATE
 |
 11:AGGREGATE (update finalize)
 |  aggregate: sum[([37: expr, DOUBLE, false]); args: DOUBLE; result: DOUBLE; args nullable: false; result nullable: true]
 |  group by: [20: L_ORDERKEY, INT, false], [14: O_ORDERDATE, DATE, false], [17: O_SHIPPRIORITY, INT, false]
-|  cardinality: 19828107
+|  cardinality: 46999957
 |  column statistics:
 |  * O_ORDERDATE-->[6.941952E8, 7.948512E8, 0.0, 4.0, 2406.0] ESTIMATE
 |  * O_SHIPPRIORITY-->[0.0, 0.0, 0.0, 4.0, 1.0] ESTIMATE
 |  * L_ORDERKEY-->[1.0, 6.0E8, 0.0, 8.0, 2.1799208766687468E7] ESTIMATE
-|  * sum-->[810.9, 104949.5, 0.0, 8.0, 932377.0] ESTIMATE
+|  * sum-->[810.9, 5290372.920961436, 0.0, 8.0, 932377.0] ESTIMATE
 |
 10:Project
 |  output columns:
@@ -94,6 +94,8 @@ OutPut Exchange Id: 13
 |  * expr-->[810.9, 104949.5, 0.0, 8.0, 932377.0] ESTIMATE
 |
 |----8:EXCHANGE
+|       distribution type: SHUFFLE
+|       partition exprs: [10: O_ORDERKEY, INT, false]
 |       cardinality: 21799209
 |
 1:Project
@@ -112,7 +114,6 @@ table: lineitem, rollup: lineitem
 preAggregation: on
 Predicates: [30: L_SHIPDATE, DATE, false] > '1995-03-11'
 partitionsRatio=1/1, tabletsRatio=20/20
-tabletList=10213,10215,10217,10219,10221,10223,10225,10227,10229,10231 ...
 actualRows=0, avgRowSize=28.0
 cardinality: 323405941
 probe runtime filters:
@@ -155,6 +156,7 @@ OutPut Exchange Id: 08
 |  * O_SHIPPRIORITY-->[0.0, 0.0, 0.0, 4.0, 1.0] ESTIMATE
 |
 |----5:EXCHANGE
+|       distribution type: BROADCAST
 |       cardinality: 3000000
 |
 2:OlapScanNode
@@ -162,7 +164,6 @@ table: orders, rollup: orders
 preAggregation: on
 Predicates: [14: O_ORDERDATE, DATE, false] < '1995-03-11'
 partitionsRatio=1/1, tabletsRatio=10/10
-tabletList=10139,10141,10143,10145,10147,10149,10151,10153,10155,10157
 actualRows=0, avgRowSize=24.0
 cardinality: 72661123
 probe runtime filters:
@@ -191,7 +192,6 @@ table: customer, rollup: customer
 preAggregation: on
 Predicates: [7: C_MKTSEGMENT, CHAR, false] = 'HOUSEHOLD'
 partitionsRatio=1/1, tabletsRatio=10/10
-tabletList=10162,10164,10166,10168,10170,10172,10174,10176,10178,10180
 actualRows=0, avgRowSize=18.0
 cardinality: 3000000
 column statistics:

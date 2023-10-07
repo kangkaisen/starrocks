@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/indexed_column_reader.h
 
@@ -25,25 +38,21 @@
 #include <utility>
 
 #include "common/status.h"
+#include "fs/fs.h"
 #include "gen_cpp/segment.pb.h"
-#include "storage/column_block.h"
-#include "storage/fs/fs_util.h"
 #include "storage/rowset/common.h"
 #include "storage/rowset/index_page.h"
+#include "storage/rowset/options.h"
 #include "storage/rowset/page_handle.h"
 #include "storage/rowset/page_pointer.h"
 #include "storage/rowset/parsed_page.h"
-#include "util/block_compression.h"
+#include "util/compression/block_compression.h"
 #include "util/slice.h"
 
 namespace starrocks {
 
 class KeyCoder;
 class TypeInfo;
-
-namespace fs {
-class BlockManager;
-}
 
 class EncodingInfo;
 class IndexedColumnReader;
@@ -74,18 +83,16 @@ public:
         return _current_ordinal;
     }
 
-    // After one seek, we can only call this function once to read data
-    // into ColumnBlock. when read string type data, memory will allocated
-    // from Arena
-    Status next_batch(size_t* n, ColumnBlockView* column_view);
+    Status next_batch(size_t* n, Column* column);
 
 private:
-    IndexedColumnIterator(const IndexedColumnReader* reader, std::unique_ptr<fs::ReadableBlock> rblock);
+    IndexedColumnIterator(const IndexedColumnReader* reader, const IndexReadOptions& opts);
 
     Status _read_data_page(const PagePointer& pp);
 
     const IndexedColumnReader* _reader = nullptr;
-    std::unique_ptr<fs::ReadableBlock> _rblock;
+    IndexReadOptions _opts;
+
     // iterator for ordinal index page
     IndexPageIterator _ordinal_iter;
     // iterator for value index page
@@ -98,7 +105,6 @@ private:
     std::unique_ptr<ParsedPage> _data_page;
     // next_batch() will read from this position
     ordinal_t _current_ordinal = 0;
-    // open file handle
 };
 
 // thread-safe reader for IndexedColumn (see comments of `IndexedColumnWriter` to understand what IndexedColumn is)
@@ -106,13 +112,11 @@ class IndexedColumnReader {
     friend class IndexedColumnIterator;
 
 public:
-    // Does *NOT* take the ownership of |block_mgr|.
-    IndexedColumnReader(fs::BlockManager* block_mgr, std::string file_name, IndexedColumnMetaPB meta)
-            : _block_mgr(block_mgr), _file_name(std::move(file_name)), _meta(std::move(meta)){};
+    IndexedColumnReader(IndexedColumnMetaPB meta) : _meta(std::move(meta)) {}
 
-    Status load(bool use_page_cache, bool kept_in_memory);
+    Status load(const IndexReadOptions& opts);
 
-    Status new_iterator(std::unique_ptr<IndexedColumnIterator>* iter);
+    Status new_iterator(const IndexReadOptions& opts, std::unique_ptr<IndexedColumnIterator>* iter);
 
     int64_t num_values() const { return _num_values; }
     const EncodingInfo* encoding_info() const { return _encoding_info; }
@@ -126,23 +130,16 @@ public:
         return size;
     }
 
-    bool use_page_cache() const { return _use_page_cache; }
-    bool kept_in_memory() const { return _kept_in_memory; }
-
 private:
-    Status load_index_page(fs::ReadableBlock* rblock, const PagePointerPB& pp, PageHandle* handle,
+    Status load_index_page(const IndexReadOptions& opts, const PagePointerPB& pp, PageHandle* handle,
                            IndexPageReader* reader);
 
     // read a page specified by `pp' from `file' into `handle'
-    Status read_page(fs::ReadableBlock* rblock, const PagePointer& pp, PageHandle* handle, Slice* body,
+    Status read_page(const IndexReadOptions& opts, const PagePointer& pp, PageHandle* handle, Slice* body,
                      PageFooterPB* footer) const;
 
-    fs::BlockManager* _block_mgr;
-    std::string _file_name;
     IndexedColumnMetaPB _meta;
 
-    bool _use_page_cache = true;
-    bool _kept_in_memory = false;
     int64_t _num_values = 0;
     // whether this column contains any index page.
     // could be false when the column contains only one data page.

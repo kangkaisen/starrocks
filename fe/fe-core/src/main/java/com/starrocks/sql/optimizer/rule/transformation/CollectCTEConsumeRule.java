@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.optimizer.rule.transformation;
 
@@ -7,7 +20,6 @@ import com.google.common.collect.Maps;
 import com.starrocks.sql.optimizer.CTEContext;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
-import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.logical.LogicalCTEConsumeOperator;
 import com.starrocks.sql.optimizer.operator.pattern.Pattern;
@@ -46,7 +58,7 @@ public class CollectCTEConsumeRule extends TransformationRule {
         if (null != consume.getPredicate()) {
             Map<ColumnRefOperator, ScalarOperator> mapping = Maps.newHashMap(consume.getCteOutputColumnRefMap());
             ReplaceColumnRefRewriter rewriter = new ReplaceColumnRefRewriter(mapping);
-            ScalarOperator predicate = consume.getPredicate().clone().accept(rewriter, null);
+            ScalarOperator predicate = rewriter.rewrite(consume.getPredicate());
 
             if (cteContext.getConsumePredicates().containsKey(consume.getCteId())) {
                 cteContext.getConsumePredicates().get(consume.getCteId()).add(predicate);
@@ -54,12 +66,6 @@ public class CollectCTEConsumeRule extends TransformationRule {
                 cteContext.getConsumePredicates().put(consume.getCteId(), Lists.newArrayList(predicate));
             }
         }
-
-        // collect required columns
-        ColumnRefSet cteRequiredColumns =
-                cteContext.getRequiredColumns().getOrDefault(consume.getCteId(), new ColumnRefSet());
-        consume.getCteOutputColumnRefMap().values().forEach(cteRequiredColumns::union);
-        cteContext.getRequiredColumns().put(consume.getCteId(), cteRequiredColumns);
 
         return Collections.emptyList();
     }

@@ -1,18 +1,34 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.ast;
 
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.JoinOperator;
+import com.starrocks.sql.parser.NodePosition;
+import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
 
 public class JoinRelation extends Relation {
-    private final JoinOperator type;
+    private final JoinOperator joinOp;
     private Relation left;
     private Relation right;
     private Expr onPredicate;
     private String joinHint = "";
-    private final boolean lateral;
+    private boolean lateral;
+    private boolean isImplicit;
 
     /**
      * usingColNames is created by parser
@@ -20,16 +36,27 @@ public class JoinRelation extends Relation {
      */
     private List<String> usingColNames;
 
-    public JoinRelation(JoinOperator type, Relation left, Relation right, Expr onPredicate, boolean isLateral) {
-        this.type = type;
+    public JoinRelation(JoinOperator joinOp, Relation left, Relation right, Expr onPredicate, boolean isLateral) {
+        this(joinOp, left, right, onPredicate, isLateral, NodePosition.ZERO);
+    }
+
+    public JoinRelation(JoinOperator joinOp, Relation left, Relation right, Expr onPredicate,
+                        boolean isLateral, NodePosition pos) {
+        super(pos);
+        if (joinOp == null) {
+            this.joinOp = JoinOperator.CROSS_JOIN;
+            isImplicit = true;
+        } else {
+            this.joinOp = joinOp;
+        }
         this.left = left;
         this.right = right;
         this.onPredicate = onPredicate;
         this.lateral = isLateral;
     }
 
-    public JoinOperator getType() {
-        return type;
+    public JoinOperator getJoinOp() {
+        return joinOp;
     }
 
     public Relation getLeft() {
@@ -57,7 +84,7 @@ public class JoinRelation extends Relation {
     }
 
     public void setJoinHint(String joinHint) {
-        this.joinHint = joinHint;
+        this.joinHint = StringUtils.upperCase(joinHint);
     }
 
     public String getJoinHint() {
@@ -66,6 +93,14 @@ public class JoinRelation extends Relation {
 
     public boolean isLateral() {
         return lateral;
+    }
+
+    public void setLateral(boolean lateral) {
+        this.lateral = lateral;
+    }
+
+    public boolean isImplicit() {
+        return isImplicit;
     }
 
     public List<String> getUsingColNames() {

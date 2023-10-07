@@ -1,38 +1,57 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.analyzer;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.ColumnDef;
-import com.starrocks.analysis.CreateTableAsSelectStmt;
-import com.starrocks.analysis.CreateTableStmt;
-import com.starrocks.analysis.DistributionDesc;
 import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.HashDistributionDesc;
-import com.starrocks.analysis.InsertStmt;
+import com.starrocks.analysis.FunctionCallExpr;
+import com.starrocks.analysis.KeysDesc;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.analysis.TableName;
 import com.starrocks.analysis.TypeDef;
-import com.starrocks.catalog.ArrayType;
-import com.starrocks.catalog.Catalog;
-import com.starrocks.catalog.PrimitiveType;
-import com.starrocks.catalog.ScalarType;
+import com.starrocks.catalog.KeysType;
+import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.Pair;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.RunMode;
+import com.starrocks.sql.ast.ColumnDef;
+import com.starrocks.sql.ast.CreateTableAsSelectStmt;
+import com.starrocks.sql.ast.CreateTableStmt;
+import com.starrocks.sql.ast.DistributionDesc;
+import com.starrocks.sql.ast.ExpressionPartitionDesc;
+import com.starrocks.sql.ast.HashDistributionDesc;
+import com.starrocks.sql.ast.InsertStmt;
+import com.starrocks.sql.ast.MultiRangePartitionDesc;
+import com.starrocks.sql.ast.PartitionDesc;
 import com.starrocks.sql.ast.QueryStatement;
+import com.starrocks.sql.ast.RandomDistributionDesc;
+import com.starrocks.sql.ast.RangePartitionDesc;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.optimizer.statistics.StatisticStorage;
+import com.starrocks.sql.parser.ParsingException;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class CTASAnalyzer {
-
-    @Deprecated
-    public static void transformCTASStmt(CreateTableAsSelectStmt createTableAsSelectStmt, ConnectContext session) {
+    public static void analyze(CreateTableAsSelectStmt createTableAsSelectStmt, ConnectContext session) {
         List<String> columnNames = createTableAsSelectStmt.getColumnNames();
         QueryStatement queryStatement = createTableAsSelectStmt.getQueryStatement();
         CreateTableStmt createTableStmt = createTableAsSelectStmt.getCreateTableStmt();
@@ -51,9 +70,6 @@ public class CTASAnalyzer {
             tableRefToTable.put(t.getKey().getTbl(), t.getValue());
         }
 
-        // For replication_num, we select the maximum value of all tables replication_num
-        int defaultReplicationNum = 1;
-
         List<Field> allFields = queryStatement.getQueryRelation().getRelationFields().getAllFields();
         List<String> finalColumnNames = Lists.newArrayList();
 
@@ -69,20 +85,44 @@ public class CTASAnalyzer {
             }
         }
 
+        boolean isPKTable = false;
+        KeysDesc keysDesc = createTableStmt.getKeysDesc();
+        if (keysDesc != null) {
+            KeysType keysType = keysDesc.getKeysType();
+            if (keysType == KeysType.PRIMARY_KEYS) {
+                isPKTable = true;
+            } else if (keysType != KeysType.DUP_KEYS) {
+                throw new SemanticException("CTAS does not support %s table", keysDesc.getKeysType().toString());
+            }
+        }
+
         for (int i = 0; i < allFields.size(); i++) {
-            Type type = transformType(allFields.get(i).getType());
-            ColumnDef columnDef = new ColumnDef(finalColumnNames.get(i), new TypeDef(type), false,
-                    null, true, ColumnDef.DefaultValueDef.NOT_SET, "");
-            createTableStmt.addColumnDef(columnDef);
+            Type type = AnalyzerUtils.transformTableColumnType(allFields.get(i).getType());
             Expr originExpression = allFields.get(i).getOriginExpression();
+            ColumnDef columnDef = new ColumnDef(finalColumnNames.get(i), new TypeDef(type), false,
+                    null, originExpression.isNullable(), ColumnDef.DefaultValueDef.NOT_SET, "");
+            if (isPKTable && keysDesc.containsCol(finalColumnNames.get(i))) {
+                columnDef.setAllowNull(false);
+            }
+            createTableStmt.addColumnDef(columnDef);
             if (originExpression instanceof SlotRef) {
                 SlotRef slotRef = (SlotRef) originExpression;
+                // lateral json_each(parse_json(c1)) will return null
+                if (slotRef.getTblNameWithoutAnalyzed() == null) {
+                    continue;
+                }
                 String tableName = slotRef.getTblNameWithoutAnalyzed().getTbl();
                 Table table = tableRefToTable.get(tableName);
+                if (!(table instanceof OlapTable)) {
+                    continue;
+                }
                 columnNameToTable.put(new Pair<>(tableName,
                         new Pair<>(slotRef.getColumnName(), allFields.get(i).getName())), table);
             }
         }
+
+        // For replication_num, The behavior is the same as creating a table
+        int defaultReplicationNum = RunMode.defaultReplicationNum();
 
         Map<String, String> stmtProperties = createTableStmt.getProperties();
         if (null == stmtProperties) {
@@ -93,73 +133,68 @@ public class CTASAnalyzer {
             stmtProperties.put("replication_num", String.valueOf(defaultReplicationNum));
         }
 
-        // For HashDistributionDesc key
-        // If we have statistics cache, we pick the column with the highest cardinality in the statistics,
-        // if we don't, we pick the first column
         if (null == createTableStmt.getDistributionDesc()) {
-            String defaultColumnName = finalColumnNames.get(0);
-            double candidateDistinctCountCount = 1.0;
-            StatisticStorage currentStatisticStorage = Catalog.getCurrentStatisticStorage();
+            if ((createTableStmt.getKeysDesc() != null && createTableStmt.getKeysDesc().getKeysType() != KeysType.DUP_KEYS)
+                    || createTableStmt.getProperties().containsKey("colocate_with")) {
+                // For HashDistributionDesc key
+                // If we have statistics cache, we pick the column with the highest cardinality in the statistics,
+                // if we don't, we pick the first column
+                String defaultColumnName = finalColumnNames.get(0);
+                double candidateDistinctCountCount = 1.0;
+                StatisticStorage currentStatisticStorage = GlobalStateMgr.getCurrentStatisticStorage();
 
-            for (Map.Entry<Pair<String, Pair<String, String>>, Table> columnEntry : columnNameToTable.entrySet()) {
-                Pair<String, String> columnName = columnEntry.getKey().second;
-                ColumnStatistic columnStatistic = currentStatisticStorage.getColumnStatistic(
-                        columnEntry.getValue(), columnName.first);
-                double curDistinctValuesCount = columnStatistic.getDistinctValuesCount();
-                if (curDistinctValuesCount > candidateDistinctCountCount) {
-                    defaultColumnName = columnName.second;
-                    candidateDistinctCountCount = curDistinctValuesCount;
+                for (Map.Entry<Pair<String, Pair<String, String>>, Table> columnEntry : columnNameToTable.entrySet()) {
+                    Pair<String, String> columnName = columnEntry.getKey().second;
+                    ColumnStatistic columnStatistic = currentStatisticStorage.getColumnStatistic(
+                            columnEntry.getValue(), columnName.first);
+                    double curDistinctValuesCount = columnStatistic.getDistinctValuesCount();
+                    if (curDistinctValuesCount > candidateDistinctCountCount) {
+                        defaultColumnName = columnName.second;
+                        candidateDistinctCountCount = curDistinctValuesCount;
+                    }
                 }
-            }
 
-            int defaultBucket = 10;
-            DistributionDesc distributionDesc =
-                    new HashDistributionDesc(defaultBucket, Lists.newArrayList(defaultColumnName));
-            createTableStmt.setDistributionDesc(distributionDesc);
+                DistributionDesc distributionDesc =
+                        new HashDistributionDesc(0, Lists.newArrayList(defaultColumnName));
+                createTableStmt.setDistributionDesc(distributionDesc);
+            } else {
+                // no specified distribution, use random distribution
+                DistributionDesc distributionDesc = new RandomDistributionDesc();
+                createTableStmt.setDistributionDesc(distributionDesc);
+            }
         }
 
-        CreateTableAnalyzer.transformCreateTableStmt(createTableStmt, session);
+        PartitionDesc partitionDesc = createTableStmt.getPartitionDesc();
+        List<ColumnDef> columnDefs = createTableStmt.getColumnDefs();
+
+        if (partitionDesc instanceof ExpressionPartitionDesc) {
+            ExpressionPartitionDesc expressionPartitionDesc = (ExpressionPartitionDesc) partitionDesc;
+            FunctionCallExpr functionCallExpr = (FunctionCallExpr) expressionPartitionDesc.getExpr();
+            AnalyzerUtils.checkAndExtractPartitionCol(functionCallExpr, columnDefs);
+            String currentGranularity = null;
+            RangePartitionDesc rangePartitionDesc = expressionPartitionDesc.getRangePartitionDesc();
+            if (!rangePartitionDesc.getSingleRangePartitionDescs().isEmpty()) {
+                throw new ParsingException("Automatic partition table creation only supports " +
+                        "batch create partition syntax", rangePartitionDesc.getPos());
+            }
+            List<MultiRangePartitionDesc> multiRangePartitionDescs = rangePartitionDesc.getMultiRangePartitionDescs();
+            for (MultiRangePartitionDesc multiRangePartitionDesc : multiRangePartitionDescs) {
+                String descGranularity = multiRangePartitionDesc.getTimeUnit().toLowerCase();
+                if (currentGranularity == null) {
+                    currentGranularity = descGranularity;
+                } else if (!currentGranularity.equals(descGranularity)) {
+                    throw new ParsingException("The partition granularity of automatic partition table " +
+                            "batch creation in advance should be consistent", rangePartitionDesc.getPos());
+                }
+            }
+            AnalyzerUtils.checkAutoPartitionTableLimit(functionCallExpr, currentGranularity);
+            rangePartitionDesc.setAutoPartitionTable(true);
+        }
+
+        Analyzer.analyze(createTableStmt, session);
 
         InsertStmt insertStmt = createTableAsSelectStmt.getInsertStmt();
         insertStmt.setQueryStatement(queryStatement);
-    }
-
-    // For char and varchar types, use the inferred length if the length can be inferred,
-    // otherwise use the longest varchar value.
-    // For double and float types, since they may be selected as key columns,
-    // the key column must be an exact value, so we unified into a default decimal type.
-    private static Type transformType(Type srcType) {
-        Type newType;
-        if (srcType.isScalarType()) {
-            if (PrimitiveType.VARCHAR == srcType.getPrimitiveType() ||
-                    PrimitiveType.CHAR == srcType.getPrimitiveType()) {
-                int len = ScalarType.MAX_VARCHAR_LENGTH;
-                if (srcType instanceof ScalarType) {
-                    ScalarType scalarType = (ScalarType) srcType;
-                    if (scalarType.getLength() > 0 && scalarType.isAssignedStrLenInColDefinition()) {
-                        len = scalarType.getLength();
-                    }
-                }
-                ScalarType stringType = ScalarType.createVarcharType(len);
-                stringType.setAssignedStrLenInColDefinition();
-                newType = stringType;
-            } else if (PrimitiveType.FLOAT == srcType.getPrimitiveType() ||
-                    PrimitiveType.DOUBLE == srcType.getPrimitiveType()) {
-                newType = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL128, 38, 9);
-            } else if (PrimitiveType.DECIMAL128 == srcType.getPrimitiveType() ||
-                    PrimitiveType.DECIMAL64 == srcType.getPrimitiveType() ||
-                    PrimitiveType.DECIMAL32 == srcType.getPrimitiveType()) {
-                newType = ScalarType.createDecimalV3Type(srcType.getPrimitiveType(),
-                        srcType.getPrecision(), srcType.getDecimalDigits());
-            } else {
-                newType = ScalarType.createType(srcType.getPrimitiveType());
-            }
-        } else if (srcType.isArrayType()) {
-            newType = new ArrayType(transformType(((ArrayType) srcType).getItemType()));
-        } else {
-            throw new SemanticException("Unsupported CTAS transform type: %s", srcType.getPrimitiveType());
-        }
-        return newType;
     }
 
 }

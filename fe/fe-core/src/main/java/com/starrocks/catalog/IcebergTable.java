@@ -1,7 +1,22 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.catalog;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
@@ -9,18 +24,24 @@ import com.google.common.collect.Maps;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.analysis.DescriptorTable;
-import com.starrocks.common.DdlException;
+import com.starrocks.analysis.Expr;
+import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.common.io.Text;
-import com.starrocks.external.iceberg.IcebergCatalog;
-import com.starrocks.external.iceberg.IcebergCatalogType;
-import com.starrocks.external.iceberg.IcebergUtil;
-import com.starrocks.external.iceberg.StarRocksIcebergException;
+import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.connector.iceberg.IcebergApiConverter;
+import com.starrocks.connector.iceberg.IcebergCatalogType;
+import com.starrocks.server.CatalogMgr;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TColumn;
+import com.starrocks.thrift.THdfsPartition;
 import com.starrocks.thrift.TIcebergTable;
 import com.starrocks.thrift.TTableDescriptor;
 import com.starrocks.thrift.TTableType;
-import org.apache.iceberg.types.Type;
+import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.PartitionField;
+import org.apache.iceberg.SortField;
 import org.apache.iceberg.types.Types;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -28,202 +49,159 @@ import org.apache.logging.log4j.Logger;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+
+import static com.starrocks.connector.iceberg.IcebergConnector.ICEBERG_CATALOG_TYPE;
+import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.getResourceMappingCatalogName;
+import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT;
+import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT_DEFAULT;
 
 public class IcebergTable extends Table {
     private static final Logger LOG = LogManager.getLogger(IcebergTable.class);
 
-    private static final String PROPERTY_MISSING_MSG =
-            "Iceberg %s is null. Please add properties('%s'='xxx') when create table";
     private static final String JSON_KEY_ICEBERG_DB = "database";
     private static final String JSON_KEY_ICEBERG_TABLE = "table";
     private static final String JSON_KEY_RESOURCE_NAME = "resource";
     private static final String JSON_KEY_ICEBERG_PROPERTIES = "icebergProperties";
+    private static final String PARQUET_FORMAT = "parquet";
 
-    private static final String ICEBERG_CATALOG = "starrocks.catalog-type";
-    private static final String ICEBERG_METASTORE_URIS = "iceberg.catalog.hive.metastore.uris";
-    private static final String ICEBERG_DB = "database";
-    private static final String ICEBERG_TABLE = "table";
-    private static final String ICEBERG_RESOURCE = "resource";
-
-    private org.apache.iceberg.Table icbTbl; // actual iceberg table
-
-    private String db;
-    private String table;
+    private String catalogName;
+    @SerializedName(value = "dn")
+    private String remoteDbName;
+    @SerializedName(value = "tn")
+    private String remoteTableName;
+    @SerializedName(value = "rn")
     private String resourceName;
-    private String tableLocation;
+    @SerializedName(value = "prop")
+    private Map<String, String> icebergProperties = Maps.newHashMap();
 
-    private final List<String> columnNames = Lists.newArrayList();
+    private org.apache.iceberg.Table nativeTable; // actual iceberg table
+    private List<Column> partitionColumns;
 
-    private final Map<String, String> icebergProperties = Maps.newHashMap();
+    private final AtomicLong partitionIdGen = new AtomicLong(0L);
 
     public IcebergTable() {
         super(TableType.ICEBERG);
     }
 
-    public IcebergTable(long id, String name, List<Column> schema, Map<String, String> properties) throws DdlException {
-        super(id, name, TableType.ICEBERG, schema);
-        validate(properties);
+    public IcebergTable(long id, String srTableName, String catalogName, String resourceName, String remoteDbName,
+                        String remoteTableName, List<Column> schema, org.apache.iceberg.Table nativeTable,
+                        Map<String, String> icebergProperties) {
+        super(id, srTableName, TableType.ICEBERG, schema);
+        this.catalogName = catalogName;
+        this.resourceName = resourceName;
+        this.remoteDbName = remoteDbName;
+        this.remoteTableName = remoteTableName;
+        this.nativeTable = nativeTable;
+        this.icebergProperties = icebergProperties;
     }
 
-    public String getDb() {
-        return db;
-    }
-
-    public String getTable() {
-        return table;
+    public String getCatalogName() {
+        return catalogName == null ? getResourceMappingCatalogName(resourceName, "iceberg") : catalogName;
     }
 
     public String getResourceName() {
         return resourceName;
     }
 
+    public String getRemoteDbName() {
+        return remoteDbName;
+    }
+
+    public String getRemoteTableName() {
+        return remoteTableName;
+    }
+
+    @Override
+    public String getUUID() {
+        if (CatalogMgr.isExternalCatalog(catalogName)) {
+            return String.join(".", catalogName, remoteDbName, remoteTableName,
+                    ((BaseTable) getNativeTable()).operations().current().uuid());
+        } else {
+            return Long.toString(id);
+        }
+    }
+
+    public List<Column> getPartitionColumns() {
+        if (partitionColumns == null) {
+            List<PartitionField> identityPartitionFields = this.getNativeTable().spec().fields().stream().
+                    filter(partitionField -> partitionField.transform().isIdentity()).collect(Collectors.toList());
+            partitionColumns = identityPartitionFields.stream().map(partitionField -> getColumn(partitionField.name()))
+                    .collect(Collectors.toList());
+        }
+
+        return partitionColumns;
+    }
+
+    public long nextPartitionId() {
+        return partitionIdGen.getAndIncrement();
+    }
+
+    public List<Integer> partitionColumnIndexes() {
+        List<Column> partitionCols = getPartitionColumns();
+        return partitionCols.stream().map(col -> fullSchema.indexOf(col)).collect(Collectors.toList());
+    }
+
+    public List<Integer> getSortKeyIndexes() {
+        List<Integer> indexes = new ArrayList<>();
+        org.apache.iceberg.Table nativeTable = getNativeTable();
+        List<Types.NestedField> fields = nativeTable.schema().asStruct().fields();
+        List<Integer> sortFieldSourceIds = nativeTable.sortOrder().fields().stream()
+                .map(SortField::sourceId)
+                .collect(Collectors.toList());
+
+        for (int i = 0; i < fields.size(); i++) {
+            Types.NestedField field = fields.get(i);
+            if (sortFieldSourceIds.contains(field.fieldId())) {
+                indexes.add(i);
+            }
+        }
+
+        return indexes;
+    }
+
+    public boolean isV2Format() {
+        return ((BaseTable) getNativeTable()).operations().current().formatVersion() > 1;
+    }
+
+    public boolean isUnPartitioned() {
+        return ((BaseTable) getNativeTable()).operations().current().spec().isUnpartitioned();
+    }
+
+    public List<String> getPartitionColumnNames() {
+        return getPartitionColumns().stream().filter(java.util.Objects::nonNull).map(Column::getName)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public String getTableIdentifier() {
+        return Joiner.on(":").join(name, ((BaseTable) getNativeTable()).operations().current().uuid());
+    }
+
     public IcebergCatalogType getCatalogType() {
-        return IcebergCatalogType.valueOf(icebergProperties.get(ICEBERG_CATALOG));
+        return IcebergCatalogType.valueOf(icebergProperties.get(ICEBERG_CATALOG_TYPE));
     }
 
-    public String getIcebergHiveMetastoreUris() {
-        return icebergProperties.get(ICEBERG_METASTORE_URIS);
+    public String getTableLocation() {
+        return getNativeTable().location();
     }
 
-    public void setTableLocation(String location) {
-        this.tableLocation = location;
-    }
-
-    // icbTbl is used for caching
-    public synchronized org.apache.iceberg.Table getIcebergTable() {
-        try {
-            if (this.icbTbl == null) {
-                IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(this);
-                this.icbTbl = catalog.loadTable(this);
+    public org.apache.iceberg.Table getNativeTable() {
+        // For compatibility with the resource iceberg table. native table is lazy. Prevent failure during fe restarting.
+        if (nativeTable == null) {
+            IcebergTable resourceMappingTable = (IcebergTable) GlobalStateMgr.getCurrentState().getMetadataMgr()
+                    .getTable(getCatalogName(), remoteDbName, remoteTableName);
+            if (resourceMappingTable == null) {
+                throw new StarRocksConnectorException("Can't find table %s.%s.%s",
+                        getCatalogName(), remoteDbName, remoteTableName);
             }
-        } catch (StarRocksIcebergException e) {
-            LOG.error("Load iceberg table failure!", e);
-            throw e;
+            nativeTable = resourceMappingTable.getNativeTable();
         }
-        return icbTbl;
-    }
-
-    private void validate(Map<String, String> properties) throws DdlException {
-        if (properties == null) {
-            throw new DdlException("Please set properties of iceberg table, they are: database, table.");
-        }
-
-        Map<String, String> copiedProps = Maps.newHashMap(properties);
-        db = copiedProps.remove(ICEBERG_DB);
-        if (Strings.isNullOrEmpty(db)) {
-            throw new DdlException(String.format(PROPERTY_MISSING_MSG, ICEBERG_DB, ICEBERG_DB));
-        }
-
-        table = copiedProps.get(ICEBERG_TABLE);
-        if (Strings.isNullOrEmpty(table)) {
-            throw new DdlException(String.format(PROPERTY_MISSING_MSG, ICEBERG_TABLE, ICEBERG_TABLE));
-        }
-        copiedProps.remove(ICEBERG_TABLE);
-
-        String resourceName = copiedProps.get(ICEBERG_RESOURCE);
-        if (Strings.isNullOrEmpty(resourceName)) {
-            throw new DdlException("property " + ICEBERG_RESOURCE + " must be set");
-        }
-
-        copiedProps.remove(ICEBERG_RESOURCE);
-        Resource resource = Catalog.getCurrentCatalog().getResourceMgr().getResource(resourceName);
-        if (resource == null) {
-            throw new DdlException("iceberg resource [" + resourceName + "] not exists");
-        }
-        if (resource.getType() != Resource.ResourceType.ICEBERG) {
-            throw new DdlException("resource [" + resourceName + "] is not iceberg resource");
-        }
-        IcebergResource icebergResource = (IcebergResource) resource;
-        IcebergCatalogType type = icebergResource.getCatalogType();
-        icebergProperties.put(ICEBERG_CATALOG, type.name());
-        LOG.info("Iceberg table type is " + type.name());
-        switch (type) {
-            case HIVE_CATALOG:
-                icebergProperties.put(ICEBERG_METASTORE_URIS, icebergResource.getHiveMetastoreURIs());
-                break;
-            default:
-                throw new DdlException("unsupported catalog type " + type.name());
-        }
-        this.resourceName = resourceName;
-
-        IcebergCatalog catalog = IcebergUtil.getIcebergCatalog(type, icebergResource.getHiveMetastoreURIs());
-        org.apache.iceberg.Table icebergTable = catalog.loadTable(IcebergUtil.getIcebergTableIdentifier(db, table));
-        // TODO: use TypeUtil#indexByName to handle nested field
-        Map<String, Types.NestedField> icebergColumns = icebergTable.schema().columns().stream()
-                .collect(Collectors.toMap(Types.NestedField::name, field -> field));
-        for (Column column : this.fullSchema) {
-            Types.NestedField icebergColumn = icebergColumns.get(column.getName());
-            if (icebergColumn == null) {
-                throw new DdlException("column [" + column.getName() + "] not exists in iceberg");
-            }
-            if (!validateColumnType(icebergColumn.type(), column.getType())) {
-                throw new DdlException("can not convert iceberg column type [" + icebergColumn.type() + "] to " +
-                        "starrocks type [" + column.getPrimitiveType() + "], column name: " + column.getName());
-            }
-            if (!column.isAllowNull()) {
-                throw new DdlException(
-                        "iceberg extern table not support no-nullable column: [" + icebergColumn.name() + "]");
-            }
-        }
-
-        if (!copiedProps.isEmpty()) {
-            throw new DdlException("Unknown table properties: " + copiedProps.toString());
-        }
-    }
-
-    private boolean validateColumnType(Type icebergType, com.starrocks.catalog.Type type) {
-        if (icebergType == null) {
-            return false;
-        }
-
-        if (icebergType.isListType()) {
-            return validateColumnType(icebergType.asListType().elementType(), ((ArrayType) type).getItemType());
-        }
-
-        if (!icebergType.isPrimitiveType()) {
-            return false;
-        }
-        PrimitiveType primitiveType = type.getPrimitiveType();
-        // for type with length, like char(10), we only check the type and ignore the length
-        // TODO: fixed and binary should be considered as binary
-        switch (icebergType.typeId()) {
-            case BOOLEAN:
-                return primitiveType == PrimitiveType.BOOLEAN;
-            case INTEGER:
-                return primitiveType == PrimitiveType.INT ||
-                        primitiveType == PrimitiveType.TINYINT ||
-                        primitiveType == PrimitiveType.SMALLINT;
-            case LONG:
-                return primitiveType == PrimitiveType.BIGINT;
-            case FLOAT:
-                return primitiveType == PrimitiveType.FLOAT;
-            case DOUBLE:
-                return primitiveType == PrimitiveType.DOUBLE;
-            case DATE:
-                return primitiveType == PrimitiveType.DATE;
-            case TIMESTAMP:
-                return primitiveType == PrimitiveType.DATETIME;
-            case STRING:
-            case UUID:
-                return primitiveType == PrimitiveType.VARCHAR ||
-                        primitiveType == PrimitiveType.CHAR;
-            case DECIMAL:
-                return primitiveType == PrimitiveType.DECIMALV2 ||
-                        primitiveType == PrimitiveType.DECIMAL32 ||
-                        primitiveType == PrimitiveType.DECIMAL64 ||
-                        primitiveType == PrimitiveType.DECIMAL128;
-            case TIME:
-            case FIXED:
-            case BINARY:
-            case STRUCT:
-            case LIST:
-            case MAP:
-            default:
-                return false;
-        }
+        return nativeTable;
     }
 
     @Override
@@ -231,7 +209,6 @@ public class IcebergTable extends Table {
         Preconditions.checkNotNull(partitions);
 
         TIcebergTable tIcebergTable = new TIcebergTable();
-        tIcebergTable.setLocation(tableLocation);
 
         List<TColumn> tColumns = Lists.newArrayList();
         for (Column column : getBaseSchema()) {
@@ -239,8 +216,21 @@ public class IcebergTable extends Table {
         }
         tIcebergTable.setColumns(tColumns);
 
+        tIcebergTable.setIceberg_schema(IcebergApiConverter.getTIcebergSchema(nativeTable.schema()));
+        tIcebergTable.setPartition_column_names(getPartitionColumnNames());
+
+        for (int i = 0; i < partitions.size(); i++) {
+            DescriptorTable.ReferencedPartitionInfo info = partitions.get(i);
+            PartitionKey key = info.getKey();
+            long partitionId = info.getId();
+            THdfsPartition tPartition = new THdfsPartition();
+            List<LiteralExpr> keys = key.getKeys();
+            tPartition.setPartition_key_exprs(keys.stream().map(Expr::treeToThrift).collect(Collectors.toList()));
+            tIcebergTable.putToPartitions(partitionId, tPartition);
+        }
+
         TTableDescriptor tTableDescriptor = new TTableDescriptor(id, TTableType.ICEBERG_TABLE,
-                fullSchema.size(), 0, table, db);
+                fullSchema.size(), 0, remoteTableName, remoteDbName);
         tTableDescriptor.setIcebergTable(tIcebergTable);
         return tTableDescriptor;
     }
@@ -250,8 +240,8 @@ public class IcebergTable extends Table {
         super.write(out);
 
         JsonObject jsonObject = new JsonObject();
-        jsonObject.addProperty(JSON_KEY_ICEBERG_DB, db);
-        jsonObject.addProperty(JSON_KEY_ICEBERG_TABLE, table);
+        jsonObject.addProperty(JSON_KEY_ICEBERG_DB, remoteDbName);
+        jsonObject.addProperty(JSON_KEY_ICEBERG_TABLE, remoteTableName);
         if (!Strings.isNullOrEmpty(resourceName)) {
             jsonObject.addProperty(JSON_KEY_RESOURCE_NAME, resourceName);
         }
@@ -271,8 +261,8 @@ public class IcebergTable extends Table {
 
         String json = Text.readString(in);
         JsonObject jsonObject = JsonParser.parseString(json).getAsJsonObject();
-        db = jsonObject.getAsJsonPrimitive(JSON_KEY_ICEBERG_DB).getAsString();
-        table = jsonObject.getAsJsonPrimitive(JSON_KEY_ICEBERG_TABLE).getAsString();
+        remoteDbName = jsonObject.getAsJsonPrimitive(JSON_KEY_ICEBERG_DB).getAsString();
+        remoteTableName = jsonObject.getAsJsonPrimitive(JSON_KEY_ICEBERG_TABLE).getAsString();
         resourceName = jsonObject.getAsJsonPrimitive(JSON_KEY_RESOURCE_NAME).getAsString();
         if (jsonObject.has(JSON_KEY_ICEBERG_PROPERTIES)) {
             JsonObject jIcebergProperties = jsonObject.getAsJsonObject(JSON_KEY_ICEBERG_PROPERTIES);
@@ -280,15 +270,105 @@ public class IcebergTable extends Table {
                 icebergProperties.put(entry.getKey(), entry.getValue().getAsString());
             }
         }
-        {
-            for (Column col : fullSchema) {
-                columnNames.add(col.getName());
-            }
-        }
     }
 
     @Override
     public boolean isSupported() {
         return true;
+    }
+
+    @Override
+    public boolean supportInsert() {
+        // for now, only support writing iceberg table with parquet file format
+        return getNativeTable().properties().getOrDefault(DEFAULT_FILE_FORMAT, DEFAULT_FILE_FORMAT_DEFAULT)
+                .equalsIgnoreCase(PARQUET_FORMAT);
+    }
+
+    @Override
+    public int hashCode() {
+        return com.google.common.base.Objects.hashCode(getCatalogName(), remoteDbName, getTableIdentifier());
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (!(other instanceof IcebergTable)) {
+            return false;
+        }
+
+        IcebergTable otherTable = (IcebergTable) other;
+        String catalogName = getCatalogName();
+        String tableIdentifier = getTableIdentifier();
+        return Objects.equal(catalogName, otherTable.getCatalogName()) &&
+                Objects.equal(remoteDbName, otherTable.remoteDbName) &&
+                Objects.equal(tableIdentifier, otherTable.getTableIdentifier());
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+        private long id;
+        private String srTableName;
+        private String catalogName;
+        private String resourceName;
+        private String remoteDbName;
+        private String remoteTableName;
+        private List<Column> fullSchema;
+        private Map<String, String> icebergProperties;
+        private org.apache.iceberg.Table nativeTable;
+
+        public Builder() {
+        }
+
+        public Builder setId(long id) {
+            this.id = id;
+            return this;
+        }
+
+        public Builder setSrTableName(String srTableName) {
+            this.srTableName = srTableName;
+            return this;
+        }
+
+        public Builder setCatalogName(String catalogName) {
+            this.catalogName = catalogName;
+            return this;
+        }
+
+        public Builder setResourceName(String resourceName) {
+            this.resourceName = resourceName;
+            return this;
+        }
+
+        public Builder setRemoteDbName(String remoteDbName) {
+            this.remoteDbName = remoteDbName;
+            return this;
+        }
+
+        public Builder setRemoteTableName(String remoteTableName) {
+            this.remoteTableName = remoteTableName;
+            return this;
+        }
+
+        public Builder setFullSchema(List<Column> fullSchema) {
+            this.fullSchema = fullSchema;
+            return this;
+        }
+
+        public Builder setIcebergProperties(Map<String, String> icebergProperties) {
+            this.icebergProperties = icebergProperties;
+            return this;
+        }
+
+        public Builder setNativeTable(org.apache.iceberg.Table nativeTable) {
+            this.nativeTable = nativeTable;
+            return this;
+        }
+
+        public IcebergTable build() {
+            return new IcebergTable(id, srTableName, catalogName, resourceName, remoteDbName, remoteTableName,
+                    fullSchema, nativeTable, icebergProperties);
+        }
     }
 }

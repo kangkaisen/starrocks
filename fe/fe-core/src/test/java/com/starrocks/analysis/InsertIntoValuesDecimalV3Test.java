@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.analysis;
 
@@ -7,13 +20,13 @@ import com.starrocks.catalog.ScalarType;
 import com.starrocks.common.Config;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.StatementPlanner;
+import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.ValuesRelation;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -21,10 +34,8 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.util.List;
-import java.util.UUID;
 
 public class InsertIntoValuesDecimalV3Test {
-    private static String runningDir = "fe/mocked/InsertIntoValuesDecimalV3/" + UUID.randomUUID().toString() + "/";
     private static StarRocksAssert starRocksAssert;
 
     @Rule
@@ -32,14 +43,9 @@ public class InsertIntoValuesDecimalV3Test {
 
     private static ConnectContext ctx;
 
-    @AfterClass
-    public static void tearDown() throws Exception {
-        UtFrameUtils.cleanStarRocksFeDir(runningDir);
-    }
-
     @BeforeClass
     public static void setUp() throws Exception {
-        UtFrameUtils.createMinStarRocksCluster(runningDir);
+        UtFrameUtils.createMinStarRocksCluster();
         String createTblStmtStr =
                 "CREATE TABLE if not exists test_table (\n" +
                         "\tcol_int INT NOT NULL, \n" +
@@ -48,7 +54,7 @@ public class InsertIntoValuesDecimalV3Test {
                         "DUPLICATE KEY(`col_int`) \n" +
                         "COMMENT \"OLAP\" \n" +
                         "DISTRIBUTED BY HASH(`col_int`) BUCKETS 1 \n" +
-                        "PROPERTIES( \"replication_num\" = \"1\", \"in_memory\" = \"false\", \"storage_format\" = \"DEFAULT\" )";
+                        "PROPERTIES( \"replication_num\" = \"1\", \"in_memory\" = \"false\")";
 
         ctx = UtFrameUtils.createDefaultCtx();
         starRocksAssert = new StarRocksAssert(ctx);
@@ -64,8 +70,7 @@ public class InsertIntoValuesDecimalV3Test {
                 "DISTRIBUTED BY HASH(`v1`) BUCKETS 3\n" +
                 "PROPERTIES (\n" +
                 "\"replication_num\" = \"1\",\n" +
-                "\"in_memory\" = \"false\",\n" +
-                "\"storage_format\" = \"DEFAULT\"\n" +
+                "\"in_memory\" = \"false\"\n" +
                 ");");
     }
 
@@ -98,7 +103,7 @@ public class InsertIntoValuesDecimalV3Test {
         String plan = execPlan.getExplainString(TExplainLevel.NORMAL);
 
         Assert.assertTrue(plan.contains("constant exprs: \n" +
-                "         1 | 2 | ARRAY<bigint(20)>[]"));
+                "         1 | 2 | []"));
     }
 }
 

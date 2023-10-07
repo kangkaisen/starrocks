@@ -1,9 +1,24 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.optimizer.rewrite.scalar;
 
 import com.google.common.collect.Lists;
+import com.starrocks.analysis.BinaryType;
 import com.starrocks.analysis.FunctionName;
 import com.starrocks.catalog.Function;
+import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Type;
@@ -35,13 +50,14 @@ public class FoldConstantsRuleTest {
     @Test
     public void applyCall() {
 
-        CallOperator root = new CallOperator("concat", Type.VARCHAR, Lists.newArrayList(
+        CallOperator root = new CallOperator(FunctionSet.CONCAT, Type.VARCHAR, Lists.newArrayList(
                 ConstantOperator.createVarchar("1"),
                 ConstantOperator.createVarchar("2"),
                 ConstantOperator.createVarchar("3")
         ));
 
-        Function fn = new Function(new FunctionName("concat"), new Type[] {Type.VARCHAR}, Type.VARCHAR, false);
+        Function fn =
+                new Function(new FunctionName(FunctionSet.CONCAT), new Type[] {Type.VARCHAR}, Type.VARCHAR, false);
 
         new Expectations(root) {
             {
@@ -132,8 +148,8 @@ public class FoldConstantsRuleTest {
         CastOperator cast6 = new CastOperator(Type.BIGINT, ConstantOperator.createDate(LocalDateTime.now()));
         assertEquals(cast6, rule.apply(cast6, null));
 
-        CastOperator cast7 = new CastOperator(ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 1, 1)
-                , ConstantOperator.createDecimal(BigDecimal.valueOf(0.00008),
+        CastOperator cast7 = new CastOperator(ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 1, 1),
+                ConstantOperator.createDecimal(BigDecimal.valueOf(0.00008),
                 ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 6, 6))
         );
         assertEquals("0.0", rule.apply(cast7, null).toString());
@@ -141,44 +157,44 @@ public class FoldConstantsRuleTest {
 
     @Test
     public void applyBinary() {
-        BinaryPredicateOperator bpo1 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.EQ,
+        BinaryPredicateOperator bpo1 = new BinaryPredicateOperator(BinaryType.EQ,
                 ConstantOperator.createNull(Type.INT), ConstantOperator.createInt(1));
         assertEquals(OB_NULL, rule.apply(bpo1, null));
 
-        BinaryPredicateOperator bpo2 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.EQ,
+        BinaryPredicateOperator bpo2 = new BinaryPredicateOperator(BinaryType.EQ,
                 new ColumnRefOperator(1, Type.INT, "name", true), ConstantOperator.createInt(1));
         assertEquals(bpo2, rule.apply(bpo2, null));
 
-        BinaryPredicateOperator bpo3 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.EQ,
+        BinaryPredicateOperator bpo3 = new BinaryPredicateOperator(BinaryType.EQ,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(1));
         assertEquals(OB_TRUE, rule.apply(bpo3, null));
 
-        BinaryPredicateOperator bpo4 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.NE,
+        BinaryPredicateOperator bpo4 = new BinaryPredicateOperator(BinaryType.NE,
                 ConstantOperator.createDate(LocalDateTime.of(2021, 1, 1, 0, 0)),
                 ConstantOperator.createDate(LocalDateTime.of(2021, 1, 1, 0, 0)));
         assertEquals(OB_FALSE, rule.apply(bpo4, null));
 
-        BinaryPredicateOperator bpo5 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.EQ_FOR_NULL,
+        BinaryPredicateOperator bpo5 = new BinaryPredicateOperator(BinaryType.EQ_FOR_NULL,
                 ConstantOperator.createNull(Type.BOOLEAN), ConstantOperator.createNull(Type.BOOLEAN));
         assertEquals(OB_TRUE, rule.apply(bpo5, null));
 
-        BinaryPredicateOperator bpo6 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.EQ_FOR_NULL,
+        BinaryPredicateOperator bpo6 = new BinaryPredicateOperator(BinaryType.EQ_FOR_NULL,
                 ConstantOperator.createNull(Type.BOOLEAN), ConstantOperator.createInt(1));
         assertEquals(OB_FALSE, rule.apply(bpo6, null));
 
-        BinaryPredicateOperator bpo7 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.GE,
+        BinaryPredicateOperator bpo7 = new BinaryPredicateOperator(BinaryType.GE,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(1));
         assertEquals(OB_TRUE, rule.apply(bpo7, null));
 
-        BinaryPredicateOperator bpo8 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.GT,
+        BinaryPredicateOperator bpo8 = new BinaryPredicateOperator(BinaryType.GT,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(1));
         assertEquals(OB_FALSE, rule.apply(bpo8, null));
 
-        BinaryPredicateOperator bpo9 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.LE,
+        BinaryPredicateOperator bpo9 = new BinaryPredicateOperator(BinaryType.LE,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(1));
         assertEquals(OB_TRUE, rule.apply(bpo9, null));
 
-        BinaryPredicateOperator bpo10 = new BinaryPredicateOperator(BinaryPredicateOperator.BinaryType.LT,
+        BinaryPredicateOperator bpo10 = new BinaryPredicateOperator(BinaryType.LT,
                 ConstantOperator.createInt(1), ConstantOperator.createInt(1));
         assertEquals(OB_FALSE, rule.apply(bpo10, null));
 

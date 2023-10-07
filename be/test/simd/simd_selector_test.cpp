@@ -1,21 +1,33 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <limits>
 
 #include "column/type_traits.h"
 #include "column/vectorized_fwd.h"
 #include "gtest/gtest.h"
-#include "runtime/primitive_type.h"
 #include "simd/selector.h"
 #include "testutil/parallel_test.h"
+#include "types/logical_type.h"
 #include "util/value_generator.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
-template <PrimitiveType TYPE, template <typename T> class Gen1, template <typename T> class Gen2,
+template <LogicalType TYPE, template <typename T> class Gen1, template <typename T> class Gen2,
           template <typename T> class Gen3, int TEST_SIZE>
 void test_simd_select_if() {
-    static_assert(isArithmeticPT<TYPE>, "Now Select IF only support Arithmetic TYPE");
+    static_assert(isArithmeticLT<TYPE>, "Now Select IF only support Arithmetic TYPE");
 
     using SelectorContainer = typename BooleanColumn::Container;
     using RuntimeContainer = typename RunTimeColumnType<TYPE>::Container;
@@ -115,7 +127,7 @@ using SelectorRandomGen = RandomGenerator<T, 2>;
 template <class T>
 using ValueRandomGen = RandomGenerator<T, 65535>;
 
-template <PrimitiveType TYPE, int TEST_SIZE>
+template <LogicalType TYPE, int TEST_SIZE>
 bool test_simd_select_if_wrapper() {
     test_simd_select_if<TYPE, AlwaysZeroGenerator, AlwaysOneGenerator, AlwaysZeroGenerator, TEST_SIZE>();
     test_simd_select_if<TYPE, AlwaysOneGenerator, AlwaysOneGenerator, AlwaysZeroGenerator, TEST_SIZE>();
@@ -123,7 +135,7 @@ bool test_simd_select_if_wrapper() {
     return true;
 }
 
-template <PrimitiveType... TYPE>
+template <LogicalType... TYPE>
 bool test_simd_select_if_all() {
     constexpr int chunk_size = 4095;
     return (... && test_simd_select_if_wrapper<TYPE, chunk_size>());
@@ -149,4 +161,4 @@ PARALLEL_TEST(SIMDSelectorTest, SelectorTest) {
                             TYPE_DOUBLE>();
     // clang-format on
 }
-} // namespace starrocks::vectorized
+} // namespace starrocks

@@ -1,87 +1,103 @@
-# This file is made available under Elastic License 2.0.
-# This file is based on code available under the Apache license here:
-#   https://github.com/apache/incubator-doris/blob/master/be/src/exprs/CMakeLists.txt
-
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
+# Copyright 2021-present StarRocks, Inc. All rights reserved.
 #
-#   http://www.apache.org/licenses/LICENSE-2.0
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-# where to put generated libraries
+if (CLANG_TIDY_PATH)
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_PATH}")
+endif()
+
 set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/exprs")
 
 # where to put generated binaries
 set(EXECUTABLE_OUTPUT_PATH "${BUILD_DIR}/src/exprs")
 
 set(EXPR_FILES 
-  agg/aggregate_factory.cpp
+  agg/factory/aggregate_factory.cpp
+  agg/factory/aggregate_resolver_approx.cpp
+  agg/factory/aggregate_resolver_avg.cpp
+  agg/factory/aggregate_resolver_minmaxany.cpp
+  agg/factory/aggregate_resolver_others.cpp
+  agg/factory/aggregate_resolver_sumcount.cpp
+  agg/factory/aggregate_resolver_stream.cpp
+  agg/factory/aggregate_resolver_utility.cpp
+  agg/factory/aggregate_resolver_variance.cpp
+  agg/factory/aggregate_resolver_window.cpp
   anyval_util.cpp
   base64.cpp
+  binary_functions.cpp
   expr_context.cpp
   expr.cpp
-  slot_ref.cpp
+  function_context.cpp
   table_function/table_function_factory.cpp
   table_function/json_each.cpp
-  vectorized/arithmetic_expr.cpp
-  vectorized/array_element_expr.cpp
-  vectorized/array_expr.cpp
-  vectorized/array_functions.cpp
-  vectorized/binary_predicate.cpp
-  vectorized/bitmap_functions.cpp
-  vectorized/case_expr.cpp
-  vectorized/cast_expr.cpp
-  vectorized/column_ref.cpp
-  vectorized/compound_predicate.cpp
-  vectorized/condition_expr.cpp
-  vectorized/encryption_functions.cpp
-  vectorized/es_functions.cpp
-  vectorized/find_in_set.cpp
-  vectorized/function_call_expr.cpp
-  vectorized/function_helper.cpp
-  vectorized/geo_functions.cpp
-  vectorized/grouping_sets_functions.cpp
-  vectorized/hyperloglog_functions.cpp
-  vectorized/in_const_predicate.cpp
-  vectorized/info_func.cpp
-  vectorized/in_predicate.cpp
-  vectorized/is_null_predicate.cpp
-  vectorized/json_functions.cpp
-  vectorized/jsonpath.cpp
-  vectorized/like_predicate.cpp
-  vectorized/literal.cpp
-  vectorized/locate.cpp
-  vectorized/math_functions.cpp
-  vectorized/percentile_functions.cpp
-  vectorized/runtime_filter_bank.cpp
-  vectorized/runtime_filter.cpp
-  vectorized/split.cpp
-  vectorized/split_part.cpp
-  vectorized/string_functions.cpp
-  vectorized/time_functions.cpp
-  vectorized/utility_functions.cpp
+  table_function/list_rowsets.cpp
+  arithmetic_expr.cpp
+  array_element_expr.cpp
+  array_expr.cpp
+  array_functions.cpp
+  binary_predicate.cpp
+  bitmap_functions.cpp
+  case_expr.cpp
+  cast_expr.cpp
+  cast_expr_array.cpp
+  cast_expr_json.cpp
+  cast_nested.cpp
+  column_ref.cpp
+  placeholder_ref.cpp
+  dictmapping_expr.cpp
+  compound_predicate.cpp
+  condition_expr.cpp
+  encryption_functions.cpp
+  es_functions.cpp
+  find_in_set.cpp
+  function_call_expr.cpp
+  function_helper.cpp
+  geo_functions.cpp
+  grouping_sets_functions.cpp
+  hyperloglog_functions.cpp
+  in_const_predicate.cpp
+  info_func.cpp
+  in_predicate.cpp
+  is_null_predicate.cpp
+  json_functions.cpp
+  jsonpath.cpp
+  like_predicate.cpp
+  literal.cpp
+  locate.cpp
+  map_element_expr.cpp
+  map_functions.cpp
+  struct_functions.cpp
+  math_functions.cpp
+  percentile_functions.cpp
+  runtime_filter_bank.cpp
+  runtime_filter.cpp
+  split.cpp
+  split_part.cpp
+  str_to_map.cpp
+  string_functions.cpp
+  time_functions.cpp
+  utility_functions.cpp
   agg/java_udaf_function.cpp
   agg/java_window_function.cpp
   table_function/java_udtf_function.cpp
-  vectorized/java_function_call_expr.cpp
+  java_function_call_expr.cpp
+  lambda_function.cpp
+  array_map_expr.cpp
+  subfield_expr.cpp
+  map_apply_expr.cpp
+  map_expr.cpp
+  substring_index.cpp
+  dict_query_expr.cpp
 )
 
 add_library(Exprs ${EXPR_FILES})
-
-# simdjson Runtime Implement Dispatch: https://github.com/simdjson/simdjson/blob/master/doc/implementation-selection.md#runtime-cpu-detection
-# Unset architecture-specific flags to avoid breaking implement runtime dispatch.
-if ("${CMAKE_BUILD_TARGET_ARCH}" STREQUAL "x86" OR "${CMAKE_BUILD_TARGET_ARCH}" STREQUAL "x86_64")
-  set_source_files_properties(vectorized/json_functions.cpp PROPERTIES COMPILE_FLAGS -mno-avx)
-  set_source_files_properties(vectorized/json_functions.cpp PROPERTIES COMPILE_FLAGS -mno-avx2)
-endif()

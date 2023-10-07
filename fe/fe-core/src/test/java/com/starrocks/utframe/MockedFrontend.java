@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/utframe/MockedFrontend.java
 
@@ -23,19 +36,20 @@ package com.starrocks.utframe;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.common.Config;
 import com.starrocks.common.util.JdkUtils;
 import com.starrocks.common.util.NetUtils;
 import com.starrocks.common.util.PrintableMap;
 import com.starrocks.ha.FrontendNodeType;
+import com.starrocks.ha.StateChangeExecutor;
 import com.starrocks.journal.Journal;
+import com.starrocks.journal.JournalException;
 import com.starrocks.journal.JournalFactory;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.service.ExecuteEnv;
 import com.starrocks.service.FrontendOptions;
 import mockit.Mock;
 import mockit.MockUp;
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LoggerContext;
 
@@ -100,7 +114,6 @@ public class MockedFrontend {
 
         // UT don't need log
         LoggerContext context = (LoggerContext) LogManager.getContext(false);
-        context.getConfiguration().getRootLogger().setLevel(Level.WARN);
         context.start();
     }
 
@@ -192,9 +205,11 @@ public class MockedFrontend {
     private static class FERunnable implements Runnable {
         private final MockedFrontend frontend;
         private final String[] args;
+        private final boolean startBDB;
 
-        public FERunnable(MockedFrontend frontend, String[] args) {
+        public FERunnable(MockedFrontend frontend, boolean startBDB, String[] args) {
             this.frontend = frontend;
+            this.startBDB = startBDB;
             this.args = args;
         }
 
@@ -211,22 +226,26 @@ public class MockedFrontend {
 
                 // check it after Config is initialized, otherwise the config 'check_java_version' won't work.
                 if (!JdkUtils.checkJavaVersion()) {
-                    throw new IllegalArgumentException("Java version doesn't match");
+                // throw new IllegalArgumentException("Java version doesn't match");
                 }
 
                 // set dns cache ttl
                 java.security.Security.setProperty("networkaddress.cache.ttl", "60");
 
-                FrontendOptions.init();
+                FrontendOptions.init(new String[0]);
                 ExecuteEnv.setup();
 
-                // init catalog and wait it be ready
-                new MockUp<JournalFactory>() {
-                    @Mock
-                    public Journal create(String name) {
-                        return new MockJournal();
-                    }
-                };
+                if (!startBDB) {
+                    // init globalStateMgr and wait it be ready
+                    new MockUp<JournalFactory>() {
+                        @Mock
+                        public Journal create(String name) throws JournalException {
+                            GlobalStateMgr.getCurrentState().setHaProtocol(new MockJournal.MockProtocol());
+                            return new MockJournal();
+                        }
+
+                    };
+                }
 
                 new MockUp<NetUtils>() {
                     @Mock
@@ -235,10 +254,15 @@ public class MockedFrontend {
                     }
                 };
 
-                Catalog.getCurrentCatalog().initialize(args);
-                Catalog.getCurrentCatalog().notifyNewFETypeTransfer(FrontendNodeType.MASTER);
+                GlobalStateMgr.getCurrentState().initialize(args);
+                StateChangeExecutor.getInstance().setMetaContext(
+                        GlobalStateMgr.getCurrentState().getMetaContext());
+                StateChangeExecutor.getInstance().registerStateChangeExecution(
+                        GlobalStateMgr.getCurrentState().getStateChangeExecution());
+                StateChangeExecutor.getInstance().start();
+                StateChangeExecutor.getInstance().notifyNewFETypeTransfer(FrontendNodeType.LEADER);
 
-                Catalog.getCurrentCatalog().waitForReady();
+                GlobalStateMgr.getCurrentState().waitForReady();
 
                 while (true) {
                     Thread.sleep(2000);
@@ -250,31 +274,32 @@ public class MockedFrontend {
     }
 
     // must call init() before start.
-    public void start(String[] args) throws FeStartException, NotInitException {
+    public void start(boolean startBDB, String[] args) throws FeStartException, NotInitException, InterruptedException {
         initLock.lock();
         if (!isInit) {
             throw new NotInitException("fe process is not initialized");
         }
         initLock.unlock();
-
-        Thread feThread = new Thread(new FERunnable(this, args), FE_PROCESS);
+        Thread feThread = new Thread(new FERunnable(this, startBDB, args), FE_PROCESS);
         feThread.start();
         waitForCatalogReady();
         System.out.println("Fe process is started");
     }
 
     private void waitForCatalogReady() throws FeStartException {
-        int retry = 0;
-        while (!Catalog.getCurrentCatalog().isReady() && retry++ < 120) {
+        int tryCount = 0;
+        while (!GlobalStateMgr.getCurrentState().isReady() && tryCount < 600) {
             try {
-                Thread.sleep(100);
+                tryCount++;
+                Thread.sleep(1000);
+                System.out.println("globalStateMgr is not ready, wait for 1 second");
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
         }
 
-        if (!Catalog.getCurrentCatalog().isReady()) {
-            System.err.println("catalog is not ready");
+        if (!GlobalStateMgr.getCurrentState().isReady()) {
+            System.err.println("globalStateMgr is not ready");
             throw new FeStartException("fe start failed");
         }
     }

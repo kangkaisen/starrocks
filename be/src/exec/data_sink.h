@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exec/data_sink.h
 
@@ -41,10 +54,10 @@ class RowDescriptor;
 // Superclass of all data sinks.
 class DataSink {
 public:
-    DataSink() {}
+    DataSink() = default;
     virtual ~DataSink() = default;
 
-    virtual Status init(const TDataSink& thrift_sink);
+    virtual Status init(const TDataSink& thrift_sink, RuntimeState* state);
 
     // Setup. Call before send(), Open(), or Close().
     // Subclasses must call DataSink::Prepare().
@@ -53,7 +66,7 @@ public:
     // Setup. Call before send() or close().
     virtual Status open(RuntimeState* state) = 0;
 
-    virtual Status send_chunk(RuntimeState* state, vectorized::Chunk* chunk);
+    virtual Status send_chunk(RuntimeState* state, Chunk* chunk);
 
     // Releases all resources that were allocated in prepare()/send().
     // Further send() calls are illegal after calling close().
@@ -68,7 +81,7 @@ public:
     // new sink is written to *sink, and is owned by the caller.
     static Status create_data_sink(RuntimeState* state, const TDataSink& thrift_sink,
                                    const std::vector<TExpr>& output_exprs, const TPlanFragmentExecParams& params,
-                                   const RowDescriptor& row_desc, std::unique_ptr<DataSink>* sink);
+                                   int32_t sender_id, const RowDescriptor& row_desc, std::unique_ptr<DataSink>* sink);
 
     // Returns the runtime profile for the sink.
     virtual RuntimeProfile* profile() = 0;

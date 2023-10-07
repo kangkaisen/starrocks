@@ -6,8 +6,9 @@
 
 #include <fmt/format.h>
 
+#include "common/config.h"
 #include "gen_cpp/Status_types.h"  // for TStatus
-#include "gen_cpp/status.pb.h"     // for PStatus
+#include "gen_cpp/status.pb.h"     // for StatusPB
 #include "gutil/strings/fastmem.h" // for memcpy_inlined
 
 namespace starrocks {
@@ -21,8 +22,8 @@ inline const char* assemble_state(TStatusCode::type code, Slice msg, Slice ctx) 
     msg.size = std::min<size_t>(msg.size, std::numeric_limits<uint16_t>::max());
     ctx.size = std::min<size_t>(ctx.size, std::numeric_limits<uint16_t>::max());
 
-    const uint16_t len1 = msg.size;
-    const uint16_t len2 = ctx.size;
+    const auto len1 = static_cast<uint16_t>(msg.size);
+    const auto len2 = static_cast<uint16_t>(ctx.size);
     const uint32_t size = static_cast<uint32_t>(len1) + len2;
     auto result = new char[size + 5];
     memcpy(result, &len1, sizeof(len1));
@@ -33,7 +34,7 @@ inline const char* assemble_state(TStatusCode::type code, Slice msg, Slice ctx) 
     return result;
 }
 
-const char* Status::copy_state(const char* state) const {
+const char* Status::copy_state(const char* state) {
     uint16_t len1;
     uint16_t len2;
     strings::memcpy_inlined(&len1, state, sizeof(len1));
@@ -44,23 +45,24 @@ const char* Status::copy_state(const char* state) const {
     return result;
 }
 
-const char* Status::copy_state_with_extra_ctx(const char* state, Slice ctx) const {
+const char* Status::copy_state_with_extra_ctx(const char* state, Slice ctx) {
     uint16_t len1;
     uint16_t len2;
     strings::memcpy_inlined(&len1, state, sizeof(len1));
     strings::memcpy_inlined(&len2, state + sizeof(len1), sizeof(len2));
     uint32_t old_length = static_cast<uint32_t>(len1) + len2 + 5;
     ctx.size = std::min<size_t>(ctx.size, std::numeric_limits<uint16_t>::max() - len2);
-    uint32_t new_length = old_length + ctx.size;
+    auto new_length = static_cast<uint32_t>(old_length + ctx.size);
     auto result = new char[new_length];
     strings::memcpy_inlined(result, state, old_length);
     strings::memcpy_inlined(result + old_length, ctx.data, ctx.size);
-    uint16_t new_len2 = len2 + ctx.size;
+    auto new_len2 = static_cast<uint16_t>(len2 + ctx.size);
     memcpy(result + 2, &new_len2, sizeof(new_len2));
     return result;
 }
 
-Status::Status(const TStatus& s) : _state(nullptr) {
+Status::Status(const TStatus& s) {
+    must_check();
     if (s.status_code != TStatusCode::OK) {
         if (s.error_msgs.empty()) {
             _state = assemble_state(s.status_code, Slice(), Slice());
@@ -70,8 +72,9 @@ Status::Status(const TStatus& s) : _state(nullptr) {
     }
 }
 
-Status::Status(const PStatus& s) : _state(nullptr) {
-    TStatusCode::type code = (TStatusCode::type)s.status_code();
+Status::Status(const StatusPB& s) {
+    must_check();
+    auto code = (TStatusCode::type)s.status_code();
     if (code != TStatusCode::OK) {
         if (s.error_msgs_size() == 0) {
             _state = assemble_state(code, Slice(), Slice());
@@ -83,7 +86,51 @@ Status::Status(const PStatus& s) : _state(nullptr) {
 
 Status::Status(TStatusCode::type code, Slice msg, Slice ctx) : _state(assemble_state(code, msg, ctx)) {}
 
+#if defined(ENABLE_STATUS_FAILED)
+int32_t Status::get_cardinality_of_inject() {
+    const auto& cardinality_of_inject = starrocks::config::cardinality_of_inject;
+    if (cardinality_of_inject < 1) {
+        return 1;
+    } else {
+        return cardinality_of_inject;
+    }
+}
+
+void Status::access_directory_of_inject() {
+    std::string directs = starrocks::config::directory_of_inject;
+    vector<string> fields = strings::Split(directs, ",");
+    for (const auto& direct : fields) {
+        dircetory_enable[direct] = true;
+    }
+}
+
+// direct_name is like "../src/exec/pipeline" and so on.
+bool Status::in_directory_of_inject(const std::string& direct_name) {
+    if (dircetory_enable.empty()) {
+        return false;
+    }
+
+    vector<string> fields = strings::Split(direct_name, "/");
+    if (fields.size() > 1) {
+        std::stringstream ss;
+        for (int i = 1; i < fields.size(); ++i) {
+            ss << "/" << fields[i];
+            const auto& iter = dircetory_enable.find(ss.str());
+            if (iter != dircetory_enable.end() && iter->second) {
+                return true;
+            }
+        }
+        return false;
+    } else {
+        DCHECK_GE(fields.size(), 1);
+        DCHECK_EQ(fields[0], "..");
+        return false;
+    }
+}
+#endif
+
 void Status::to_thrift(TStatus* s) const {
+    mark_checked();
     s->error_msgs.clear();
     if (_state == nullptr) {
         s->status_code = TStatusCode::OK;
@@ -95,7 +142,8 @@ void Status::to_thrift(TStatus* s) const {
     }
 }
 
-void Status::to_protobuf(PStatus* s) const {
+void Status::to_protobuf(StatusPB* s) const {
+    mark_checked();
     s->clear_error_msgs();
     if (_state == nullptr) {
         s->set_status_code((int)TStatusCode::OK);
@@ -107,6 +155,7 @@ void Status::to_protobuf(PStatus* s) const {
 }
 
 std::string Status::code_as_string() const {
+    mark_checked();
     if (_state == nullptr) {
         return "OK";
     }
@@ -167,16 +216,23 @@ std::string Status::code_as_string() const {
         return "Incomplete";
     case TStatusCode::DATA_QUALITY_ERROR:
         return "Data quality error";
+    case TStatusCode::RESOURCE_BUSY:
+        return "Resource busy";
+    case TStatusCode::SR_EAGAIN:
+        return "Resource temporarily unavailable";
+    case TStatusCode::REMOTE_FILE_NOT_FOUND:
+        return "Remote file not found";
     default: {
         char tmp[30];
         snprintf(tmp, sizeof(tmp), "Unknown code(%d): ", static_cast<int>(code()));
         return tmp;
     }
     }
-    return std::string();
+    return {};
 }
 
 std::string Status::to_string() const {
+    mark_checked();
     std::string result(code_as_string());
     if (_state == nullptr) {
         return result;
@@ -189,18 +245,20 @@ std::string Status::to_string() const {
 }
 
 Slice Status::message() const {
+    mark_checked();
     if (_state == nullptr) {
-        return Slice();
+        return {};
     }
 
     uint16_t len1;
     memcpy(&len1, _state, sizeof(len1));
-    return Slice(_state + 5, len1);
+    return {_state + 5, len1};
 }
 
 Slice Status::detailed_message() const {
+    mark_checked();
     if (_state == nullptr) {
-        return Slice();
+        return {};
     }
 
     uint16_t len1;
@@ -208,29 +266,32 @@ Slice Status::detailed_message() const {
     memcpy(&len1, _state, sizeof(len1));
     memcpy(&len2, _state + 2, sizeof(len2));
     uint32_t length = static_cast<uint32_t>(len1) + len2;
-    return Slice(_state + 5, length);
+    return {_state + 5, length};
 }
 Status Status::clone_and_prepend(const Slice& msg) const {
+    mark_checked();
     if (ok()) {
         return *this;
     }
     auto msg2 = message();
     std::string_view msg_view(reinterpret_cast<const char*>(msg.data), msg.size);
     std::string_view msg_view2(reinterpret_cast<const char*>(msg2.data), msg2.size);
-    return Status(code(), fmt::format("{}:{}", msg_view, msg_view2));
+    return {code(), fmt::format("{}: {}", msg_view, msg_view2)};
 }
 
 Status Status::clone_and_append(const Slice& msg) const {
+    mark_checked();
     if (ok()) {
         return *this;
     }
     auto msg2 = message();
     std::string_view msg_view(reinterpret_cast<const char*>(msg.data), msg.size);
     std::string_view msg_view2(reinterpret_cast<const char*>(msg2.data), msg2.size);
-    return Status(code(), fmt::format("{}:{}", msg_view2, msg_view));
+    return {code(), fmt::format("{}: {}", msg_view2, msg_view)};
 }
 
 Status Status::clone_and_append_context(const char* filename, int line, const char* expr) const {
+    mark_checked();
     if (UNLIKELY(ok())) {
         return *this;
     }

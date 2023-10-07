@@ -1,4 +1,17 @@
-// Copyright (c) 2020 Beijing Dingshi Zongheng Technology Co., Ltd. All rights reserved.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.plan;
 
@@ -84,7 +97,7 @@ public class RangeExtractTest extends PlanTestBase {
     public void testRangePredicate9() throws Exception {
         String sql = "select * from t0 where v1 > 1 and v1 <= 1";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("PREDICATES: 1: v1 > 1, 1: v1 <= 1\n"));
+        Assert.assertTrue(plan.contains("  0:EMPTYSET\n"));
     }
 
     @Test
@@ -101,6 +114,13 @@ public class RangeExtractTest extends PlanTestBase {
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("PREDICATES: 1: v1 IN (1, 3), abs(1: v1) > 2\n"));
         Assert.assertTrue(plan.contains("PREDICATES: abs(4: v4) > 2, 4: v4 IN (1, 3)\n"));
+    }
+
+    @Test
+    public void testRangePredicate12() throws Exception {
+        String sql = "select * from test_all_type where t1a = '12345' and t1a = 12345";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("PREDICATES: 1: t1a = '12345'\n"));
     }
 
 }

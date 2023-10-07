@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/catalog/AggregateFunction.java
 
@@ -24,9 +37,10 @@ package com.starrocks.catalog;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.Gson;
-import com.starrocks.analysis.CreateFunctionStmt;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.analysis.FunctionName;
-import com.starrocks.analysis.HdfsURI;
+import com.starrocks.sql.ast.CreateFunctionStmt;
+import com.starrocks.sql.ast.HdfsURI;
 import com.starrocks.thrift.TAggregateFunction;
 import com.starrocks.thrift.TFunction;
 import com.starrocks.thrift.TFunctionBinaryType;
@@ -37,6 +51,7 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static com.starrocks.common.io.IOUtils.readOptionStringOrNull;
 import static com.starrocks.common.io.IOUtils.writeOptionString;
@@ -47,11 +62,19 @@ import static com.starrocks.common.io.IOUtils.writeOptionString;
  */
 public class AggregateFunction extends Function {
     // Set if different from retType_, null otherwise.
+    @SerializedName(value = "intermediateType")
     private Type intermediateType;
+
+    // The name inside the binary at location_ that contains this particular
+    // function. e.g. org.example.MyUdf.class.
+    @SerializedName(value = "symbolName")
+    private String symbolName;
+
     // If true, this aggregate function should ignore distinct.
     // e.g. min(distinct col) == min(col).
     // TODO: currently it is not possible for user functions to specify this. We should
     // extend the create aggregate function stmt to allow additional metadata like this.
+    @SerializedName(value = "ignoresDistinct")
     private boolean ignoresDistinct;
 
     // True if this function can appear within an analytic expr (fn() OVER(...)).
@@ -59,9 +82,11 @@ public class AggregateFunction extends Function {
     // we should identify this property from the function itself (e.g., based on which
     // functions of the UDA API are implemented).
     // Currently, there is no reliable way of doing that.
+    @SerializedName(value = "isAnalyticFn")
     private boolean isAnalyticFn;
 
     // True if this function can be used for aggregation (without an OVER() clause).
+    @SerializedName(value = "isAggregateFn")
     private boolean isAggregateFn;
 
     // True if this function returns a non-null value on an empty input. It is used
@@ -69,11 +94,35 @@ public class AggregateFunction extends Function {
     // TODO: Instead of manually setting this flag, we should identify this
     // property from the function itself (e.g. evaluating the function on an
     // empty input in BE).
+    @SerializedName(value = "returnsNonNullOnEmpty")
     private boolean returnsNonNullOnEmpty;
 
-    // The name inside the binary at location_ that contains this particular
-    // function. e.g. org.example.MyUdf.class.
-    private String symbolName;
+    public List<Boolean> getIsAscOrder() {
+        return isAscOrder;
+    }
+
+    public void setIsAscOrder(List<Boolean> isAscOrder) {
+        this.isAscOrder = isAscOrder;
+    }
+
+    private List<Boolean> isAscOrder;
+
+    public List<Boolean> getNullsFirst() {
+        return nullsFirst;
+    }
+
+    public void setNullsFirst(List<Boolean> nullsFirst) {
+        this.nullsFirst = nullsFirst;
+    }
+
+    // True if "NULLS FIRST", false if "NULLS LAST", null if not specified.
+    private List<Boolean> nullsFirst;
+
+    private boolean isDistinct = false;
+
+    public void setIsDistinct(boolean isDistinct) {
+        this.isDistinct = isDistinct;
+    }
 
     // only used for serialization
     protected AggregateFunction() {
@@ -103,6 +152,7 @@ public class AggregateFunction extends Function {
         return createBuiltin(name, argTypes, retType, intermediateType, false, ignoresDistinct, isAnalyticFn,
                 returnsNonNullOnEmpty);
     }
+
 
     public static AggregateFunction createBuiltin(String name,
                                                   List<Type> argTypes, Type retType, Type intermediateType,
@@ -148,6 +198,19 @@ public class AggregateFunction extends Function {
         isAnalyticFn = true;
         isAggregateFn = true;
         returnsNonNullOnEmpty = false;
+    }
+
+    public AggregateFunction(AggregateFunction other) {
+        super(other);
+        intermediateType = other.intermediateType;
+        ignoresDistinct = other.ignoresDistinct;
+        isAnalyticFn = other.isAnalyticFn;
+        isAggregateFn = other.isAggregateFn;
+        returnsNonNullOnEmpty = other.returnsNonNullOnEmpty;
+        symbolName = other.symbolName;
+        isAscOrder = other.isAscOrder;
+        nullsFirst = other.nullsFirst;
+        isDistinct = other.isDistinct;
     }
 
     public String getSymbolName() {
@@ -213,6 +276,10 @@ public class AggregateFunction extends Function {
             return this;
         }
 
+        public void setIntermediateType(Type intermediateType) {
+            this.intermediateType = intermediateType;
+        }
+
         public AggregateFunction build() {
             AggregateFunction fn =
                     new AggregateFunction(name, Lists.newArrayList(argTypes), retType, intermediateType, hasVarArgs,
@@ -266,6 +333,20 @@ public class AggregateFunction extends Function {
     }
 
     @Override
+    public boolean equals(Object obj) {
+        if (!(obj instanceof AggregateFunction)) {
+            return false;
+        }
+        AggregateFunction agg = (AggregateFunction) obj;
+
+        return Objects.equals(intermediateType, agg.intermediateType) && ignoresDistinct == agg.ignoresDistinct &&
+                isAnalyticFn == agg.isAnalyticFn && isAggregateFn == agg.isAggregateFn &&
+                returnsNonNullOnEmpty == agg.returnsNonNullOnEmpty && Objects.equals(symbolName, agg.symbolName)
+                && isDistinct == agg.isDistinct && Objects.equals(nullsFirst, agg.getNullsFirst()) &&
+                Objects.equals(isAscOrder, agg.getIsAscOrder()) && super.equals(obj);
+    }
+
+    @Override
     public TFunction toThrift() {
         TFunction fn = super.toThrift();
         TAggregateFunction aggFn = new TAggregateFunction();
@@ -275,6 +356,14 @@ public class AggregateFunction extends Function {
         } else {
             aggFn.setIntermediate_type(getReturnType().toThrift());
         }
+        if (isAscOrder != null && !isAscOrder.isEmpty()) {
+            aggFn.setIs_asc_order(isAscOrder);
+        }
+        if (nullsFirst != null && !nullsFirst.isEmpty()) {
+            aggFn.setNulls_first(nullsFirst);
+        }
+        aggFn.setIs_distinct(isDistinct);
+
         aggFn.setSymbol(getSymbolName());
         fn.setAggregate_fn(aggFn);
         return fn;
@@ -328,11 +417,17 @@ public class AggregateFunction extends Function {
     @Override
     public String getProperties() {
         Map<String, String> properties = Maps.newHashMap();
+        properties.put("fid", getFunctionId() + "");
         properties.put(CreateFunctionStmt.FILE_KEY, getLocation() == null ? "" : getLocation().toString());
         properties.put(CreateFunctionStmt.MD5_CHECKSUM, checksum);
         properties.put(CreateFunctionStmt.SYMBOL_KEY, symbolName == null ? "" : symbolName);
         properties.put(CreateFunctionStmt.TYPE_KEY, getBinaryType().name());
         return new Gson().toJson(properties);
+    }
+
+    @Override
+    public Function copy() {
+        return new AggregateFunction(this);
     }
 }
 

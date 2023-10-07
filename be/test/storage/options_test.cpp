@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/test/olap/options_test.cpp
 
@@ -28,19 +41,22 @@
 
 namespace starrocks {
 
-void set_up() {
-    system("rm -rf ./test_run && mkdir -p ./test_run");
-    system("mkdir -p ./test_run/data && mkdir -p ./test_run/data.ssd");
+static void set_up() {
+    [[maybe_unused]] auto res = system("rm -rf ./test_run && mkdir -p ./test_run");
+    res = system("mkdir -p ./test_run/data && mkdir -p ./test_run/data.ssd");
 }
 
-void tear_down() {
-    system("rm -rf ./test_run");
+static void tear_down() {
+    [[maybe_unused]] auto res = system("rm -rf ./test_run");
 }
 
 class OptionsTest : public testing::Test {
 public:
-    OptionsTest() {}
-    virtual ~OptionsTest() {}
+    OptionsTest() = default;
+    ~OptionsTest() override = default;
+
+    static void SetUpTestSuite() { set_up(); }
+    static void TearDownTestSuite() { tear_down(); }
 };
 
 TEST_F(OptionsTest, parse_root_path) {
@@ -87,14 +103,3 @@ TEST_F(OptionsTest, parse_root_path) {
 }
 
 } // namespace starrocks
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-
-    int ret = 0;
-    starrocks::set_up();
-    ret = RUN_ALL_TESTS();
-    starrocks::tear_down();
-
-    return ret;
-}

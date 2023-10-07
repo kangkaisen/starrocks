@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/test/http/http_client_test.cpp
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -80,8 +76,8 @@ static std::string hostname = "";
 
 class HttpClientTest : public testing::Test {
 public:
-    HttpClientTest() {}
-    ~HttpClientTest() override {}
+    HttpClientTest() = default;
+    ~HttpClientTest() override = default;
 
     static void SetUpTestCase() {
         s_server = new EvHttpServer(0);
@@ -94,7 +90,11 @@ public:
         hostname = "http://127.0.0.1:" + std::to_string(real_port);
     }
 
-    static void TearDownTestCase() { delete s_server; }
+    static void TearDownTestCase() {
+        s_server->stop();
+        s_server->join();
+        delete s_server;
+    }
 };
 
 TEST_F(HttpClientTest, get_normal) {
@@ -174,8 +174,3 @@ TEST_F(HttpClientTest, post_failed) {
 }
 
 } // namespace starrocks
-
-int main(int argc, char* argv[]) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}

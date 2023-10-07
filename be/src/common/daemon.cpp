@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/common/daemon.cpp
 
@@ -22,17 +35,17 @@
 #include "common/daemon.h"
 
 #include <gflags/gflags.h>
-#include <gperftools/malloc_extension.h>
 
 #include "column/column_helper.h"
 #include "column/column_pool.h"
 #include "common/config.h"
 #include "common/minidump.h"
-#include "runtime/exec_env.h"
-#include "runtime/mem_tracker.h"
-#include "runtime/memory/chunk_allocator.h"
+#include "exec/workgroup/work_group.h"
+#include "gutil/cpu.h"
+#include "jemalloc/jemalloc.h"
+#include "runtime/memory/mem_chunk_allocator.h"
+#include "runtime/time_types.h"
 #include "runtime/user_function_cache.h"
-#include "runtime/vectorized/time_types.h"
 #include "storage/options.h"
 #include "storage/storage_engine.h"
 #include "util/cpu_info.h"
@@ -41,18 +54,30 @@
 #include "util/gc_helper.h"
 #include "util/logging.h"
 #include "util/mem_info.h"
+#include "util/misc.h"
 #include "util/monotime.h"
 #include "util/network_util.h"
 #include "util/starrocks_metrics.h"
-#include "util/system_metrics.h"
 #include "util/thread.h"
 #include "util/thrift_util.h"
 #include "util/time.h"
 #include "util/timezone_utils.h"
 
 namespace starrocks {
+DEFINE_bool(cn, false, "start as compute node");
 
-bool k_starrocks_exit = false;
+// NOTE: when BE receiving SIGTERM, this flag will be set to true. Then BE will reject
+// all ExecPlanFragments call by returning a fail status(brpc::EINTERNAL).
+// After all existing fragments executed, BE will exit.
+std::atomic<bool> k_starrocks_exit = false;
+
+// NOTE: when call `/api/_stop_be` http interface, this flag will be set to true. Then BE will reject
+// all ExecPlanFragments call by returning a fail status(brpc::EINTERNAL).
+// After all existing fragments executed, BE will exit.
+// The difference between k_starrocks_exit and the flag is that
+// k_starrocks_exit not only require waiting for all existing fragment to complete,
+// but also waiting for all threads to exit gracefully.
+std::atomic<bool> k_starrocks_exit_quick = false;
 
 class ReleaseColumnPool {
 public:
@@ -70,47 +95,17 @@ private:
     size_t _freed_bytes = 0;
 };
 
-void gc_tcmalloc_memory(void* arg_this) {
-    using namespace starrocks::vectorized;
+void gc_memory(void* arg_this) {
+    using namespace starrocks;
     const static float kFreeRatio = 0.5;
-    GCHelper gch(config::tc_gc_period, config::memory_maintenance_sleep_time_s, MonoTime::Now());
 
-    Daemon* daemon = static_cast<Daemon*>(arg_this);
+    auto* daemon = static_cast<Daemon*>(arg_this);
     while (!daemon->stopped()) {
-        sleep(config::memory_maintenance_sleep_time_s);
-#if !defined(ADDRESS_SANITIZER) && !defined(LEAK_SANITIZER) && !defined(THREAD_SANITIZER)
-        MallocExtension::instance()->MarkThreadBusy();
-#endif
+        nap_sleep(config::memory_maintenance_sleep_time_s, [daemon] { return daemon->stopped(); });
+
         ReleaseColumnPool releaser(kFreeRatio);
         ForEach<ColumnPoolList>(releaser);
         LOG_IF(INFO, releaser.freed_bytes() > 0) << "Released " << releaser.freed_bytes() << " bytes from column pool";
-
-#if !defined(ADDRESS_SANITIZER) && !defined(LEAK_SANITIZER) && !defined(THREAD_SANITIZER)
-        size_t used_size = 0;
-        size_t free_size = 0;
-        MallocExtension::instance()->GetNumericProperty("generic.current_allocated_bytes", &used_size);
-        MallocExtension::instance()->GetNumericProperty("tcmalloc.pageheap_free_bytes", &free_size);
-        size_t phy_size = used_size + free_size; // physical memory usage
-        size_t total_bytes_to_gc = 0;
-        if (phy_size > config::tc_use_memory_min) {
-            size_t max_free_size = phy_size * config::tc_free_memory_rate / 100;
-            if (free_size > max_free_size) {
-                total_bytes_to_gc = free_size - max_free_size;
-            }
-        }
-        size_t bytes_to_gc = gch.bytes_should_gc(MonoTime::Now(), total_bytes_to_gc);
-        if (bytes_to_gc > 0) {
-            size_t bytes = bytes_to_gc;
-            while (bytes >= GCBYTES_ONE_STEP) {
-                MallocExtension::instance()->ReleaseToSystem(GCBYTES_ONE_STEP);
-                bytes -= GCBYTES_ONE_STEP;
-            }
-            if (bytes > 0) {
-                MallocExtension::instance()->ReleaseToSystem(bytes);
-            }
-        }
-        MallocExtension::instance()->MarkThreadIdle();
-#endif
     }
 }
 
@@ -131,7 +126,7 @@ void calculate_metrics(void* arg_this) {
     std::map<std::string, int64_t> lst_net_send_bytes;
     std::map<std::string, int64_t> lst_net_receive_bytes;
 
-    Daemon* daemon = static_cast<Daemon*>(arg_this);
+    auto* daemon = static_cast<Daemon*>(arg_this);
     while (!daemon->stopped()) {
         StarRocksMetrics::instance()->metrics()->trigger_hook();
 
@@ -177,7 +172,20 @@ void calculate_metrics(void* arg_this) {
                                                                                 &lst_net_receive_bytes);
         }
 
-        sleep(15); // 15 seconds
+        auto* mem_metrics = StarRocksMetrics::instance()->system_metrics()->memory_metrics();
+
+        LOG(INFO) << fmt::format(
+                "Current memory statistics: process({}), query_pool({}), load({}), "
+                "metadata({}), compaction({}), schema_change({}), column_pool({}), "
+                "page_cache({}), update({}), chunk_allocator({}), clone({}), consistency({})",
+                mem_metrics->process_mem_bytes.value(), mem_metrics->query_mem_bytes.value(),
+                mem_metrics->load_mem_bytes.value(), mem_metrics->metadata_mem_bytes.value(),
+                mem_metrics->compaction_mem_bytes.value(), mem_metrics->schema_change_mem_bytes.value(),
+                mem_metrics->column_pool_mem_bytes.value(), mem_metrics->storage_page_cache_mem_bytes.value(),
+                mem_metrics->update_mem_bytes.value(), mem_metrics->chunk_allocator_mem_bytes.value(),
+                mem_metrics->clone_mem_bytes.value(), mem_metrics->consistency_mem_bytes.value());
+
+        nap_sleep(15, [daemon] { return daemon->stopped(); });
     }
 }
 
@@ -205,14 +213,19 @@ static void init_starrocks_metrics(const std::vector<StorePath>& store_paths) {
     StarRocksMetrics::instance()->initialize(paths, init_system_metrics, disk_devices, network_interfaces);
 }
 
-void sigterm_handler(int signo) {
-    k_starrocks_exit = true;
+void sigterm_handler(int signo, siginfo_t* info, void* context) {
+    if (info == nullptr) {
+        LOG(ERROR) << "got signal: " << strsignal(signo) << "from unknown pid, is going to exit";
+    } else {
+        LOG(ERROR) << "got signal: " << strsignal(signo) << " from pid: " << info->si_pid << ", is going to exit";
+    }
+    k_starrocks_exit.store(true);
 }
 
-int install_signal(int signo, void (*handler)(int)) {
+int install_signal(int signo, void (*handler)(int sig, siginfo_t* info, void* context)) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(struct sigaction));
-    sa.sa_handler = handler;
+    sa.sa_sigaction = handler;
     sigemptyset(&sa.sa_mask);
     auto ret = sigaction(signo, &sa, nullptr);
     if (ret != 0) {
@@ -245,11 +258,12 @@ void init_minidump() {
 #endif
 }
 
-void Daemon::init(int argc, char** argv, const std::vector<StorePath>& paths) {
-    // google::SetVersionString(get_build_version(false));
-    // google::ParseCommandLineFlags(&argc, &argv, true);
-    google::ParseCommandLineFlags(&argc, &argv, true);
-    init_glog("be", true);
+void Daemon::init(bool as_cn, const std::vector<StorePath>& paths) {
+    if (as_cn) {
+        init_glog("cn", true);
+    } else {
+        init_glog("be", true);
+    }
 
     LOG(INFO) << get_version_string(false);
 
@@ -260,16 +274,17 @@ void Daemon::init(int argc, char** argv, const std::vector<StorePath>& paths) {
     LOG(INFO) << CpuInfo::debug_string();
     LOG(INFO) << DiskInfo::debug_string();
     LOG(INFO) << MemInfo::debug_string();
+    LOG(INFO) << base::CPU::instance()->debug_string();
 
-    UserFunctionCache::instance()->init(config::user_function_dir);
+    CHECK(UserFunctionCache::instance()->init(config::user_function_dir).ok());
 
-    vectorized::date::init_date_cache();
+    date::init_date_cache();
 
     TimezoneUtils::init_time_zones();
 
-    std::thread tcmalloc_gc_thread(gc_tcmalloc_memory, this);
-    Thread::set_thread_name(tcmalloc_gc_thread, "tcmalloc_daemon");
-    _daemon_threads.emplace_back(std::move(tcmalloc_gc_thread));
+    std::thread gc_thread(gc_memory, this);
+    Thread::set_thread_name(gc_thread, "gc_daemon");
+    _daemon_threads.emplace_back(std::move(gc_thread));
 
     init_starrocks_metrics(paths);
 
@@ -285,8 +300,8 @@ void Daemon::init(int argc, char** argv, const std::vector<StorePath>& paths) {
 
 void Daemon::stop() {
     _stopped.store(true, std::memory_order_release);
-    int thread_size = _daemon_threads.size();
-    for (int i = 0; i < thread_size; ++i) {
+    size_t thread_size = _daemon_threads.size();
+    for (size_t i = 0; i < thread_size; ++i) {
         if (_daemon_threads[i].joinable()) {
             _daemon_threads[i].join();
         }

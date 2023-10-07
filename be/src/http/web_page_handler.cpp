@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/http/web_page_handler.cpp
 
@@ -23,8 +36,7 @@
 
 #include <functional>
 
-#include "common/config.h"
-#include "env/env.h"
+#include "fs/fs.h"
 #include "gutil/stl_util.h"
 #include "gutil/strings/substitute.h"
 #include "http/ev_http_server.h"
@@ -52,6 +64,7 @@ WebPageHandler::WebPageHandler(EvHttpServer* server) : _http_server(server) {
     // Make WebPageHandler to be static file handler, static files, e.g. css, png, will be handled by WebPageHandler.
     _http_server->register_static_file_handler(this);
 
+    // NOLINT
     TemplatePageHandlerCallback root_callback = std::bind<void>(std::mem_fn(&WebPageHandler::root_handler), this,
                                                                 std::placeholders::_1, std::placeholders::_2);
     register_template_page("/", "Home", root_callback, false /* is_on_nav_bar */);
@@ -172,15 +185,15 @@ std::string WebPageHandler::mustache_partial_tag(const std::string& path) const 
 }
 
 bool WebPageHandler::static_pages_available() const {
-    bool is_dir = false;
-    return Env::Default()->is_directory(_www_path, &is_dir).ok() && is_dir;
+    const StatusOr<bool> status_or = FileSystem::Default()->is_directory(_www_path);
+    return status_or.ok() && status_or.value();
 }
 
 bool WebPageHandler::mustache_template_available(const std::string& path) const {
     if (!static_pages_available()) {
         return false;
     }
-    return Env::Default()->path_exists(strings::Substitute("$0/$1.mustache", _www_path, path)).ok();
+    return FileSystem::Default()->path_exists(strings::Substitute("$0/$1.mustache", _www_path, path)).ok();
 }
 
 void WebPageHandler::render_main_template(const std::string& content, std::stringstream* output) {

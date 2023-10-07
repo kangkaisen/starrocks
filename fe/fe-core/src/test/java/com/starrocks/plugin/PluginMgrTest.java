@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/plugin/PluginMgrTest.java
 
@@ -25,17 +38,14 @@ import com.starrocks.common.Config;
 import com.starrocks.common.io.DataOutputBuffer;
 import com.starrocks.utframe.UtFrameUtils;
 import org.apache.commons.io.FileUtils;
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.util.UUID;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -43,17 +53,9 @@ import static org.junit.Assert.assertTrue;
 
 public class PluginMgrTest {
 
-    private static String runningDir = "fe/mocked/PluginMgrTest/" + UUID.randomUUID().toString() + "/";
-
     @BeforeClass
     public static void beforeClass() throws Exception {
-        UtFrameUtils.createMinStarRocksCluster(runningDir);
-    }
-
-    @AfterClass
-    public static void tearDown() {
-        File file = new File(runningDir);
-        file.delete();
+        UtFrameUtils.createMinStarRocksCluster();
     }
 
     @Before
@@ -74,9 +76,9 @@ public class PluginMgrTest {
     //
     //            InstallPluginStmt stmt =
     //                    new InstallPluginStmt(PluginTestUtil.getTestPathString("auditdemo.zip"), Maps.newHashMap());
-    //            Catalog.getCurrentCatalog().installPlugin(stmt);
+    //            GlobalStateMgr.getCurrentState().installPlugin(stmt);
     //
-    //            PluginMgr pluginMgr = Catalog.getCurrentPluginMgr();
+    //            PluginMgr pluginMgr = GlobalStateMgr.getCurrentPluginMgr();
     //
     //            assertEquals(2, pluginMgr.getActivePluginList(PluginInfo.PluginType.AUDIT).size());
     //
@@ -118,9 +120,9 @@ public class PluginMgrTest {
     //
     //            InstallPluginStmt stmt =
     //                    new InstallPluginStmt(PluginTestUtil.getTestPathString("test_local_plugin"), Maps.newHashMap());
-    //            Catalog.getCurrentCatalog().installPlugin(stmt);
+    //            GlobalStateMgr.getCurrentState().installPlugin(stmt);
     //
-    //            PluginMgr pluginMgr = Catalog.getCurrentPluginMgr();
+    //            PluginMgr pluginMgr = GlobalStateMgr.getCurrentPluginMgr();
     //
     //            assertTrue(Files.exists(PluginTestUtil.getTestPath("test_local_plugin")));
     //            assertTrue(Files.exists(PluginTestUtil.getTestPath("test_local_plugin/auditdemo.jar")));

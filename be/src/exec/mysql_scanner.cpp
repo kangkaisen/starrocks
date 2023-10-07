@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exec/mysql_scanner.cpp
 
@@ -30,7 +43,7 @@
 namespace starrocks {
 
 MysqlScanner::MysqlScanner(const MysqlScannerParam& param)
-        : _my_param(param), _my_conn(nullptr), _my_result(nullptr), _is_open(false), _field_num(0) {}
+        : _my_param(param), _my_conn(nullptr), _my_result(nullptr), _opened(false), _field_num(0) {}
 
 MysqlScanner::~MysqlScanner() {
     if (_my_result) {
@@ -50,7 +63,7 @@ MysqlScanner::~MysqlScanner() {
 }
 
 Status MysqlScanner::open() {
-    if (_is_open) {
+    if (_opened) {
         LOG(INFO) << "this scanner already opened";
         return Status::OK();
     }
@@ -77,13 +90,13 @@ Status MysqlScanner::open() {
         return Status::InternalError("mysql set character set failed.");
     }
 
-    _is_open = true;
+    _opened = true;
 
     return Status::OK();
 }
 
 Status MysqlScanner::query(const std::string& query) {
-    if (!_is_open) {
+    if (!_opened) {
         return Status::InternalError("Query before open.");
     }
 
@@ -117,8 +130,9 @@ Status MysqlScanner::query(const std::string& query) {
 Status MysqlScanner::query(const std::string& table, const std::vector<std::string>& fields,
                            const std::vector<std::string>& filters,
                            const std::unordered_map<std::string, std::vector<std::string>>& filters_in,
-                           std::unordered_map<std::string, bool>& filters_null_in_set, int64_t limit) {
-    if (!_is_open) {
+                           std::unordered_map<std::string, bool>& filters_null_in_set, int64_t limit,
+                           const std::string& temporal_clause) {
+    if (!_opened) {
         return Status::InternalError("Query before open.");
     }
 
@@ -183,6 +197,10 @@ Status MysqlScanner::query(const std::string& table, const std::vector<std::stri
         }
     }
 
+    if (!temporal_clause.empty()) {
+        _sql_str += " " + temporal_clause;
+    }
+
     if (limit != -1) {
         _sql_str += " limit " + std::to_string(limit) + " ";
     }
@@ -190,8 +208,16 @@ Status MysqlScanner::query(const std::string& table, const std::vector<std::stri
     return query(_sql_str);
 }
 
+Slice MysqlScanner::escape(const std::string& value) {
+    _escape_buffer.resize(value.size() * 2 + 1 + 2);
+    _escape_buffer[0] = '\'';
+    auto sz = mysql_real_escape_string(_my_conn, _escape_buffer.data() + 1, value.data(), value.size());
+    _escape_buffer[sz + 1] = '\'';
+    return {_escape_buffer.data(), sz + 2};
+}
+
 Status MysqlScanner::get_next_row(char*** buf, unsigned long** lengths, bool* eos) {
-    if (!_is_open) {
+    if (!_opened) {
         return Status::InternalError("GetNextRow before open.");
     }
 

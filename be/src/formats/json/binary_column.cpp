@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "binary_column.h"
 
@@ -8,7 +20,7 @@
 #include "gutil/strings/substitute.h"
 #include "util/json.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 // The value must be in type simdjson::ondemand::json_type::number;
 static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDescriptor& type_desc,
@@ -17,7 +29,7 @@ static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDesc
 
     if (type_desc.len < sv.size()) {
         auto err_msg =
-                strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$2", name, type_desc.len);
+                strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$1", name, type_desc.len);
         return Status::InvalidArgument(err_msg);
     }
 
@@ -33,7 +45,7 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
 
     if (type_desc.len < sv.size()) {
         auto err_msg =
-                strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$2", name, type_desc.len);
+                strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$1", name, type_desc.len);
         return Status::InvalidArgument(err_msg);
     }
 
@@ -132,4 +144,18 @@ Status add_native_json_column(Column* column, const TypeDescriptor& type_desc, c
     return Status::OK();
 }
 
-} // namespace starrocks::vectorized
+Status add_binary_column_from_json_object(Column* column, const TypeDescriptor& type_desc, const std::string& name,
+                                          simdjson::ondemand::object* obj) {
+    auto binary_column = down_cast<BinaryColumn*>(column);
+    std::string_view json_str = simdjson::to_json_string(*obj);
+    if (json_str.length() > type_desc.len) {
+        auto err_msg = strings::Substitute("Value length $0 exceed the column length $1($2)", json_str.length(), name,
+                                           type_desc.len);
+        return Status::InvalidArgument(err_msg);
+    }
+
+    binary_column->append(Slice(json_str.data(), json_str.length()));
+    return Status::OK();
+}
+
+} // namespace starrocks

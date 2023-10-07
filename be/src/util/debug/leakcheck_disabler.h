@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/util/debug/leakcheck_disabler.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -23,8 +19,7 @@
 #include "gutil/macros.h"
 #include "util/debug/leak_annotations.h"
 
-namespace starrocks {
-namespace debug {
+namespace starrocks::debug {
 
 // Scoped object that generically disables LSAN leak checking in a given scope.
 // While this object is alive, calls to "new" will not be checked for leaks.
@@ -41,5 +36,4 @@ private:
     const ScopedLeakCheckDisabler& operator=(const ScopedLeakCheckDisabler&) = delete;
 };
 
-} // namespace debug
-} // namespace starrocks
+} // namespace starrocks::debug

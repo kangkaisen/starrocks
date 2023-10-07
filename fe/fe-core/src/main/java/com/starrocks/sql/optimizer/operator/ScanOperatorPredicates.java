@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.optimizer.operator;
 
@@ -13,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class ScanOperatorPredicates {
     // id -> partition key
@@ -38,6 +52,14 @@ public class ScanOperatorPredicates {
         return selectedPartitionIds;
     }
 
+    public List<PartitionKey> getSelectedPartitionKeys() {
+        List<PartitionKey> partitions = Lists.newArrayList();
+        for (long partitionId : selectedPartitionIds) {
+            partitions.add(idToPartitionKey.get(partitionId));
+        }
+        return partitions;
+    }
+
     public void setSelectedPartitionIds(Collection<Long> selectedPartitionIds) {
         this.selectedPartitionIds = selectedPartitionIds;
     }
@@ -60,5 +82,53 @@ public class ScanOperatorPredicates {
 
     public Map<ColumnRefOperator, Column> getMinMaxColumnRefMap() {
         return minMaxColumnRefMap;
+    }
+
+    public void clear() {
+        idToPartitionKey.clear();
+        selectedPartitionIds.clear();
+        partitionConjuncts.clear();
+        noEvalPartitionConjuncts.clear();
+        nonPartitionConjuncts.clear();
+        minMaxConjuncts.clear();
+        minMaxColumnRefMap.clear();
+    }
+
+    @Override
+    public ScanOperatorPredicates clone() {
+        ScanOperatorPredicates other = new ScanOperatorPredicates();
+        other.idToPartitionKey.putAll(this.idToPartitionKey);
+        other.selectedPartitionIds.addAll(this.selectedPartitionIds);
+        other.partitionConjuncts.addAll(this.partitionConjuncts);
+        other.noEvalPartitionConjuncts.addAll(this.noEvalPartitionConjuncts);
+        other.nonPartitionConjuncts.addAll(this.nonPartitionConjuncts);
+        other.minMaxConjuncts.addAll(this.minMaxConjuncts);
+        other.minMaxColumnRefMap.putAll(this.minMaxColumnRefMap);
+
+        return other;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        ScanOperatorPredicates that = (ScanOperatorPredicates) o;
+        return Objects.equals(idToPartitionKey, that.idToPartitionKey) &&
+                Objects.equals(selectedPartitionIds, that.selectedPartitionIds) &&
+                Objects.equals(partitionConjuncts, that.partitionConjuncts) &&
+                Objects.equals(noEvalPartitionConjuncts, that.noEvalPartitionConjuncts) &&
+                Objects.equals(nonPartitionConjuncts, that.nonPartitionConjuncts) &&
+                Objects.equals(minMaxConjuncts, that.minMaxConjuncts) &&
+                Objects.equals(minMaxColumnRefMap, that.minMaxColumnRefMap);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(idToPartitionKey, selectedPartitionIds, partitionConjuncts, noEvalPartitionConjuncts,
+                nonPartitionConjuncts, minMaxConjuncts, minMaxColumnRefMap);
     }
 }

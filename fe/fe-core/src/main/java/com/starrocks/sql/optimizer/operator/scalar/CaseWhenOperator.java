@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.optimizer.operator.scalar;
 
@@ -19,6 +32,14 @@ public class CaseWhenOperator extends CallOperator {
 
     public CaseWhenOperator(CaseWhenOperator other, List<ScalarOperator> children) {
         super("CaseWhen", other.type, children);
+        this.hasCase = other.hasCase;
+        this.hasElse = other.hasElse;
+        this.whenStart = other.whenStart;
+        this.whenEnd = other.whenEnd;
+    }
+
+    public CaseWhenOperator(Type returnType, CaseWhenOperator other) {
+        super("CaseWhen", returnType, other.arguments);
         this.hasCase = other.hasCase;
         this.hasElse = other.hasElse;
         this.whenStart = other.whenStart;
@@ -92,6 +113,31 @@ public class CaseWhenOperator extends CallOperator {
         return arguments.get(2 * i + whenStart + 1);
     }
 
+    // return all then + else
+    public List<ScalarOperator> getAllValuesClause() {
+        List<ScalarOperator> re = Lists.newArrayList();
+        for (int i = 0; i < getWhenClauseSize(); i++) {
+            re.add(getThenClause(i));
+        }
+        if (hasElse()) {
+            re.add(getElseClause());
+        }
+        return re;
+    }
+
+    // return all case + when
+    public List<ScalarOperator> getAllConditionClause() {
+        List<ScalarOperator> re = Lists.newArrayList();
+        if (hasCase()) {
+            re.add(getCaseClause());
+        }
+        for (int i = 0; i < getWhenClauseSize(); i++) {
+            re.add(getWhenClause(i));
+        }
+
+        return re;
+    }
+
     public void setWhenClause(int i, ScalarOperator op) {
         arguments.set(2 * i + whenStart, op);
     }
@@ -114,7 +160,7 @@ public class CaseWhenOperator extends CallOperator {
             }
         }
         this.arguments = newArguments;
-        this.whenEnd = this.arguments.size();
+        this.whenEnd = hasElse ? this.arguments.size() - 1 : this.arguments.size();
     }
 
     @Override
@@ -155,6 +201,7 @@ public class CaseWhenOperator extends CallOperator {
                 whenStart == that.whenStart &&
                 whenEnd == that.whenEnd;
     }
+
 
     @Override
     public int hashCode() {

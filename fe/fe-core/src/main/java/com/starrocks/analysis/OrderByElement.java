@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/analysis/OrderByElement.java
 
@@ -21,9 +34,11 @@
 
 package com.starrocks.analysis;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.parser.NodePosition;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,9 +47,6 @@ import java.util.Objects;
 /**
  * Combination of expr and ASC/DESC, and nulls ordering.
  */
-// Our new cost based query optimizer is more powerful and stable than old query optimizer,
-// The old query optimizer related codes could be deleted safely.
-// TODO: Remove old query optimizer related codes before 2021-09-30
 public class OrderByElement implements ParseNode {
     private Expr expr;
     private final boolean isAsc;
@@ -43,8 +55,14 @@ public class OrderByElement implements ParseNode {
     // "NULLS LAST", and null if not specified.
     private final Boolean nullsFirstParam;
 
+    private final NodePosition pos;
+
     public OrderByElement(Expr expr, boolean isAsc, Boolean nullsFirstParam) {
-        super();
+        this(expr, isAsc, nullsFirstParam, NodePosition.ZERO);
+    }
+
+    public OrderByElement(Expr expr, boolean isAsc, Boolean nullsFirstParam, NodePosition pos) {
+        this.pos = pos;
         this.expr = expr;
         this.isAsc = isAsc;
         this.nullsFirstParam = nullsFirstParam;
@@ -81,7 +99,7 @@ public class OrderByElement implements ParseNode {
             OrderByElement element = src.get(i);
             OrderByElement reverseElement =
                     new OrderByElement(element.getExpr().clone(), !element.isAsc,
-                            !nullsFirst(element.nullsFirstParam, element.isAsc));
+                            !nullsFirst(element.nullsFirstParam));
             result.add(reverseElement);
         }
 
@@ -139,18 +157,9 @@ public class OrderByElement implements ParseNode {
         return strBuilder.toString();
     }
 
-    public String toDigest() {
-        StringBuilder strBuilder = new StringBuilder();
-        strBuilder.append(expr.toDigest());
-        strBuilder.append(isAsc ? " asc" : " desc");
-        if (nullsFirstParam != null) {
-            if (isAsc && !nullsFirstParam) {
-                strBuilder.append(" nulls last");
-            } else if (!isAsc && nullsFirstParam) {
-                strBuilder.append(" nulls first");
-            }
-        }
-        return strBuilder.toString();
+    @Override
+    public NodePosition getPos() {
+        return pos;
     }
 
     public String explain() {
@@ -196,12 +205,12 @@ public class OrderByElement implements ParseNode {
      *
      * @param nullsFirstParam True if "NULLS FIRST", false if "NULLS LAST", or null if
      *                        the NULLs order was not specified.
-     * @param isAsc
      * @return Returns true if nulls are ordered first or false if nulls are ordered last.
      * Independent of isAsc.
      */
-    public static boolean nullsFirst(Boolean nullsFirstParam, boolean isAsc) {
-        return nullsFirstParam == null ? isAsc : nullsFirstParam;
+    public static boolean nullsFirst(Boolean nullsFirstParam) {
+        Preconditions.checkNotNull(nullsFirstParam);
+        return nullsFirstParam;
     }
 
     @Override

@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/mysql/MysqlHandshakePacket.java
 
@@ -22,14 +35,15 @@
 package com.starrocks.mysql;
 
 import com.google.common.collect.ImmutableMap;
-import com.starrocks.catalog.Catalog;
+import com.starrocks.authentication.UserAuthenticationInfo;
 import com.starrocks.common.Config;
-import com.starrocks.mysql.privilege.Password;
-import com.starrocks.system.SystemInfoService;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.UserIdentity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 // MySQL protocol handshake packet.
 public class MysqlHandshakePacket extends MysqlPacket {
@@ -39,7 +53,7 @@ public class MysqlHandshakePacket extends MysqlPacket {
     // Version of handshake packet, since MySQL 3.21.0, Handshake of protocol 10 is used
     private static final int PROTOCOL_VERSION = 10;
     // JDBC use this version to check which protocol the server support
-    private static final String SERVER_VERSION = "5.1.0";
+    private static final String SERVER_VERSION = Config.mysql_server_version;
     // 33 stands for UTF-8 character set
     private static final int CHARACTER_SET = 33;
     // use default capability for all
@@ -50,7 +64,7 @@ public class MysqlHandshakePacket extends MysqlPacket {
     private static final String CLEAR_PASSWORD_PLUGIN_NAME = "mysql_clear_password";
     public static final String AUTHENTICATION_KERBEROS_CLIENT = "authentication_kerberos_client";
 
-    private static final ImmutableMap<String, Boolean> supportedPlugins = new ImmutableMap.Builder<String, Boolean>()
+    private static final ImmutableMap<String, Boolean> SUPPORTED_PLUGINS = new ImmutableMap.Builder<String, Boolean>()
             .put(NATIVE_AUTH_PLUGIN_NAME, true)
             .put(CLEAR_PASSWORD_PLUGIN_NAME, true)
             .build();
@@ -58,10 +72,12 @@ public class MysqlHandshakePacket extends MysqlPacket {
     // connection id used in KILL statement.
     private int connectionId;
     private byte[] authPluginData;
+    private boolean supportSSL;
 
-    public MysqlHandshakePacket(int connectionId) {
+    public MysqlHandshakePacket(int connectionId, boolean supportSSL) {
         this.connectionId = connectionId;
         authPluginData = MysqlPassword.createRandomString(SCRAMBLE_LENGTH);
+        this.supportSSL = supportSSL;
     }
 
     public byte[] getAuthPluginData() {
@@ -71,6 +87,10 @@ public class MysqlHandshakePacket extends MysqlPacket {
     @Override
     public void writeTo(MysqlSerializer serializer) {
         MysqlCapability capability = CAPABILITY;
+        if (supportSSL) {
+            capability = new MysqlCapability(capability.getFlags()
+                    | MysqlCapability.Flag.CLIENT_SSL.getFlagBit());
+        }
 
         serializer.writeInt1(PROTOCOL_VERSION);
         serializer.writeNulTerminateString(SERVER_VERSION);
@@ -105,7 +125,7 @@ public class MysqlHandshakePacket extends MysqlPacket {
     }
 
     public boolean checkAuthPluginSameAsStarRocks(String pluginName) {
-        return supportedPlugins.containsKey(pluginName) && supportedPlugins.get(pluginName);
+        return SUPPORTED_PLUGINS.containsKey(pluginName) && SUPPORTED_PLUGINS.get(pluginName);
     }
 
     // If the auth default plugin in client is different from StarRocks
@@ -119,17 +139,15 @@ public class MysqlHandshakePacket extends MysqlPacket {
 
     // If user use kerberos for authentication, fe need to resend the handshake request.
     public void buildKrb5AuthRequest(MysqlSerializer serializer, String remoteIp, String user) throws Exception {
-        String fullUserName = SystemInfoService.DEFAULT_CLUSTER + ":" + user;
-        Password password = Catalog.getCurrentCatalog().getAuth().getUserPrivTable()
-                .getPasswordByApproximate(fullUserName, remoteIp);
-        if (password == null) {
-            String msg = String.format("Can not find password with [user: %s, remoteIp: %s].", user, remoteIp);
+        Map.Entry<UserIdentity, UserAuthenticationInfo> authenticationInfo =
+                GlobalStateMgr.getCurrentState().getAuthenticationMgr().getBestMatchedUserIdentity(user, remoteIp);
+        if (authenticationInfo == null) {
+            String msg = String.format("Can not find kerberos authentication with [user: %s, remoteIp: %s].", user, remoteIp);
             LOG.error(msg);
             throw new Exception(msg);
         }
-
-        String userRealm = password.getUserForAuthPlugin();
-        Class<?> authClazz = Catalog.getCurrentCatalog().getAuth().getAuthClazz();
+        String userRealm = authenticationInfo.getValue().getTextForAuthPlugin();
+        Class<?> authClazz = GlobalStateMgr.getCurrentState().getAuthenticationMgr().getAuthClazz();
         Method method = authClazz.getMethod("buildKrb5HandshakeRequest", String.class, String.class);
         byte[] packet = (byte[]) method.invoke(null, Config.authentication_kerberos_service_principal, userRealm);
         serializer.writeBytes(packet);

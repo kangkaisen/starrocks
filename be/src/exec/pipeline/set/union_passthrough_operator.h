@@ -1,12 +1,23 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include "exec/exec_node.h"
 #include "exec/pipeline/operator.h"
 
-namespace starrocks {
-namespace pipeline {
+namespace starrocks::pipeline {
 // UNION ALL operator has three kinds of sub-node as follows:
 // 1. Passthrough.
 //    The src column from sub-node is projected to the dest column without expressions.
@@ -30,9 +41,10 @@ public:
 
     using SlotMap = std::unordered_map<SlotId, SlotItem>;
 
-    UnionPassthroughOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id, SlotMap* dst2src_slot_map,
-                             const std::vector<SlotDescriptor*>& slots, const std::vector<SlotDescriptor*>& src_slots)
-            : Operator(factory, id, "union_passthrough", plan_node_id),
+    UnionPassthroughOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id, int32_t driver_sequence,
+                             SlotMap* dst2src_slot_map, const std::vector<SlotDescriptor*>& slots,
+                             const std::vector<SlotDescriptor*>& src_slots)
+            : Operator(factory, id, "union_passthrough", plan_node_id, false, driver_sequence),
               _dst2src_slot_map(dst2src_slot_map),
               _dst_slots(slots),
               _src_slots(src_slots) {}
@@ -50,7 +62,7 @@ public:
 
     Status push_chunk(RuntimeState* state, const ChunkPtr& src_chunk) override;
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
     // Maps the dst slot id of the dest chunk to that of the src chunk.
@@ -62,7 +74,7 @@ private:
     const std::vector<SlotDescriptor*>& _src_slots;
 
     bool _is_finished = false;
-    vectorized::ChunkPtr _dst_chunk = nullptr;
+    ChunkPtr _dst_chunk = nullptr;
 };
 
 class UnionPassthroughOperatorFactory final : public OperatorFactory {
@@ -77,8 +89,8 @@ public:
               _src_slots(src_slots) {}
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
-        return std::make_shared<UnionPassthroughOperator>(this, _id, _plan_node_id, _dst2src_slot_map, _dst_slots,
-                                                          _src_slots);
+        return std::make_shared<UnionPassthroughOperator>(this, _id, _plan_node_id, driver_sequence, _dst2src_slot_map,
+                                                          _dst_slots, _src_slots);
     }
 
 private:
@@ -89,5 +101,4 @@ private:
     const std::vector<SlotDescriptor*>& _src_slots;
 };
 
-} // namespace pipeline
-} // namespace starrocks
+} // namespace starrocks::pipeline

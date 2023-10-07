@@ -1,10 +1,28 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "column/decimalv3_column.h"
 
 #include "column/fixed_length_column.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
+
+template <typename T>
+DecimalV3Column<T>::DecimalV3Column(size_t num_rows) {
+    this->resize_uninitialized(num_rows);
+}
+
 template <typename T>
 DecimalV3Column<T>::DecimalV3Column(int precision, int scale) : _precision(precision), _scale(scale) {
     DCHECK(0 <= _scale && _scale <= _precision && _precision <= decimal_precision_limit<T>);
@@ -12,7 +30,7 @@ DecimalV3Column<T>::DecimalV3Column(int precision, int scale) : _precision(preci
 
 template <typename T>
 DecimalV3Column<T>::DecimalV3Column(int precision, int scale, size_t num_rows) : DecimalV3Column(precision, scale) {
-    this->resize(num_rows);
+    this->resize_uninitialized(num_rows);
 }
 template <typename T>
 bool DecimalV3Column<T>::is_decimal() const {
@@ -52,7 +70,7 @@ void DecimalV3Column<T>::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) c
 }
 
 template <typename T>
-std::string DecimalV3Column<T>::debug_item(uint32_t idx) const {
+std::string DecimalV3Column<T>::debug_item(size_t idx) const {
     auto& data = this->get_data();
     return DecimalV3Cast::to_string<T>(data[idx], _precision, _scale);
 }
@@ -91,8 +109,8 @@ int64_t DecimalV3Column<T>::xor_checksum(uint32_t from, uint32_t to) const {
 
     for (size_t i = from; i < to; ++i) {
         if constexpr (std::is_same_v<T, int128_t>) {
-            xor_checksum ^= (src[i] >> 64);
-            xor_checksum ^= (src[i] & ULLONG_MAX);
+            xor_checksum ^= static_cast<int64_t>(src[i] >> 64);
+            xor_checksum ^= static_cast<int64_t>(src[i] & ULLONG_MAX);
         } else {
             xor_checksum ^= src[i];
         }
@@ -104,4 +122,4 @@ int64_t DecimalV3Column<T>::xor_checksum(uint32_t from, uint32_t to) const {
 template class DecimalV3Column<int32_t>;
 template class DecimalV3Column<int64_t>;
 template class DecimalV3Column<int128_t>;
-} // namespace starrocks::vectorized
+} // namespace starrocks

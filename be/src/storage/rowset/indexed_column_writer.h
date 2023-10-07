@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/indexed_column_writer.h
 
@@ -41,12 +54,9 @@ class KeyCoder;
 class TypeInfo;
 using TypeInfoPtr = std::shared_ptr<TypeInfo>;
 
-namespace fs {
-class WritableBlock;
-}
-
 class IndexPageBuilder;
 class PageBuilder;
+class WritableFile;
 
 struct IndexedColumnWriterOptions {
     size_t index_page_size = OLAP_PAGE_SIZE;
@@ -73,8 +83,7 @@ struct IndexedColumnWriterOptions {
 // TODO test with empty input
 class IndexedColumnWriter {
 public:
-    explicit IndexedColumnWriter(const IndexedColumnWriterOptions& options, TypeInfoPtr typeinfo,
-                                 fs::WritableBlock* wblock);
+    explicit IndexedColumnWriter(const IndexedColumnWriterOptions& options, TypeInfoPtr typeinfo, WritableFile* wfile);
 
     ~IndexedColumnWriter();
 
@@ -92,7 +101,7 @@ private:
 
     IndexedColumnWriterOptions _options;
     TypeInfoPtr _typeinfo;
-    fs::WritableBlock* _wblock;
+    WritableFile* _wfile;
     // only used for `_first_value`
     MemPool _mem_pool;
 

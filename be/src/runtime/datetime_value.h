@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/datetime_value.h
 
@@ -31,33 +44,11 @@
 
 #include "cctz/civil_time.h"
 #include "cctz/time_zone.h"
+#include "runtime/time_types.h"
 #include "util/hash_util.hpp"
 #include "util/timezone_utils.h"
 
 namespace starrocks {
-
-enum TimeUnit {
-    MICROSECOND,
-    SECOND,
-    MINUTE,
-    HOUR,
-    DAY,
-    WEEK,
-    MONTH,
-    QUARTER,
-    YEAR,
-    SECOND_MICROSECOND,
-    MINUTE_MICROSECOND,
-    MINUTE_SECOND,
-    HOUR_MICROSECOND,
-    HOUR_SECOND,
-    HOUR_MINUTE,
-    DAY_MICROSECOND,
-    DAY_SECOND,
-    DAY_MINUTE,
-    DAY_HOUR,
-    YEAR_MONTH
-};
 
 struct TimeInterval {
     int32_t year{0};
@@ -69,10 +60,9 @@ struct TimeInterval {
     int32_t microsecond{0};
     bool is_neg{false};
 
-    TimeInterval() {}
+    TimeInterval() = default;
 
-    TimeInterval(TimeUnit unit, int count, bool is_neg_param)
-            : year(0), month(0), day(0), hour(0), minute(0), second(0), microsecond(0), is_neg(is_neg_param) {
+    TimeInterval(TimeUnit unit, int count, bool is_neg_param) : is_neg(is_neg_param) {
         switch (unit) {
         case YEAR:
             year = count;
@@ -143,7 +133,7 @@ public:
               _day(day),
               _microsecond(microsec) {}
 
-    DateTimeValue(int64_t t) { from_date_int64(t); }
+    explicit DateTimeValue(int64_t t) { from_date_int64(t); }
 
     // Converted from Olap Date or Datetime
     bool from_olap_datetime(uint64_t datetime) {
@@ -234,6 +224,9 @@ public:
     // Convert this datetime value to string by the format string
     bool to_format_string(const char* format, int len, char* to) const;
 
+    // Convert this datetime value to string by the joda format string
+    bool to_joda_format_string(const char* format, int len, char* to) const;
+
     // compute the length of data format pattern
     static int compute_format_len(const char* format, int len);
 
@@ -249,12 +242,14 @@ public:
 
     static uint8_t calc_weekday(uint64_t daynr, bool);
 
+    TimeType type() const { return (TimeType)_type; }
     int year() const { return _year; }
     int month() const { return _month; }
     int day() const { return _day; }
     int hour() const { return _hour; }
     int minute() const { return _minute; }
     int second() const { return _second; }
+    int microsecond() const { return _microsecond; }
 
     void cast_to_date() {
         _hour = 0;
@@ -315,15 +310,15 @@ public:
 
     //unix_timestamp is called with a timezone argument,
     //it returns seconds of the value of date literal since '1970-01-01 00:00:00' UTC
-    bool unix_timestamp(int64_t* timestamp, const std::string_view& timezone) const;
+    bool unix_timestamp(int64_t* timestamp, std::string_view timezone) const;
     bool unix_timestamp(int64_t* timestamp, const cctz::time_zone& ctz) const;
 
     //construct datetime_value from timestamp and timezone
     //timestamp is an internal timestamp value representing seconds since '1970-01-01 00:00:00' UTC
-    bool from_cctz_timezone(const TimezoneHsScan& timezone_hsscan, const std::string_view& timezone,
-                            cctz::time_zone& ctz);
+    bool from_cctz_timezone(const TimezoneHsScan& timezone_hsscan, std::string_view timezone, cctz::time_zone& ctz);
     bool from_unixtime(int64_t, const std::string& timezone);
     bool from_unixtime(int64_t, const cctz::time_zone& ctz);
+    bool from_unixtime(int64_t, int64_t, const cctz::time_zone& ctz);
 
     bool operator==(const DateTimeValue& other) const {
         // NOTE: This is not same with MySQL.
@@ -404,7 +399,7 @@ public:
 
     void set_type(int type);
 
-private:
+protected:
     // Used to make sure sizeof DateTimeValue
     friend class UnusedClass;
 
@@ -513,7 +508,64 @@ std::ostream& operator<<(std::ostream& os, const DateTimeValue& value);
 
 std::size_t hash_value(DateTimeValue const& value);
 
+class TeradataFormat final : public DateTimeValue {
+public:
+    TeradataFormat() {
+        _month = 1;
+        _day = 1;
+    }
+    ~TeradataFormat() = default;
+
+    bool prepare(std::string_view format);
+    bool parse(std::string_view str, DateTimeValue* output);
+
+private:
+    // Token parsers
+    std::vector<std::function<bool()>> _token_parsers;
+    // Cursor
+    const char* val = nullptr;
+    const char* val_end = nullptr;
+};
+
 } // namespace starrocks
+
+namespace starrocks::joda {
+
+class JodaFormat : public starrocks::DateTimeValue {
+public:
+    JodaFormat() = default;
+    ~JodaFormat() = default;
+
+    bool prepare(std::string_view format);
+    bool parse(std::string_view str, DateTimeValue* output);
+
+private:
+    // Token parsers
+    std::vector<std::function<bool()>> _token_parsers;
+
+    // Cursor
+    const char* val = nullptr;
+    const char* val_end = nullptr;
+
+    bool date_part_used = false;
+    bool time_part_used = false;
+    bool frac_part_used = false;
+
+    int halfday = 0;
+    int weekday = -1;
+    int yearday = -1;
+    int week_num = -1;
+
+    cctz::time_zone ctz; // default UTC
+    bool has_timezone = false;
+
+    const bool strict_week_number = false;
+    const bool sunday_first = false;
+    const bool strict_week_number_year_type = false;
+    const int strict_week_number_year = -1;
+};
+
+} // namespace starrocks::joda
 
 namespace std {
 template <>

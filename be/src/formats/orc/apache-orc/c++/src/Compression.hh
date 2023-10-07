@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/src/Compression.hh
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -33,10 +29,11 @@ namespace orc {
    * @param input the input stream that is the underlying source
    * @param bufferSize the maximum size of the buffer
    * @param pool the memory pool
+   * @param metrics the reader metrics
    */
 std::unique_ptr<SeekableInputStream> createDecompressor(CompressionKind kind,
                                                         std::unique_ptr<SeekableInputStream> input, uint64_t bufferSize,
-                                                        MemoryPool& pool);
+                                                        MemoryPool& pool, ReaderMetrics* metrics);
 
 /**
    * Create a compressor for the given compression kind.

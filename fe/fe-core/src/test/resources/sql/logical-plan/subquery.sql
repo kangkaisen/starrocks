@@ -157,14 +157,22 @@ logical project (col)
 
 [sql]
 select v1 from t0 where v1 = (select v4 from t1 where v2 = v5);
-[except]
-Correlated scalar subquery should aggregation query
+[result]
+logical project (col)
+    logical filter (col = col)
+        logical apply (col)
+            logical project (col,col,col)
+                logical scan
+            logical project (col)
+                logical filter (col = col)
+                    logical project (col,col,col)
+                        logical scan
 [end]
 
 [sql]
 select * from t0 where v1 in (select sum(v4) from t1 where v2= v4);
 [except]
-Unsupported correlated in predicate subquery with grouping or aggregation
+Getting analyzing error. Detail message: Unsupported correlated in predicate subquery with grouping or aggregation.
 [end]
 
 [sql]

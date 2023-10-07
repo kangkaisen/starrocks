@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/descriptor_helper.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -51,8 +47,12 @@ private:
 class TTupleDescriptorBuilder;
 class TSlotDescriptorBuilder {
 public:
-    TSlotDescriptorBuilder() { _slot_desc.isMaterialized = true; }
-    TSlotDescriptorBuilder& type(PrimitiveType type) { return this->type(TypeDescriptor(type)); }
+    TSlotDescriptorBuilder() {
+        _slot_desc.isMaterialized = true;
+        _slot_desc.isOutputColumn = true;
+        _slot_desc.__isset.isOutputColumn = true;
+    }
+    TSlotDescriptorBuilder& type(LogicalType type) { return this->type(TypeDescriptor(type)); }
     TSlotDescriptorBuilder& type(const TypeDescriptor& type) {
         _slot_desc.slotType = type.to_thrift();
         return *this;
@@ -83,6 +83,11 @@ public:
     }
     TSlotDescriptorBuilder& is_materialized(bool is_materialized) {
         _slot_desc.isMaterialized = is_materialized;
+        return *this;
+    }
+    TSlotDescriptorBuilder& is_output_column(bool is_output_column) {
+        _slot_desc.isOutputColumn = is_output_column;
+        _slot_desc.__isset.isOutputColumn = true;
         return *this;
     }
     TSlotDescriptorBuilder& column_name(const std::string& name) {

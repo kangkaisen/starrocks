@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.optimizer.operator.logical;
 
 import com.starrocks.sql.optimizer.OptExpression;
@@ -11,7 +24,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import java.util.List;
 
 public class LogicalUnionOperator extends LogicalSetOperator {
-    private final boolean isUnionAll;
+    private boolean isUnionAll;
 
     public LogicalUnionOperator(List<ColumnRefOperator> result, List<List<ColumnRefOperator>> childOutputColumns,
                                 boolean isUnionAll) {
@@ -19,15 +32,31 @@ public class LogicalUnionOperator extends LogicalSetOperator {
         this.isUnionAll = isUnionAll;
     }
 
-    private LogicalUnionOperator(LogicalUnionOperator.Builder builder) {
-        super(OperatorType.LOGICAL_UNION, builder.outputColumnRefOp, builder.childOutputColumns,
-                builder.getLimit(),
-                builder.getProjection());
-        this.isUnionAll = builder.isUnionAll;
+    private LogicalUnionOperator() {
+        super(OperatorType.LOGICAL_UNION);
     }
 
     public boolean isUnionAll() {
         return isUnionAll;
+    }
+
+    @Override
+    public int hashCode() {
+        return super.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+
+        if (!super.equals(o)) {
+            return false;
+        }
+
+        LogicalUnionOperator that = (LogicalUnionOperator) o;
+        return isUnionAll == that.isUnionAll;
     }
 
     @Override
@@ -40,23 +69,25 @@ public class LogicalUnionOperator extends LogicalSetOperator {
         return visitor.visitLogicalUnion(optExpression, context);
     }
 
-    public static class Builder extends LogicalSetOperator.Builder<LogicalUnionOperator, LogicalUnionOperator.Builder> {
-        private boolean isUnionAll;
+    public static Builder builder() {
+        return new Builder();
+    }
 
+    public static class Builder extends LogicalSetOperator.Builder<LogicalUnionOperator, LogicalUnionOperator.Builder> {
         @Override
-        public LogicalUnionOperator build() {
-            return new LogicalUnionOperator(this);
+        protected LogicalUnionOperator newInstance() {
+            return new LogicalUnionOperator();
         }
 
         @Override
         public Builder withOperator(LogicalUnionOperator unionOperator) {
             super.withOperator(unionOperator);
-            isUnionAll = unionOperator.isUnionAll;
+            builder.isUnionAll = unionOperator.isUnionAll;
             return this;
         }
 
         public Builder isUnionAll(boolean isUnionAll) {
-            this.isUnionAll = isUnionAll;
+            builder.isUnionAll = isUnionAll;
             return this;
         }
     }

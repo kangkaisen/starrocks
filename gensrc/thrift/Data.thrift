@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/gensrc/thrift/Data.thrift
 
@@ -81,8 +94,9 @@ struct TResultBatch {
 
 struct TGlobalDict {
     1: optional i32 columnId
-    2: optional list<string> strings
+    2: optional list<binary> strings
     3: optional list<i32> ids
+    4: optional i64 version
 }
 
 // Statistic data for new planner 
@@ -102,5 +116,14 @@ struct TStatisticData {
     12: optional TGlobalDict dict
     // the latest partition version for this table
     13: optional i64 meta_version
+    14: optional i64 partitionId
+    // the batch load version
+    15: optional binary hll
+    16: optional string partitionName
 }
 
+// Result data for user variable
+struct TVariableData {
+    1: optional bool isNull
+    2: optional binary result
+}

@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -20,19 +32,11 @@ public:
 
     StatusOr<int64_t> read(void* data, int64_t count) override;
 
-    StatusOr<int64_t> read_at(int64_t offset, void* data, int64_t count) override;
-
-    StatusOr<int64_t> seek(int64_t offset, int whence) override;
-
-    Status skip(int64_t count) override;
-
-    bool allows_peak() const override { return false; }
-
-    StatusOr<std::string_view> peak(int64_t nbytes) override;
-
     StatusOr<int64_t> get_size() override;
 
-    StatusOr<int64_t> position() override;
+    StatusOr<int64_t> position() override { return _offset; }
+
+    Status seek(int64_t offset) override;
 
     // closes the underlying file.
     //
@@ -56,6 +60,7 @@ public:
 private:
     int _fd;
     int _errno;
+    int64_t _offset;
     bool _close_on_delete;
     bool _is_closed;
 };

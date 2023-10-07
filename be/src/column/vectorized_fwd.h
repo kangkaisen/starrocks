@@ -1,9 +1,21 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
 
 #include <memory>
 #include <vector>
-
-#pragma once
 
 namespace starrocks {
 
@@ -12,8 +24,6 @@ class HyperLogLog;
 class BitmapValue;
 class PercentileValue;
 class JsonValue;
-
-namespace vectorized {
 
 class DateValue;
 class TimestampValue;
@@ -31,7 +41,8 @@ template <typename T>
 using Buffer = std::vector<T>;
 
 class ArrayColumn;
-class BinaryColumn;
+class MapColumn;
+class StructColumn;
 class NullableColumn;
 class ConstColumn;
 
@@ -43,6 +54,9 @@ class FixedLengthColumnBase;
 
 template <typename T>
 class DecimalV3Column;
+
+template <typename T>
+class BinaryColumnBase;
 
 using ColumnPtr = std::shared_ptr<Column>;
 using MutableColumnPtr = std::unique_ptr<Column>;
@@ -67,11 +81,13 @@ using TimestampColumn = FixedLengthColumn<TimestampValue>;
 using Decimal32Column = DecimalV3Column<int32_t>;
 using Decimal64Column = DecimalV3Column<int64_t>;
 using Decimal128Column = DecimalV3Column<int128_t>;
+using BinaryColumn = BinaryColumnBase<uint32_t>;
+using LargeBinaryColumn = BinaryColumnBase<uint64_t>;
 
 template <typename T>
 constexpr bool is_decimal_column = false;
 template <typename T>
-constexpr bool is_decimal_column<DecimalV3Column<T>> = true;
+inline constexpr bool is_decimal_column<DecimalV3Column<T>> = true;
 template <typename ColumnType>
 using DecimalColumnType = std::enable_if_t<is_decimal_column<ColumnType>, ColumnType>;
 
@@ -84,8 +100,12 @@ using PercentileColumn = ObjectColumn<PercentileValue>;
 using JsonColumnBase = ObjectColumn<JsonValue>;
 class JsonColumn;
 
+class MapColumn;
+class StructColumn;
+
 using ChunkPtr = std::shared_ptr<Chunk>;
 using ChunkUniquePtr = std::unique_ptr<Chunk>;
+using Chunks = std::vector<ChunkPtr>;
 
 using SchemaPtr = std::shared_ptr<Schema>;
 
@@ -95,5 +115,4 @@ using FieldPtr = std::shared_ptr<Field>;
 using Filter = Buffer<uint8_t>;
 using FilterPtr = std::shared_ptr<Filter>;
 
-} // namespace vectorized
 } // namespace starrocks

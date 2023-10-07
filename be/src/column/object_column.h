@@ -1,14 +1,30 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <memory>
 
 #include "column/column.h"
+#include "column/datum.h"
+#include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
-#include "util/bitmap_value.h"
+#include "types/bitmap_value.h"
+#include "types/hll.h"
+#include "util/percentile_value.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 //class Object {
 //    Object();
@@ -29,6 +45,8 @@ public:
     using ValueType = T;
 
     ObjectColumn() = default;
+
+    explicit ObjectColumn(size_t size) : _pool(size) {}
 
     ObjectColumn(const ObjectColumn& column) { DCHECK(false) << "Can't copy construct object column"; }
 
@@ -77,15 +95,22 @@ public:
 
     void append(T&& object);
 
+    void append(const T& object);
+
     void append_datum(const Datum& datum) override { append(datum.get<T*>()); }
 
     void remove_first_n_values(size_t count) override;
 
     void append(const Column& src, size_t offset, size_t count) override;
 
+    void append_shallow_copy(const Column& src, size_t offset, size_t count) override;
+
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
+    void append_selective_shallow_copy(const Column& src, const uint32_t* indexes, uint32_t from,
+                                       uint32_t size) override;
+
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
 
     bool append_nulls(size_t count) override { return false; }
 
@@ -100,7 +125,9 @@ public:
 
     void append_default(size_t count) override;
 
-    Status update_rows(const Column& src, const uint32_t* indexes) override;
+    void fill_default(const Filter& filter) override;
+
+    void update_rows(const Column& src, const uint32_t* indexes) override;
 
     uint32_t serialize(size_t idx, uint8_t* pos) override;
     uint32_t serialize_default(uint8_t* pos) override;
@@ -120,7 +147,7 @@ public:
 
     ColumnPtr clone_shared() const override;
 
-    size_t filter_range(const Column::Filter& filter, size_t from, size_t to) override;
+    size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 
     int compare_at(size_t left, size_t right, const Column& rhs, int nan_direction_hint) const override;
 
@@ -148,13 +175,11 @@ public:
 
     Datum get(size_t n) const override { return Datum(get_object(n)); }
 
-    size_t shrink_memory_usage() const override { return _pool.size() * type_size() + byte_size(); }
-
     size_t container_memory_usage() const override { return _pool.capacity() * type_size(); }
 
-    size_t element_memory_usage() const override { return byte_size(); }
+    size_t reference_memory_usage() const override { return byte_size(); }
 
-    size_t element_memory_usage(size_t from, size_t size) const override { return byte_size(from, size); }
+    size_t reference_memory_usage(size_t from, size_t size) const override { return byte_size(from, size); }
 
     void swap_column(Column& rhs) override {
         auto& r = down_cast<ObjectColumn&>(rhs);
@@ -175,17 +200,22 @@ public:
         _buffer.clear();
     }
 
+    void reset_cache() {
+        _cache_ok = false;
+        _cache.clear();
+    }
+
     Buffer<T>& get_pool() { return _pool; }
 
     const Buffer<T>& get_pool() const { return _pool; }
 
-    std::string debug_item(uint32_t idx) const override;
+    std::string debug_item(size_t idx) const override;
 
     std::string debug_string() const override {
         std::stringstream ss;
         ss << "[";
         size_t size = this->size();
-        for (int i = 0; i < size - 1; ++i) {
+        for (size_t i = 0; i < size - 1; ++i) {
             ss << debug_item(i) << ", ";
         }
         if (size > 0) {
@@ -195,12 +225,27 @@ public:
         return ss.str();
     }
 
-    bool reach_capacity_limit() const override {
-        return _pool.size() >= Column::MAX_CAPACITY_LIMIT || _cache.size() >= Column::MAX_CAPACITY_LIMIT ||
-               _slices.size() >= Column::MAX_CAPACITY_LIMIT || _buffer.size() >= Column::MAX_CAPACITY_LIMIT;
+    bool capacity_limit_reached(std::string* msg = nullptr) const override {
+        if (_pool.size() > Column::MAX_CAPACITY_LIMIT) {
+            if (msg != nullptr) {
+                msg->append("row count of object column exceed the limit: " +
+                            std::to_string(Column::MAX_CAPACITY_LIMIT));
+            }
+            return true;
+        }
+        return false;
     }
 
+    StatusOr<ColumnPtr> upgrade_if_overflow() override;
+
+    StatusOr<ColumnPtr> downgrade() override { return nullptr; }
+
+    bool has_large_column() const override { return false; }
+
 private:
+    // add this to avoid warning clang-diagnostic-overloaded-virtual
+    using Column::append;
+
     void _build_cache() const {
         if (_cache_ok) {
             return;
@@ -229,4 +274,4 @@ private:
     mutable Buffer<Slice> _slices;
     mutable Buffer<uint8_t> _buffer;
 };
-} // namespace starrocks::vectorized
+} // namespace starrocks

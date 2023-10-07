@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/orc/tree/main/c++/src/StripeStream.hh
 
@@ -64,6 +77,8 @@ public:
 
     MemoryPool& getMemoryPool() const override;
 
+    ReaderMetrics* getReaderMetrics() const override;
+
     const Timezone& getWriterTimezone() const override;
 
     const Timezone& getReaderTimezone() const override;
@@ -71,6 +86,8 @@ public:
     std::ostream* getErrorStream() const override;
 
     bool getThrowOnHive11DecimalOverflow() const override;
+
+    bool isDecimalAsLong() const override;
 
     int32_t getForcedScaleOnHive11Decimal() const override;
 
@@ -125,12 +142,13 @@ class StripeInformationImpl : public StripeInformation {
     CompressionKind compression;
     uint64_t blockSize;
     mutable std::unique_ptr<proto::StripeFooter> stripeFooter;
+    ReaderMetrics* metrics;
     void ensureStripeFooterLoaded() const;
 
 public:
     StripeInformationImpl(uint64_t _offset, uint64_t _indexLength, uint64_t _dataLength, uint64_t _footerLength,
                           uint64_t _numRows, InputStream* _stream, MemoryPool& _memory, CompressionKind _compression,
-                          uint64_t _blockSize)
+                          uint64_t _blockSize, ReaderMetrics* _metrics)
             : offset(_offset),
               indexLength(_indexLength),
               dataLength(_dataLength),
@@ -139,7 +157,8 @@ public:
               stream(_stream),
               memory(_memory),
               compression(_compression),
-              blockSize(_blockSize) {
+              blockSize(_blockSize),
+              metrics(_metrics) {
         // PASS
     }
 

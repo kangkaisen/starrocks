@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/orc/tree/main/c++/src/Reader.cc
 
@@ -36,6 +49,7 @@
 #include "Options.hh"
 #include "Statistics.hh"
 #include "StripeStream.hh"
+#include "Utils.hh"
 #include "wrap/coded-stream-wrapper.h"
 
 namespace orc {
@@ -43,6 +57,11 @@ namespace orc {
 // hashing. Bloom filters of them should not be used.
 static const char* BAD_CPP_BLOOM_FILTER_VERSIONS[] = {"1.6.0", "1.6.1", "1.6.2", "1.6.3",  "1.6.4",  "1.6.5", "1.6.6",
                                                       "1.6.7", "1.6.8", "1.6.9", "1.6.10", "1.6.11", "1.7.0"};
+
+ReaderMetrics* getDefaultReaderMetrics() {
+    static ReaderMetrics internal;
+    return &internal;
+}
 
 const WriterVersionImpl& WriterVersionImpl::VERSION_HIVE_8732() {
     static const WriterVersionImpl version(WriterVersion_HIVE_8732);
@@ -67,7 +86,7 @@ CompressionKind convertCompressionKind(const proto::PostScript& ps) {
 
 std::string ColumnSelector::toDotColumnPath() {
     if (columns.empty()) {
-        return std::string();
+        return {};
     }
     std::ostringstream columnStream;
     std::copy(columns.begin(), columns.end(), std::ostream_iterator<std::string>(columnStream, "."));
@@ -83,7 +102,7 @@ WriterVersion getWriterVersionImpl(const FileContents* contents) {
 }
 
 void ColumnSelector::selectChildren(std::vector<bool>& selectedColumns, const Type& type) {
-    size_t id = static_cast<size_t>(type.getColumnId());
+    auto id = static_cast<size_t>(type.getColumnId());
     if (!selectedColumns[id]) {
         selectedColumns[id] = true;
         for (size_t c = id; c <= type.getMaximumColumnId(); ++c) {
@@ -97,7 +116,7 @@ void ColumnSelector::selectChildren(std::vector<bool>& selectedColumns, const Ty
    * @return true if any child was selected.
    */
 bool ColumnSelector::selectParents(std::vector<bool>& selectedColumns, const Type& type) {
-    size_t id = static_cast<size_t>(type.getColumnId());
+    auto id = static_cast<size_t>(type.getColumnId());
     bool result = selectedColumns[id];
     uint64_t numSubtypeSelected = 0;
     for (uint64_t c = 0; c < type.getSubtypeCount(); ++c) {
@@ -137,7 +156,7 @@ void ColumnSelector::buildTypeNameIdMap(const Type* type) {
             columns.pop_back();
         }
     } else {
-        // other non-primitive type
+        // other non-logical type
         for (size_t j = 0; j < type->getSubtypeCount(); ++j) {
             buildTypeNameIdMap(type->getSubtype(j));
         }
@@ -163,6 +182,9 @@ void ColumnSelector::updateSelected(std::vector<bool>& selectedColumns, std::vec
     } else if (options.getTypeIdsSet()) {
         for (unsigned long typeId : options.getInclude()) {
             updateSelectedByTypeId(selectedColumns, typeId);
+        }
+        for (unsigned long typeId : options.getLazyLoadColumnIndexes()) {
+            updateSelectedByTypeId(lazyLoadColumns, typeId);
         }
     } else {
         // default is to select all columns
@@ -198,7 +220,15 @@ void ColumnSelector::updateSelectedByName(std::vector<bool>& selectedColumns, co
     if (ite != nameIdMap.end()) {
         updateSelectedByTypeId(selectedColumns, ite->second);
     } else {
-        throw ParseError("Invalid column selected " + fieldName);
+        bool first = true;
+        std::ostringstream ss;
+        ss << "Invalid column selected " << fieldName << ". Valid names are ";
+        for (auto& it : nameIdMap) {
+            if (!first) ss << ", ";
+            ss << it.first;
+            first = false;
+        }
+        throw ParseError(ss.str());
     }
 }
 
@@ -224,6 +254,7 @@ RowReaderImpl::RowReaderImpl(const std::shared_ptr<FileContents>& _contents, con
     currentRowInStripe = 0;
     lazyLoadLastUsedRowInStripe = 0;
     rowsInCurrentStripe = 0;
+    numRowGroupsInStripeRange = 0;
     uint64_t rowTotal = 0;
 
     firstRowOfStripe.resize(numberOfStripes);
@@ -239,6 +270,11 @@ RowReaderImpl::RowReaderImpl(const std::shared_ptr<FileContents>& _contents, con
             }
             if (i >= lastStripe) {
                 lastStripe = i + 1;
+            }
+
+            if (footer->rowindexstride() > 0) {
+                numRowGroupsInStripeRange +=
+                        (stripeInfo.numberofrows() + footer->rowindexstride() - 1) / footer->rowindexstride();
             }
         }
     }
@@ -258,8 +294,9 @@ RowReaderImpl::RowReaderImpl(const std::shared_ptr<FileContents>& _contents, con
     // prepare SargsApplier if SearchArgument is available
     if (opts.getSearchArgument() && footer->rowindexstride() > 0) {
         sargs = opts.getSearchArgument();
-        sargsApplier.reset(new SargsApplier(*contents->schema, sargs.get(), opts.getRowReaderFilter().get(),
-                                            footer->rowindexstride(), getWriterVersionImpl(_contents.get())));
+        sargsApplier.reset(new SargsApplier(*contents->schema, sargs.get(), footer->rowindexstride(),
+                                            getWriterVersionImpl(_contents.get()), contents->readerMetrics,
+                                            opts.getRowReaderFilter().get()));
     }
 
     skipBloomFilters = hasBadBloomFilters();
@@ -330,7 +367,7 @@ void RowReaderImpl::seekToRow(uint64_t rowNumber) {
     // Implement this by setting previousRow to the number of rows in the file.
 
     // seeking past lastStripe
-    uint64_t num_stripes = static_cast<uint64_t>(footer->stripes_size());
+    auto num_stripes = static_cast<uint64_t>(footer->stripes_size());
     if ((lastStripe == num_stripes && rowNumber >= footer->numberofrows()) ||
         (lastStripe < num_stripes && rowNumber >= firstRowOfStripe[lastStripe])) {
         currentStripe = num_stripes;
@@ -355,24 +392,31 @@ void RowReaderImpl::seekToRow(uint64_t rowNumber) {
     previousRow = rowNumber;
     startNextStripe();
 
-    // when predicate push down is enabled, above call to startNextStripe()
-    // will move current row to 1st matching row group; here we only need
-    // to deal with the case when PPD is not enabled.
-    if (!sargsApplier) {
-        uint64_t rowsToSkip = currentRowInStripe;
-
-        if (footer->rowindexstride() > 0 && currentStripeInfo.indexlength() > 0) {
+    uint64_t rowsToSkip = currentRowInStripe;
+    auto rowIndexStride = footer->rowindexstride();
+    // seek to the target row group if row indexes exists
+    if (rowIndexStride > 0 && currentStripeInfo.indexlength() > 0) {
+        // when predicate push down is enabled, above call to startNextStripe()
+        // will move current row to 1st matching row group; here we only need
+        // to deal with the case when PPD is not enabled.
+        if (!sargsApplier) {
             if (rowIndexes.empty()) {
                 loadStripeIndex();
             }
-            uint32_t rowGroupId = static_cast<uint32_t>(currentRowInStripe / footer->rowindexstride());
+            auto rowGroupId = static_cast<uint32_t>(currentRowInStripe / footer->rowindexstride());
             rowsToSkip -= static_cast<uint64_t>(rowGroupId) * footer->rowindexstride();
 
             if (rowGroupId != 0) {
                 seekToRowGroup(rowGroupId);
             }
         }
+        // skip leading rows in the target row group
+        rowsToSkip %= rowIndexStride;
+    }
 
+    // 'reader' is reset in startNextStripe(). It could be nullptr if 'rowsToSkip' is 0,
+    // e.g. when startNextStripe() skips all remaining rows of the file.
+    if (rowsToSkip > 0) {
         reader->skip(rowsToSkip);
     }
 }
@@ -384,9 +428,10 @@ void RowReaderImpl::loadStripeIndex() {
 
     // obtain row indexes for selected columns
     uint64_t offset = currentStripeInfo.offset();
-    uint64_t rowIndexSize = currentStripeInfo.indexlength();
-    contents->stream->prepareCache(InputStream::PrepareCacheScope::READ_ROW_GROUP_INDEX, offset, rowIndexSize);
 
+    // usually row index size is small.
+    uint64_t rowIndexSize = currentStripeInfo.indexlength();
+    contents->stream->prepareCache(InputStream::PrepareCacheScope::READ_FULL_ROW_INDEX, offset, rowIndexSize);
     for (int i = 0; i < currentStripeFooter.streams_size(); ++i) {
         const proto::Stream& pbStream = currentStripeFooter.streams(i);
         uint64_t colId = pbStream.column();
@@ -397,7 +442,7 @@ void RowReaderImpl::loadStripeIndex() {
                     createDecompressor(getCompression(),
                                        std::unique_ptr<SeekableInputStream>(new SeekableFileInputStream(
                                                contents->stream.get(), offset, pbStream.length(), *contents->pool)),
-                                       getCompressionSize(), *contents->pool);
+                                       getCompressionSize(), *contents->pool, contents->readerMetrics);
 
             if (pbStream.kind() == proto::Stream_Kind_ROW_INDEX) {
                 proto::RowIndex rowIndex;
@@ -451,6 +496,10 @@ bool RowReaderImpl::getThrowOnHive11DecimalOverflow() const {
     return throwOnHive11DecimalOverflow;
 }
 
+bool RowReaderImpl::getIsDecimalAsLong() const {
+    return contents->isDecimalAsLong;
+}
+
 int32_t RowReaderImpl::getForcedScaleOnHive11Decimal() const {
     return forcedScaleOnHive11Decimal;
 }
@@ -469,7 +518,7 @@ proto::StripeFooter getStripeFooter(const proto::StripeInformation& info, const 
             createDecompressor(contents.compression,
                                std::unique_ptr<SeekableInputStream>(new SeekableFileInputStream(
                                        contents.stream.get(), stripeFooterStart, stripeFooterLength, *contents.pool)),
-                               contents.blockSize, *contents.pool);
+                               contents.blockSize, *contents.pool, contents.readerMetrics);
     proto::StripeFooter result;
     if (!result.ParseFromZeroCopyStream(pbStream.get())) {
         throw ParseError(std::string("bad StripeFooter from ") + pbStream->getName());
@@ -534,7 +583,7 @@ uint64_t ReaderImpl::getNumberOfStripeStatistics() const {
     if (!isMetadataLoaded) {
         readMetadata();
     }
-    return metadata == nullptr ? 0 : static_cast<uint64_t>(metadata->stripestats_size());
+    return contents->metadata == nullptr ? 0 : static_cast<uint64_t>(contents->metadata->stripestats_size());
 }
 
 std::unique_ptr<StripeInformation> ReaderImpl::getStripe(uint64_t stripeIndex) const {
@@ -543,10 +592,17 @@ std::unique_ptr<StripeInformation> ReaderImpl::getStripe(uint64_t stripeIndex) c
     }
     proto::StripeInformation stripeInfo = footer->stripes(static_cast<int>(stripeIndex));
 
-    return std::unique_ptr<StripeInformation>(
-            new StripeInformationImpl(stripeInfo.offset(), stripeInfo.indexlength(), stripeInfo.datalength(),
-                                      stripeInfo.footerlength(), stripeInfo.numberofrows(), contents->stream.get(),
-                                      *contents->pool, contents->compression, contents->blockSize));
+    return std::unique_ptr<StripeInformation>(new StripeInformationImpl(
+            stripeInfo.offset(), stripeInfo.indexlength(), stripeInfo.datalength(), stripeInfo.footerlength(),
+            stripeInfo.numberofrows(), contents->stream.get(), *contents->pool, contents->compression,
+            contents->blockSize, contents->readerMetrics));
+}
+
+const orc::proto::StripeInformation& ReaderImpl::getStripeInOrcFormat(uint64_t stripeIndex) const {
+    if (stripeIndex > getNumberOfStripes()) {
+        throw std::logic_error("stripe index out of range");
+    }
+    return footer->stripes(static_cast<int>(stripeIndex));
 }
 
 FileVersion ReaderImpl::getFormatVersion() const {
@@ -646,8 +702,8 @@ void ReaderImpl::getRowIndexStatistics(const proto::StripeInformation& stripeInf
     uint64_t indexEnd = stripeInfo.offset() + stripeInfo.indexlength();
     for (int i = 0; i < num_streams; i++) {
         const proto::Stream& stream = currentStripeFooter.streams(i);
-        StreamKind streamKind = static_cast<StreamKind>(stream.kind());
-        uint64_t length = static_cast<uint64_t>(stream.length());
+        auto streamKind = static_cast<StreamKind>(stream.kind());
+        auto length = static_cast<uint64_t>(stream.length());
         if (streamKind == StreamKind::StreamKind_ROW_INDEX) {
             if (offset + length > indexEnd) {
                 std::stringstream msg;
@@ -660,14 +716,14 @@ void ReaderImpl::getRowIndexStatistics(const proto::StripeInformation& stripeInf
                     createDecompressor(contents->compression,
                                        std::unique_ptr<SeekableInputStream>(new SeekableFileInputStream(
                                                contents->stream.get(), offset, length, *contents->pool)),
-                                       contents->blockSize, *(contents->pool));
+                                       contents->blockSize, *(contents->pool), contents->readerMetrics);
 
             proto::RowIndex rowIndex;
             if (!rowIndex.ParseFromZeroCopyStream(pbStream.get())) {
                 throw ParseError("Failed to parse RowIndex from stripe footer");
             }
             int num_entries = rowIndex.entry_size();
-            size_t column = static_cast<size_t>(stream.column());
+            auto column = static_cast<size_t>(stream.column());
             for (int j = 0; j < num_entries; j++) {
                 const proto::RowIndexEntry& entry = rowIndex.entry(j);
                 (*indexStats)[column].push_back(entry.statistics());
@@ -694,10 +750,10 @@ std::unique_ptr<StripeStatistics> ReaderImpl::getStripeStatistics(uint64_t strip
     if (!isMetadataLoaded) {
         readMetadata();
     }
-    if (metadata == nullptr) {
+    if (contents->metadata == nullptr) {
         throw std::logic_error("No stripe statistics in file");
     }
-    size_t num_cols = static_cast<size_t>(metadata->stripestats(static_cast<int>(stripeIndex)).colstats_size());
+    auto num_cols = static_cast<size_t>(contents->metadata->stripestats(static_cast<int>(stripeIndex)).colstats_size());
     std::vector<std::vector<proto::ColumnStatistics>> indexStats(num_cols);
 
     proto::StripeInformation currentStripeInfo = footer->stripes(static_cast<int>(stripeIndex));
@@ -709,8 +765,8 @@ std::unique_ptr<StripeStatistics> ReaderImpl::getStripeStatistics(uint64_t strip
                                        ? getTimezoneByName(currentStripeFooter.writertimezone())
                                        : getLocalTimezone();
     StatContext statContext(hasCorrectStatistics(), &writerTZ);
-    return std::unique_ptr<StripeStatistics>(
-            new StripeStatisticsImpl(metadata->stripestats(static_cast<int>(stripeIndex)), indexStats, statContext));
+    return std::unique_ptr<StripeStatistics>(new StripeStatisticsImpl(
+            contents->metadata->stripestats(static_cast<int>(stripeIndex)), indexStats, statContext));
 }
 
 std::unique_ptr<Statistics> ReaderImpl::getStatistics() const {
@@ -743,9 +799,9 @@ void ReaderImpl::readMetadata() const {
                 createDecompressor(contents->compression,
                                    std::unique_ptr<SeekableInputStream>(new SeekableFileInputStream(
                                            contents->stream.get(), metadataStart, metadataSize, *contents->pool)),
-                                   contents->blockSize, *contents->pool);
-        metadata.reset(new proto::Metadata());
-        if (!metadata->ParseFromZeroCopyStream(pbStream.get())) {
+                                   contents->blockSize, *contents->pool, contents->readerMetrics);
+        contents->metadata.reset(new proto::Metadata());
+        if (!contents->metadata->ParseFromZeroCopyStream(pbStream.get())) {
             throw ParseError("Failed to parse the metadata");
         }
     }
@@ -770,6 +826,10 @@ std::unique_ptr<RowReader> ReaderImpl::createRowReader() const {
 }
 
 std::unique_ptr<RowReader> ReaderImpl::createRowReader(const RowReaderOptions& opts) const {
+    if (opts.getSearchArgument() && !isMetadataLoaded) {
+        // load stripe statistics for PPD
+        readMetadata();
+    }
     return std::unique_ptr<RowReader>(new RowReaderImpl(contents, opts));
 }
 
@@ -936,10 +996,45 @@ uint64_t ReaderImpl::getMemoryUse(int stripeIx, std::vector<bool>& selectedColum
     return memory + decompressorMemory;
 }
 
+// Update fields to indicate we've reached the end of file
+void RowReaderImpl::markEndOfFile() {
+    currentStripe = lastStripe;
+    currentRowInStripe = 0;
+    rowsInCurrentStripe = 0;
+    if (lastStripe == 0) {
+        // Empty file
+        previousRow = 0;
+    } else {
+        previousRow =
+                firstRowOfStripe[lastStripe - 1] + footer->stripes(static_cast<int>(lastStripe - 1)).numberofrows();
+    }
+}
+
+void RowReaderImpl::buildIORanges(std::vector<InputStream::IORange>* io_ranges) {
+    // column streams: index & data
+    uint64_t offset = currentStripeInfo.offset();
+    for (const proto::Stream& stream : currentStripeFooter.streams()) {
+        uint32_t columnId = stream.column();
+        uint64_t length = stream.length();
+        if (selectedColumns[columnId] || lazyLoadColumns[columnId]) {
+            io_ranges->emplace_back(InputStream::IORange{.offset = offset, .size = length});
+        }
+        offset += length;
+    }
+}
+
 void RowReaderImpl::startNextStripe() {
     reader.reset(); // ColumnReaders use lots of memory; free old memory first
     rowIndexes.clear();
     bloomFilterIndex.clear();
+    bool streamIORangesEnabled = contents->stream->isIORangesEnabled();
+
+    // evaluate file statistics if it exists
+    if (sargsApplier && !sargsApplier->evaluateFileStatistics(*footer, numRowGroupsInStripeRange)) {
+        // skip the entire file
+        markEndOfFile();
+        return;
+    }
 
     while (currentStripe < lastStripe) {
         currentStripeInfo = footer->stripes(static_cast<int>(currentStripe));
@@ -966,12 +1061,38 @@ void RowReaderImpl::startNextStripe() {
 
         contents->stream->prepareCache(InputStream::PrepareCacheScope::READ_FULL_STRIPE, currentStripeInfo.offset(),
                                        stripeSize);
+        if (streamIORangesEnabled) {
+            contents->stream->clearIORanges();
+        }
         currentStripeFooter = getStripeFooter(currentStripeInfo, *contents);
         rowsInCurrentStripe = currentStripeInfo.numberofrows();
+        if (streamIORangesEnabled) {
+            std::vector<InputStream::IORange> io_ranges;
+            buildIORanges(&io_ranges);
+            contents->stream->setIORanges(io_ranges);
+        }
 
         if (sargsApplier) {
+            bool isStripeNeeded = true;
+            if (contents->metadata) {
+                const auto& currentStripeStats = contents->metadata->stripestats(static_cast<int>(currentStripe));
+                // skip this stripe after stats fail to satisfy sargs
+                uint64_t stripeRowGroupCount =
+                        (rowsInCurrentStripe + footer->rowindexstride() - 1) / footer->rowindexstride();
+                isStripeNeeded = sargsApplier->evaluateStripeStatistics(currentStripeStats, stripeRowGroupCount);
+            }
+            if (!isStripeNeeded) {
+                skipStripe = true;
+                goto end;
+            }
+
             // read row group statistics and bloom filters of current stripe
             loadStripeIndex();
+
+            if (sargsApplier->getRowReaderFilter()) {
+                sargsApplier->getRowReaderFilter()->setWriterTimezone(
+                        currentStripeFooter.has_writertimezone() ? currentStripeFooter.writertimezone() : "");
+            }
 
             // select row groups to read in the current stripe
             sargsApplier->pickRowGroups(rowsInCurrentStripe, rowIndexes, bloomFilterIndex);
@@ -985,6 +1106,7 @@ void RowReaderImpl::startNextStripe() {
             const Timezone& writerTimezone = currentStripeFooter.has_writertimezone()
                                                      ? getTimezoneByName(currentStripeFooter.writertimezone())
                                                      : getLocalTimezone();
+
             StripeStreamsImpl stripeStreams(*this, currentStripe, currentStripeInfo, currentStripeFooter,
                                             currentStripeInfo.offset(), *contents->stream, writerTimezone,
                                             readerTimezone);
@@ -1002,8 +1124,9 @@ void RowReaderImpl::startNextStripe() {
                 }
 
                 // move to the 1st selected row group when PPD is enabled.
-                currentRowInStripe = advanceToNextRowGroup(currentRowInStripe, rowsInCurrentStripe,
-                                                           footer->rowindexstride(), sargsApplier->getRowGroups());
+                currentRowInStripe =
+                        advanceToNextRowGroup(currentRowInStripe, rowsInCurrentStripe, footer->rowindexstride(),
+                                              sargsApplier->getNextSkippedRows());
                 previousRow = firstRowOfStripe[currentStripe] + currentRowInStripe - 1;
                 if (currentRowInStripe > 0) {
                     seekToRowGroup(static_cast<uint32_t>(currentRowInStripe / footer->rowindexstride()));
@@ -1020,17 +1143,17 @@ void RowReaderImpl::startNextStripe() {
             break;
         }
     }
+
+    if (currentStripe == lastStripe) {
+        markEndOfFile();
+    }
 }
 
 bool RowReaderImpl::next(ColumnVectorBatch& data, ReadPosition* pos) {
+    SCOPED_STOPWATCH(contents->readerMetrics, ReaderInclusiveLatencyUs, ReaderCall);
     if (currentStripe >= lastStripe) {
         data.numElements = 0;
-        if (lastStripe > 0) {
-            previousRow =
-                    firstRowOfStripe[lastStripe - 1] + footer->stripes(static_cast<int>(lastStripe - 1)).numberofrows();
-        } else {
-            previousRow = 0;
-        }
+        markEndOfFile();
         return false;
     }
     if (currentRowInStripe == 0) {
@@ -1043,15 +1166,13 @@ bool RowReaderImpl::next(ColumnVectorBatch& data, ReadPosition* pos) {
     uint64_t rowsToRead = std::min(static_cast<uint64_t>(data.capacity), rowsInCurrentStripe - currentRowInStripe);
     if (currentStripe >= lastStripe) {
         rowsToRead = 0;
-    } else if (sargsApplier) {
+    } else if (sargsApplier && rowsToRead > 0) {
         rowsToRead = computeBatchSize(rowsToRead, currentRowInStripe, rowsInCurrentStripe, footer->rowindexstride(),
-                                      sargsApplier->getRowGroups());
+                                      sargsApplier->getNextSkippedRows());
     }
     data.numElements = rowsToRead;
     if (rowsToRead == 0) {
-        previousRow = lastStripe <= 0 ? footer->numberofrows()
-                                      : firstRowOfStripe[lastStripe - 1] +
-                                                footer->stripes(static_cast<int>(lastStripe - 1)).numberofrows();
+        markEndOfFile();
         return false;
     }
     if (enableEncodedBlock) {
@@ -1073,7 +1194,7 @@ bool RowReaderImpl::next(ColumnVectorBatch& data, ReadPosition* pos) {
     // check if we need to advance to next selected row group
     if (sargsApplier) {
         uint64_t nextRowToRead = advanceToNextRowGroup(currentRowInStripe, rowsInCurrentStripe,
-                                                       footer->rowindexstride(), sargsApplier->getRowGroups());
+                                                       footer->rowindexstride(), sargsApplier->getNextSkippedRows());
         if (currentRowInStripe != nextRowToRead) {
             // it is guaranteed to be at start of a row group
             currentRowInStripe = nextRowToRead;
@@ -1111,57 +1232,68 @@ void RowReaderImpl::lazyLoadSeekTo(uint64_t toRow) {
     // then #1 cost is X + toRow % rowindexstripe
     // #2 cost is (row - lazyLoadLastUsedRowInStripe)
     const uint64_t ROW_INDEX_STRIDE = footer->rowindexstride();
-    static const uint64_t SEEK_TO_ROW_GROUP_COST = 4096;
-    uint64_t costIndirectSkip = toRow % ROW_INDEX_STRIDE;
-    uint64_t toRowGroupNumber = toRow / ROW_INDEX_STRIDE;
-    uint64_t fromRowGroupNumber = lazyLoadLastUsedRowInStripe / ROW_INDEX_STRIDE;
-
-    if ((fromRowGroupNumber != toRowGroupNumber) && (SEEK_TO_ROW_GROUP_COST + costIndirectSkip) < costDirectSkip) {
-        PositionProviderMap map;
-        getRowGroupPosition(static_cast<uint32_t>(toRowGroupNumber), &map);
-        reader->lazyLoadSeekToRowGroup(&map);
-        reader->lazyLoadSkip(costIndirectSkip);
-    } else {
+    if (ROW_INDEX_STRIDE == 0) {
+        // Orc can only have one RowGroup in each stipe
         reader->lazyLoadSkip(costDirectSkip);
+    } else {
+        static const uint64_t SEEK_TO_ROW_GROUP_COST = 4096;
+        uint64_t costIndirectSkip = toRow % ROW_INDEX_STRIDE;
+        uint64_t toRowGroupNumber = toRow / ROW_INDEX_STRIDE;
+        uint64_t fromRowGroupNumber = lazyLoadLastUsedRowInStripe / ROW_INDEX_STRIDE;
+
+        if ((fromRowGroupNumber != toRowGroupNumber) && (SEEK_TO_ROW_GROUP_COST + costIndirectSkip) < costDirectSkip) {
+            PositionProviderMap map;
+            getRowGroupPosition(static_cast<uint32_t>(toRowGroupNumber), &map);
+            reader->lazyLoadSeekToRowGroup(&map);
+            reader->lazyLoadSkip(costIndirectSkip);
+        } else {
+            reader->lazyLoadSkip(costDirectSkip);
+        }
     }
+
     lazyLoadLastUsedRowInStripe = toRow;
 }
 
 uint64_t RowReaderImpl::computeBatchSize(uint64_t requestedSize, uint64_t currentRowInStripe,
                                          uint64_t rowsInCurrentStripe, uint64_t rowIndexStride,
-                                         const std::vector<bool>& includedRowGroups) {
+                                         const std::vector<uint64_t>& nextSkippedRows) {
     // In case of PPD, batch size should be aware of row group boundaries. If only a subset of row
     // groups are selected then marker position is set to the end of range (subset of row groups
     // within stripe).
     uint64_t endRowInStripe = rowsInCurrentStripe;
-    if (!includedRowGroups.empty()) {
-        endRowInStripe = currentRowInStripe;
-        uint32_t rg = static_cast<uint32_t>(currentRowInStripe / rowIndexStride);
-        for (; rg < includedRowGroups.size(); ++rg) {
-            if (!includedRowGroups[rg]) {
-                break;
-            } else {
-                endRowInStripe = std::min(rowsInCurrentStripe, (rg + 1) * rowIndexStride);
-            }
-        }
+    uint64_t groupsInStripe = nextSkippedRows.size();
+    if (groupsInStripe > 0) {
+        auto rg = static_cast<uint32_t>(currentRowInStripe / rowIndexStride);
+        if (rg >= groupsInStripe) return 0;
+        uint64_t nextSkippedRow = nextSkippedRows[rg];
+        if (nextSkippedRow == 0) return 0;
+        endRowInStripe = nextSkippedRow;
     }
     return std::min(requestedSize, endRowInStripe - currentRowInStripe);
 }
 
 uint64_t RowReaderImpl::advanceToNextRowGroup(uint64_t currentRowInStripe, uint64_t rowsInCurrentStripe,
-                                              uint64_t rowIndexStride, const std::vector<bool>& includedRowGroups) {
-    if (!includedRowGroups.empty()) {
-        uint32_t rg = static_cast<uint32_t>(currentRowInStripe / rowIndexStride);
-        for (; rg < includedRowGroups.size(); ++rg) {
-            if (includedRowGroups[rg]) {
-                return currentRowInStripe;
-            } else {
-                // advance to start of next row group
-                currentRowInStripe = (rg + 1) * rowIndexStride;
-            }
-        }
+                                              uint64_t rowIndexStride, const std::vector<uint64_t>& nextSkippedRows) {
+    auto groupsInStripe = nextSkippedRows.size();
+    if (groupsInStripe == 0) {
+        // No PPD, keeps using the current row in stripe
+        return std::min(currentRowInStripe, rowsInCurrentStripe);
     }
-    return std::min(currentRowInStripe, rowsInCurrentStripe);
+    auto rg = static_cast<uint32_t>(currentRowInStripe / rowIndexStride);
+    if (rg >= groupsInStripe) {
+        // Points to the end of the stripe
+        return rowsInCurrentStripe;
+    }
+    if (nextSkippedRows[rg] != 0) {
+        // Current row group is selected
+        return currentRowInStripe;
+    }
+    // Advance to the next selected row group
+    while (rg < groupsInStripe && nextSkippedRows[rg] == 0) ++rg;
+    if (rg < groupsInStripe) {
+        return rg * rowIndexStride;
+    }
+    return rowsInCurrentStripe;
 }
 
 std::unique_ptr<ColumnVectorBatch> RowReaderImpl::createRowBatch(uint64_t capacity) const {
@@ -1264,13 +1396,13 @@ void checkProtoTypes(const proto::Footer& footer) {
    * @param memoryPool the memory pool to use
    */
 std::unique_ptr<proto::Footer> readFooter(InputStream* stream, const DataBuffer<char>* buffer, uint64_t footerOffset,
-                                          const proto::PostScript& ps, MemoryPool& memoryPool) {
+                                          const proto::PostScript& ps, MemoryPool& memoryPool, ReaderMetrics* metrics) {
     const char* footerPtr = buffer->data() + footerOffset;
 
     std::unique_ptr<SeekableInputStream> pbStream = createDecompressor(
             convertCompressionKind(ps),
             std::unique_ptr<SeekableInputStream>(new SeekableArrayInputStream(footerPtr, ps.footerlength())),
-            getCompressionBlockSize(ps), memoryPool);
+            getCompressionBlockSize(ps), memoryPool, metrics);
 
     std::unique_ptr<proto::Footer> footer = std::unique_ptr<proto::Footer>(new proto::Footer());
     if (!footer->ParseFromZeroCopyStream(pbStream.get())) {
@@ -1285,6 +1417,7 @@ std::unique_ptr<Reader> createReader(std::unique_ptr<InputStream> stream, const 
     std::shared_ptr<FileContents> contents = std::make_shared<FileContents>();
     contents->pool = options.getMemoryPool();
     contents->errorStream = options.getErrorStream();
+    contents->readerMetrics = options.getReaderMetrics();
     std::string serializedFooter = options.getSerializedFileTail();
     uint64_t fileLength;
     uint64_t postscriptLength;
@@ -1330,8 +1463,16 @@ std::unique_ptr<Reader> createReader(std::unique_ptr<InputStream> stream, const 
             footerOffset = readSize - tailSize;
         }
 
-        contents->footer = REDUNDANT_MOVE(
-                readFooter(stream.get(), buffer.get(), footerOffset, *contents->postscript, *contents->pool));
+        contents->footer = REDUNDANT_MOVE(readFooter(stream.get(), buffer.get(), footerOffset, *contents->postscript,
+                                                     *contents->pool, contents->readerMetrics));
+
+        contents->isDecimalAsLong = false;
+        if (contents->postscript->version_size() == 2) {
+            FileVersion v(contents->postscript->version(0), contents->postscript->version(1));
+            if (v == FileVersion::UNSTABLE_PRE_2_0()) {
+                contents->isDecimalAsLong = true;
+            }
+        }
     }
     contents->stream = std::move(stream);
     return std::unique_ptr<Reader>(new ReaderImpl(std::move(contents), options, fileLength, postscriptLength));
@@ -1349,11 +1490,11 @@ std::map<uint32_t, BloomFilterIndex> ReaderImpl::getBloomFilters(uint32_t stripe
     const proto::StripeFooter currentStripeFooter = getStripeFooter(currentStripeInfo, *contents);
 
     // iterate stripe footer to get stream of bloomfilter
-    uint64_t offset = static_cast<uint64_t>(currentStripeInfo.offset());
+    auto offset = static_cast<uint64_t>(currentStripeInfo.offset());
     for (int i = 0; i < currentStripeFooter.streams_size(); i++) {
         const proto::Stream& stream = currentStripeFooter.streams(i);
-        uint32_t column = static_cast<uint32_t>(stream.column());
-        uint64_t length = static_cast<uint64_t>(stream.length());
+        auto column = static_cast<uint32_t>(stream.column());
+        auto length = static_cast<uint64_t>(stream.length());
 
         // a bloom filter stream from a selected column is found
         if (stream.kind() == proto::Stream_Kind_BLOOM_FILTER_UTF8 &&
@@ -1362,7 +1503,7 @@ std::map<uint32_t, BloomFilterIndex> ReaderImpl::getBloomFilters(uint32_t stripe
                     createDecompressor(contents->compression,
                                        std::unique_ptr<SeekableInputStream>(new SeekableFileInputStream(
                                                contents->stream.get(), offset, length, *contents->pool)),
-                                       contents->blockSize, *(contents->pool));
+                                       contents->blockSize, *(contents->pool), contents->readerMetrics);
 
             proto::BloomFilterIndex pbBFIndex;
             if (!pbBFIndex.ParseFromZeroCopyStream(pbStream.get())) {
@@ -1408,5 +1549,13 @@ uint64_t InputStream::getNaturalReadSizeAfterSeek() const {
 }
 
 void InputStream::prepareCache(PrepareCacheScope scope, uint64_t offset, uint64_t length) {}
+
+bool InputStream::isIORangesEnabled() const {
+    return false;
+}
+
+void InputStream::clearIORanges() {}
+
+void InputStream::setIORanges(std::vector<InputStream::IORange>& io_ranges) {}
 
 } // namespace orc

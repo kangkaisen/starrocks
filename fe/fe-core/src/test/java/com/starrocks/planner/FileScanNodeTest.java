@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.planner;
 
@@ -8,10 +21,9 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.BrokerDesc;
-import com.starrocks.analysis.DataDescription;
+import com.starrocks.sql.ast.DataDescription;
 import com.starrocks.analysis.DescriptorTable;
 import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
@@ -22,6 +34,7 @@ import com.starrocks.common.UserException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.Backend;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TBrokerFileStatus;
@@ -79,7 +92,8 @@ public class FileScanNodeTest {
     }
 
     @Test
-    public void testCreateScanRangeLocations(@Mocked Catalog catalog, @Mocked SystemInfoService systemInfoService,
+    public void testCreateScanRangeLocations(@Mocked GlobalStateMgr globalStateMgr,
+                                             @Mocked SystemInfoService systemInfoService,
                                              @Injectable Database db, @Injectable OlapTable table)
             throws UserException {
         // table schema
@@ -92,7 +106,7 @@ public class FileScanNodeTest {
 
         new Expectations() {
             {
-                Catalog.getCurrentSystemInfo();
+                GlobalStateMgr.getCurrentSystemInfo();
                 result = systemInfoService;
                 systemInfoService.getIdToBackend();
                 result = idToBackend;
@@ -134,13 +148,13 @@ public class FileScanNodeTest {
         fileStatusList.add(new TBrokerFileStatus("hdfs://127.0.0.1:9001/file2", false, 268435400, true));
         fileStatusesList.add(fileStatusList);
 
-        Analyzer analyzer = new Analyzer(Catalog.getCurrentCatalog(), new ConnectContext());
+        Analyzer analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), new ConnectContext());
         DescriptorTable descTable = analyzer.getDescTbl();
         TupleDescriptor tupleDesc = descTable.createTupleDescriptor("DestTableTuple");
         FileScanNode scanNode = new FileScanNode(new PlanNodeId(0), tupleDesc, "FileScanNode", fileStatusesList, 2);
         scanNode.setLoadInfo(jobId, txnId, table, brokerDesc, fileGroups, true, loadParallelInstanceNum);
         scanNode.init(analyzer);
-        scanNode.finalize(analyzer);
+        scanNode.finalizeStats(analyzer);
 
         // check
         List<TScanRangeLocations> locationsList = scanNode.getScanRangeLocations(0);
@@ -194,13 +208,13 @@ public class FileScanNodeTest {
         fileStatusList.add(new TBrokerFileStatus("hdfs://127.0.0.1:9001/file4", false, 268435451, false));
         fileStatusesList.add(fileStatusList);
 
-        analyzer = new Analyzer(Catalog.getCurrentCatalog(), new ConnectContext());
+        analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), new ConnectContext());
         descTable = analyzer.getDescTbl();
         tupleDesc = descTable.createTupleDescriptor("DestTableTuple");
         scanNode = new FileScanNode(new PlanNodeId(0), tupleDesc, "FileScanNode", fileStatusesList, 4);
         scanNode.setLoadInfo(jobId, txnId, table, brokerDesc, fileGroups, true, loadParallelInstanceNum);
         scanNode.init(analyzer);
-        scanNode.finalize(analyzer);
+        scanNode.finalizeStats(analyzer);
 
         // check
         locationsList = scanNode.getScanRangeLocations(0);
@@ -246,13 +260,13 @@ public class FileScanNodeTest {
         fileStatusList2.add(new TBrokerFileStatus("hdfs://127.0.0.1:9001/file5", false, 10, true));
         fileStatusesList.add(fileStatusList2);
 
-        analyzer = new Analyzer(Catalog.getCurrentCatalog(), new ConnectContext());
+        analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), new ConnectContext());
         descTable = analyzer.getDescTbl();
         tupleDesc = descTable.createTupleDescriptor("DestTableTuple");
         scanNode = new FileScanNode(new PlanNodeId(0), tupleDesc, "FileScanNode", fileStatusesList, 5);
         scanNode.setLoadInfo(jobId, txnId, table, brokerDesc, fileGroups, true, loadParallelInstanceNum);
         scanNode.init(analyzer);
-        scanNode.finalize(analyzer);
+        scanNode.finalizeStats(analyzer);
 
         // check
         locationsList = scanNode.getScanRangeLocations(0);
@@ -294,13 +308,13 @@ public class FileScanNodeTest {
         fileStatusList.add(new TBrokerFileStatus("hdfs://127.0.0.1:9001/file2", false, 10, false));
         fileStatusesList.add(fileStatusList);
 
-        analyzer = new Analyzer(Catalog.getCurrentCatalog(), new ConnectContext());
+        analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), new ConnectContext());
         descTable = analyzer.getDescTbl();
         tupleDesc = descTable.createTupleDescriptor("DestTableTuple");
         scanNode = new FileScanNode(new PlanNodeId(0), tupleDesc, "FileScanNode", fileStatusesList, 2);
         scanNode.setLoadInfo(jobId, txnId, table, brokerDesc, fileGroups, true, loadParallelInstanceNum);
         scanNode.init(analyzer);
-        scanNode.finalize(analyzer);
+        scanNode.finalizeStats(analyzer);
 
         // check
         locationsList = scanNode.getScanRangeLocations(0);
@@ -327,13 +341,13 @@ public class FileScanNodeTest {
         fileStatusList.add(new TBrokerFileStatus("hdfs://127.0.0.1:9001/file1", false, 0, false));
         fileStatusesList.add(fileStatusList);
 
-        analyzer = new Analyzer(Catalog.getCurrentCatalog(), new ConnectContext());
+        analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), new ConnectContext());
         descTable = analyzer.getDescTbl();
         tupleDesc = descTable.createTupleDescriptor("DestTableTuple");
         scanNode = new FileScanNode(new PlanNodeId(0), tupleDesc, "FileScanNode", fileStatusesList, 1);
         scanNode.setLoadInfo(jobId, txnId, table, brokerDesc, fileGroups, true, loadParallelInstanceNum);
         scanNode.init(analyzer);
-        scanNode.finalize(analyzer);
+        scanNode.finalizeStats(analyzer);
 
         // check
         locationsList = scanNode.getScanRangeLocations(0);

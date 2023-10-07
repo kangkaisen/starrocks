@@ -1,6 +1,21 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package com.starrocks.sql.optimizer.rule.transformation;
 
+import com.google.common.collect.Lists;
+import com.starrocks.sql.optimizer.JoinHelper;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.Utils;
@@ -14,7 +29,6 @@ import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import com.starrocks.sql.optimizer.rule.RuleType;
-import jersey.repackaged.com.google.common.collect.Lists;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -22,8 +36,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-
-import static com.starrocks.sql.optimizer.rule.transformation.JoinPredicateUtils.getEqConj;
 
 /**
  * Because the children of Join need to shuffle data
@@ -44,8 +56,8 @@ public class PushDownJoinOnExpressionToChildProject extends TransformationRule {
         ColumnRefSet leftOutputColumns = input.inputAt(0).getOutputColumns();
         ColumnRefSet rightOutputColumns = input.inputAt(1).getOutputColumns();
 
-        List<BinaryPredicateOperator> equalConjs =
-                getEqConj(leftOutputColumns, rightOutputColumns, Utils.extractConjuncts(onPredicate));
+        List<BinaryPredicateOperator> equalConjs = JoinHelper.
+                getEqualsPredicate(leftOutputColumns, rightOutputColumns, Utils.extractConjuncts(onPredicate));
 
         return !equalConjs.isEmpty();
     }
@@ -58,12 +70,12 @@ public class PushDownJoinOnExpressionToChildProject extends TransformationRule {
         ColumnRefSet leftOutputColumns = input.inputAt(0).getOutputColumns();
         ColumnRefSet rightOutputColumns = input.inputAt(1).getOutputColumns();
 
-        List<BinaryPredicateOperator> equalConjs =
-                getEqConj(leftOutputColumns, rightOutputColumns, Utils.extractConjuncts(onPredicate));
+        List<BinaryPredicateOperator> equalsPredicate = JoinHelper.
+                getEqualsPredicate(leftOutputColumns, rightOutputColumns, Utils.extractConjuncts(onPredicate));
 
         Map<ColumnRefOperator, ScalarOperator> leftProjectMaps = new HashMap<>();
         Map<ColumnRefOperator, ScalarOperator> rightProjectMaps = new HashMap<>();
-        for (BinaryPredicateOperator binaryPredicateOperator : equalConjs) {
+        for (BinaryPredicateOperator binaryPredicateOperator : equalsPredicate) {
             ScalarOperator left = binaryPredicateOperator.getChild(0);
             ScalarOperator right = binaryPredicateOperator.getChild(1);
             if (leftOutputColumns.containsAll(left.getUsedColumns()) && !left.isColumnRef()) {
@@ -86,14 +98,14 @@ public class PushDownJoinOnExpressionToChildProject extends TransformationRule {
 
         Rewriter leftRewriter = new Rewriter(leftProjectMaps);
         Rewriter rightRewriter = new Rewriter(rightProjectMaps);
-        ScalarOperator newJoinOnPredicate = onPredicate.accept(leftRewriter, null).accept(rightRewriter, null);
+        ScalarOperator newJoinOnPredicate = onPredicate.clone().accept(leftRewriter, null).accept(rightRewriter, null);
 
         OptExpression newJoinOpt = OptExpression.create(new LogicalJoinOperator.Builder().withOperator(joinOperator)
                 .setOnPredicate(newJoinOnPredicate)
                 .build(), input.getInputs());
 
         if (!leftProjectMaps.isEmpty()) {
-            leftProjectMaps.putAll(leftOutputColumns.getStream().boxed()
+            leftProjectMaps.putAll(leftOutputColumns.getStream()
                     .map(columnRefId -> context.getColumnRefFactory().getColumnRef(columnRefId))
                     .collect(Collectors.toMap(Function.identity(), Function.identity())));
 
@@ -103,7 +115,7 @@ public class PushDownJoinOnExpressionToChildProject extends TransformationRule {
         }
 
         if (!rightProjectMaps.isEmpty()) {
-            rightProjectMaps.putAll(rightOutputColumns.getStream().boxed()
+            rightProjectMaps.putAll(rightOutputColumns.getStream()
                     .map(columnRefId -> context.getColumnRefFactory().getColumnRef(columnRefId))
                     .collect(Collectors.toMap(Function.identity(), Function.identity())));
 

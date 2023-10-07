@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/orc/tree/main/c++/src/ColumnReader.hh
 
@@ -66,6 +79,11 @@ public:
     virtual MemoryPool& getMemoryPool() const = 0;
 
     /**
+     * Get the reader metrics for this reader.
+     */
+    virtual ReaderMetrics* getReaderMetrics() const = 0;
+
+    /**
      * Get the writer's timezone, so that we can convert their dates correctly.
      */
     virtual const Timezone& getWriterTimezone() const = 0;
@@ -94,6 +112,12 @@ public:
      */
     virtual int32_t getForcedScaleOnHive11Decimal() const = 0;
 
+    /**
+     * Whether decimals that have precision <=18 are encoded as fixed scale and values
+     * encoded in RLE.
+     */
+    virtual bool isDecimalAsLong() const = 0;
+
     virtual bool getUseWriterTimezone() const { return false; }
 
     virtual DataBuffer<char>* getSharedBuffer() const { return nullptr; }
@@ -107,6 +131,7 @@ protected:
     std::unique_ptr<ByteRleDecoder> notNullDecoder;
     uint64_t columnId;
     MemoryPool& memoryPool;
+    ReaderMetrics* metrics;
 
 public:
     ColumnReader(const Type& type, StripeStreams& stipe);
@@ -143,22 +168,27 @@ public:
         next(rowBatch, numValues, notNull);
     }
 
-    // Functions for lazy load fields.
-    virtual void lazyLoadSkip(uint64_t numValues);
-    virtual void lazyLoadNext(ColumnVectorBatch& rowBatch, uint64_t numValues, char* notNull);
-    virtual void lazyLoadNextEncoded(ColumnVectorBatch& rowBatch, uint64_t numValues, char* notNull) {
-        rowBatch.isEncoded = false;
-        lazyLoadNext(rowBatch, numValues, notNull);
-    }
-
     /**
      * Seek to beginning of a row group in the current stripe
      * @param positions a list of PositionProviders storing the positions
      */
     virtual void seekToRowGroup(PositionProviderMap* providers);
-    virtual void lazyLoadSeekToRowGroup(PositionProviderMap* providers);
 
     uint64_t getColumnId() { return columnId; }
+
+    // Functions for lazy load fields.
+    virtual void lazyLoadSkip(uint64_t numValues) { skip(numValues); }
+
+    virtual void lazyLoadNext(ColumnVectorBatch& rowBatch, uint64_t numValues, char* notNull) {
+        next(rowBatch, numValues, notNull);
+    }
+
+    virtual void lazyLoadNextEncoded(ColumnVectorBatch& rowBatch, uint64_t numValues, char* notNull) {
+        rowBatch.isEncoded = false;
+        lazyLoadNext(rowBatch, numValues, notNull);
+    }
+
+    virtual void lazyLoadSeekToRowGroup(PositionProviderMap* providers) { seekToRowGroup(providers); }
 };
 
 /**

@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/http/http_client.cpp
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -84,7 +80,7 @@ Status HttpClient::init(const std::string& url) {
     }
 
     curl_write_callback callback = [](char* buffer, size_t size, size_t nmemb, void* param) {
-        HttpClient* client = (HttpClient*)param;
+        auto* client = (HttpClient*)param;
         return client->on_response_data(buffer, size * nmemb);
     };
 
@@ -104,6 +100,13 @@ Status HttpClient::init(const std::string& url) {
     if (code != CURLE_OK) {
         LOG(WARNING) << "failed to set CURLOPT_URL, errmsg=" << _to_errmsg(code);
         return Status::InternalError("fail to set CURLOPT_URL");
+    }
+
+    // set NoProxy, otherwise elasticsearch may hang when the host enables HTTP_PROXY/HTTPS_PROXY
+    code = curl_easy_setopt(_curl, CURLOPT_NOPROXY, "*");
+    if (code != CURLE_OK) {
+        LOG(WARNING) << "failed to set CURLOPT_NOPROXY, errmsg=" << _to_errmsg(code);
+        return Status::InternalError("fail to set CURLOPT_NOPROXY");
     }
 
     return Status::OK();

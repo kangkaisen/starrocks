@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/catalog/HiveTableTest.java
 
@@ -22,9 +35,19 @@
 package com.starrocks.catalog;
 
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
-import com.starrocks.external.hive.HiveRepository;
+import com.starrocks.connector.hive.HiveMetaClient;
+import com.starrocks.connector.hive.HiveMetastoreApiConverter;
+import com.starrocks.connector.hive.HiveMetastoreTest;
+import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.MetadataMgr;
+import com.starrocks.server.TableFactoryProvider;
+import com.starrocks.sql.ast.CreateTableStmt;
+import com.starrocks.sql.common.EngineType;
+import com.starrocks.utframe.StarRocksAssert;
+import com.starrocks.utframe.UtFrameUtils;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
@@ -35,99 +58,136 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.List;
-import java.util.Map;
+
+import static com.starrocks.connector.hive.HiveClassNames.MAPRED_PARQUET_INPUT_FORMAT_CLASS;
+import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.getResourceMappingCatalogName;
 
 public class HiveTableTest {
-    private String hiveDb;
-    private String hiveTable;
-    String resourceName;
-    private List<Column> columns;
-    private Map<String, String> properties;
+    private static ConnectContext connectContext;
+    private static StarRocksAssert starRocksAssert;
+    private HiveMetaClient hiveClient;
 
     @Before
-    public void setUp() {
-        hiveDb = "db0";
-        hiveTable = "table0";
-        resourceName = "hive0";
+    public void setUp() throws Exception {
+        UtFrameUtils.createMinStarRocksCluster();
+        // create connect context
+        connectContext = UtFrameUtils.createDefaultCtx();
+        starRocksAssert = new StarRocksAssert(connectContext);
+        starRocksAssert.withResource("create external resource 'hive0' PROPERTIES(" +
+                "\"type\"  =  \"hive\", \"hive.metastore.uris\"  =  \"thrift://127.0.0.1:9083\")");
+        starRocksAssert.withDatabase("db");
+        hiveClient = new HiveMetastoreTest.MockedHiveMetaClient();
+    }
 
-        columns = Lists.newArrayList();
-        Column column = new Column("col1", Type.BIGINT, true);
-        columns.add(column);
-
-        properties = Maps.newHashMap();
-        properties.put("database", hiveDb);
-        properties.put("table", hiveTable);
-        properties.put("resource", resourceName);
+    com.starrocks.catalog.Table createTable(CreateTableStmt stmt) throws DdlException {
+        return TableFactoryProvider.getFactory(EngineType.HIVE.name()).createTable(null, null, stmt);
     }
 
     @Test
-    public void testWithResourceName(@Mocked Catalog catalog,
-                                     @Mocked ResourceMgr resourceMgr,
-                                     @Mocked HiveRepository hiveRepository) throws DdlException {
-        Resource hiveResource = new HiveResource(resourceName);
-        Map<String, String> resourceProperties = Maps.newHashMap();
-        resourceProperties.put("hive.metastore.uris", "thrift://127.0.0.1:9083");
-        hiveResource.setProperties(resourceProperties);
-
-        List<FieldSchema> partKeys = Lists.newArrayList(new FieldSchema("col1", "BIGINT", ""));
+    public void testCreateExternalTable(@Mocked MetadataMgr metadataMgr) throws Exception {
+        List<FieldSchema> partKeys = Lists.newArrayList(new FieldSchema("col1", "INT", ""));
         List<FieldSchema> unPartKeys = Lists.newArrayList(new FieldSchema("col2", "INT", ""));
         String hdfsPath = "hdfs://127.0.0.1:10000/hive";
         StorageDescriptor sd = new StorageDescriptor();
+        sd.setInputFormat(MAPRED_PARQUET_INPUT_FORMAT_CLASS);
         sd.setCols(unPartKeys);
         sd.setLocation(hdfsPath);
         Table msTable = new Table();
         msTable.setPartitionKeys(partKeys);
         msTable.setSd(sd);
         msTable.setTableType("MANAGED_TABLE");
+        msTable.setTableName("hive_table");
+        msTable.setDbName("hive_db");
+        int createTime = (int) System.currentTimeMillis();
+        msTable.setCreateTime(createTime);
 
+        HiveTable oTable = HiveMetastoreApiConverter.toHiveTable(msTable, getResourceMappingCatalogName("hive0", "hive"));
+        Assert.assertTrue(oTable.supportInsert());
         new Expectations() {
             {
-                Catalog.getCurrentCatalog();
-                result = catalog;
+                GlobalStateMgr.getCurrentState().getMetadataMgr();
+                result = metadataMgr;
                 minTimes = 0;
 
-                catalog.getResourceMgr();
-                result = resourceMgr;
-
-                resourceMgr.getResource("hive0");
-                result = hiveResource;
-
-                catalog.getHiveRepository();
-                result = hiveRepository;
-
-                hiveRepository.getTable(resourceName, hiveDb, hiveTable);
-                result = msTable;
+                metadataMgr.getTable(anyString, anyString, anyString);
+                result = oTable;
             }
         };
 
-        columns.add(new Column("col2", Type.INT, true));
-        properties.put("resource", resourceName);
-        HiveTable table = new HiveTable(1000, "hive_table", columns, properties);
-        Assert.assertEquals(hiveTable, table.getHiveTable());
-        Assert.assertEquals(hiveDb, table.getHiveDb());
-        Assert.assertEquals(String.format("%s.%s", hiveDb, hiveTable), table.getHiveDbTable());
-        Assert.assertEquals(hdfsPath, table.getHdfsPath());
-        Assert.assertEquals(Lists.newArrayList(new Column("col1", Type.BIGINT, true)), table.getPartitionColumns());
+        String createTableSql = "create external table if not exists  db.hive_tbl (col1 int, col2 int) engine=hive properties " +
+                "(\"resource\"=\"hive0\", \"database\"=\"db0\", \"table\"=\"table0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
+
+        Assert.assertTrue(table instanceof HiveTable);
+        HiveTable hiveTable = (HiveTable) table;
+        Assert.assertEquals("hive_tbl", hiveTable.getName());
+        Assert.assertEquals("hive_db", hiveTable.getDbName());
+        Assert.assertEquals("hive_table", hiveTable.getTableName());
+        Assert.assertEquals(hdfsPath, hiveTable.getTableLocation());
+        Assert.assertEquals(Lists.newArrayList("col1"), hiveTable.getPartitionColumnNames());
+        Assert.assertEquals(new Column("col1", Type.INT, true), hiveTable.getPartitionColumns().get(0));
+        Assert.assertEquals(Lists.newArrayList("col2"), hiveTable.getDataColumnNames());
+        Assert.assertFalse(hiveTable.isUnPartitioned());
+
     }
 
-    @Test(expected = DdlException.class)
-    public void testNoDb() throws DdlException {
-        properties.remove("database");
-        new HiveTable(1000, "hive_table", columns, properties);
+    @Test(expected = AnalysisException.class)
+    public void testNoDb() throws Exception {
+        String createTableSql = "create external table nodb.hive_tbl (col1 int, col2 int) engine=hive properties " +
+                "(\"resource\"=\"hive0\", \"table\"=\"table0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
+        Assert.fail("No exception throws.");
+    }
+
+    @Test(expected = AnalysisException.class)
+    public void testNoTbl() throws Exception {
+        String createTableSql = "create external table nodb.hive_tbl (col1 int, col2 int) engine=hive properties " +
+                "(\"resource\"=\"hive0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
         Assert.fail("No exception throws.");
     }
 
     @Test(expected = DdlException.class)
-    public void testNoTbl() throws DdlException {
-        properties.remove("table");
-        new HiveTable(1000, "hive_table", columns, properties);
+    public void testNoResource() throws Exception {
+        String createTableSql = "create external table db.hive_tbl (col1 int, col2 int) engine=hive properties " +
+                "(\"resource\"=\"not_exist_reousrce\", \"database\"=\"db0\", \"table\"=\"table0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
         Assert.fail("No exception throws.");
     }
 
     @Test(expected = DdlException.class)
-    public void testNoHiveMetastoreUris() throws DdlException {
-        properties.remove("hive.metastore.uris");
-        new HiveTable(1000, "hive_table", columns, properties);
+    public void testNotExistResource() throws Exception {
+        String createTableSql = "create external table db.hive_tbl (col1 int, col2 int) engine=hive properties " +
+                "(\"database\"=\"db0\", \"table\"=\"table0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
+        Assert.fail("No exception throws.");
+    }
+
+    @Test(expected = DdlException.class)
+    public void testHiveColumnConvert(@Mocked MetadataMgr metadataMgr) throws Exception {
+        Table msTable = hiveClient.getTable("hive_db", "hive_table");
+        HiveTable oTable = HiveMetastoreApiConverter.toHiveTable(msTable, getResourceMappingCatalogName("hive0", "hive"));
+        new Expectations() {
+            {
+                GlobalStateMgr.getCurrentState().getMetadataMgr();
+                result = metadataMgr;
+                minTimes = 0;
+
+                metadataMgr.getTable(anyString, anyString, anyString);
+                result = oTable;
+            }
+        };
+
+        String createTableSql = "create external table  if not exists  db.hive_tbl (col1 int, not_exist int) " +
+                "engine=hive properties " +
+                "(\"resource\"=\"hive0\", \"database\"=\"db0\", \"table\"=\"table0\")";
+        CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(createTableSql, connectContext);
+        com.starrocks.catalog.Table table = createTable(createTableStmt);
         Assert.fail("No exception throws.");
     }
 }

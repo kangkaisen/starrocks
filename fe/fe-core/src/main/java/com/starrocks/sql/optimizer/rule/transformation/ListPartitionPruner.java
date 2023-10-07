@@ -1,13 +1,28 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.sql.optimizer.rule.transformation;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.starrocks.analysis.BinaryType;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.LiteralExpr;
+import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.planner.PartitionPruner;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
@@ -28,7 +43,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Set;
-import java.util.TreeMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.stream.Collectors;
 
 public class ListPartitionPruner implements PartitionPruner {
     private static final Logger LOG = LogManager.getLogger(ListPartitionPruner.class);
@@ -51,7 +68,7 @@ public class ListPartitionPruner implements PartitionPruner {
     //                1 -> set(1,5),
     //                2 -> set(2))
 
-    private final Map<ColumnRefOperator, TreeMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap;
+    private final Map<ColumnRefOperator, ConcurrentNavigableMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap;
     // Store partitions with null partition values separately
     // partitionColumnName -> null partitionIds
     //
@@ -64,20 +81,23 @@ public class ListPartitionPruner implements PartitionPruner {
 
     private final Set<Long> allPartitions;
     private final List<ColumnRefOperator> partitionColumnRefs;
+    private final List<Long> specifyPartitionIds;
 
-    public ListPartitionPruner(Map<ColumnRefOperator, TreeMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap,
-                               Map<ColumnRefOperator, Set<Long>> columnToNullPartitions,
-                               List<ScalarOperator> partitionConjuncts) {
+    public ListPartitionPruner(
+            Map<ColumnRefOperator, ConcurrentNavigableMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap,
+            Map<ColumnRefOperator, Set<Long>> columnToNullPartitions,
+            List<ScalarOperator> partitionConjuncts, List<Long> specifyPartitionIds) {
         this.columnToPartitionValuesMap = columnToPartitionValuesMap;
         this.columnToNullPartitions = columnToNullPartitions;
         this.partitionConjuncts = partitionConjuncts;
         this.allPartitions = getAllPartitions();
         this.partitionColumnRefs = getPartitionColumnRefs();
+        this.specifyPartitionIds = specifyPartitionIds;
     }
 
     private Set<Long> getAllPartitions() {
         Set<Long> allPartitions = Sets.newHashSet();
-        for (TreeMap<LiteralExpr, Set<Long>> partitionValuesMap : columnToPartitionValuesMap.values()) {
+        for (ConcurrentNavigableMap<LiteralExpr, Set<Long>> partitionValuesMap : columnToPartitionValuesMap.values()) {
             for (Set<Long> partitions : partitionValuesMap.values()) {
                 allPartitions.addAll(partitions);
             }
@@ -98,6 +118,10 @@ public class ListPartitionPruner implements PartitionPruner {
         return noEvalConjuncts;
     }
 
+    public List<ScalarOperator> getPartitionConjuncts() {
+        return partitionConjuncts;
+    }
+
     /**
      * Return a list of partitions left after applying the conjuncts on partition columns.
      * Null is returned if all partitions.
@@ -109,14 +133,14 @@ public class ListPartitionPruner implements PartitionPruner {
         Preconditions.checkNotNull(columnToNullPartitions);
         Preconditions.checkArgument(columnToPartitionValuesMap.size() == columnToNullPartitions.size());
         Preconditions.checkNotNull(partitionConjuncts);
-        if (columnToPartitionValuesMap.isEmpty() && columnToNullPartitions.isEmpty()) {
+        if (columnToPartitionValuesMap.isEmpty()) {
             // no partition columns, notEvalConjuncts is same with conjuncts
             noEvalConjuncts.addAll(partitionConjuncts);
             return null;
         }
         if (partitionConjuncts.isEmpty()) {
             // no conjuncts, notEvalConjuncts is empty
-            return null;
+            return specifyPartitionIds;
         }
 
         Set<Long> matches = null;
@@ -139,10 +163,23 @@ public class ListPartitionPruner implements PartitionPruner {
                 noEvalConjuncts.add(operator);
             }
         }
+        // Null represents the full set. If a partition is specified,
+        // the intersection of the full set and the specified partition is the specified partition.
+        // If a match is found, the intersection data is taken.
+        // If no partition is specified, the match result will be taken
         if (matches == null) {
-            return null;
+            if (specifyPartitionIds != null && !specifyPartitionIds.isEmpty()) {
+                return specifyPartitionIds;
+            } else {
+                return null;
+            }
         } else {
-            return new ArrayList<>(matches);
+            if (specifyPartitionIds != null && !specifyPartitionIds.isEmpty()) {
+                // intersect
+                return specifyPartitionIds.stream().filter(matches::contains).collect(Collectors.toList());
+            } else {
+                return new ArrayList<>(matches);
+            }
         }
     }
 
@@ -172,15 +209,71 @@ public class ListPartitionPruner implements PartitionPruner {
         return false;
     }
 
+    private LiteralExpr castLiteralExpr(LiteralExpr literalExpr, Type type) {
+        LiteralExpr result = null;
+        String value = literalExpr.getStringValue();
+        if (literalExpr.getType() == Type.DATE && type.isNumericType()) {
+            value = String.valueOf(literalExpr.getLongValue() / 1000000);
+        }
+        try {
+            result = LiteralExpr.create(value, type);
+        } catch (Exception e) {
+            LOG.warn(e);
+            throw new StarRocksConnectorException("can not cast literal value " + literalExpr.getStringValue() +
+                    " to target type " + type.prettyPrint());
+        }
+        return result;
+    }
+
+    // generate new partition value map using cast operator' type.
+    // eg. string partition value cast to int
+    // string_col = '01'  1
+    // string_col = '1'   2
+    // string_col = '001' 3
+    // will generate new partition value map
+    // int_col = 1  [1, 2, 3]
+    private ConcurrentNavigableMap<LiteralExpr, Set<Long>> getCastPartitionValueMap(CastOperator castOperator,
+                                            ConcurrentNavigableMap<LiteralExpr, Set<Long>> partitionValueMap) {
+        ConcurrentNavigableMap<LiteralExpr, Set<Long>> newPartitionValueMap = new ConcurrentSkipListMap<>();
+
+        for (Map.Entry<LiteralExpr, Set<Long>> entry : partitionValueMap.entrySet()) {
+            LiteralExpr key = entry.getKey();
+            LiteralExpr literalExpr = castLiteralExpr(key, castOperator.getType());
+            Set<Long> partitions = newPartitionValueMap.computeIfAbsent(literalExpr, k -> Sets.newHashSet());
+            partitions.addAll(entry.getValue());
+        }
+        return newPartitionValueMap;
+    }
+
+    private ConstantOperator evaluateConstant(ScalarOperator operator) {
+        if (operator.isConstantRef()) {
+            return (ConstantOperator) operator;
+        }
+        if (operator instanceof CastOperator && operator.getChild(0).isConstantRef()) {
+            ConstantOperator child = (ConstantOperator) operator.getChild(0);
+            ScalarOperatorToExpr.FormatterContext formatterContext =
+                    new ScalarOperatorToExpr.FormatterContext(new HashMap<>());
+            LiteralExpr literal = (LiteralExpr) ScalarOperatorToExpr.buildExecExpression(child, formatterContext);
+            try {
+                literal = castLiteralExpr(literal, operator.getType());
+                return ConstantOperator.createObject(literal.getRealObjectValue(), operator.getType());
+            } catch (Exception e) {
+                LOG.warn("can not cast literal value " + literal.getStringValue() +
+                        " to target type " + operator.getType().prettyPrint());
+                return null;
+            }
+        }
+        return null;
+    }
+
     private Set<Long> evalBinaryPredicate(BinaryPredicateOperator binaryPredicate) {
         Preconditions.checkNotNull(binaryPredicate);
-        ScalarOperator left = binaryPredicate.getChild(0);
         ScalarOperator right = binaryPredicate.getChild(1);
-
-        if (!(right.isConstantRef())) {
+        // eval the right child only if it is a constant or cast(constant)
+        ConstantOperator rightChild = evaluateConstant(right);
+        if (rightChild == null) {
             return null;
         }
-        ConstantOperator rightChild = (ConstantOperator) binaryPredicate.getChild(1);
 
         if (!isSinglePartitionColumn(binaryPredicate)) {
             return null;
@@ -188,9 +281,16 @@ public class ListPartitionPruner implements PartitionPruner {
         ColumnRefOperator leftChild = Utils.extractColumnRef(binaryPredicate).get(0);
 
         Set<Long> matches = Sets.newHashSet();
-        TreeMap<LiteralExpr, Set<Long>> partitionValueMap = columnToPartitionValuesMap.get(leftChild);
+        ConcurrentNavigableMap<LiteralExpr, Set<Long>> partitionValueMap = columnToPartitionValuesMap.get(leftChild);
         Set<Long> nullPartitions = columnToNullPartitions.get(leftChild);
-        if (partitionValueMap == null || nullPartitions == null) {
+
+        if (binaryPredicate.getChild(0) instanceof CastOperator && partitionValueMap != null) {
+            // partitionValueMap need cast to target type
+            partitionValueMap = getCastPartitionValueMap((CastOperator) binaryPredicate.getChild(0),
+                    partitionValueMap);
+        }
+
+        if (partitionValueMap == null || nullPartitions == null || partitionValueMap.isEmpty()) {
             return null;
         }
 
@@ -198,7 +298,7 @@ public class ListPartitionPruner implements PartitionPruner {
                 new ScalarOperatorToExpr.FormatterContext(new HashMap<>());
         LiteralExpr literal = (LiteralExpr) ScalarOperatorToExpr.buildExecExpression(rightChild, formatterContext);
 
-        BinaryPredicateOperator.BinaryType type = binaryPredicate.getBinaryType();
+        BinaryType type = binaryPredicate.getBinaryType();
         switch (type) {
             case EQ:
                 // SlotRef = Literal
@@ -240,12 +340,12 @@ public class ListPartitionPruner implements PartitionPruner {
                 LiteralExpr upperBoundKey = null;
                 LiteralExpr lowerBoundKey = null;
 
-                if (type == BinaryPredicateOperator.BinaryType.LE || type == BinaryPredicateOperator.BinaryType.LT) {
+                if (type == BinaryType.LE || type == BinaryType.LT) {
                     // SlotRef <[=] Literal
                     if (literal.compareLiteral(firstKey) < 0) {
                         return Sets.newHashSet();
                     }
-                    if (type == BinaryPredicateOperator.BinaryType.LE) {
+                    if (type == BinaryType.LE) {
                         upperInclusive = true;
                     }
                     if (literal.compareLiteral(lastKey) <= 0) {
@@ -261,7 +361,7 @@ public class ListPartitionPruner implements PartitionPruner {
                     if (literal.compareLiteral(lastKey) > 0) {
                         return Sets.newHashSet();
                     }
-                    if (type == BinaryPredicateOperator.BinaryType.GE) {
+                    if (type == BinaryType.GE) {
                         lowerInclusive = true;
                     }
                     if (literal.compareLiteral(firstKey) >= 0) {
@@ -305,9 +405,9 @@ public class ListPartitionPruner implements PartitionPruner {
         ColumnRefOperator child = Utils.extractColumnRef(inPredicate).get(0);
 
         Set<Long> matches = Sets.newHashSet();
-        TreeMap<LiteralExpr, Set<Long>> partitionValueMap = columnToPartitionValuesMap.get(child);
+        ConcurrentNavigableMap<LiteralExpr, Set<Long>> partitionValueMap = columnToPartitionValuesMap.get(child);
         Set<Long> nullPartitions = columnToNullPartitions.get(child);
-        if (partitionValueMap == null || nullPartitions == null) {
+        if (partitionValueMap == null || nullPartitions == null || partitionValueMap.isEmpty()) {
             return null;
         }
 
@@ -374,16 +474,22 @@ public class ListPartitionPruner implements PartitionPruner {
         Set<Long> rights = evalPartitionPruneFilter(compoundPredicate.getChild(1));
         if (lefts == null && rights == null) {
             return null;
-        } else if (lefts == null) {
-            return rights;
-        } else if (rights == null) {
-            return lefts;
         }
 
         if (compoundPredicate.getCompoundType() == CompoundPredicateOperator.CompoundType.AND) {
-            lefts.retainAll(rights);
+            if (lefts == null) {
+                return rights;
+            } else if (rights == null) {
+                return lefts;
+            } else {
+                lefts.retainAll(rights);
+            }
         } else if (compoundPredicate.getCompoundType() == CompoundPredicateOperator.CompoundType.OR) {
-            lefts.addAll(rights);
+            if (lefts == null || rights == null) {
+                return null;
+            } else {
+                lefts.addAll(rights);
+            }
         }
         return lefts;
     }

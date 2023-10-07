@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/http/TableQueryPlanActionTest.java
 
@@ -50,6 +63,7 @@ public class TableQueryPlanActionTest extends StarRocksHttpTestCase {
 
     @Test
     public void testQueryPlanAction() throws IOException, TException {
+        super.setUpWithCatalog();
         RequestBody body =
                 RequestBody.create(JSON, "{ \"sql\" :  \" select k1,k2 from " + DB_NAME + "." + TABLE_NAME + " \" }");
         Request request = new Request.Builder()
@@ -86,12 +100,12 @@ public class TableQueryPlanActionTest extends StarRocksHttpTestCase {
     @Test
     public void testNoSqlFailure() throws IOException {
         RequestBody body = RequestBody
-            .create(JSON, "{}");
+                .create(JSON, "{}");
         Request request = new Request.Builder()
-            .post(body)
-            .addHeader("Authorization", rootAuth)
-            .url(URI + PATH_URI)
-            .build();
+                .post(body)
+                .addHeader("Authorization", rootAuth)
+                .url(URI + PATH_URI)
+                .build();
         Response response = networkClient.newCall(request).execute();
         String respStr = Objects.requireNonNull(response.body()).string();
         System.out.println(respStr);
@@ -141,6 +155,7 @@ public class TableQueryPlanActionTest extends StarRocksHttpTestCase {
         Assert.assertEquals(403, jsonObject.getInt("status"));
         String exception = jsonObject.getString("exception");
         Assert.assertNotNull(exception);
-        Assert.assertTrue(exception.startsWith("only support OlapTable currently"));
+        Assert.assertTrue(
+                exception.startsWith("Only support OlapTable, CloudNativeTable and MaterializedView currently"));
     }
 }

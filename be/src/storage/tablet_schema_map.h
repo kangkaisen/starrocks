@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -58,11 +70,10 @@ public:
     // [thread-safe]
     Stats stats() const;
 
-    void set_mem_tracker(MemTracker* mem_tracker) { _mem_tracker = mem_tracker; }
-
 private:
     constexpr static int kShardSize = 16;
 
+    bool check_schema_unique_id(const TabletSchemaPB& schema_pb, const TabletSchemaCSPtr& schema_ptr);
     struct MapShard {
         mutable std::mutex mtx;
         phmap::flat_hash_map<SchemaId, std::weak_ptr<const TabletSchema>> map;
@@ -71,7 +82,6 @@ private:
     MapShard* get_shard(SchemaId id) { return &_map_shards[id % kShardSize]; }
     const MapShard* get_shard(SchemaId id) const { return &_map_shards[id % kShardSize]; }
 
-    MemTracker* _mem_tracker = nullptr;
     MapShard _map_shards[kShardSize];
 };
 

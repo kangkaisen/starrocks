@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/include/orc/Common.hh
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -38,6 +34,7 @@ private:
 public:
     static const FileVersion& v_0_11();
     static const FileVersion& v_0_12();
+    static const FileVersion& UNSTABLE_PRE_2_0();
 
     FileVersion(uint32_t major, uint32_t minor) : majorVersion(major), minorVersion(minor) {}
 

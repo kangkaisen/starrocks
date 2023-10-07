@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/util/thread.cpp
 
@@ -34,6 +47,7 @@
 #include <string>
 
 #include "common/logging.h"
+#include "exec/schema_scanner/schema_be_threads_scanner.h"
 #include "gutil/atomicops.h"
 #include "gutil/dynamic_annotations.h"
 #include "gutil/once.h"
@@ -61,7 +75,7 @@ static GoogleOnceType once = GOOGLE_ONCE_INIT;
 // auditing. Used only by Thread.
 class ThreadMgr {
 public:
-    ThreadMgr() {}
+    ThreadMgr() = default;
 
     ~ThreadMgr() {
         std::lock_guard lock(_lock);
@@ -77,6 +91,8 @@ public:
     // already been removed, this is a no-op.
     void remove_thread(const pthread_t& pthread_id, const std::string& category);
 
+    void get_thread_infos(std::vector<BeThreadInfo>& infos);
+
 private:
     // Container class for any details we want to capture about a thread
     // TODO: Add start-time.
@@ -84,17 +100,19 @@ private:
     class ThreadDescriptor {
     public:
         ThreadDescriptor() = default;
-        ThreadDescriptor(std::string category, std::string name, int64_t thread_id)
-                : _name(std::move(name)), _category(std::move(category)), _thread_id(thread_id) {}
+        ThreadDescriptor(std::string category, std::string name, int64_t thread_id, Thread* thread)
+                : _name(std::move(name)), _category(std::move(category)), _thread_id(thread_id), _thread(thread) {}
 
         const std::string& name() const { return _name; }
         const std::string& category() const { return _category; }
         int64_t thread_id() const { return _thread_id; }
+        Thread* thread() const { return _thread; }
 
     private:
         std::string _name;
         std::string _category;
         int64_t _thread_id;
+        Thread* _thread{nullptr};
     };
 
     // A ThreadCategory is a set of threads that are logically related.
@@ -145,7 +163,7 @@ void ThreadMgr::add_thread(const pthread_t& pthread_id, const std::string& name,
     ANNOTATE_IGNORE_READS_AND_WRITES_BEGIN();
     {
         std::lock_guard l(_lock);
-        _thread_categories[category][pthread_id] = ThreadDescriptor(category, name, tid);
+        _thread_categories[category][pthread_id] = ThreadDescriptor(category, name, tid, Thread::current_thread());
         _threads_running_metric++;
         _threads_started_metric++;
     }
@@ -167,6 +185,26 @@ void ThreadMgr::remove_thread(const pthread_t& pthread_id, const std::string& ca
     ANNOTATE_IGNORE_READS_AND_WRITES_END();
 }
 
+void ThreadMgr::get_thread_infos(std::vector<BeThreadInfo>& infos) {
+    std::lock_guard l(_lock);
+    for (const auto& category : _thread_categories) {
+        for (const auto& thread : category.second) {
+            BeThreadInfo& info = infos.emplace_back();
+            info.group = thread.second.category();
+            info.name = thread.second.name();
+            info.pthread_id = thread.first;
+            info.tid = thread.second.thread_id();
+            info.idle = thread.second.thread()->idle();
+            info.finished_tasks = thread.second.thread()->finished_tasks();
+        }
+    }
+}
+
+void Thread::get_thread_infos(std::vector<BeThreadInfo>& infos) {
+    GoogleOnceInit(&once, &init_threadmgr);
+    thread_manager->get_thread_infos(infos);
+}
+
 Thread::~Thread() {
     if (_joinable) {
         int ret = pthread_detach(_thread);
@@ -175,7 +213,8 @@ Thread::~Thread() {
 }
 
 void Thread::join() {
-    ThreadJoiner(this).join();
+    auto st = ThreadJoiner(this).join();
+    st.permit_unchecked_error();
 }
 
 int64_t Thread::tid() const {
@@ -296,7 +335,7 @@ Status Thread::start_thread(const std::string& category, const std::string& name
 }
 
 void* Thread::supervise_thread(void* arg) {
-    Thread* t = static_cast<Thread*>(arg);
+    auto* t = static_cast<Thread*>(arg);
     int64_t system_tid = Thread::current_thread_id();
     PCHECK(system_tid != -1);
 
@@ -330,7 +369,7 @@ void* Thread::supervise_thread(void* arg) {
 }
 
 void Thread::finish_thread(void* arg) {
-    Thread* t = static_cast<Thread*>(arg);
+    auto* t = static_cast<Thread*>(arg);
 
     // We're here either because of the explicit pthread_cleanup_pop() in
     // SuperviseThread() or through pthread_exit(). In either case,

@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/planner/RepeatNode.java
 
@@ -21,30 +34,26 @@
 
 package com.starrocks.planner;
 
-import com.clearspring.analytics.util.Lists;
 import com.google.common.base.MoreObjects;
-import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.GroupByClause;
-import com.starrocks.analysis.GroupingFunctionCallExpr;
-import com.starrocks.analysis.GroupingInfo;
-import com.starrocks.analysis.SlotDescriptor;
 import com.starrocks.analysis.SlotId;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.analysis.TupleId;
-import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Pair;
 import com.starrocks.common.UserException;
 import com.starrocks.thrift.TExplainLevel;
+import com.starrocks.thrift.TNormalPlanNode;
+import com.starrocks.thrift.TNormalRepeatNode;
 import com.starrocks.thrift.TPlanNode;
 import com.starrocks.thrift.TPlanNodeType;
 import com.starrocks.thrift.TRepeatNode;
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.logging.log4j.util.Strings;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -54,26 +63,12 @@ import java.util.stream.Collectors;
  * Used for grouping sets.
  * It will add some new rows and a column of groupingId according to grouping sets info.
  */
-// Our new cost based query optimizer is more powerful and stable than old query optimizer,
-// The old query optimizer related codes could be deleted safely.
-// TODO: Remove old query optimizer related codes before 2021-09-30
 public class RepeatNode extends PlanNode {
     private List<Set<Integer>> repeatSlotIdList;
     private Set<Integer> allSlotId;
     private TupleDescriptor outputTupleDesc;
     private List<List<Long>> groupingList;
-    private GroupingInfo groupingInfo;
-    private PlanNode input;
-    private GroupByClause groupByClause;
     private List<Integer> filter_null_value_columns = Lists.newArrayList();
-
-    protected RepeatNode(PlanNodeId id, PlanNode input, GroupingInfo groupingInfo, GroupByClause groupByClause) {
-        super(id, input.getTupleIds(), "REPEAT_NODE");
-        this.children.add(input);
-        this.groupingInfo = groupingInfo;
-        this.input = input;
-        this.groupByClause = groupByClause;
-    }
 
     // only for unittest
     protected RepeatNode(PlanNodeId id, PlanNode input, List<Set<SlotId>> repeatSlotIdList,
@@ -118,77 +113,10 @@ public class RepeatNode extends PlanNode {
 
     @Override
     public void computeStats(Analyzer analyzer) {
-        avgRowSize = 0;
-        cardinality = 0;
-        numNodes = 1;
     }
 
     @Override
     public void init(Analyzer analyzer) throws UserException {
-        Preconditions.checkState(conjuncts.isEmpty());
-        groupByClause.substituteGroupingExprs(groupingInfo.getGroupingSlots(), input.getOutputSmap(),
-                analyzer);
-
-        for (Expr expr : groupByClause.getGroupingExprs()) {
-            if (expr instanceof SlotRef || (expr instanceof GroupingFunctionCallExpr)) {
-                continue;
-            }
-            throw new AnalysisException("function or expr is not allowed in grouping sets clause.");
-        }
-
-        // build new BitSet List for tupleDesc
-        Set<SlotDescriptor> slotDescSet = new HashSet<>();
-        for (TupleId tupleId : input.getTupleIds()) {
-            TupleDescriptor tupleDescriptor = analyzer.getDescTbl().getTupleDesc(tupleId);
-            slotDescSet.addAll(tupleDescriptor.getSlots());
-        }
-
-        // build tupleDesc according to child's tupleDesc info
-        outputTupleDesc = groupingInfo.getVirtualTuple();
-        //set aggregate nullable
-        for (Expr slot : groupByClause.getGroupingExprs()) {
-            if (slot instanceof SlotRef) {
-                ((SlotRef) slot).getDesc().setIsNullable(true);
-            }
-        }
-        outputTupleDesc.computeMemLayout();
-
-        List<Set<SlotId>> groupingIdList = new ArrayList<>();
-        List<Expr> exprList = groupByClause.getGroupingExprs();
-        Preconditions.checkState(exprList.size() >= 2);
-        allSlotId = new HashSet<>();
-        for (BitSet bitSet : Collections.unmodifiableList(groupingInfo.getGroupingIdList())) {
-            Set<SlotId> slotIdSet = new HashSet<>();
-            for (SlotDescriptor slotDesc : slotDescSet) {
-                SlotId slotId = slotDesc.getId();
-                if (slotId == null) {
-                    continue;
-                }
-                for (int i = 0; i < exprList.size(); i++) {
-                    if (exprList.get(i) instanceof SlotRef) {
-                        SlotRef slotRef = (SlotRef) (exprList.get(i));
-                        if (bitSet.get(i) && slotRef.getSlotId() == slotId) {
-                            slotIdSet.add(slotId);
-                            break;
-                        }
-                    }
-                }
-            }
-            groupingIdList.add(slotIdSet);
-        }
-
-        this.repeatSlotIdList = buildIdSetList(groupingIdList);
-        for (Set<Integer> s : this.repeatSlotIdList) {
-            allSlotId.addAll(s);
-        }
-        this.groupingList = groupingInfo.genGroupingList(groupByClause.getGroupingExprs());
-        tupleIds.add(outputTupleDesc.getId());
-        for (TupleId id : tupleIds) {
-            analyzer.getTupleDesc(id).setIsMaterialized(true);
-        }
-        computeMemLayout(analyzer);
-        computeStats(analyzer);
-        createDefaultSmap(analyzer);
     }
 
     @Override
@@ -234,8 +162,8 @@ public class RepeatNode extends PlanNode {
     }
 
     @Override
-    public boolean canUsePipeLine() {
-        return getChildren().stream().allMatch(PlanNode::canUsePipeLine);
+    public boolean canUseRuntimeAdaptiveDop() {
+        return getChildren().stream().allMatch(PlanNode::canUseRuntimeAdaptiveDop);
     }
 
     @Override
@@ -255,5 +183,26 @@ public class RepeatNode extends PlanNode {
         if (!description.getEqualForNull() && slotRefWithNullValue) {
             filter_null_value_columns.add(slotId.asInt());
         }
+    }
+    @Override
+    protected void toNormalForm(TNormalPlanNode planNode, FragmentNormalizer normalizer) {
+        TNormalRepeatNode repeatNode = new TNormalRepeatNode();
+        repeatNode.setOutput_tuple_id(normalizer.remapTupleId(outputTupleDesc.getId()).asInt());
+        List<Integer> allSlotIds = new ArrayList<>(allSlotId);
+        repeatNode.setAll_slot_ids(
+                normalizer.remapIntegerSlotIds(allSlotIds).stream().sorted().collect(Collectors.toList()));
+        List<List<Integer>> slotIdSetList = repeatSlotIdList.stream()
+                .map(s -> {
+                    List<Integer> slotIds = normalizer.remapIntegerSlotIds(new ArrayList<>(s)).stream().sorted()
+                            .collect(Collectors.toList());
+                    String key = Strings.join(slotIds.stream().map(id -> "" + id).collect(Collectors.toList()), ',');
+                    return new Pair<>(slotIds, key);
+                }).sorted(Pair.comparingBySecond()).map(p -> p.first).collect(Collectors.toList());
+        repeatNode.setSlot_id_set_list(slotIdSetList);
+        repeatNode.setRepeat_id_list(groupingList.get(0));
+        repeatNode.setGrouping_list(groupingList);
+        planNode.setRepeat_node(repeatNode);
+        planNode.setNode_type(TPlanNodeType.REPEAT_NODE);
+        normalizeConjuncts(normalizer, planNode, conjuncts);
     }
 }

@@ -3,6 +3,9 @@ package com.starrocks.analysis;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.qe.ConnectContext;
+import com.starrocks.sql.analyzer.ExpressionAnalyzer;
+import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.utframe.UtFrameUtils;
 import org.junit.Assert;
 import org.junit.Test;
@@ -20,18 +23,12 @@ public class ArithmeticExprTest {
         rhsExpr.setType(decimal32p9s2);
         ArithmeticExpr addExpr = new ArithmeticExpr(
                 ArithmeticExpr.Operator.ADD, lhsExpr, rhsExpr);
-        try {
-            ScalarType decimal64p18s2 = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 2);
-            addExpr.analyzeImpl(null);
-            Assert.assertEquals(addExpr.type, decimal64p18s2);
-            Assert.assertTrue(addExpr.getChild(0) instanceof CastExpr);
-            Assert.assertTrue(addExpr.getChild(1) instanceof CastExpr);
-            Assert.assertEquals(addExpr.getChild(0).type, decimal64p18s2);
-            Assert.assertEquals(addExpr.getChild(1).type, decimal64p18s2);
-        } catch (AnalysisException e) {
-            Assert.fail("Should not throw exception");
-        }
-
+        ScalarType decimal64p10s2 = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 10, 2);
+        ExpressionAnalyzer.analyzeExpressionIgnoreSlot(addExpr, ConnectContext.get());
+        Assert.assertEquals(addExpr.type, decimal64p10s2);
+        Assert.assertNotNull(addExpr.getFn());
+        Assert.assertEquals(addExpr.getFn().getArgs()[0], decimal64p10s2);
+        Assert.assertEquals(addExpr.getFn().getArgs()[1], decimal64p10s2);
     }
 
     private ScalarType dec(int bits, int precision, int scale) {
@@ -53,7 +50,7 @@ public class ArithmeticExprTest {
 
     @Test
     public void testDecimalMultiply() throws AnalysisException {
-        Object[][] cases = new Object[][]{
+        Object[][] cases = new Object[][] {
                 {
                         dec(32, 4, 3),
                         dec(32, 4, 3),
@@ -117,7 +114,8 @@ public class ArithmeticExprTest {
             ScalarType expectReturnType = (ScalarType) c[2];
             ScalarType expectLhsType = (ScalarType) c[3];
             ScalarType expectRhsType = (ScalarType) c[4];
-            ArithmeticExpr.TypeTriple tr = ArithmeticExpr.getReturnTypeOfDecimal(ArithmeticExpr.Operator.MULTIPLY, lhsType, rhsType);
+            ArithmeticExpr.TypeTriple tr =
+                    ArithmeticExpr.getReturnTypeOfDecimal(ArithmeticExpr.Operator.MULTIPLY, lhsType, rhsType);
             Assert.assertEquals(tr.returnType, expectReturnType);
             Assert.assertEquals(tr.lhsTargetType, expectLhsType);
             Assert.assertEquals(tr.rhsTargetType, expectRhsType);
@@ -126,7 +124,7 @@ public class ArithmeticExprTest {
 
     @Test
     public void testDecimalMultiplyFail() {
-        Object[][] cases = new Object[][]{
+        Object[][] cases = new Object[][] {
                 {
                         dec(128, 38, 36),
                         dec(32, 4, 3),
@@ -146,7 +144,7 @@ public class ArithmeticExprTest {
             try {
                 ArithmeticExpr.getReturnTypeOfDecimal(ArithmeticExpr.Operator.MULTIPLY, lhsType, rhsType);
                 Assert.fail("should throw exception");
-            } catch (AnalysisException ignored) {
+            } catch (SemanticException ignored) {
             }
         }
     }

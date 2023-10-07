@@ -1,29 +1,38 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <butil/thread_local.h>
 #include <butil/time.h> // NOLINT
+#include <bvar/bvar.h>
 
 #include <atomic>
-
-#include "common/compiler_util.h"
-DIAGNOSTIC_PUSH
-DIAGNOSTIC_IGNORE("-Wclass-memaccess")
-#include <bvar/bvar.h>
-DIAGNOSTIC_POP
 
 #include "column/binary_column.h"
 #include "column/const_column.h"
 #include "column/decimalv3_column.h"
 #include "column/fixed_length_column.h"
 #include "column/object_column.h"
+#include "common/compiler_util.h"
 #include "common/config.h"
 #include "common/type_list.h"
 #include "gutil/dynamic_annotations.h"
 #include "runtime/current_thread.h"
+#include "util/json.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 template <typename T>
 struct ColumnPoolBlockSize {
@@ -108,7 +117,7 @@ class CACHELINE_ALIGNED ColumnPool {
             _curr_free.bytes = 0;
         }
 
-        ~LocalPool() {
+        ~LocalPool() noexcept {
             if (_curr_free.nfree > 0 && !_pool->_push_free_block(_curr_free)) {
                 for (size_t i = 0; i < _curr_free.nfree; i++) {
                     ASAN_UNPOISON_MEMORY_REGION(_curr_free.ptrs[i], sizeof(T));
@@ -118,7 +127,7 @@ class CACHELINE_ALIGNED ColumnPool {
             _pool->_clear_from_destructor_of_local_pool();
         }
 
-        inline T* get_object() {
+        T* get_object() {
             if (_curr_free.nfree == 0) {
                 if (!_pool->_pop_free_block(&_curr_free)) {
                     return nullptr;
@@ -135,7 +144,7 @@ class CACHELINE_ALIGNED ColumnPool {
             return obj;
         }
 
-        inline void return_object(T* ptr, size_t chunk_size) {
+        void return_object(T* ptr, size_t chunk_size) {
             if (UNLIKELY(column_reserved_size(ptr) > chunk_size)) {
                 delete ptr;
                 return;
@@ -165,17 +174,21 @@ class CACHELINE_ALIGNED ColumnPool {
             delete ptr;
         }
 
-        inline void release_large_columns(size_t limit) {
+        void release_large_columns(size_t limit) {
             size_t freed_bytes = 0;
             for (size_t i = 0; i < _curr_free.nfree; i++) {
                 ASAN_UNPOISON_MEMORY_REGION(_curr_free.ptrs[i], sizeof(T));
                 freed_bytes += release_column_if_large(_curr_free.ptrs[i], limit);
                 ASAN_POISON_MEMORY_REGION(_curr_free.ptrs[i], sizeof(T));
             }
-            _curr_free.bytes -= freed_bytes;
+            if (freed_bytes > 0) {
+                _curr_free.bytes -= freed_bytes;
+                tls_thread_status.mem_consume(freed_bytes);
+                _pool->mem_tracker()->release(freed_bytes);
+            }
         }
 
-        static inline void delete_local_pool(void* arg) { delete (LocalPool*)arg; }
+        static void delete_local_pool(void* arg) { delete (LocalPool*)arg; }
 
     private:
         ColumnPool* _pool;
@@ -183,8 +196,8 @@ class CACHELINE_ALIGNED ColumnPool {
     };
 
 public:
-    void set_mem_tracker(MemTracker* mem_tracker) { _mem_tracker = mem_tracker; }
-    MemTracker* mem_tracker() { return _mem_tracker; }
+    void set_mem_tracker(std::shared_ptr<MemTracker> mem_tracker) { _mem_tracker = std::move(mem_tracker); }
+    MemTracker* mem_tracker() { return _mem_tracker.get(); }
 
     static std::enable_if_t<std::is_default_constructible_v<T>, ColumnPool*> singleton() {
         static ColumnPool p;
@@ -192,7 +205,7 @@ public:
     }
 
     template <bool AllocOnEmpty = true>
-    inline T* get_column() {
+    T* get_column() {
         LocalPool* lp = _get_or_new_local_pool();
         if (UNLIKELY(lp == nullptr)) {
             return nullptr;
@@ -204,7 +217,7 @@ public:
         return ptr;
     }
 
-    inline void return_column(T* ptr, size_t chunk_size) {
+    void return_column(T* ptr, size_t chunk_size) {
         LocalPool* lp = _get_or_new_local_pool();
         if (LIKELY(lp != nullptr)) {
             reset_column(ptr);
@@ -216,14 +229,15 @@ public:
 
     // Destroy some objects in the *central* free list.
     // Returns the number of bytes freed to tcmalloc.
-    inline size_t release_free_columns(float free_ratio) {
-        free_ratio = std::min<float>(free_ratio, 1.0);
+    size_t release_free_columns(double free_ratio) {
+        free_ratio = std::min<double>(free_ratio, 1.0);
         int64_t now = butil::gettimeofday_s();
         std::vector<DynamicFreeBlock*> tmp;
         if (now - _first_push_time > 3) {
             //    ^^^^^^^^^^^^^^^^ read without lock by intention.
             std::lock_guard<std::mutex> l(_free_blocks_lock);
-            int n = implicit_cast<int>(_free_blocks.size() * (1 - free_ratio));
+            int n = implicit_cast<int>(static_cast<base::identity_<int>::type>(
+                    static_cast<double>(_free_blocks.size()) * (1 - free_ratio)));
             tmp.insert(tmp.end(), _free_blocks.begin() + n, _free_blocks.end());
             _free_blocks.resize(n);
         }
@@ -241,14 +255,14 @@ public:
 
     // Reduce memory usage on behalf of column if its memory usage is greater
     // than or equal to |limit|.
-    inline void release_large_columns(size_t limit) {
+    void release_large_columns(size_t limit) {
         LocalPool* lp = _local_pool;
         if (lp) {
             lp->release_large_columns(limit);
         }
     }
 
-    inline void clear_columns() {
+    void clear_columns() {
         LocalPool* lp = _local_pool;
         if (lp) {
             _local_pool = nullptr;
@@ -257,7 +271,7 @@ public:
         }
     }
 
-    inline ColumnPoolInfo describe_column_pool() {
+    ColumnPoolInfo describe_column_pool() {
         ColumnPoolInfo info;
         info.local_cnt = _nlocal.load(std::memory_order_relaxed);
         if (_free_blocks.empty()) {
@@ -272,7 +286,7 @@ public:
     }
 
 private:
-    static inline void _release_free_block(DynamicFreeBlock* blk) {
+    static void _release_free_block(DynamicFreeBlock* blk) {
         for (size_t i = 0; i < blk->nfree; i++) {
             T* p = blk->ptrs[i];
             ASAN_UNPOISON_MEMORY_REGION(p, sizeof(T));
@@ -281,7 +295,7 @@ private:
         free(blk);
     }
 
-    inline LocalPool* _get_or_new_local_pool() {
+    LocalPool* _get_or_new_local_pool() {
         LocalPool* lp = _local_pool;
         if (LIKELY(lp != nullptr)) {
             return lp;
@@ -297,7 +311,7 @@ private:
         return lp;
     }
 
-    inline void _clear_from_destructor_of_local_pool() {
+    void _clear_from_destructor_of_local_pool() {
         _local_pool = nullptr;
 
         // Do nothing if there are active threads.
@@ -318,9 +332,8 @@ private:
         release_free_columns(1.0);
     }
 
-    inline bool _push_free_block(const FreeBlock& blk) {
-        DynamicFreeBlock* p =
-                (DynamicFreeBlock*)malloc(offsetof(DynamicFreeBlock, ptrs) + sizeof(*blk.ptrs) * blk.nfree);
+    bool _push_free_block(const FreeBlock& blk) {
+        auto* p = (DynamicFreeBlock*)malloc(offsetof(DynamicFreeBlock, ptrs) + sizeof(*blk.ptrs) * blk.nfree);
         if (UNLIKELY(p == nullptr)) {
             return false;
         }
@@ -333,7 +346,7 @@ private:
         return true;
     }
 
-    inline bool _pop_free_block(FreeBlock* blk) {
+    bool _pop_free_block(FreeBlock* blk) {
         if (_free_blocks.empty()) {
             return false;
         }
@@ -357,7 +370,7 @@ private:
 
     ~ColumnPool() = default;
 
-    MemTracker* _mem_tracker = nullptr;
+    std::shared_ptr<MemTracker> _mem_tracker = nullptr;
 
     static __thread LocalPool* _local_pool; // NOLINT
     static std::atomic<long> _nlocal;       // NOLINT
@@ -403,7 +416,7 @@ inline void release_large_columns(size_t limit) {
 }
 
 template <typename T>
-inline size_t release_free_columns(float ratio) {
+inline size_t release_free_columns(double ratio) {
     static_assert(InList<ColumnPool<T>, ColumnPoolList>::value, "Cannot use column pool");
     return ColumnPool<T>::singleton()->release_free_columns(ratio);
 }
@@ -437,4 +450,4 @@ inline void TEST_clear_all_columns_this_thread() {
     ForEach<ColumnPoolList>(detail::ClearColumnPool());
 }
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

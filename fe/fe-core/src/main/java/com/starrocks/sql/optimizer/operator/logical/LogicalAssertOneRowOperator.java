@@ -1,26 +1,39 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.sql.optimizer.operator.logical;
 
-import com.starrocks.analysis.AssertNumRowsElement;
+import com.starrocks.sql.ast.AssertNumRowsElement;
 import com.starrocks.sql.optimizer.ExpressionContext;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
+import com.starrocks.sql.optimizer.RowOutputInfo;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
 
 import java.util.ArrayList;
-import java.util.Objects;
+import java.util.List;
 
 public class LogicalAssertOneRowOperator extends LogicalOperator {
 
-    private final AssertNumRowsElement.Assertion assertion;
+    private AssertNumRowsElement.Assertion assertion;
 
-    private final long checkRows;
+    private long checkRows;
 
     // Error sql message, use for throw exception in BE
-    private final String tips;
+    private String tips;
 
     private LogicalAssertOneRowOperator(AssertNumRowsElement.Assertion assertion, long checkRows, String tips) {
         super(OperatorType.LOGICAL_ASSERT_ONE_ROW);
@@ -29,11 +42,8 @@ public class LogicalAssertOneRowOperator extends LogicalOperator {
         this.tips = tips;
     }
 
-    private LogicalAssertOneRowOperator(Builder builder) {
-        super(OperatorType.LOGICAL_ASSERT_ONE_ROW, builder.getLimit(), builder.getPredicate(), builder.getProjection());
-        this.assertion = builder.assertion;
-        this.checkRows = builder.checkRows;
-        this.tips = builder.tips;
+    private LogicalAssertOneRowOperator() {
+        super(OperatorType.LOGICAL_ASSERT_ONE_ROW);
     }
 
     public static LogicalAssertOneRowOperator createLessEqOne(String tips) {
@@ -54,19 +64,7 @@ public class LogicalAssertOneRowOperator extends LogicalOperator {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        if (!super.equals(o)) {
-            return false;
-        }
-        LogicalAssertOneRowOperator that = (LogicalAssertOneRowOperator) o;
-        return checkRows == that.checkRows &&
-                assertion == that.assertion &&
-                Objects.equals(tips, that.tips);
+        return this == o;
     }
 
     @Override
@@ -79,8 +77,13 @@ public class LogicalAssertOneRowOperator extends LogicalOperator {
     }
 
     @Override
+    public RowOutputInfo deriveRowOutputInfo(List<OptExpression> inputs) {
+        return projectInputRow(inputs.get(0).getRowOutputInfo());
+    }
+
+    @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), assertion, checkRows, tips);
+        return System.identityHashCode(this);
     }
 
     @Override
@@ -95,21 +98,18 @@ public class LogicalAssertOneRowOperator extends LogicalOperator {
 
     public static class Builder
             extends LogicalOperator.Builder<LogicalAssertOneRowOperator, LogicalAssertOneRowOperator.Builder> {
-        private AssertNumRowsElement.Assertion assertion;
-        private long checkRows;
-        private String tips;
 
         @Override
-        public LogicalAssertOneRowOperator build() {
-            return new LogicalAssertOneRowOperator(this);
+        protected LogicalAssertOneRowOperator newInstance() {
+            return new LogicalAssertOneRowOperator();
         }
 
         @Override
         public LogicalAssertOneRowOperator.Builder withOperator(LogicalAssertOneRowOperator assertOneRowOperator) {
             super.withOperator(assertOneRowOperator);
-            this.assertion = assertOneRowOperator.assertion;
-            this.checkRows = assertOneRowOperator.checkRows;
-            this.tips = assertOneRowOperator.tips;
+            builder.assertion = assertOneRowOperator.assertion;
+            builder.checkRows = assertOneRowOperator.checkRows;
+            builder.tips = assertOneRowOperator.tips;
             return this;
         }
     }

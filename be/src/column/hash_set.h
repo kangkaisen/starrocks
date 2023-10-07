@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -9,7 +21,7 @@
 #include "util/phmap/phmap_dump.h"
 #include "util/slice.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 template <typename T>
 using HashSet = phmap::flat_hash_set<T, StdHash<T>>;
@@ -38,7 +50,7 @@ public:
     bool operator()(const SliceWithHash& x, const SliceWithHash& y) const {
         // by comparing hash value first, we can avoid comparing real data
         // which may touch another memory area and has bad cache locality.
-        return x.hash == y.hash && memequal(x.data, x.size, y.data, y.size);
+        return x.hash == y.hash && memequal_padded(x.data, x.size, y.data, y.size);
     }
 };
 
@@ -62,7 +74,7 @@ public:
     bool operator()(const TSliceWithHash<seed>& x, const TSliceWithHash<seed>& y) const {
         // by comparing hash value first, we can avoid comparing real data
         // which may touch another memory area and has bad cache locality.
-        return x.hash == y.hash && memequal(x.data, x.size, y.data, y.size);
+        return x.hash == y.hash && memequal_padded(x.data, x.size, y.data, y.size);
     }
 };
 
@@ -145,4 +157,4 @@ public:
     }
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

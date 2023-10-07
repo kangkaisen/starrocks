@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/service/backend_options.h
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -26,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "gen_cpp/Types_types.h"
+
 namespace starrocks {
 
 class CIDR;
@@ -34,6 +32,8 @@ class BackendOptions {
 public:
     static bool init();
     static std::string get_localhost();
+    static TBackend get_localBackend();
+    static void set_localhost(const std::string& host);
 
 private:
     static bool analyze_priority_cidrs();
@@ -41,6 +41,7 @@ private:
 
     static std::string _s_localhost;
     static std::vector<CIDR> _s_priority_cidrs;
+    static TBackend _backend;
 
     BackendOptions(const BackendOptions&) = delete;
     const BackendOptions& operator=(const BackendOptions&) = delete;

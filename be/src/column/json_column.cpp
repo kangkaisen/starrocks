@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "column/json_column.h"
 
@@ -6,18 +18,13 @@
 #include "util/hash_util.hpp"
 #include "util/mysql_row_buffer.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 void JsonColumn::append_datum(const Datum& datum) {
-    if (const JsonValue* json = datum.get_if<JsonValue>()) {
-        append(json);
-    } else if (JsonValue* const* json_p = datum.get_if<JsonValue*>()) {
-        append(*json_p);
-    } else {
-        CHECK(false) << "invalid datum type";
-    }
+    append(datum.get<JsonValue*>());
 }
-int JsonColumn::compare_at(size_t left_idx, size_t right_idx, const starrocks::vectorized::Column& rhs,
+
+int JsonColumn::compare_at(size_t left_idx, size_t right_idx, const starrocks::Column& rhs,
                            int nan_direction_hint) const {
     JsonValue* x = get_object(left_idx);
     const JsonValue* y = rhs.get(right_idx).get_json();
@@ -39,11 +46,11 @@ void JsonColumn::put_mysql_row_buffer(starrocks::MysqlRowBuffer* buf, size_t idx
     if (!json_str.ok()) {
         buf->push_null();
     } else {
-        buf->push_string(json_str->data(), json_str->size());
+        buf->push_string(json_str->data(), json_str->size(), '\'');
     }
 }
 
-std::string JsonColumn::debug_item(uint32_t idx) const {
+std::string JsonColumn::debug_item(size_t idx) const {
     return get_object(idx)->to_string_uncheck();
 }
 
@@ -63,4 +70,26 @@ ColumnPtr JsonColumn::clone_shared() const {
     return BaseClass::clone_shared();
 }
 
-} // namespace starrocks::vectorized
+const uint8_t* JsonColumn::deserialize_and_append(const uint8_t* data) {
+    JsonValue value((JsonValue::VSlice(data)));
+    size_t size = value.serialize_size();
+    append(std::move(value));
+    return data + size;
+}
+
+uint32_t JsonColumn::serialize_size(size_t idx) const {
+    return static_cast<uint32_t>(get_object(idx)->serialize_size());
+}
+
+uint32_t JsonColumn::serialize(size_t idx, uint8_t* pos) {
+    return static_cast<uint32_t>(get_object(idx)->serialize(pos));
+}
+
+void JsonColumn::serialize_batch(uint8_t* dst, Buffer<uint32_t>& slice_sizes, size_t chunk_size,
+                                 uint32_t max_one_row_size) {
+    for (size_t i = 0; i < chunk_size; ++i) {
+        slice_sizes[i] += serialize(i, dst + i * max_one_row_size + slice_sizes[i]);
+    }
+}
+
+} // namespace starrocks

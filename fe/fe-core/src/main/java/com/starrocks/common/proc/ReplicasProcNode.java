@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/proc/ReplicasProcNode.java
 
@@ -23,9 +36,9 @@ package com.starrocks.common.proc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.Replica;
 import com.starrocks.common.util.TimeUtils;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.Backend;
 
 import java.util.Arrays;
@@ -41,7 +54,8 @@ public class ReplicasProcNode implements ProcNodeInterface {
             .add("LstSuccessVersion").add("LstSuccessVersionHash")
             .add("LstFailedVersion").add("LstFailedVersionHash")
             .add("LstFailedTime").add("SchemaHash").add("DataSize").add("RowCount").add("State")
-            .add("IsBad").add("IsSetBadForce").add("VersionCount").add("PathHash").add("MetaUrl").add("CompactionStatus")
+            .add("IsBad").add("IsSetBadForce").add("VersionCount").add("PathHash").add("MetaUrl")
+            .add("CompactionStatus").add("IsErrorState")
             .build();
 
     private long tabletId;
@@ -54,7 +68,7 @@ public class ReplicasProcNode implements ProcNodeInterface {
 
     @Override
     public ProcResult fetchResult() {
-        ImmutableMap<Long, Backend> backendMap = Catalog.getCurrentSystemInfo().getIdToBackend();
+        ImmutableMap<Long, Backend> backendMap = GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
 
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
@@ -63,11 +77,10 @@ public class ReplicasProcNode implements ProcNodeInterface {
             String compactionUrl;
             Backend backend = backendMap.get(replica.getBackendId());
             if (backend != null) {
-                metaUrl = String.format("http://%s:%d/api/meta/header/%d/%d",
-                                        backend.getHost(),
-                                        backend.getHttpPort(),
-                                        tabletId,
-                                        replica.getSchemaHash());
+                metaUrl = String.format("http://%s:%d/api/meta/header/%d",
+                        backend.getHost(),
+                        backend.getHttpPort(),
+                        tabletId);
                 compactionUrl = String.format(
                         "http://%s:%d/api/compaction/show?tablet_id=%d&schema_hash=%d",
                         backend.getHost(),
@@ -97,7 +110,8 @@ public class ReplicasProcNode implements ProcNodeInterface {
                     String.valueOf(replica.getVersionCount()),
                     String.valueOf(replica.getPathHash()),
                     metaUrl,
-                    compactionUrl));
+                    compactionUrl,
+                    String.valueOf(replica.isErrorState())));
         }
         return result;
     }

@@ -17,6 +17,7 @@
 
 package com.starrocks.load.loadv2.dpp;
 
+import com.google.common.base.Objects;
 import org.roaringbitmap.Util;
 
 import java.io.DataInput;
@@ -245,49 +246,35 @@ public class BitmapValue {
         }
     }
 
-    public boolean equals(BitmapValue other) {
-        boolean ret = false;
-        if (this.bitmapType != other.bitmapType) {
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(bitmapType);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof BitmapValue)) {
             return false;
         }
-        switch (other.bitmapType) {
+        BitmapValue otherBitmap = (BitmapValue) other;
+        boolean ret = false;
+        if (this.bitmapType != otherBitmap.bitmapType) {
+            return false;
+        }
+        switch (otherBitmap.bitmapType) {
             case EMPTY:
                 ret = true;
                 break;
             case SINGLE_VALUE:
-                ret = this.singleValue == other.singleValue;
+                ret = this.singleValue == otherBitmap.singleValue;
                 break;
             case BITMAP_VALUE:
-                ret = bitmap.equals(other.bitmap);
+                ret = bitmap.equals(otherBitmap.bitmap);
         }
         return ret;
-    }
-
-    /**
-     * usage note:
-     * now getSizeInBytes is different from be' impl
-     * The reason is that java's roaring didn't implement method #shrinkToFit but be's getSizeInBytes need it
-     * Implementing java's shrinkToFit means refactor roaring whose fields are all unaccess in StarRocks Fe's package
-     * That would be an another big project
-     */
-    // TODO(wb): keep getSizeInBytes consistent with be and refactor roaring
-    public long getSizeInBytes() {
-        long size = 0;
-        switch (bitmapType) {
-            case EMPTY:
-                size = 1;
-                break;
-            case SINGLE_VALUE:
-                if (isLongValue32bitEnough(singleValue)) {
-                    size = 1 + 4;
-                } else {
-                    size = 1 + 8;
-                }
-                break;
-            case BITMAP_VALUE:
-                size = 1 + bitmap.getSizeInBytes();
-        }
-        return size;
     }
 
     @Override

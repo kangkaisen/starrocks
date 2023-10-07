@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/planner/SelectNode.java
 
@@ -21,7 +34,6 @@
 
 package com.starrocks.planner;
 
-import com.google.common.base.Preconditions;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.Expr;
 import com.starrocks.common.UserException;
@@ -36,9 +48,6 @@ import java.util.List;
 /**
  * Node that applies conjuncts and a limit clause. Has exactly one child.
  */
-// Our new cost based query optimizer is more powerful and stable than old query optimizer,
-// The old query optimizer related codes could be deleted safely.
-// TODO: Remove old query optimizer related codes before 2021-09-30
 public class SelectNode extends PlanNode {
     private static final Logger LOG = LogManager.getLogger(SelectNode.class);
 
@@ -56,21 +65,10 @@ public class SelectNode extends PlanNode {
 
     @Override
     public void init(Analyzer analyzer) throws UserException {
-        analyzer.markConjunctsAssigned(conjuncts);
-        computeStats(analyzer);
-        createDefaultSmap(analyzer);
     }
 
     @Override
     public void computeStats(Analyzer analyzer) {
-        super.computeStats(analyzer);
-        if (getChild(0).cardinality == -1) {
-            cardinality = -1;
-        } else {
-            cardinality = Math.round(((double) getChild(0).cardinality) * computeSelectivity());
-            Preconditions.checkState(cardinality >= 0);
-        }
-        LOG.info("stats Select: cardinality=" + Long.toString(cardinality));
     }
 
     @Override
@@ -88,7 +86,7 @@ public class SelectNode extends PlanNode {
     }
 
     @Override
-    public boolean canUsePipeLine() {
-        return getChildren().stream().allMatch(PlanNode::canUsePipeLine);
+    public boolean canUseRuntimeAdaptiveDop() {
+        return getChildren().stream().allMatch(PlanNode::canUseRuntimeAdaptiveDop);
     }
 }

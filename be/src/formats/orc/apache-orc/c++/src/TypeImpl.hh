@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/src/TypeImpl.hh
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -38,6 +34,7 @@ private:
     TypeKind kind;
     std::vector<std::unique_ptr<Type>> subTypes;
     std::vector<std::string> fieldNames;
+    mutable std::map<uint64_t, uint64_t> columnIdToPos;
     uint64_t subtypeCount;
     uint64_t maxLength;
     uint64_t precision;
@@ -46,7 +43,7 @@ private:
 
 public:
     /**
-     * Create most of the primitive types.
+     * Create most of the logical types.
      */
     TypeImpl(TypeKind kind);
 
@@ -70,7 +67,10 @@ public:
 
     const Type* getSubtype(uint64_t i) const override;
 
+    const Type* getSubtypeByColumnId(uint64_t columnId) const override;
+
     const std::string& getFieldName(uint64_t i) const override;
+
     uint64_t getFieldNamesCount() const override;
 
     uint64_t getMaximumLength() const override;
@@ -107,8 +107,7 @@ public:
      */
     void addChildType(std::unique_ptr<Type> childType);
 
-    static std::vector<std::pair<std::string, std::unique_ptr<Type>>> parseType(const std::string& input, size_t start,
-                                                                                size_t end);
+    static std::pair<ORC_UNIQUE_PTR<Type>, size_t> parseType(const std::string& input, size_t start, size_t end);
 
 private:
     /**
@@ -122,6 +121,11 @@ private:
      * Ensure that ids are assigned to all of the nodes.
      */
     void ensureIdAssigned() const;
+
+    /**
+     * Build column id mapping to position in children.
+     */
+    void buildColumnIdToPosMap() const;
 
     /**
      * Parse array type from string
@@ -154,6 +158,14 @@ private:
      * @param end end position of the input string
      */
     static std::unique_ptr<Type> parseUnionType(const std::string& input, size_t start, size_t end);
+
+    /**
+     * Parse field name from string
+     * @param input the input string of a field name
+     * @param start start position of the input string
+     * @param end end position of the input string
+     */
+    static std::pair<std::string, size_t> parseName(const std::string& input, const size_t start, const size_t end);
 
     /**
      * Parse decimal type from string

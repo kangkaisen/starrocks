@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.catalog;
 
@@ -17,21 +30,21 @@ import java.security.MessageDigest;
 import java.util.Map;
 
 /*
-* External JDBC resource for JDBC table query
-* <p>
-* Example:
-* CREATE EXTERNAL RESOURCE "jdbc_pg"
-* PROPERTIES
-* (
-* "type" = "jdbc",
-* "user" = "user",
-* "password" = "password",
-* "jdbc_uri" = "jdbc:postgresql://127.0.0.1:5432/db"
-* "driver" = "driver_name",
-* );
-* <p>
-* DROP RESOURCE "jdbc_pg";
-* */
+ * External JDBC resource for JDBC table query
+ * <p>
+ * Example:
+ * CREATE EXTERNAL RESOURCE "jdbc_pg"
+ * PROPERTIES
+ * (
+ * "type" = "jdbc",
+ * "user" = "user",
+ * "password" = "password",
+ * "jdbc_uri" = "jdbc:postgresql://127.0.0.1:5432/db"
+ * "driver" = "driver_name",
+ * );
+ * <p>
+ * DROP RESOURCE "jdbc_pg";
+ * */
 public class JDBCResource extends Resource {
     public static final String TYPE = "type";
     public static final String NAME = "name";
@@ -120,6 +133,9 @@ public class JDBCResource extends Resource {
     protected void getProcNodeData(BaseProcResult result) {
         String lowerCaseType = type.name().toLowerCase();
         for (Map.Entry<String, String> entry : configs.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(PASSWORD)) {
+                continue;
+            }
             result.addRow(Lists.newArrayList(name, lowerCaseType, entry.getKey(), entry.getValue()));
         }
     }

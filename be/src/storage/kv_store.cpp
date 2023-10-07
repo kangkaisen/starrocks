@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/olap_meta.cpp
 
@@ -26,6 +39,8 @@
 #include <vector>
 
 #include "common/logging.h"
+#include "gutil/strings/substitute.h"
+#include "rocksdb/convenience.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
@@ -71,13 +86,20 @@ Status KVStore::init(bool read_only) {
     options.create_missing_column_families = true;
     std::string db_path = _root_path + META_POSTFIX;
 
+    ColumnFamilyOptions meta_cf_options;
+    RETURN_IF_ERROR(rocksdb::GetColumnFamilyOptionsFromString(meta_cf_options, config::rocksdb_cf_options_string,
+                                                              &meta_cf_options));
     // The index of each column family must be consistent with the enum `ColumnFamilyIndex`
     // defined in olap_define.h
     std::vector<ColumnFamilyDescriptor> cf_descs(NUM_COLUMN_FAMILY_INDEX);
     cf_descs[0].name = DEFAULT_COLUMN_FAMILY;
+    cf_descs[0].options.compression = rocksdb::kSnappyCompression;
     cf_descs[1].name = STARROCKS_COLUMN_FAMILY;
+    cf_descs[1].options.compression = rocksdb::kSnappyCompression;
     cf_descs[2].name = META_COLUMN_FAMILY;
+    cf_descs[2].options = meta_cf_options;
     cf_descs[2].options.prefix_extractor.reset(NewFixedPrefixTransform(PREFIX_LENGTH));
+    cf_descs[2].options.compression = rocksdb::kSnappyCompression;
     static_assert(NUM_COLUMN_FAMILY_INDEX == 3);
 
     rocksdb::Status s;
@@ -90,6 +112,8 @@ Status KVStore::init(bool read_only) {
     if (s.ok() && _db != nullptr) {
         return Status::OK();
     }
+
+    LOG(WARNING) << "Fail to open RocksDB, reason:" << s.ToString() << ", path:" << db_path;
 
     //
     // Open failed, may be it's because the column families we are trying to open is a subset of column families,
@@ -199,11 +223,12 @@ static std::string get_iterate_upper_bound(const std::string& prefix) {
             ret[i] = 0;
         }
     }
-    return std::string();
+    return {};
 }
 
 Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string& prefix,
-                        std::function<bool(std::string_view, std::string_view)> const& func) {
+                        std::function<bool(std::string_view, std::string_view)> const& func, int64_t timeout_sec) {
+    int64_t t_start = MonotonicMillis();
     rocksdb::ColumnFamilyHandle* handle = _handles[column_family_index];
     auto opts = ReadOptions();
     std::string upper_bound = get_iterate_upper_bound(prefix);
@@ -218,17 +243,39 @@ Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string
     } else {
         it->Seek(prefix);
     }
-    for (; it->Valid(); it->Next()) {
-        if (!prefix.empty()) {
-            if (!it->key().starts_with(prefix)) {
-                return Status::OK();
+    // if limit time is less than or equal to zero, it means no limit
+    if (timeout_sec <= 0) {
+        for (; it->Valid(); it->Next()) {
+            if (!prefix.empty()) {
+                if (!it->key().starts_with(prefix)) {
+                    return Status::OK();
+                }
+            }
+            std::string_view key(it->key().data(), it->key().size());
+            std::string_view value(it->value().data(), it->value().size());
+            bool ret = func(key, value);
+            if (!ret) {
+                break;
             }
         }
-        std::string_view key(it->key().data(), it->key().size());
-        std::string_view value(it->value().data(), it->value().size());
-        bool ret = func(key, value);
-        if (!ret) {
-            break;
+    } else {
+        for (; it->Valid(); it->Next()) {
+            if (!prefix.empty()) {
+                if (!it->key().starts_with(prefix)) {
+                    return Status::OK();
+                }
+            }
+            std::string_view key(it->key().data(), it->key().size());
+            std::string_view value(it->value().data(), it->value().size());
+            bool ret = func(key, value);
+            if (!ret) {
+                break;
+            }
+            if (MonotonicMillis() - t_start > timeout_sec * 1000) {
+                LOG(WARNING) << "rocksdb iterate timeout: " << MonotonicMillis() - t_start
+                             << ", limit: " << timeout_sec * 1000;
+                return Status::TimedOut("rocksdb iterate timeout");
+            }
         }
     }
     LOG_IF(WARNING, !it->status().ok()) << it->status().ToString();
@@ -255,17 +302,19 @@ Status KVStore::iterate_range(ColumnFamilyIndex column_family_index, const std::
     return to_status(it->status());
 }
 
-Status KVStore::compact(uint64_t* size_before, uint64_t* size_after) {
+Status KVStore::compact() {
     rocksdb::ColumnFamilyHandle* handle = _handles[META_COLUMN_FAMILY_INDEX];
-    (void)_db->GetIntProperty(handle, "rocksdb.live-sst-files-size", size_before);
     rocksdb::CompactRangeOptions opts;
     auto st = _db->CompactRange(opts, handle, nullptr, nullptr);
-    (void)_db->GetIntProperty(handle, "rocksdb.live-sst-files-size", size_after);
     return to_status(st);
 }
 
-Status KVStore::flush() {
+Status KVStore::flushWAL() {
     return to_status(_db->FlushWAL(true));
+}
+
+Status KVStore::flushMemTable() {
+    return to_status(_db->Flush(rocksdb::FlushOptions()));
 }
 
 std::string KVStore::get_stats() {
@@ -275,6 +324,11 @@ std::string KVStore::get_stats() {
         LOG(WARNING) << "rocksdb get stats failed" << std::endl;
     }
     return stats;
+}
+
+bool KVStore::get_live_sst_files_size(uint64_t* live_sst_files_size) {
+    rocksdb::ColumnFamilyHandle* handle = _handles[META_COLUMN_FAMILY_INDEX];
+    return _db->GetIntProperty(handle, "rocksdb.live-sst-files-size", live_sst_files_size);
 }
 
 std::string KVStore::get_root_path() {

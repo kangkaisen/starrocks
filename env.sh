@@ -21,14 +21,6 @@ if [[ -z ${STARROCKS_HOME} ]]; then
     exit 1
 fi
 
-# check OS type
-if [[ ! -z "$OSTYPE" ]]; then
-    if [[ "$OSTYPE" != "linux-gnu" ]]; then
-        echo "Error: Unsupported OS type: $OSTYPE"
-        exit 1
-    fi
-fi
-
 # include custom environment variables
 if [[ -f ${STARROCKS_HOME}/custom_env.sh ]]; then
     . ${STARROCKS_HOME}/custom_env.sh
@@ -39,13 +31,24 @@ if [[ -z ${STARROCKS_THIRDPARTY} ]]; then
     export STARROCKS_THIRDPARTY=${STARROCKS_HOME}/thirdparty
 fi
 
+# set cachelib dir
+if [[ -z ${CACHELIB_DIR} ]]; then
+    export CACHELIB_DIR=${STARROCKS_THIRDPARTY}/installed/cachelib
+fi
+
 # check python
-export PYTHON=python
+if [[ -z ${PYTHON} ]]; then
+    export PYTHON=python
+fi
+
 if ! ${PYTHON} --version; then
     export PYTHON=python2.7
     if ! ${PYTHON} --version; then
-        echo "Error: python is not found"
-        exit 1
+        export PYTHON=python3
+        if ! ${PYTHON} --version; then
+            echo "Error: python is not found"
+            exit 1
+        fi
     fi
 fi
 
@@ -65,9 +68,18 @@ fi
 export CLANG_COMPATIBLE_FLAGS=`echo | ${STARROCKS_GCC_HOME}/bin/gcc -Wp,-v -xc++ - -fsyntax-only 2>&1 \
                 | grep -E '^\s+/' | awk '{print "-I" $1}' | tr '\n' ' '`
 
-# check java home
+if [[ -z ${JAVA_HOME} ]]; then
+    export JAVA_HOME="$(dirname $(dirname $(readlink -f $(which javac))))"
+    echo "Infered JAVA_HOME=$JAVA_HOME"
+fi
+
 if [[ -z ${JAVA_HOME} ]]; then
     echo "Error: JAVA_HOME is not set"
+    exit 1
+fi
+
+if ! command -v $JAVA_HOME/bin/java &> /dev/null; then
+    echo "Error: JAVA not found, JAVA_HOME may be set wrong"
     exit 1
 fi
 
@@ -94,8 +106,13 @@ CMAKE_CMD=cmake
 if [[ ! -z ${CUSTOM_CMAKE} ]]; then
     CMAKE_CMD=${CUSTOM_CMAKE}
 fi
-if ! ${CMAKE_CMD} --version; then
-    echo "Error: cmake is not found"
-    exit 1
-fi
 export CMAKE_CMD
+
+CMAKE_GENERATOR="Unix Makefiles"
+BUILD_SYSTEM="make"
+if ninja --version 2>/dev/null; then
+    BUILD_SYSTEM="ninja"
+    CMAKE_GENERATOR="Ninja"
+fi
+export CMAKE_GENERATOR
+export BUILD_SYSTEM

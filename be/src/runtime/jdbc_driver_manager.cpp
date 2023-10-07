@@ -1,24 +1,39 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "runtime/jdbc_driver_manager.h"
 
 #include <atomic>
 #include <boost/algorithm/string/predicate.hpp> // boost::algorithm::ends_with
 #include <chrono>
+#include <memory>
+#include <utility>
 
-#include "env/env.h"
 #include "fmt/format.h"
+#include "fs/fs.h"
+#include "fs/fs_util.h"
 #include "gutil/strings/split.h"
 #include "util/defer_op.h"
 #include "util/download_util.h"
 #include "util/dynamic_util.h"
-#include "util/file_utils.h"
 #include "util/slice.h"
 
 namespace starrocks {
 
 struct JDBCDriverEntry {
-    JDBCDriverEntry(const std::string& name_, const std::string& checksum_) : name(name_), checksum(checksum_) {}
+    JDBCDriverEntry(std::string name_, std::string checksum_)
+            : name(std::move(name_)), checksum(std::move(checksum_)) {}
 
     ~JDBCDriverEntry();
 
@@ -43,11 +58,11 @@ struct JDBCDriverEntry {
 JDBCDriverEntry::~JDBCDriverEntry() {
     if (should_delete.load()) {
         LOG(INFO) << fmt::format("try to delete jdbc driver {}", location);
-        FileUtils::remove(location);
+        WARN_IF_ERROR(FileSystem::Default()->delete_file(location), "fail to delete jdbc driver");
     }
 }
 
-JDBCDriverManager::JDBCDriverManager() {}
+JDBCDriverManager::JDBCDriverManager() = default;
 
 JDBCDriverManager::~JDBCDriverManager() {
     std::unique_lock<std::mutex> l(_lock);
@@ -57,7 +72,7 @@ JDBCDriverManager::~JDBCDriverManager() {
 JDBCDriverManager* JDBCDriverManager::getInstance() {
     static std::unique_ptr<JDBCDriverManager> manager;
     if (manager == nullptr) {
-        manager.reset(new JDBCDriverManager());
+        manager = std::make_unique<JDBCDriverManager>();
     }
     return manager.get();
 }
@@ -66,16 +81,21 @@ Status JDBCDriverManager::init(const std::string& driver_dir) {
     std::unique_lock<std::mutex> l(_lock);
 
     _driver_dir = driver_dir;
-    RETURN_IF_ERROR(FileUtils::create_dir(_driver_dir));
+    RETURN_IF_ERROR(fs::create_directories(_driver_dir));
     std::vector<std::string> driver_files;
-    RETURN_IF_ERROR(FileUtils::list_files(Env::Default(), _driver_dir, &driver_files));
+    RETURN_IF_ERROR(FileSystem::Default()->get_children(_driver_dir, &driver_files));
     // load jdbc drivers from file
     for (auto& file : driver_files) {
         std::string target_file = fmt::format("{}/{}", _driver_dir, file);
-        // remove all tmporary files
+        ASSIGN_OR_RETURN(auto is_dir, FileSystem::Default()->is_directory(target_file));
+        if (is_dir) {
+            LOG(WARNING) << "there exists sub directory in jdbc driver folder: " << target_file;
+            continue;
+        }
+        // remove all temporary files
         if (boost::algorithm::ends_with(file, TMP_FILE_SUFFIX)) {
-            LOG(INFO) << fmt::format("try to remove tmporary file {}", target_file);
-            FileUtils::remove(target_file);
+            LOG(INFO) << fmt::format("try to remove temporary file {}", target_file);
+            RETURN_IF_ERROR(FileSystem::Default()->delete_file(target_file));
             continue;
         }
         // try to load drivers from jar file
@@ -84,8 +104,9 @@ Status JDBCDriverManager::init(const std::string& driver_dir) {
             std::string checksum;
             int64_t first_access_ts;
             if (!_parse_from_file_name(file, &name, &checksum, &first_access_ts)) {
-                LOG(WARNING) << fmt::format("cannot parse jdbc driver info from file {}, try to remove it", file);
-                FileUtils::remove(target_file);
+                LOG(WARNING) << fmt::format("cannot parse jdbc driver info from file {}, try to remove it",
+                                            target_file);
+                RETURN_IF_ERROR(FileSystem::Default()->delete_file(target_file));
                 continue;
             }
 
@@ -119,7 +140,7 @@ Status JDBCDriverManager::init(const std::string& driver_dir) {
                 } else {
                     // this driver is old, just remove
                     LOG(INFO) << fmt::format("try to remove an old jdbc driver, name[{}], file[{}]", name, target_file);
-                    FileUtils::remove(target_file);
+                    RETURN_IF_ERROR(FileSystem::Default()->delete_file(target_file));
                 }
             }
         }

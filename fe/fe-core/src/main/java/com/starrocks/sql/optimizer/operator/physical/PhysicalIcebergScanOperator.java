@@ -1,53 +1,43 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.starrocks.sql.optimizer.operator.physical;
 
-import com.google.common.base.Objects;
-import com.starrocks.catalog.Column;
-import com.starrocks.catalog.Table;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
-import com.starrocks.sql.optimizer.operator.Projection;
-import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
-import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
-
-import java.util.List;
-import java.util.Map;
+import com.starrocks.sql.optimizer.operator.ScanOperatorPredicates;
+import com.starrocks.sql.optimizer.operator.logical.LogicalIcebergScanOperator;
 
 public class PhysicalIcebergScanOperator extends PhysicalScanOperator {
-    private final List<ScalarOperator> conjuncts;
-    // List of conjuncts for min/max values that are used to skip data when scanning Parquet/Orc files.
-    private final List<ScalarOperator> minMaxConjuncts;
-    // Map of columnRefOperator to column which column in minMaxConjuncts
-    private final Map<ColumnRefOperator, Column> minMaxColumnRefMap;
+    private ScanOperatorPredicates predicates;
 
-    public PhysicalIcebergScanOperator(Table table,
-                                    Map<ColumnRefOperator, Column> columnRefMap,
-                                    List<ScalarOperator> conjuncts,
-                                    List<ScalarOperator> minMaxConjuncts,
-                                    Map<ColumnRefOperator, Column> minMaxColumnRefMap,
-                                    long limit,
-                                    ScalarOperator predicate,
-                                    Projection projection) {
-        super(OperatorType.PHYSICAL_ICEBERG_SCAN, table, columnRefMap, limit, predicate, projection);
-        this.conjuncts = conjuncts;
-        this.minMaxConjuncts = minMaxConjuncts;
-        this.minMaxColumnRefMap = minMaxColumnRefMap;
+    public PhysicalIcebergScanOperator(LogicalIcebergScanOperator scanOperator) {
+        super(OperatorType.PHYSICAL_ICEBERG_SCAN, scanOperator);
+        this.predicates = scanOperator.getScanOperatorPredicates();
     }
 
-    public List<ScalarOperator> getConjuncts() {
-        return conjuncts;
+    @Override
+    public ScanOperatorPredicates getScanOperatorPredicates() {
+        return this.predicates;
     }
 
-    public List<ScalarOperator> getMinMaxConjuncts() {
-        return minMaxConjuncts;
-    }
-
-    public Map<ColumnRefOperator, Column> getMinMaxColumnRefMap() {
-        return minMaxColumnRefMap;
+    @Override
+    public void setScanOperatorPredicates(ScanOperatorPredicates predicates) {
+        this.predicates = predicates;
     }
 
     @Override
@@ -61,35 +51,12 @@ public class PhysicalIcebergScanOperator extends PhysicalScanOperator {
     }
 
     @Override
-    public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        if (!super.equals(o)) {
-            return false;
-        }
-
-        PhysicalIcebergScanOperator that = (PhysicalIcebergScanOperator) o;
-        return Objects.equal(table, that.table) &&
-                Objects.equal(conjuncts, that.conjuncts) &&
-                Objects.equal(minMaxConjuncts, that.minMaxConjuncts) &&
-                Objects.equal(minMaxColumnRefMap, that.minMaxColumnRefMap);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hashCode(super.hashCode(), table, conjuncts, minMaxConjuncts, minMaxColumnRefMap);
-    }
-
-    @Override
     public ColumnRefSet getUsedColumns() {
         ColumnRefSet refs = super.getUsedColumns();
-        conjuncts.forEach(d -> refs.union(d.getUsedColumns()));
-        minMaxConjuncts.forEach(d -> refs.union(d.getUsedColumns()));
-        minMaxColumnRefMap.keySet().forEach(refs::union);
+        predicates.getNoEvalPartitionConjuncts().forEach(d -> refs.union(d.getUsedColumns()));
+        predicates.getPartitionConjuncts().forEach(d -> refs.union(d.getUsedColumns()));
+        predicates.getMinMaxConjuncts().forEach(d -> refs.union(d.getUsedColumns()));
+        predicates.getMinMaxColumnRefMap().keySet().forEach(refs::union);
         return refs;
     }
 }

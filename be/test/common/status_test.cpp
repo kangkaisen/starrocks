@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/test/common/status_test.cpp
 
@@ -39,7 +52,7 @@ TEST_F(StatusTest, OK) {
     ASSERT_EQ("OK", st.to_string());
     // copy
     {
-        Status other = st;
+        const Status& other = st;
         ASSERT_TRUE(other.ok());
     }
     // move assign
@@ -62,7 +75,7 @@ TEST_F(StatusTest, Error) {
     ASSERT_EQ("Internal error: 123", st.to_string());
     // copy
     {
-        Status other = st;
+        const Status& other = st;
         ASSERT_FALSE(other.ok());
         ASSERT_EQ("123", st.get_error_msg());
         ASSERT_EQ("123", st.message());
@@ -131,4 +144,21 @@ TEST_F(StatusTest, LongContext) {
     ASSERT_EQ(fmt::format("{}\na.cpp:10 {}", message, context), st1.detailed_message());
     ASSERT_EQ(fmt::format("Internal error: {}\na.cpp:10 {}", message, context), st1.to_string());
 }
+
+TEST_F(StatusTest, update) {
+    Status st;
+    st.update(Status::NotFound(""));
+    ASSERT_TRUE(st.is_not_found());
+
+    st.update(Status::InternalError(""));
+    ASSERT_TRUE(st.is_not_found());
+
+    Status st1 = Status::InvalidArgument("");
+    st.update(st1);
+    ASSERT_TRUE(st.is_not_found());
+
+    st.update(std::move(st1));
+    ASSERT_TRUE(st.is_not_found());
+}
+
 } // namespace starrocks

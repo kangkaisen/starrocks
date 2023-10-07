@@ -1,6 +1,22 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "aggregate_streaming_source_operator.h"
+
+#include <variant>
+
+#include "util/failpoint/fail_point.h"
 
 namespace starrocks::pipeline {
 
@@ -11,6 +27,10 @@ bool AggregateStreamingSourceOperator::has_output() const {
         // case2: streaming mode is 'AUTO'
         //     case 2.1: very poor aggregation
         //     case 2.2: middle cases, first aggregate locally and output by stream
+        return true;
+    }
+
+    if (_aggregator->is_streaming_all_states()) {
         return true;
     }
 
@@ -29,23 +49,7 @@ bool AggregateStreamingSourceOperator::has_output() const {
 }
 
 bool AggregateStreamingSourceOperator::is_finished() const {
-    // source operator may finish early
-    if (_is_finished) {
-        return true;
-    }
-
-    // since there are two behavior of streaming operator
-    // case 1: chunk-at-a-time, so we check whether the chunk buffer is empty
-    // case 2: local aggregate, so we check whether hash table is eos
-    if (_aggregator->is_sink_complete() && _aggregator->is_chunk_buffer_empty() && _aggregator->is_ht_eos()) {
-        _is_finished = true;
-    }
-    return _is_finished;
-}
-
-Status AggregateStreamingSourceOperator::set_finishing(RuntimeState* state) {
-    _is_finished = true;
-    return Status::OK();
+    return _aggregator->is_sink_complete() && !has_output();
 }
 
 Status AggregateStreamingSourceOperator::set_finished(RuntimeState* state) {
@@ -57,47 +61,50 @@ void AggregateStreamingSourceOperator::close(RuntimeState* state) {
     SourceOperator::close(state);
 }
 
-StatusOr<vectorized::ChunkPtr> AggregateStreamingSourceOperator::pull_chunk(RuntimeState* state) {
+StatusOr<ChunkPtr> AggregateStreamingSourceOperator::pull_chunk(RuntimeState* state) {
     // It is no need to distinguish whether streaming or aggregation mode
     // We just first read chunk from buffer and finally read chunk from hash table
     if (!_aggregator->is_chunk_buffer_empty()) {
-        return std::move(_aggregator->poll_chunk_buffer());
+        return _aggregator->poll_chunk_buffer();
     }
 
     // Even if it is streaming mode, the purpose of reading from hash table is to
     // correctly process the state of hash table(_is_ht_eos)
-    vectorized::ChunkPtr chunk = std::make_shared<vectorized::Chunk>();
-    _output_chunk_from_hash_map(&chunk, state);
+    ChunkPtr chunk = std::make_shared<Chunk>();
+    RETURN_IF_ERROR(_output_chunk_from_hash_map(&chunk, state));
     eval_runtime_bloom_filters(chunk.get());
     DCHECK_CHUNK(chunk);
     return std::move(chunk);
 }
 
-void AggregateStreamingSourceOperator::_output_chunk_from_hash_map(vectorized::ChunkPtr* chunk, RuntimeState* state) {
+// used to verify https://github.com/StarRocks/starrocks/issues/30078
+DEFINE_FAIL_POINT(force_reset_aggregator_after_agg_streaming_sink_finish);
+
+Status AggregateStreamingSourceOperator::_output_chunk_from_hash_map(ChunkPtr* chunk, RuntimeState* state) {
     if (!_aggregator->it_hash().has_value()) {
-        if (false) {
-        }
-#define HASH_MAP_METHOD(NAME)                                                                                         \
-    else if (_aggregator->hash_map_variant().type == vectorized::HashMapVariant::Type::NAME) _aggregator->it_hash() = \
-            _aggregator->hash_map_variant().NAME->hash_map.begin();
-        APPLY_FOR_VARIANT_ALL(HASH_MAP_METHOD)
-#undef HASH_MAP_METHOD
-        else {
-            DCHECK(false);
-        }
+        _aggregator->hash_map_variant().visit(
+                [&](auto& hash_map_with_key) { _aggregator->it_hash() = _aggregator->_state_allocator.begin(); });
         COUNTER_SET(_aggregator->hash_table_size(), (int64_t)_aggregator->hash_map_variant().size());
     }
 
-    if (false) {
+    RETURN_IF_ERROR(_aggregator->convert_hash_map_to_chunk(state->chunk_size(), chunk));
+
+    auto need_reset_aggregator = _aggregator->is_streaming_all_states() && _aggregator->is_ht_eos();
+
+    FAIL_POINT_TRIGGER_EXECUTE(force_reset_aggregator_after_agg_streaming_sink_finish, {
+        if (_aggregator->is_sink_complete()) {
+            need_reset_aggregator = true;
+        }
+    });
+
+    if (need_reset_aggregator) {
+        if (!_aggregator->is_sink_complete()) {
+            RETURN_IF_ERROR(_aggregator->reset_state(state, {}, nullptr, false));
+        }
+        _aggregator->set_streaming_all_states(false);
     }
-#define HASH_MAP_METHOD(NAME)                                                                                     \
-    else if (_aggregator->hash_map_variant().type == vectorized::HashMapVariant::Type::NAME)                      \
-            _aggregator->convert_hash_map_to_chunk<decltype(_aggregator->hash_map_variant().NAME)::element_type>( \
-                    *_aggregator->hash_map_variant().NAME, state->chunk_size(), chunk);
-    APPLY_FOR_VARIANT_ALL(HASH_MAP_METHOD)
-#undef HASH_MAP_METHOD
-    else {
-        DCHECK(false);
-    }
+
+    return Status::OK();
 }
+
 } // namespace starrocks::pipeline

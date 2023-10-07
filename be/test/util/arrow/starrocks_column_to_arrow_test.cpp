@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "util/arrow/starrocks_column_to_arrow.h"
 
@@ -23,52 +35,53 @@ DIAGNOSTIC_POP
 #include <arrow/pretty_print.h>
 #include <column/chunk.h>
 #include <column/type_traits.h>
-#include <exec/vectorized/arrow_type_traits.h>
+#include <exec/arrow_type_traits.h>
 
 #include "column/column_helper.h"
 #include "runtime/large_int_value.h"
-#include "storage/schema.h"
 #include "storage/tablet_schema_helper.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 struct StarRocksColumnToArrowTest : public testing::Test {};
 
-template <PrimitiveType PT, ArrowTypeId AT>
-void compare_arrow_value(const RunTimeCppType<PT>& datum, const ArrowTypeIdToArrayType<AT>* data_array, size_t i) {
-    using CppType = RunTimeCppType<PT>;
+template <LogicalType LT, ArrowTypeId AT>
+void compare_arrow_value(const RunTimeCppType<LT>& datum, const ArrowTypeIdToArrayType<AT>* data_array, size_t i) {
+    using CppType = RunTimeCppType<LT>;
     ASSERT_TRUE(data_array->IsValid(i));
-    if constexpr (pt_is_decimalv2<PT>) {
+    if constexpr (lt_is_decimalv2<LT>) {
         auto actual_value = unaligned_load<int128_t>(data_array->Value(i));
         ASSERT_EQ(actual_value, datum.value());
-    } else if constexpr (pt_is_decimal<PT>) {
+    } else if constexpr (lt_is_decimal<LT>) {
         auto actual_value = unaligned_load<int128_t>(data_array->Value(i));
         int128_t expect_value;
         DecimalV3Cast::to_decimal_trivial<CppType, int128_t, false>(datum, &expect_value);
         ASSERT_EQ(actual_value, expect_value);
-    } else if constexpr (pt_is_float<PT> || (pt_is_integer<PT> && !pt_is_largeint<PT>)) {
+    } else if constexpr (lt_is_float<LT> || (lt_is_integer<LT> && !lt_is_largeint<LT>)) {
         ASSERT_EQ(data_array->Value(i), datum);
-    } else if constexpr (pt_is_largeint<PT>) {
+    } else if constexpr (lt_is_largeint<LT>) {
         ASSERT_EQ(data_array->GetString(i), LargeIntValue::to_string(datum));
-    } else if constexpr (pt_is_binary<PT> || pt_is_date_or_datetime<PT>) {
+    } else if constexpr (lt_is_string<LT> || lt_is_date_or_datetime<LT>) {
         ASSERT_EQ(data_array->GetString(i), datum.to_string());
-    } else if constexpr (pt_is_hll<PT>) {
+    } else if constexpr (lt_is_hll<LT>) {
         std::string s;
         raw::make_room(&s, datum->max_serialized_size());
         size_t n = datum->serialize((uint8_t*)&s.front());
         s.resize(n);
         ASSERT_EQ(data_array->GetString(i), s);
+    } else if constexpr (lt_is_json<LT>) {
+        ASSERT_EQ(data_array->GetString(i), datum->to_string_uncheck());
     }
 }
 
-template <PrimitiveType PT, ArrowTypeId AT>
+template <LogicalType LT, ArrowTypeId AT>
 struct NotNullableColumnTester {
-    using CppType = RunTimeCppType<PT>;
-    using ColumnType = RunTimeColumnType<PT>;
+    using CppType = RunTimeCppType<LT>;
+    using ColumnType = RunTimeColumnType<LT>;
     using ArrowType = ArrowTypeIdToType<AT>;
     using ArrowArrayType = ArrowTypeIdToArrayType<AT>;
     static inline void apply(size_t num_rows, const std::vector<CppType>& data, const TypeDescriptor& type_desc) {
         auto chunk = std::make_shared<Chunk>();
-        std::vector<PrimitiveType> primitive_types(1, PT);
+        std::vector<LogicalType> primitive_types(1, LT);
         auto column = ColumnType::create();
         auto data_column = down_cast<ColumnType*>(column.get());
         data_column->reserve(num_rows);
@@ -80,9 +93,9 @@ struct NotNullableColumnTester {
         }
         chunk->append_column(column, SlotId(0));
         std::shared_ptr<ArrowType> arrow_type;
-        if constexpr (pt_is_decimalv2<PT>) {
+        if constexpr (lt_is_decimalv2<LT>) {
             arrow_type = std::make_shared<ArrowType>(27, 9);
-        } else if constexpr (pt_is_decimal<PT>) {
+        } else if constexpr (lt_is_decimal<LT>) {
             arrow_type = std::make_shared<ArrowType>(type_desc.precision, type_desc.scale);
             data_column->set_precision(type_desc.precision);
             data_column->set_scale(type_desc.scale);
@@ -108,21 +121,21 @@ struct NotNullableColumnTester {
         k = 0;
         for (auto i = 0; i < num_rows; ++i) {
             auto datum = data[k++ % data_size];
-            compare_arrow_value<PT, AT>(datum, data_array, i);
+            compare_arrow_value<LT, AT>(datum, data_array, i);
         }
     }
 };
 
-template <PrimitiveType PT, ArrowTypeId AT>
+template <LogicalType LT, ArrowTypeId AT>
 struct NullableColumnTester {
-    using CppType = RunTimeCppType<PT>;
-    using ColumnType = RunTimeColumnType<PT>;
+    using CppType = RunTimeCppType<LT>;
+    using ColumnType = RunTimeColumnType<LT>;
     using ArrowType = ArrowTypeIdToType<AT>;
     using ArrowArrayType = ArrowTypeIdToArrayType<AT>;
-    static inline void apply(size_t num_rows, std::set<size_t> null_index, const std::vector<CppType>& data,
+    static inline void apply(size_t num_rows, const std::set<size_t>& null_index, const std::vector<CppType>& data,
                              const TypeDescriptor& type_desc) {
         auto chunk = std::make_shared<Chunk>();
-        std::vector<PrimitiveType> primitive_types(1, PT);
+        std::vector<LogicalType> primitive_types(1, LT);
         auto column = ColumnType::create();
         auto data_column = down_cast<ColumnType*>(column.get());
         data_column->reserve(num_rows);
@@ -142,9 +155,9 @@ struct NullableColumnTester {
         }
         chunk->append_column(NullableColumn::create(column, null_column), SlotId(0));
         std::shared_ptr<ArrowType> arrow_type;
-        if constexpr (pt_is_decimalv2<PT>) {
+        if constexpr (lt_is_decimalv2<LT>) {
             arrow_type = std::make_shared<ArrowType>(27, 9);
-        } else if constexpr (pt_is_decimal<PT>) {
+        } else if constexpr (lt_is_decimal<LT>) {
             arrow_type = std::make_shared<ArrowType>(type_desc.precision, type_desc.scale);
             data_column->set_precision(type_desc.precision);
             data_column->set_scale(type_desc.scale);
@@ -173,27 +186,27 @@ struct NullableColumnTester {
                 ASSERT_FALSE(data_array->IsValid(i));
             } else {
                 auto datum = data[k++ % data_size];
-                compare_arrow_value<PT, AT>(datum, data_array, i);
+                compare_arrow_value<LT, AT>(datum, data_array, i);
             }
         }
     }
 };
 
-template <PrimitiveType PT, ArrowTypeId AT>
+template <LogicalType LT, ArrowTypeId AT>
 struct ConstNullColumnTester {
-    using CppType = RunTimeCppType<PT>;
-    using ColumnType = RunTimeColumnType<PT>;
+    using CppType = RunTimeCppType<LT>;
+    using ColumnType = RunTimeColumnType<LT>;
     using ArrowType = ArrowTypeIdToType<AT>;
     using ArrowArrayType = ArrowTypeIdToArrayType<AT>;
     static inline void apply(size_t num_rows, const TypeDescriptor& type_desc) {
         auto chunk = std::make_shared<Chunk>();
-        std::vector<PrimitiveType> primitive_types(1, PT);
-        auto column = vectorized::ColumnHelper::create_const_null_column(num_rows);
+        std::vector<LogicalType> primitive_types(1, LT);
+        auto column = ColumnHelper::create_const_null_column(num_rows);
         chunk->append_column(column, SlotId(0));
         std::shared_ptr<ArrowType> arrow_type;
-        if constexpr (pt_is_decimalv2<PT>) {
+        if constexpr (lt_is_decimalv2<LT>) {
             arrow_type = std::make_shared<ArrowType>(27, 9);
-        } else if constexpr (pt_is_decimal<PT>) {
+        } else if constexpr (lt_is_decimal<LT>) {
             arrow_type = std::make_shared<ArrowType>(type_desc.precision, type_desc.scale);
         } else {
             arrow_type = std::make_shared<ArrowType>();
@@ -221,20 +234,20 @@ struct ConstNullColumnTester {
     }
 };
 
-template <PrimitiveType PT, ArrowTypeId AT>
+template <LogicalType LT, ArrowTypeId AT>
 struct ConstColumnTester {
-    using CppType = RunTimeCppType<PT>;
-    using ColumnType = RunTimeColumnType<PT>;
+    using CppType = RunTimeCppType<LT>;
+    using ColumnType = RunTimeColumnType<LT>;
     using ArrowType = ArrowTypeIdToType<AT>;
     using ArrowArrayType = ArrowTypeIdToArrayType<AT>;
     static inline void apply(size_t num_rows, const CppType& datum, const TypeDescriptor& type_desc) {
         auto chunk = std::make_shared<Chunk>();
-        std::vector<PrimitiveType> primitive_types(1, PT);
+        std::vector<LogicalType> primitive_types(1, LT);
         auto data_column = ColumnType::create();
         std::shared_ptr<ArrowType> arrow_type;
-        if constexpr (pt_is_decimalv2<PT>) {
+        if constexpr (lt_is_decimalv2<LT>) {
             arrow_type = std::make_shared<ArrowType>(27, 9);
-        } else if constexpr (pt_is_decimal<PT>) {
+        } else if constexpr (lt_is_decimal<LT>) {
             arrow_type = std::make_shared<ArrowType>(type_desc.precision, type_desc.scale);
             data_column->set_precision(type_desc.precision);
             data_column->set_scale(type_desc.scale);
@@ -262,7 +275,7 @@ struct ConstColumnTester {
 
         for (auto i = 0; i < num_rows; ++i) {
             ASSERT_TRUE(data_array->IsValid(i));
-            compare_arrow_value<PT, AT>(datum, data_array, i);
+            compare_arrow_value<LT, AT>(datum, data_array, i);
         }
     }
 };
@@ -294,7 +307,7 @@ TEST_F(StarRocksColumnToArrowTest, testDoubleColumn) {
 }
 
 TEST_F(StarRocksColumnToArrowTest, testStringColumn) {
-    std::vector<string> strings{"a", "", "abc", "", "", "abcdefg"};
+    std::vector<std::string> strings{"a", "", "abc", "", "", "abcdefg"};
     std::vector<Slice> data;
     for (auto& s : strings) {
         data.emplace_back(s);
@@ -369,6 +382,23 @@ TEST_F(StarRocksColumnToArrowTest, testHllColumn) {
     NotNullableColumnTester<TYPE_HLL, ArrowTypeId::STRING>::apply(997, data, type_desc);
 }
 
+TEST_F(StarRocksColumnToArrowTest, testJsonColumn) {
+    std::vector<JsonValue> json_data(3);
+    json_data[0] = JsonValue::from_string("{}");
+    json_data[1] = JsonValue::from_string(
+            "{\"array\":[1,2,3],\"boolean\":true,"
+            "\"color\":\"gold\",\"null\":null,"
+            "\"number\":123,\"object\":{\"a\":\"b\",\"c\":\"d\"},\"string\":\"Hello World\"}");
+    json_data[2] = JsonValue::from_string(
+            "{\"name\":\"alice\",\"age\":25,\"gender\":\"women\","
+            "\"dept\":\"R&D\",\"lang\":[\"CPP\",\"JAVA\",\"PHP\"],"
+            "\"projects\":[{\"name\":\"feature1\",\"deadline\":\"2023-01-02\"},"
+            "{\"name\":\"feature2\",\"deadline\":\"2023-01-03\"}]}");
+    std::vector<JsonValue*> data{&json_data[0], &json_data[1], &json_data[2]};
+    auto type_desc = TypeDescriptor::create_json_type();
+    NotNullableColumnTester<TYPE_JSON, ArrowTypeId::STRING>::apply(997, data, type_desc);
+}
+
 TEST_F(StarRocksColumnToArrowTest, testNullableDecimalColumn) {
     DecimalV2Value datum0("123456789012345678.123456789");
     DecimalV2Value datum1("3.1415926");
@@ -400,7 +430,7 @@ TEST_F(StarRocksColumnToArrowTest, testNullableDoubleColumn) {
 }
 
 TEST_F(StarRocksColumnToArrowTest, testNullableStringColumn) {
-    std::vector<string> strings{"a", "", "abc", "", "", "abcdefg"};
+    std::vector<std::string> strings{"a", "", "abc", "", "", "abcdefg"};
     std::vector<Slice> data;
     for (auto& s : strings) {
         data.emplace_back(s);
@@ -497,9 +527,4 @@ TEST_F(StarRocksColumnToArrowTest, testConstNullColumn) {
     ConstNullColumnTester<TYPE_DECIMAL128, ArrowTypeId::DECIMAL>::apply(997, decimal128_type_desc);
 }
 
-} // namespace starrocks::vectorized
-
-int main(int argc, char** argv) {
-    testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
+} // namespace starrocks

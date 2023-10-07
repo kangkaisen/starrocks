@@ -1,14 +1,27 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include <ryu/ryu.h>
 
-#include "runtime/date_value.hpp"
 #include "runtime/decimalv2_value.h"
-#include "runtime/timestamp_value.h"
+#include "types/date_value.hpp"
+#include "types/timestamp_value.h"
+#include "util/mysql_global.h"
 
-namespace starrocks::vectorized::csv {
+namespace starrocks::csv {
 
 class OutputStream {
 public:
@@ -99,9 +112,9 @@ protected:
     virtual Status _sync(const char* data, size_t size) = 0;
 
 private:
-    inline size_t _free_space() const { return _end - _pos; }
+    size_t _free_space() const { return _end - _pos; }
 
-    inline Status _reserve(size_t n) {
+    Status _reserve(size_t n) {
         if (_free_space() < n) {
             RETURN_IF_ERROR(_flush());
             if (UNLIKELY(_free_space() < n)) {
@@ -111,7 +124,7 @@ private:
         return Status::OK();
     }
 
-    inline Status _flush() {
+    Status _flush() {
         Status st = _sync(_buff, _pos - _buff);
         _pos = _buff; // Don't care about the status.
         return st;
@@ -122,4 +135,4 @@ private:
     char* _end;
 };
 
-} // namespace starrocks::vectorized::csv
+} // namespace starrocks::csv

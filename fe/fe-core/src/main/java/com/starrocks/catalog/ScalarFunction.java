@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/catalog/ScalarFunction.java
 
@@ -21,13 +34,13 @@
 
 package com.starrocks.catalog;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
 import com.google.gson.Gson;
-import com.starrocks.analysis.CreateFunctionStmt;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.analysis.FunctionName;
-import com.starrocks.analysis.HdfsURI;
 import com.starrocks.common.io.Text;
+import com.starrocks.sql.ast.CreateFunctionStmt;
+import com.starrocks.sql.ast.HdfsURI;
 import com.starrocks.thrift.TFunction;
 import com.starrocks.thrift.TFunctionBinaryType;
 import com.starrocks.thrift.TScalarFunction;
@@ -48,8 +61,11 @@ import static com.starrocks.common.io.IOUtils.writeOptionString;
 public class ScalarFunction extends Function {
     // The name inside the binary at location_ that contains this particular
     // function. e.g. org.example.MyUdf.class.
+    @SerializedName(value = "symbolName")
     private String symbolName;
+    @SerializedName(value = "prepareFnSymbol")
     private String prepareFnSymbol;
+    @SerializedName(value = "closeFnSymbol")
     private String closeFnSymbol;
 
     // Only used for serialization
@@ -76,37 +92,23 @@ public class ScalarFunction extends Function {
         setCloseFnSymbol(closeFnSymbol);
     }
 
-    public ScalarFunction(long fid, FunctionName name, List<Type> argTypes, Type retType, boolean hasVarArgs,
-                          boolean isVectorized) {
-        super(fid, name, argTypes, retType, hasVarArgs, isVectorized);
+    public ScalarFunction(long fid, FunctionName name, List<Type> argTypes, Type retType, boolean hasVarArgs) {
+        super(fid, name, argTypes, retType, hasVarArgs);
+    }
+
+    public ScalarFunction(ScalarFunction other) {
+        super(other);
+        symbolName = other.symbolName;
+        prepareFnSymbol = other.prepareFnSymbol;
+        closeFnSymbol = other.closeFnSymbol;
     }
 
     public static ScalarFunction createVectorizedBuiltin(long fid,
                                                          String name, List<Type> argTypes,
                                                          boolean hasVarArgs, Type retType) {
-        ScalarFunction fn = new ScalarFunction(fid,
-                new FunctionName(name), argTypes, retType, hasVarArgs, true);
+        ScalarFunction fn = new ScalarFunction(fid, new FunctionName(name), argTypes, retType, hasVarArgs);
         fn.setBinaryType(TFunctionBinaryType.BUILTIN);
         fn.setUserVisible(true);
-        return fn;
-    }
-
-    /**
-     * Creates a builtin scalar function. This is a helper that wraps a few steps
-     * into one call.
-     */
-    public static ScalarFunction createBuiltin(
-            String name, List<Type> argTypes,
-            boolean hasVarArgs, Type retType, String symbol,
-            String prepareFnSymbol, String closeFnSymbol, boolean userVisible) {
-        Preconditions.checkNotNull(symbol);
-        ScalarFunction fn = new ScalarFunction(
-                new FunctionName(name), argTypes, retType, hasVarArgs);
-        fn.setBinaryType(TFunctionBinaryType.BUILTIN);
-        fn.setUserVisible(userVisible);
-        fn.symbolName = symbol;
-        fn.prepareFnSymbol = prepareFnSymbol;
-        fn.closeFnSymbol = closeFnSymbol;
         return fn;
     }
 
@@ -230,10 +232,16 @@ public class ScalarFunction extends Function {
     @Override
     public String getProperties() {
         Map<String, String> properties = Maps.newHashMap();
+        properties.put("fid", getFunctionId() + "");
         properties.put(CreateFunctionStmt.FILE_KEY, getLocation() == null ? "" : getLocation().toString());
         properties.put(CreateFunctionStmt.MD5_CHECKSUM, checksum);
         properties.put(CreateFunctionStmt.SYMBOL_KEY, getSymbolName());
         properties.put(CreateFunctionStmt.TYPE_KEY, getBinaryType().name());
         return new Gson().toJson(properties);
+    }
+
+    @Override
+    public Function copy() {
+        return new ScalarFunction(this);
     }
 }

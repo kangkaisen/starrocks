@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -12,10 +24,10 @@
 
 #include "column/type_traits.h"
 #include "gutil/port.h"
-#include "runtime/primitive_type.h"
 #include "simd/simd_utils.h"
+#include "types/logical_type.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 #ifdef __AVX2__
 template <typename T, bool left_const = false, bool right_const = false, std::enable_if_t<sizeof(T) == 1, int> = 1>
@@ -23,7 +35,8 @@ inline void avx2_select_if(uint8_t*& selector, T*& dst, const T*& a, const T*& b
     const T* dst_end = dst + size;
     while (dst + 32 < dst_end) {
         __m256i loaded_mask = _mm256_loadu_si256(reinterpret_cast<__m256i*>(selector));
-        loaded_mask = _mm256_cmpgt_epi8(loaded_mask, _mm256_setzero_si256());
+        loaded_mask = _mm256_cmpeq_epi8(loaded_mask, _mm256_setzero_si256());
+        loaded_mask = ~loaded_mask;
         __m256i vec_a;
         __m256i vec_b;
         if constexpr (!left_const) {
@@ -58,7 +71,8 @@ inline void avx2_select_if(uint8_t*& selector, T*& dst, const T*& a, const T*& b
         uint64_t value = UNALIGNED_LOAD64(selector);
         __m128i v = _mm_set1_epi64x(value);
         __m256i loaded_mask = _mm256_cvtepi8_epi32(v);
-        __m256i cond = _mm256_cmpgt_epi8(loaded_mask, _mm256_setzero_si256());
+        __m256i cond = _mm256_cmpeq_epi8(loaded_mask, _mm256_setzero_si256());
+        cond = ~cond;
 
         // Mask Shuffle
         // convert 0x 10 00 00 00 14 00 00 00
@@ -95,7 +109,8 @@ inline void avx2_select_if_common_implement(uint8_t*& selector, T*& dst, const T
     while (dst + 32 < dst_end) {
         // load selector mask from selector
         __m256i loaded_mask = _mm256_loadu_si256(reinterpret_cast<__m256i*>(selector));
-        loaded_mask = _mm256_cmpgt_epi8(loaded_mask, _mm256_setzero_si256());
+        loaded_mask = _mm256_cmpeq_epi8(loaded_mask, _mm256_setzero_si256());
+        loaded_mask = ~loaded_mask;
         uint32_t mask = _mm256_movemask_epi8(loaded_mask);
 
         __m256i vec_a[data_size];
@@ -205,7 +220,7 @@ inline void avx2_select_if_common_implement(uint8_t*& selector, T*& dst, const T
 
 // SIMD selector
 // only support PrimaryType Arithmetic and DATE
-template <PrimitiveType TYPE>
+template <LogicalType TYPE>
 class SIMD_selector {
 public:
     using Container = typename RunTimeColumnType<TYPE>::Container;
@@ -318,4 +333,4 @@ public:
     }
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

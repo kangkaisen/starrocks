@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/util/network_util.cpp
 
@@ -100,6 +113,25 @@ Status hostname_to_ip_addrs(const std::string& name, std::vector<std::string>* a
 
     freeaddrinfo(addr_info);
     return Status::OK();
+}
+
+bool is_valid_ip(const std::string& ip) {
+    unsigned char buf[sizeof(struct in6_addr)];
+    return inet_pton(AF_INET, ip.data(), buf) > 0;
+}
+
+std::string hostname_to_ip(const std::string& host) {
+    std::vector<std::string> addresses;
+    Status status = hostname_to_ip_addrs(host, &addresses);
+    if (!status.ok()) {
+        LOG(WARNING) << "status of hostname_to_ip_addrs was not ok, err is " << status.get_error_msg();
+        return "";
+    }
+    if (addresses.size() != 1) {
+        LOG(WARNING) << "the number of addresses could only be equal to 1, failed to get ip from host";
+        return "";
+    }
+    return addresses[0];
 }
 
 bool find_first_non_localhost(const std::vector<std::string>& addresses, std::string* addr) {

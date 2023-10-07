@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exprs/expr_context.h
 
@@ -21,33 +34,26 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 
-#include "column/chunk.h"
-#include "column/column.h"
+#include "column/vectorized_fwd.h"
 #include "common/status.h"
-#include "udf/udf.h"
-#include "udf/udf_internal.h" // for ArrayVal
-
-#undef USING_STARROCKS_UDF
-#define USING_STARROCKS_UDF using namespace starrocks_udf
-
-USING_STARROCKS_UDF;
+#include "exprs/function_context.h"
+// Only include column/vectorized_fwd.h in this file, you need include what you need
+// in the source files. Please NOT add unnecessary includes in this file.
 
 namespace starrocks {
 
-namespace vectorized {
 class OlapScanNode;
 class Chunk;
-} // namespace vectorized
 
 class Expr;
 class MemPool;
 class MemTracker;
 class RuntimeState;
+class ObjectPool;
 class TColumnValue;
-
-using vectorized::ColumnPtr;
 
 /// An ExprContext contains the state for the execution of a tree of Exprs, in particular
 /// the FunctionContexts necessary for the expr tree. This allows for multi-threaded
@@ -61,15 +67,14 @@ public:
 
     /// Prepare expr tree for evaluation.
     /// Allocations from this context will be counted against 'tracker'.
-    Status prepare(RuntimeState* state);
+    [[nodiscard]] Status prepare(RuntimeState* state);
 
     /// Must be called after calling Prepare(). Does not need to be called on clones.
     /// Idempotent (this allows exprs to be opened multiple times in subplans without
     /// reinitializing function state).
-    Status open(RuntimeState* state);
+    [[nodiscard]] Status open(RuntimeState* state);
 
-    //TODO chenhao
-    static Status open(std::vector<ExprContext*> input_evals, RuntimeState* state);
+    [[nodiscard]] static Status open(std::vector<ExprContext*> input_evals, RuntimeState* state);
 
     /// Creates a copy of this ExprContext. Open() must be called first. The copy contains
     /// clones of each FunctionContext, which share the fragment-local state of the
@@ -77,9 +82,7 @@ public:
     /// to create an ExprContext for each execution thread that needs to evaluate
     /// 'root'. Note that clones are already opened. '*new_context' must be initialized by
     /// the caller to NULL.
-    Status clone(RuntimeState* state, ExprContext** new_context);
-
-    Status clone(RuntimeState* state, ExprContext** new_ctx, Expr* root);
+    [[nodiscard]] Status clone(RuntimeState* state, ObjectPool* pool, ExprContext** new_context);
 
     /// Closes all FunctionContexts. Must be called on every ExprContext, including clones.
     void close(RuntimeState* state);
@@ -89,7 +92,7 @@ public:
     /// Prepare() and save the returned index. 'varargs_buffer_size', if specified, is the
     /// size of the varargs buffer in the created FunctionContext (see udf-internal.h).
     int register_func(RuntimeState* state, const FunctionContext::TypeDesc& return_type,
-                      const std::vector<FunctionContext::TypeDesc>& arg_types, int varargs_buffer_size);
+                      const std::vector<FunctionContext::TypeDesc>& arg_types);
 
     /// Retrieves a registered FunctionContext. 'i' is the index returned by the call to
     /// register_func(). This should only be called by Exprs.
@@ -103,65 +106,41 @@ public:
 
     bool closed() { return _closed; }
 
-    bool is_nullable();
-
     bool opened() { return _opened; }
 
-    /// If 'expr' is constant, evaluates it with no input row argument and returns the
-    /// result in 'const_val'. Sets 'const_val' to NULL if the argument is not constant.
-    /// The returned AnyVal and associated varlen data is owned by this evaluator. This
-    /// should only be called after Open() has been called on this expr. Returns an error
-    /// if there was an error evaluating the expression or if memory could not be allocated
-    /// for the expression result.
-    Status get_const_value(RuntimeState* state, Expr& expr, AnyVal** const_val);
-
-    /// Returns an error status if there was any error in evaluating the expression
-    /// or its sub-expressions. 'start_idx' and 'end_idx' correspond to the range
-    /// within the vector of FunctionContext for the sub-expressions of interest.
-    /// The default parameters correspond to the entire expr 'root_'.
-    Status get_error(int start_idx, int end_idx) const;
-
-    Status get_udf_error();
+    [[nodiscard]] Status get_udf_error();
 
     std::string get_error_msg() const;
 
-    // vector query engine
-    ColumnPtr evaluate(vectorized::Chunk* chunk);
+    [[nodiscard]] StatusOr<ColumnPtr> evaluate(Chunk* chunk, uint8_t* filter = nullptr);
+    [[nodiscard]] StatusOr<ColumnPtr> evaluate(Expr* expr, Chunk* chunk, uint8_t* filter = nullptr);
 
-    ColumnPtr evaluate(Expr* expr, vectorized::Chunk* chunk);
+    bool error_if_overflow() const;
 
 private:
     friend class Expr;
-    friend class ScalarFnCall;
-    friend class InPredicate;
     friend class OlapScanNode;
-    friend class vectorized::OlapScanNode;
-    friend class EsScanNode;
+    friend class OlapScanNode;
     friend class EsPredicate;
 
     /// FunctionContexts for each registered expression. The FunctionContexts are created
     /// and owned by this ExprContext.
     std::vector<FunctionContext*> _fn_contexts;
 
-    /// Array access to fn_contexts_. Used by ScalarFnCall's codegen'd compute function
-    /// to access the correct FunctionContext.
-    /// TODO: revisit this
-    FunctionContext** _fn_contexts_ptr;
-
     /// Pool backing fn_contexts_. Counts against the runtime state's UDF mem tracker.
     std::unique_ptr<MemPool> _pool;
 
+    RuntimeState* _runtime_state = nullptr;
     /// The expr tree this context is for.
     Expr* _root;
 
     /// True if this context came from a Clone() call. Used to manage FunctionStateScope.
-    bool _is_clone;
-
+    bool _is_clone{false};
     /// Variables keeping track of current state.
-    bool _prepared;
-    bool _opened;
+    bool _prepared{false};
+    bool _opened{false};
     // In operator, the ExprContext::close method will be called concurrently
-    std::atomic<bool> _closed;
+    std::atomic<bool> _closed{false};
 };
 
 #define RETURN_IF_HAS_ERROR(expr_ctxs)             \
@@ -170,5 +149,14 @@ private:
             RETURN_IF_ERROR(ctx->get_udf_error()); \
         }                                          \
     } while (false)
+
+#define EVALUATE_NULL_IF_ERROR(ctx, expr, chunk)                                             \
+    [](ExprContext* c, Expr* e, Chunk* ptr) {                                                \
+        auto st = c->evaluate(e, ptr);                                                       \
+        if (st.ok()) {                                                                       \
+            return st.value();                                                               \
+        }                                                                                    \
+        return ColumnHelper::create_const_null_column(ptr == nullptr ? 1 : ptr->num_rows()); \
+    }(ctx, expr, chunk)
 
 } // namespace starrocks

@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/analysis/DecimalLiteralTest.java
 
@@ -194,7 +207,7 @@ public class DecimalLiteralTest {
 
         type = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 4);
         decimalLiteral = new DecimalLiteral("12345678.90", type);
-        Assert.assertEquals(decimalLiteral.getType(), ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL32, 9, 1));
+        Assert.assertEquals(decimalLiteral.getType(), ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 10, 2));
         decimalLiteral = (DecimalLiteral) decimalLiteral.uncheckedCastTo(type);
         Assert.assertEquals(decimalLiteral.getType(), type);
 
@@ -247,7 +260,8 @@ public class DecimalLiteralTest {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec32, decimal32p4s3);
                 Assert.fail("should throw exception");
-            } catch (Exception ignored){}
+            } catch (Exception ignored) {
+            }
         }
 
         BigDecimal decimal64Values[] = {
@@ -261,7 +275,8 @@ public class DecimalLiteralTest {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec64, decimal64p10s6);
                 Assert.fail("should throw exception");
-            }catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
 
         BigDecimal decimal128Values[] = {
@@ -275,7 +290,8 @@ public class DecimalLiteralTest {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec128, decimal128p36s11);
                 Assert.fail("should throw exception");
-            }catch (Exception ignored) { }
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -297,7 +313,7 @@ public class DecimalLiteralTest {
         for (BigDecimal dec32 : decimal32Values) {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec32, decimal32p4s3);
-            }catch (Exception ignored) {
+            } catch (Exception ignored) {
                 Assert.fail("should not throw exception");
             }
         }
@@ -317,7 +333,7 @@ public class DecimalLiteralTest {
         for (BigDecimal dec64 : decimal64Values) {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec64, decimal64p10s6);
-            }catch (Exception ignored) {
+            } catch (Exception ignored) {
                 Assert.fail("should not throw exception");
             }
         }
@@ -337,7 +353,7 @@ public class DecimalLiteralTest {
         for (BigDecimal dec128 : decimal128Values) {
             try {
                 DecimalLiteral.checkLiteralOverflowInBinaryStyle(dec128, decimal128p36s11);
-            }catch (Exception ignored) {
+            } catch (Exception ignored) {
                 Assert.fail("should not throw exception");
             }
         }
@@ -456,7 +472,7 @@ public class DecimalLiteralTest {
 
     @Test
     public void testPackDecimal() {
-        BigInteger[] bigIntegers = new BigInteger[]{
+        BigInteger[] bigIntegers = new BigInteger[] {
                 BigInteger.ZERO,
                 BigInteger.ONE,
                 BigInteger.ONE.shiftLeft(31).subtract(BigInteger.ONE),

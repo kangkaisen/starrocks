@@ -1,11 +1,24 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
 #include "column/fixed_length_column.h"
+#include "column/vectorized_fwd.h"
 #include "common/logging.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 using NullData = FixedLengthColumn<uint8_t>::Container;
 using NullColumn = FixedLengthColumn<uint8_t>;
@@ -16,10 +29,19 @@ using NullValueType = NullColumn::ValueType;
 static constexpr NullValueType DATUM_NULL = NullValueType(1);
 static constexpr NullValueType DATUM_NOT_NULL = NullValueType(0);
 
-class NullableColumn final : public ColumnFactory<Column, NullableColumn> {
+class NullableColumn : public ColumnFactory<Column, NullableColumn> {
     friend class ColumnFactory<Column, NullableColumn>;
 
 public:
+    inline static ColumnPtr wrap_if_necessary(ColumnPtr column) {
+        if (column->is_nullable()) {
+            return column;
+        }
+        auto null = NullColumn::create(column->size(), 0);
+        return NullableColumn::create(std::move(column), std::move(null));
+    }
+    NullableColumn() = default;
+
     NullableColumn(MutableColumnPtr&& data_column, MutableColumnPtr&& null_column);
     NullableColumn(ColumnPtr data_column, NullColumnPtr null_column);
 
@@ -51,11 +73,12 @@ public:
 
     void set_has_null(bool has_null) { _has_null = _has_null | has_null; }
 
-    void update_has_null() {
-        const NullColumn::Container& v = _null_column->get_data();
-        const auto* p = v.data();
-        _has_null = (p != nullptr) && (nullptr != memchr(p, 1, v.size() * sizeof(v[0])));
-    }
+    // Update null element to default value
+    void fill_null_with_default();
+
+    void fill_default(const Filter& filter) override {}
+
+    void update_has_null();
 
     bool is_nullable() const override { return true; }
 
@@ -63,8 +86,6 @@ public:
         DCHECK_EQ(_null_column->size(), _data_column->size());
         return _has_null && immutable_null_column_data()[index];
     }
-
-    bool low_cardinality() const override { return false; }
 
     const uint8_t* raw_data() const override { return _data_column->raw_data(); }
 
@@ -83,7 +104,7 @@ public:
 
     size_t byte_size(size_t from, size_t size) const override {
         DCHECK_LE(from + size, this->size()) << "Range error";
-        return _data_column->byte_size(from, size) + _null_column->Column::byte_size(from, size);
+        return _data_column->byte_size(from, size) + _null_column->byte_size(from, size);
     }
 
     size_t byte_size(size_t idx) const override { return _data_column->byte_size(idx) + sizeof(bool); }
@@ -98,7 +119,7 @@ public:
         _null_column->resize(n);
     }
 
-    void resize_uninitialized(size_t n) {
+    void resize_uninitialized(size_t n) override {
         _data_column->resize_uninitialized(n);
         _null_column->resize_uninitialized(n);
     }
@@ -119,15 +140,23 @@ public:
 
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
 
     bool append_nulls(size_t count) override;
+
+    StatusOr<ColumnPtr> upgrade_if_overflow() override;
+
+    StatusOr<ColumnPtr> downgrade() override;
+
+    bool has_large_column() const override { return _data_column->has_large_column(); }
 
     bool append_strings(const Buffer<Slice>& strs) override;
 
     bool append_strings_overflow(const Buffer<Slice>& strs, size_t max_length) override;
 
     bool append_continuous_strings(const Buffer<Slice>& strs) override;
+
+    bool append_continuous_fixed_length_strings(const char* data, size_t size, int fixed_length) override;
 
     size_t append_numbers(const void* buff, size_t length) override;
 
@@ -142,7 +171,7 @@ public:
 
     void append_default(size_t count) override { append_nulls(count); }
 
-    Status update_rows(const Column& src, const uint32_t* indexes) override;
+    void update_rows(const Column& src, const uint32_t* indexes) override;
 
     uint32_t max_one_element_serialize_size() const override {
         return sizeof(bool) + _data_column->max_one_element_serialize_size();
@@ -173,9 +202,11 @@ public:
     size_t serialize_batch_at_interval(uint8_t* dst, size_t byte_offset, size_t byte_interval, size_t start,
                                        size_t count) override;
 
-    size_t filter_range(const Column::Filter& filter, size_t from, size_t to) override;
+    size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 
     int compare_at(size_t left, size_t right, const Column& rhs, int nan_direction_hint) const override;
+
+    int equals(size_t left, const Column& rhs, size_t right, bool safe_eq = true) const override;
 
     void fnv_hash(uint32_t* hash, uint32_t from, uint32_t to) const override;
 
@@ -204,10 +235,11 @@ public:
     const NullColumnPtr& null_column() const { return _null_column; }
 
     size_t null_count() const;
+    size_t null_count(size_t offset, size_t count) const;
 
     Datum get(size_t n) const override {
         if (_has_null && _null_column->get_data()[n]) {
-            return Datum();
+            return {};
         } else {
             return _data_column->get(n);
         }
@@ -218,22 +250,19 @@ public:
         _has_null = true;
         return true;
     }
+    ColumnPtr replicate(const std::vector<uint32_t>& offsets) override;
 
     size_t memory_usage() const override {
         return _data_column->memory_usage() + _null_column->memory_usage() + sizeof(bool);
-    }
-
-    size_t shrink_memory_usage() const override {
-        return _data_column->shrink_memory_usage() + _null_column->shrink_memory_usage() + sizeof(bool);
     }
 
     size_t container_memory_usage() const override {
         return _data_column->container_memory_usage() + _null_column->container_memory_usage();
     }
 
-    size_t element_memory_usage(size_t from, size_t size) const override {
+    size_t reference_memory_usage(size_t from, size_t size) const override {
         DCHECK_LE(from + size, this->size()) << "Range error";
-        return _data_column->element_memory_usage(from, size) + _null_column->element_memory_usage(from, size);
+        return _data_column->reference_memory_usage(from, size) + _null_column->reference_memory_usage(from, size);
     }
 
     void swap_column(Column& rhs) override {
@@ -244,6 +273,13 @@ public:
         std::swap(_has_null, r._has_null);
     }
 
+    void swap_by_data_column(ColumnPtr& src) {
+        reset_column();
+        _data_column.swap(src);
+        null_column_data().insert(null_column_data().end(), _data_column->size(), 0);
+        update_has_null();
+    }
+
     void reset_column() override {
         Column::reset_column();
         _data_column->reset_column();
@@ -251,8 +287,8 @@ public:
         _has_null = false;
     }
 
-    std::string debug_item(uint32_t idx) const override {
-        DCHECK(_null_column->size() == _data_column->size());
+    std::string debug_item(size_t idx) const override {
+        DCHECK_EQ(_null_column->size(), _data_column->size());
         std::stringstream ss;
         if (_null_column->get_data()[idx]) {
             ss << "NULL";
@@ -263,11 +299,11 @@ public:
     }
 
     std::string debug_string() const override {
-        DCHECK(_null_column->size() == _data_column->size());
+        DCHECK_EQ(_null_column->size(), _data_column->size());
         std::stringstream ss;
         ss << "[";
-        int size = _data_column->size();
-        for (int i = 0; i < size - 1; ++i) {
+        size_t size = _data_column->size();
+        for (size_t i = 0; i + 1 < size; ++i) {
             ss << debug_item(i) << ", ";
         }
         if (size > 0) {
@@ -277,16 +313,16 @@ public:
         return ss.str();
     }
 
-    bool reach_capacity_limit() const override {
-        return _data_column->reach_capacity_limit() || _null_column->reach_capacity_limit();
+    bool capacity_limit_reached(std::string* msg = nullptr) const override {
+        return _data_column->capacity_limit_reached(msg) || _null_column->capacity_limit_reached(msg);
     }
 
     void check_or_die() const override;
 
-private:
+protected:
     ColumnPtr _data_column;
     NullColumnPtr _null_column;
-    bool _has_null;
+    mutable bool _has_null;
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

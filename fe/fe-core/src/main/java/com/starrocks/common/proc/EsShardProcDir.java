@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/proc/EsShardProcDir.java
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -27,8 +23,8 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.EsTable;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.util.ListComparator;
-import com.starrocks.external.elasticsearch.EsShardPartitions;
-import com.starrocks.external.elasticsearch.EsShardRouting;
+import com.starrocks.connector.elasticsearch.EsShardPartitions;
+import com.starrocks.connector.elasticsearch.EsShardRouting;
 
 import java.util.ArrayList;
 import java.util.Collections;

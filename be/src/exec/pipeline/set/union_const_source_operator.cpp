@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exec/pipeline/set/union_const_source_operator.h"
 
@@ -6,10 +18,10 @@
 
 namespace starrocks::pipeline {
 
-StatusOr<vectorized::ChunkPtr> UnionConstSourceOperator::pull_chunk(starrocks::RuntimeState* state) {
+StatusOr<ChunkPtr> UnionConstSourceOperator::pull_chunk(starrocks::RuntimeState* state) {
     DCHECK(0 <= _next_processed_row_index && _next_processed_row_index < _rows_total);
 
-    auto chunk = std::make_shared<vectorized::Chunk>();
+    auto chunk = std::make_shared<Chunk>();
 
     size_t rows_count = std::min(static_cast<size_t>(state->chunk_size()), _rows_total - _next_processed_row_index);
     size_t columns_count = _dst_slots.size();
@@ -17,17 +29,19 @@ StatusOr<vectorized::ChunkPtr> UnionConstSourceOperator::pull_chunk(starrocks::R
     for (size_t col_i = 0; col_i < columns_count; col_i++) {
         const auto* dst_slot = _dst_slots[col_i];
 
-        vectorized::ColumnPtr dst_column =
-                vectorized::ColumnHelper::create_column(dst_slot->type(), dst_slot->is_nullable());
+        ColumnPtr dst_column = ColumnHelper::create_column(dst_slot->type(), dst_slot->is_nullable());
         dst_column->reserve(rows_count);
 
         for (size_t row_i = 0; row_i < rows_count; row_i++) {
             // Each const_expr_list is projected to ONE dest row.
             DCHECK_EQ(_const_expr_lists[_next_processed_row_index + row_i].size(), columns_count);
 
-            ColumnPtr src_column = _const_expr_lists[_next_processed_row_index + row_i][col_i]->evaluate(nullptr);
+            ASSIGN_OR_RETURN(ColumnPtr src_column,
+                             _const_expr_lists[_next_processed_row_index + row_i][col_i]->evaluate(nullptr));
+
+            RETURN_IF_HAS_ERROR(_const_expr_lists[_next_processed_row_index + row_i]);
             auto cur_row_dst_column =
-                    vectorized::ColumnHelper::move_column(dst_slot->type(), dst_slot->is_nullable(), src_column, 1);
+                    ColumnHelper::move_column(dst_slot->type(), dst_slot->is_nullable(), src_column, 1);
             dst_column->append(*cur_row_dst_column, 0, 1);
         }
 

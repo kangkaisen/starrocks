@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/test/olap/rowset/segment_v2/frame_of_reference_page_test.cpp
 
@@ -25,35 +38,36 @@
 
 #include <memory>
 
+#include "column/column_helper.h"
+#include "column/column_viewer.h"
+#include "gutil/int128.h"
+#include "runtime/large_int_value.h"
 #include "runtime/mem_pool.h"
+#include "storage/chunk_helper.h"
 #include "storage/rowset/options.h"
 #include "storage/rowset/page_builder.h"
 #include "storage/rowset/page_decoder.h"
-#include "storage/vectorized/chunk_helper.h"
 #include "util/logging.h"
 
 using starrocks::PageBuilderOptions;
-using starrocks::PageDecoderOptions;
 using starrocks::operator<<;
 
 namespace starrocks {
 class FrameOfReferencePageTest : public testing::Test {
 public:
-    template <FieldType type, class PageDecoderType>
+    template <LogicalType type, class PageDecoderType>
     void copy_one(PageDecoderType* decoder, typename TypeTraits<type>::CppType* ret) {
-        MemPool pool;
-        std::unique_ptr<ColumnVectorBatch> cvb;
-        ColumnVectorBatch::create(1, true, get_type_info(type), nullptr, &cvb);
-        ColumnBlock block(cvb.get(), &pool);
-        ColumnBlockView column_block_view(&block);
-
+        LogicalType ltype = scalar_field_type_to_logical_type(type);
+        TypeDescriptor index_type(ltype);
+        // TODO(alvinz): To reuse this colum
+        auto column = ColumnHelper::create_column(index_type, false);
         size_t n = 1;
-        decoder->next_batch(&n, &column_block_view);
+        ASSERT_TRUE(decoder->next_batch(&n, column.get()).ok());
         ASSERT_EQ(1, n);
-        *ret = *reinterpret_cast<const typename TypeTraits<type>::CppType*>(block.cell_ptr(0));
+        *ret = *reinterpret_cast<const typename TypeTraits<type>::CppType*>(column->raw_data());
     }
 
-    template <FieldType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
+    template <LogicalType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
               class PageDecoderType = FrameOfReferencePageDecoder<Type>>
     void test_encode_decode_page_template(typename TypeTraits<Type>::CppType* src, size_t size) {
         typedef typename TypeTraits<Type>::CppType CppType;
@@ -66,35 +80,28 @@ public:
         LOG(INFO) << "FrameOfReference Encoded size for " << size << " values: " << s.slice().size
                   << ", original size:" << size * sizeof(CppType);
 
-        PageDecoderOptions decoder_options;
-        PageDecoderType for_page_decoder(s.slice(), decoder_options);
+        PageDecoderType for_page_decoder(s.slice());
         Status status = for_page_decoder.init();
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        MemPool pool;
-        std::unique_ptr<ColumnVectorBatch> cvb;
-        ColumnVectorBatch::create(size, true, get_type_info(Type), nullptr, &cvb);
-        ColumnBlock block(cvb.get(), &pool);
-        ColumnBlockView column_block_view(&block);
+        auto column = ChunkHelper::column_from_field_type(Type, false);
         size_t size_to_fetch = size;
-        status = for_page_decoder.next_batch(&size_to_fetch, &column_block_view);
+        status = for_page_decoder.next_batch(&size_to_fetch, column.get());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(size, size_to_fetch);
 
-        CppType* values = reinterpret_cast<CppType*>(column_block_view.data());
+        auto* values = reinterpret_cast<const CppType*>(column->raw_data());
 
         for (uint i = 0; i < size; i++) {
-            if (src[i] != values[i]) {
-                FAIL() << "Fail at index " << i << " inserted=" << src[i] << " got=" << values[i];
-            }
+            ASSERT_EQ(src[i], values[i]);
         }
 
         // Test Seek within block by ordinal
         for (int i = 0; i < 100; i++) {
-            int seek_off = random() % size;
-            for_page_decoder.seek_to_position_in_page(seek_off);
+            uint32_t seek_off = random() % size;
+            ASSERT_TRUE(for_page_decoder.seek_to_position_in_page(seek_off).ok());
             EXPECT_EQ((int32_t)(seek_off), for_page_decoder.current_index());
             CppType ret;
             copy_one<Type, PageDecoderType>(&for_page_decoder, &ret);
@@ -102,7 +109,7 @@ public:
         }
     }
 
-    template <FieldType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
+    template <LogicalType Type, class PageBuilderType = FrameOfReferencePageBuilder<Type>,
               class PageDecoderType = FrameOfReferencePageDecoder<Type>>
     void test_encode_decode_page_vectorize(typename TypeTraits<Type>::CppType* src, size_t size) {
         typedef typename TypeTraits<Type>::CppType CppType;
@@ -115,14 +122,13 @@ public:
         LOG(INFO) << "FrameOfReference Encoded size for " << size << " values: " << s.slice().size
                   << ", original size:" << size * sizeof(CppType);
 
-        PageDecoderOptions decoder_options;
-        PageDecoderType for_page_decoder(s.slice(), decoder_options);
+        PageDecoderType for_page_decoder(s.slice());
         Status status = for_page_decoder.init();
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto column = vectorized::ChunkHelper::column_from_field_type(Type, false);
+        auto column = ChunkHelper::column_from_field_type(Type, false);
         size_t size_to_fetch = size;
         status = for_page_decoder.next_batch(&size_to_fetch, column.get());
         ASSERT_TRUE(status.ok());
@@ -137,21 +143,21 @@ public:
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto column1 = vectorized::ChunkHelper::column_from_field_type(Type, false);
-        vectorized::SparseRange read_range;
-        read_range.add(vectorized::Range(0, size / 3));
-        read_range.add(vectorized::Range(size / 2, (size * 2 / 3)));
-        read_range.add(vectorized::Range((size * 3 / 4), size));
+        auto column1 = ChunkHelper::column_from_field_type(Type, false);
+        SparseRange<> read_range;
+        read_range.add(Range<>(0, size / 3));
+        read_range.add(Range<>(size / 2, (size * 2 / 3)));
+        read_range.add(Range<>((size * 3 / 4), size));
         size_t read_num = read_range.span_size();
 
         status = for_page_decoder.next_batch(read_range, column1.get());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(read_num, column1->size());
 
-        vectorized::SparseRangeIterator read_iter = read_range.new_iterator();
+        SparseRangeIterator<> read_iter = read_range.new_iterator();
         size_t offset = 0;
         while (read_iter.has_more()) {
-            vectorized::Range r = read_iter.next(read_num);
+            Range<> r = read_iter.next(read_num);
             for (uint i = 0; i < r.span_size(); ++i) {
                 ASSERT_EQ(src[r.begin() + i], column1->get(offset + i).get<CppType>());
             }
@@ -168,8 +174,8 @@ TEST_F(FrameOfReferencePageTest, TestInt32BlockEncoderRandom) {
         ints.get()[i] = random();
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_INT>(ints.get(), size);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_vectorize<TYPE_INT>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt32BlockEncoderEqual) {
@@ -180,8 +186,8 @@ TEST_F(FrameOfReferencePageTest, TestInt32BlockEncoderEqual) {
         ints.get()[i] = 12345;
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_INT>(ints.get(), size);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_vectorize<TYPE_INT>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt32BlockEncoderSequence) {
@@ -192,8 +198,8 @@ TEST_F(FrameOfReferencePageTest, TestInt32BlockEncoderSequence) {
         ints.get()[i] = 12345 + i;
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_INT>(ints.get(), size);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_INT>(ints.get(), size);
+    test_encode_decode_page_vectorize<TYPE_INT>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt64BlockEncoderSequence) {
@@ -204,12 +210,12 @@ TEST_F(FrameOfReferencePageTest, TestInt64BlockEncoderSequence) {
         ints.get()[i] = 21474836478 + i;
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_BIGINT>(ints.get(), size);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_BIGINT>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_BIGINT>(ints.get(), size);
+    test_encode_decode_page_vectorize<TYPE_BIGINT>(ints.get(), size);
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_DATETIME>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_DATETIME_V1>(ints.get(), size);
     // TODO(zhuming): uncomment this line after Column for DATETIME is implemented.
-    // test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_DATETIME>(ints.get(), size);
+    // test_encode_decode_page_vectorize<TYPE_DATETIME_V1>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt24BlockEncoderSequence) {
@@ -222,9 +228,9 @@ TEST_F(FrameOfReferencePageTest, TestInt24BlockEncoderSequence) {
         ints.get()[i] = first_value + i;
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_DATE>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_DATE_V1>(ints.get(), size);
     // TODO(zhuming): uncomment this line after Column for DATE is implemented.
-    // test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_DATE>(ints.get(), size);
+    // test_encode_decode_page_vectorize<TYPE_DATE_V1>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt128BlockEncoderSequence) {
@@ -237,8 +243,8 @@ TEST_F(FrameOfReferencePageTest, TestInt128BlockEncoderSequence) {
         ints.get()[i] = first_value + i;
     }
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_LARGEINT>(ints.get(), size);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_LARGEINT>(ints.get(), size);
+    test_encode_decode_page_template<TYPE_LARGEINT>(ints.get(), size);
+    test_encode_decode_page_vectorize<TYPE_LARGEINT>(ints.get(), size);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt24BlockEncoderMinMax) {
@@ -246,9 +252,9 @@ TEST_F(FrameOfReferencePageTest, TestInt24BlockEncoderMinMax) {
     ints.get()[0] = 0;
     ints.get()[1] = 0xFFFFFF;
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_DATE>(ints.get(), 2);
+    test_encode_decode_page_template<TYPE_DATE_V1>(ints.get(), 2);
     // TODO(zhuming): uncomment this line after Column for DATE is implemented.
-    // test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_DATE>(ints.get(), 2);
+    // test_encode_decode_page_vectorize<TYPE_DATE_V1>(ints.get(), 2);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt128BlockEncoderMinMax) {
@@ -256,8 +262,8 @@ TEST_F(FrameOfReferencePageTest, TestInt128BlockEncoderMinMax) {
     ints.get()[0] = numeric_limits<int128_t>::lowest();
     ints.get()[1] = numeric_limits<int128_t>::max();
 
-    test_encode_decode_page_template<OLAP_FIELD_TYPE_LARGEINT>(ints.get(), 2);
-    test_encode_decode_page_vectorize<OLAP_FIELD_TYPE_LARGEINT>(ints.get(), 2);
+    test_encode_decode_page_template<TYPE_LARGEINT>(ints.get(), 2);
+    test_encode_decode_page_vectorize<TYPE_LARGEINT>(ints.get(), 2);
 }
 
 TEST_F(FrameOfReferencePageTest, TestInt32SequenceBlockEncoderSize) {
@@ -268,7 +274,7 @@ TEST_F(FrameOfReferencePageTest, TestInt32SequenceBlockEncoderSize) {
     }
     PageBuilderOptions builder_options;
     builder_options.data_page_size = 256 * 1024;
-    FrameOfReferencePageBuilder<OLAP_FIELD_TYPE_INT> page_builder(builder_options);
+    FrameOfReferencePageBuilder<TYPE_INT> page_builder(builder_options);
     size = page_builder.add(reinterpret_cast<const uint8_t*>(ints.get()), size);
     OwnedSlice s = page_builder.finish()->build();
     // body: 4 bytes min value + 128 * 1 /8 packing value = 20
@@ -284,7 +290,7 @@ TEST_F(FrameOfReferencePageTest, TestFirstLastValue) {
     }
     PageBuilderOptions builder_options;
     builder_options.data_page_size = 256 * 1024;
-    FrameOfReferencePageBuilder<OLAP_FIELD_TYPE_INT> page_builder(builder_options);
+    FrameOfReferencePageBuilder<TYPE_INT> page_builder(builder_options);
     size = page_builder.add(reinterpret_cast<const uint8_t*>(ints.get()), size);
     OwnedSlice s = page_builder.finish()->build();
     int32_t first_value = -1;
@@ -303,7 +309,7 @@ TEST_F(FrameOfReferencePageTest, TestInt32NormalBlockEncoderSize) {
     }
     PageBuilderOptions builder_options;
     builder_options.data_page_size = 256 * 1024;
-    FrameOfReferencePageBuilder<OLAP_FIELD_TYPE_INT> page_builder(builder_options);
+    FrameOfReferencePageBuilder<TYPE_INT> page_builder(builder_options);
     size = page_builder.add(reinterpret_cast<const uint8_t*>(ints.get()), size);
     OwnedSlice s = page_builder.finish()->build();
     // body: 4 bytes min value + 128 * 7 /8 packing value = 116

@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/orc/tree/main/c++/include/orc/Reader.hh
 
@@ -30,7 +43,7 @@
 #include "orc/sargs/SearchArgument.hh"
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
-
+#include <atomic>
 #include <map>
 #include <memory>
 #include <set>
@@ -39,6 +52,28 @@
 // clang-format on
 
 namespace orc {
+
+/**
+   * Expose the reader metrics including the latency and
+   * number of calls of the decompression/decoding/IO modules.
+   */
+struct ReaderMetrics {
+    std::atomic<uint64_t> ReaderCall{0};
+    // ReaderInclusiveLatencyUs contains the latency of
+    // the decompression/decoding/IO modules.
+    std::atomic<uint64_t> ReaderInclusiveLatencyUs{0};
+    std::atomic<uint64_t> DecompressionCall{0};
+    std::atomic<uint64_t> DecompressionLatencyUs{0};
+    std::atomic<uint64_t> DecodingCall{0};
+    std::atomic<uint64_t> DecodingLatencyUs{0};
+    std::atomic<uint64_t> ByteDecodingCall{0};
+    std::atomic<uint64_t> ByteDecodingLatencyUs{0};
+    std::atomic<uint64_t> IOCount{0};
+    std::atomic<uint64_t> IOBlockingLatencyUs{0};
+    std::atomic<uint64_t> SelectedRowGroupCount{0};
+    std::atomic<uint64_t> EvaluatedRowGroupCount{0};
+};
+ReaderMetrics* getDefaultReaderMetrics();
 
 // classes that hold data members so we can maintain binary compatibility
 struct ReaderOptionsPrivate;
@@ -82,6 +117,13 @@ public:
     ReaderOptions& setMemoryPool(MemoryPool& pool);
 
     /**
+     * Set the reader metrics.
+     *
+     * When set to nullptr, the reader metrics will be disabled.
+     */
+    ReaderOptions& setReaderMetrics(ReaderMetrics* metrics);
+
+    /**
      * Set the location of the tail as defined by the logical length of the
      * file.
      */
@@ -107,6 +149,11 @@ public:
      * Get the memory allocator.
      */
     MemoryPool* getMemoryPool() const;
+
+    /**
+     * Get the reader metrics.
+     */
+    ReaderMetrics* getReaderMetrics() const;
 };
 
 /**
@@ -277,7 +324,9 @@ public:
     RowReaderOptions& useWriterTimezone();
     bool getUseWriterTimezone() const;
     RowReaderOptions& includeLazyLoadColumnNames(const std::list<std::string>& include);
+    RowReaderOptions& includeLazyLoadColumnIndexes(const std::list<uint64_t>& include);
     const std::list<std::string>& getLazyLoadColumnNames() const;
+    const std::list<uint64_t>& getLazyLoadColumnIndexes() const;
 };
 
 class RowReader;
@@ -378,6 +427,7 @@ public:
      * @return the information about that stripe
      */
     virtual ORC_UNIQUE_PTR<StripeInformation> getStripe(uint64_t stripeIndex) const = 0;
+    virtual const orc::proto::StripeInformation& getStripeInOrcFormat(uint64_t stripeIndex) const = 0;
 
     /**
      * Get the number of stripe statistics in the file.
@@ -439,6 +489,12 @@ public:
      * Check if the file has correct column statistics.
      */
     virtual bool hasCorrectStatistics() const = 0;
+
+    /**
+     * Get metrics of the reader
+     * @return the accumulated reader metrics to current state.
+     */
+    virtual const ReaderMetrics* getReaderMetrics() const = 0;
 
     /**
      * Get the serialized file tail.

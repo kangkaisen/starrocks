@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/http/StarRocksHttpTestCase.java
 
@@ -24,7 +37,6 @@ package com.starrocks.http;
 import com.google.common.collect.Lists;
 import com.starrocks.alter.MaterializedViewHandler;
 import com.starrocks.alter.SchemaChangeHandler;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.DataProperty;
 import com.starrocks.catalog.Database;
@@ -41,7 +53,6 @@ import com.starrocks.catalog.SinglePartitionInfo;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.catalog.Type;
-import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ExceptionChecker.ThrowingRunnable;
 import com.starrocks.common.jmockit.Deencapsulation;
@@ -49,10 +60,13 @@ import com.starrocks.load.Load;
 import com.starrocks.mysql.privilege.Auth;
 import com.starrocks.persist.EditLog;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.Backend;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TStorageType;
+import com.starrocks.transaction.GlobalTransactionMgr;
+import com.starrocks.transaction.TransactionStatus;
 import junit.framework.AssertionFailedError;
 import mockit.Expectations;
 import mockit.Mock;
@@ -71,9 +85,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
-abstract public class StarRocksHttpTestCase {
+public abstract class StarRocksHttpTestCase {
 
     public OkHttpClient networkClient = new OkHttpClient.Builder()
             .readTimeout(100, TimeUnit.SECONDS)
@@ -83,7 +98,6 @@ abstract public class StarRocksHttpTestCase {
 
     private static HttpServer httpServer;
 
-    public static final String CLUSTER_NAME = "default_cluster";
     public static final String DB_NAME = "testDb";
     public static final String TABLE_NAME = "testTbl";
 
@@ -95,7 +109,7 @@ abstract public class StarRocksHttpTestCase {
     private static long testReplicaId2 = 2001;
     private static long testReplicaId3 = 2002;
 
-    private static long testDbId = 100L;
+    protected static long testDbId = 100L;
     private static long testTableId = 200L;
     private static long testPartitionId = 201L;
     public static long testIndexId = testTableId; // the base indexid == tableid
@@ -107,6 +121,7 @@ abstract public class StarRocksHttpTestCase {
     public static int HTTP_PORT;
 
     protected static String URI;
+    protected static String BASE_URL;
 
     protected String rootAuth = Credentials.basic("root", "");
 
@@ -114,7 +129,7 @@ abstract public class StarRocksHttpTestCase {
     private static EditLog editLog;
 
     public static OlapTable newTable(String name) {
-        Catalog.getCurrentInvertedIndex().clear();
+        GlobalStateMgr.getCurrentInvertedIndex().clear();
         Column k1 = new Column("k1", Type.BIGINT);
         Column k2 = new Column("k2", Type.DOUBLE);
         List<Column> columns = new ArrayList<>();
@@ -157,6 +172,7 @@ abstract public class StarRocksHttpTestCase {
         PartitionInfo partitionInfo = new SinglePartitionInfo();
         partitionInfo.setDataProperty(testPartitionId, DataProperty.DEFAULT_DATA_PROPERTY);
         partitionInfo.setReplicationNum(testPartitionId, (short) 3);
+        partitionInfo.setIsInMemory(testPartitionId, false);
         OlapTable table = new OlapTable(testTableId, name, columns, KeysType.AGG_KEYS, partitionInfo,
                 distributionInfo);
         table.addPartition(partition);
@@ -177,11 +193,11 @@ abstract public class StarRocksHttpTestCase {
         partitionInfo.setReplicationNum(testPartitionId + 100, (short) 3);
         EsTable table = null;
         Map<String, String> props = new HashMap<>();
-        props.put(EsTable.HOSTS, "http://node-1:8080");
-        props.put(EsTable.USER, "root");
-        props.put(EsTable.PASSWORD, "root");
-        props.put(EsTable.INDEX, "test");
-        props.put(EsTable.TYPE, "doc");
+        props.put(EsTable.KEY_HOSTS, "http://node-1:8080");
+        props.put(EsTable.KEY_USER, "root");
+        props.put(EsTable.KEY_PASSWORD, "root");
+        props.put(EsTable.KEY_INDEX, "test");
+        props.put(EsTable.KEY_TYPE, "doc");
         try {
             table = new EsTable(testTableId + 1, name, columns, props, partitionInfo);
         } catch (DdlException e) {
@@ -190,75 +206,150 @@ abstract public class StarRocksHttpTestCase {
         return table;
     }
 
-    private static Catalog newDelegateCatalog() {
+    private static GlobalStateMgr newDelegateCatalog() {
         try {
-            Catalog catalog = Deencapsulation.newInstance(Catalog.class);
+            GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
             Auth auth = new Auth();
-            //EasyMock.expect(catalog.getAuth()).andReturn(starrocksAuth).anyTimes();
-            Database db = new Database(testDbId, "default_cluster:testDb");
+            //EasyMock.expect(globalStateMgr.getAuth()).andReturn(starrocksAuth).anyTimes();
+            Database db = new Database(testDbId, "testDb");
             OlapTable table = newTable(TABLE_NAME);
-            db.createTable(table);
+            db.registerTableUnlocked(table);
             OlapTable table1 = newTable(TABLE_NAME + 1);
-            db.createTable(table1);
+            db.registerTableUnlocked(table1);
             EsTable esTable = newEsTable("es_table");
-            db.createTable(esTable);
-            new Expectations(catalog) {
+            db.registerTableUnlocked(esTable);
+            ConcurrentHashMap<String, Database> nameToDb = new ConcurrentHashMap<>();
+            nameToDb.put(db.getFullName(), db);
+            new Expectations(globalStateMgr) {
                 {
-                    catalog.getAuth();
+                    globalStateMgr.getAuth();
                     minTimes = 0;
                     result = auth;
 
-                    catalog.getDb(db.getId());
+                    globalStateMgr.getDb(db.getId());
                     minTimes = 0;
                     result = db;
 
-                    catalog.getDb("default_cluster:" + DB_NAME);
+                    globalStateMgr.getDb(DB_NAME);
                     minTimes = 0;
                     result = db;
 
-                    catalog.isMaster();
+                    globalStateMgr.isLeader();
                     minTimes = 0;
                     result = true;
 
-                    catalog.getDb("default_cluster:emptyDb");
+                    globalStateMgr.getDb("emptyDb");
                     minTimes = 0;
                     result = null;
 
-                    catalog.getDb(anyString);
+                    globalStateMgr.getDb(anyString);
                     minTimes = 0;
                     result = new Database();
 
-                    catalog.getDbNames();
+                    globalStateMgr.getDbNames();
                     minTimes = 0;
-                    result = Lists.newArrayList("default_cluster:testDb");
+                    result = Lists.newArrayList("testDb");
 
-                    catalog.getLoadInstance();
+                    globalStateMgr.getLoadInstance();
                     minTimes = 0;
                     result = new Load();
 
-                    catalog.getEditLog();
+                    globalStateMgr.getEditLog();
                     minTimes = 0;
                     result = editLog;
 
-                    catalog.getClusterDbNames("default_cluster");
-                    minTimes = 0;
-                    result = Lists.newArrayList("default_cluster:testDb");
-
-                    catalog.changeDb((ConnectContext) any, "blockDb");
+                    globalStateMgr.changeCatalogDb((ConnectContext) any, "blockDb");
                     minTimes = 0;
 
-                    catalog.changeDb((ConnectContext) any, anyString);
+                    globalStateMgr.changeCatalogDb((ConnectContext) any, anyString);
                     minTimes = 0;
 
-                    catalog.initDefaultCluster();
+                    globalStateMgr.initDefaultCluster();
                     minTimes = 0;
+
+                    globalStateMgr.getFullNameToDb();
+                    minTimes = 0;
+                    result = nameToDb;
                 }
             };
 
-            return catalog;
+            return globalStateMgr;
         } catch (DdlException e) {
             return null;
-        } catch (AnalysisException e) {
+        }
+    }
+
+    private static GlobalStateMgr newDelegateGlobalStateMgr() {
+        try {
+            GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
+            Auth auth = new Auth();
+            //EasyMock.expect(globalStateMgr.getAuth()).andReturn(starrocksAuth).anyTimes();
+            Database db = new Database(testDbId, "testDb");
+            OlapTable table = newTable(TABLE_NAME);
+            db.registerTableUnlocked(table);
+            OlapTable table1 = newTable(TABLE_NAME + 1);
+            db.registerTableUnlocked(table1);
+            EsTable esTable = newEsTable("es_table");
+            db.registerTableUnlocked(esTable);
+            new Expectations(globalStateMgr) {
+                {
+                    globalStateMgr.getAuth();
+                    minTimes = 0;
+                    result = auth;
+
+                    globalStateMgr.getDb(db.getId());
+                    minTimes = 0;
+                    result = db;
+
+                    globalStateMgr.getDb(DB_NAME);
+                    minTimes = 0;
+                    result = db;
+
+                    globalStateMgr.isLeader();
+                    minTimes = 0;
+                    result = true;
+
+                    globalStateMgr.getDb("emptyDb");
+                    minTimes = 0;
+                    result = null;
+
+                    globalStateMgr.getDb(anyString);
+                    minTimes = 0;
+                    result = new Database();
+
+                    globalStateMgr.getDbNames();
+                    minTimes = 0;
+                    result = Lists.newArrayList("testDb");
+
+                    globalStateMgr.getLoadInstance();
+                    minTimes = 0;
+                    result = new Load();
+
+                    globalStateMgr.getEditLog();
+                    minTimes = 0;
+                    result = editLog;
+
+                    globalStateMgr.changeCatalogDb((ConnectContext) any, "blockDb");
+                    minTimes = 0;
+
+                    globalStateMgr.changeCatalogDb((ConnectContext) any, anyString);
+                    minTimes = 0;
+
+                    globalStateMgr.initDefaultCluster();
+                    minTimes = 0;
+
+                    globalStateMgr.getMetadataMgr().getDb("default_catalog", "testDb");
+                    minTimes = 0;
+                    result = db;
+
+                    globalStateMgr.getMetadataMgr().getTable("default_catalog", "testDb", "testTbl");
+                    minTimes = 0;
+                    result = table;
+                }
+            };
+
+            return globalStateMgr;
+        } catch (DdlException e) {
             return null;
         }
     }
@@ -270,9 +361,9 @@ abstract public class StarRocksHttpTestCase {
         backend2.setBePort(9300);
         Backend backend3 = new Backend(testBackendId3, "node-3", 9308);
         backend3.setBePort(9300);
-        Catalog.getCurrentSystemInfo().addBackend(backend1);
-        Catalog.getCurrentSystemInfo().addBackend(backend2);
-        Catalog.getCurrentSystemInfo().addBackend(backend3);
+        GlobalStateMgr.getCurrentSystemInfo().addBackend(backend1);
+        GlobalStateMgr.getCurrentSystemInfo().addBackend(backend2);
+        GlobalStateMgr.getCurrentSystemInfo().addBackend(backend3);
     }
 
     @BeforeClass
@@ -282,6 +373,7 @@ abstract public class StarRocksHttpTestCase {
             socket = new ServerSocket(0);
             socket.setReuseAddress(true);
             HTTP_PORT = socket.getLocalPort();
+            BASE_URL = "http://localhost:" + HTTP_PORT;
             URI = "http://localhost:" + HTTP_PORT + "/api/" + DB_NAME + "/" + TABLE_NAME;
         } catch (Exception e) {
             throw new IllegalStateException("Could not find a free TCP/IP port to start HTTP Server on");
@@ -305,10 +397,10 @@ abstract public class StarRocksHttpTestCase {
 
     @Before
     public void setUp() {
-        Catalog catalog = newDelegateCatalog();
+        GlobalStateMgr globalStateMgr = newDelegateCatalog();
         SystemInfoService systemInfoService = new SystemInfoService();
         TabletInvertedIndex tabletInvertedIndex = new TabletInvertedIndex();
-        new MockUp<Catalog>() {
+        new MockUp<GlobalStateMgr>() {
             @Mock
             SchemaChangeHandler getSchemaChangeHandler() {
                 return new SchemaChangeHandler();
@@ -320,8 +412,8 @@ abstract public class StarRocksHttpTestCase {
             }
 
             @Mock
-            Catalog getCurrentCatalog() {
-                return catalog;
+            GlobalStateMgr getCurrentState() {
+                return globalStateMgr;
             }
 
             @Mock
@@ -332,6 +424,56 @@ abstract public class StarRocksHttpTestCase {
             @Mock
             TabletInvertedIndex getCurrentInvertedIndex() {
                 return tabletInvertedIndex;
+            }
+        };
+        assignBackends();
+        doSetUp();
+    }
+
+    public void setUpWithCatalog() {
+        GlobalStateMgr globalStateMgr = newDelegateGlobalStateMgr();
+        SystemInfoService systemInfoService = new SystemInfoService();
+        TabletInvertedIndex tabletInvertedIndex = new TabletInvertedIndex();
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            SchemaChangeHandler getSchemaChangeHandler() {
+                return new SchemaChangeHandler();
+            }
+
+            @Mock
+            MaterializedViewHandler getRollupHandler() {
+                return new MaterializedViewHandler();
+            }
+
+            @Mock
+            GlobalStateMgr getCurrentState() {
+                return globalStateMgr;
+            }
+
+            @Mock
+            SystemInfoService getCurrentSystemInfo() {
+                return systemInfoService;
+            }
+
+            @Mock
+            TabletInvertedIndex getCurrentInvertedIndex() {
+                return tabletInvertedIndex;
+            }
+
+            @Mock
+            GlobalTransactionMgr getCurrentGlobalTransactionMgr() {
+                new MockUp<GlobalTransactionMgr>() {
+                    @Mock
+                    TransactionStatus getLabelState(long dbId, String label) {
+                        if (label == "a") {
+                            return TransactionStatus.PREPARED;
+                        } else {
+                            return TransactionStatus.PREPARE;
+                        }
+                    }
+                };
+
+                return new GlobalTransactionMgr(null);
             }
         };
         assignBackends();

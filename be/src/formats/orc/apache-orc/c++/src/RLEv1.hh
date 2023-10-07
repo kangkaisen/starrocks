@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/orc/tree/main/c++/src/RLEv1.hh
-
 /**
 * Licensed to the Apache Software Foundation (ASF) under one
 * or more contributor license agreements.  See the NOTICE file
@@ -51,7 +47,7 @@ private:
 
 class RleDecoderV1 : public RleDecoder {
 public:
-    RleDecoderV1(std::unique_ptr<SeekableInputStream> input, bool isSigned);
+    RleDecoderV1(std::unique_ptr<SeekableInputStream> input, bool isSigned, ReaderMetrics* metrics);
 
     /**
     * Seek to a particular spot.
@@ -76,6 +72,8 @@ private:
     inline uint64_t readLong();
 
     inline void skipLongs(uint64_t numValues);
+
+    inline void reset();
 
     const std::unique_ptr<SeekableInputStream> inputStream;
     const bool isSigned;

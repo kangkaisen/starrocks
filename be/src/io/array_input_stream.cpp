@@ -1,6 +1,20 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "io/array_input_stream.h"
+
+#include <fmt/format.h>
 
 namespace starrocks::io {
 
@@ -8,56 +22,23 @@ StatusOr<int64_t> ArrayInputStream::read(void* data, int64_t count) {
     if (count < 0) {
         return Status::InvalidArgument("negative count");
     }
+    if (_offset >= _size) {
+        return 0;
+    }
     int64_t n = std::min(count, _size - _offset);
     memcpy(data, reinterpret_cast<const char*>(_data) + _offset, n);
     _offset += n;
     return n;
 }
 
-StatusOr<int64_t> ArrayInputStream::read_at(int64_t offset, void* data, int64_t count) {
-    if (count < 0) {
-        return Status::InvalidArgument("negative count");
-    }
-    if (offset > _size || offset < 0) {
-        return Status::InvalidArgument("invalid offset");
-    }
-    int64_t n = std::min(_size - offset, count);
-    memcpy(data, reinterpret_cast<const char*>(_data) + offset, n);
-    return n;
-}
-
-StatusOr<int64_t> ArrayInputStream::seek(int64_t offset, int whence) {
-    int64_t pos = 0;
-    if (whence == SEEK_SET) {
-        pos = offset;
-    } else if (whence == SEEK_CUR) {
-        pos = _offset + offset;
-    } else if (whence == SEEK_END) {
-        pos = _size + offset;
-    } else {
-        return Status::InvalidArgument("invalid whence");
-    }
-    if (pos < 0 || pos > _size) {
-        return Status::InvalidArgument("offset out of bounds");
-    }
-    _offset = pos;
-    return _offset;
-}
-
-Status ArrayInputStream::skip(int64_t count) {
-    if (UNLIKELY(count > std::numeric_limits<int64_t>::max() - _offset)) {
-        _offset = _size;
-        return Status::OK();
-    }
-    _offset = std::min(_size, _offset + count);
-    if (UNLIKELY(_offset < 0)) {
-        _offset = 0;
-    }
+Status ArrayInputStream::seek(int64_t offset) {
+    if (offset < 0) return Status::InvalidArgument(fmt::format("Invalid offset {}", offset));
+    _offset = offset;
     return Status::OK();
 }
 
-StatusOr<std::string_view> ArrayInputStream::peak(int64_t nbytes) {
-    int64_t n = std::min(_size - _offset, nbytes);
+StatusOr<std::string_view> ArrayInputStream::peek(int64_t nbytes) {
+    int64_t n = std::max<int64_t>(std::min(_size - _offset, nbytes), 0);
     return std::string_view(reinterpret_cast<const char*>(_data) + _offset, n);
 }
 

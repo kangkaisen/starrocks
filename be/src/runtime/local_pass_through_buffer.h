@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 #include <map>
@@ -11,7 +23,7 @@
 namespace starrocks {
 
 // To manage pass through chunks between sink/sources in the same process.
-using ChunkUniquePtrVector = std::vector<std::pair<vectorized::ChunkUniquePtr, int32_t>>;
+using ChunkUniquePtrVector = std::vector<std::pair<ChunkUniquePtr, int32_t>>;
 class PassThroughChannel;
 
 class PassThroughChunkBuffer {
@@ -20,10 +32,10 @@ public:
 
     struct KeyHash {
         size_t operator()(const Key& key) const {
-            uint64_t hash = vectorized::CRC_HASH_SEED1;
-            hash = vectorized::crc_hash_uint64(std::get<0>(key).hi, hash);
-            hash = vectorized::crc_hash_uint64(std::get<0>(key).lo, hash);
-            hash = vectorized::crc_hash_uint64(std::get<1>(key), hash);
+            uint64_t hash = CRC_HASH_SEED1;
+            hash = crc_hash_uint64(std::get<0>(key).hi, hash);
+            hash = crc_hash_uint64(std::get<0>(key).lo, hash);
+            hash = crc_hash_uint64(std::get<1>(key), hash);
             return hash;
         }
     };
@@ -45,11 +57,12 @@ private:
 
 class PassThroughContext {
 public:
-    PassThroughContext(PassThroughChunkBuffer* chunk_buffer, TUniqueId fragment_instance_id, PlanNodeId node_id)
+    PassThroughContext(PassThroughChunkBuffer* chunk_buffer, const TUniqueId& fragment_instance_id, PlanNodeId node_id)
             : _chunk_buffer(chunk_buffer), _fragment_instance_id(fragment_instance_id), _node_id(node_id) {}
     void init();
-    void append_chunk(int sender_id, const vectorized::Chunk* chunk, size_t chunk_size, int32_t driver_sequence);
+    void append_chunk(int sender_id, const Chunk* chunk, size_t chunk_size, int32_t driver_sequence);
     void pull_chunks(int sender_id, ChunkUniquePtrVector* chunks, std::vector<size_t>* bytes);
+    int64_t total_bytes() const;
 
 private:
     // hold this chunk buffer to avoid early deallocation.
@@ -68,6 +81,7 @@ public:
     void open_fragment_instance(const TUniqueId& query_id);
     void close_fragment_instance(const TUniqueId& query_id);
     PassThroughChunkBuffer* get(const TUniqueId& query_id);
+    void close();
 
 private:
     std::mutex _mutex;

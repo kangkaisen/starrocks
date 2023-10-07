@@ -1,10 +1,23 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <utility>
 
 #include "column/chunk.h"
 #include "exec/pipeline/source_operator.h"
 
-namespace starrocks {
-namespace pipeline {
+namespace starrocks::pipeline {
 
 // For uni cast stream sink, we just add a exchange sink operator
 // at the end of the pipeline. It works like
@@ -35,9 +48,9 @@ public:
     ~MultiCastLocalExchanger();
     bool can_pull_chunk(int32_t mcast_consumer_index) const;
     bool can_push_chunk() const;
-    Status push_chunk(const vectorized::ChunkPtr& chunk, int32_t sink_driver_sequenc,
+    Status push_chunk(const ChunkPtr& chunk, int32_t sink_driver_sequenc,
                       MultiCastLocalExchangeSinkOperator* sink_operator);
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state, int32_t mcast_consuemr_index);
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state, int32_t mcast_consuemr_index);
     void open_source_operator(int32_t mcast_consumer_index);
     void close_source_operator(int32_t mcast_consumer_index);
     void open_sink_operator();
@@ -46,7 +59,7 @@ public:
 
 private:
     struct Cell {
-        vectorized::ChunkPtr chunk = nullptr;
+        ChunkPtr chunk = nullptr;
         Cell* next = nullptr;
         size_t memory_usage = 0;
         size_t accumulated_row_size = 0;
@@ -78,11 +91,11 @@ private:
 class MultiCastLocalExchangeSourceOperator final : public SourceOperator {
 public:
     MultiCastLocalExchangeSourceOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id,
-                                         int32_t mcast_consumer_index,
+                                         int32_t driver_sequence, int32_t mcast_consumer_index,
                                          std::shared_ptr<MultiCastLocalExchanger> exchanger)
-            : SourceOperator(factory, id, "multi_cast_local_exchange_source", plan_node_id),
+            : SourceOperator(factory, id, "multi_cast_local_exchange_source", plan_node_id, true, driver_sequence),
               _mcast_consumer_index(mcast_consumer_index),
-              _exchanger(exchanger) {}
+              _exchanger(std::move(std::move(exchanger))) {}
 
     Status prepare(RuntimeState* state) override;
 
@@ -92,7 +105,7 @@ public:
 
     Status set_finishing(RuntimeState* state) override;
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
 private:
     bool _is_finished = false;
@@ -106,11 +119,11 @@ public:
                                                 std::shared_ptr<MultiCastLocalExchanger> exchanger)
             : SourceOperatorFactory(id, "multi_cast_local_exchange_source", plan_node_id),
               _mcast_consumer_index(mcast_consumer_index),
-              _exchanger(exchanger) {}
+              _exchanger(std::move(std::move(exchanger))) {}
     ~MultiCastLocalExchangeSourceOperatorFactory() override = default;
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
-        return std::make_shared<MultiCastLocalExchangeSourceOperator>(this, _id, _plan_node_id, _mcast_consumer_index,
-                                                                      _exchanger);
+        return std::make_shared<MultiCastLocalExchangeSourceOperator>(this, _id, _plan_node_id, driver_sequence,
+                                                                      _mcast_consumer_index, _exchanger);
     }
 
 private:
@@ -125,9 +138,8 @@ public:
     MultiCastLocalExchangeSinkOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id,
                                        const int32_t driver_sequence,
                                        std::shared_ptr<MultiCastLocalExchanger> exchanger)
-            : Operator(factory, id, "multi_cast_local_exchange_sink", plan_node_id),
-              _driver_sequence(driver_sequence),
-              _exchanger(exchanger) {}
+            : Operator(factory, id, "multi_cast_local_exchange_sink", plan_node_id, true, driver_sequence),
+              _exchanger(std::move(std::move(exchanger))) {}
 
     ~MultiCastLocalExchangeSinkOperator() override = default;
 
@@ -141,15 +153,14 @@ public:
 
     Status set_finishing(RuntimeState* state) override;
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
-    Status push_chunk(RuntimeState* state, const vectorized::ChunkPtr& chunk) override;
+    Status push_chunk(RuntimeState* state, const ChunkPtr& chunk) override;
 
     void update_counter(size_t memory_usage, size_t buffer_row_size);
 
 private:
     bool _is_finished = false;
-    const int32_t _driver_sequence;
     const std::shared_ptr<MultiCastLocalExchanger> _exchanger;
     RuntimeProfile::HighWaterMarkCounter* _peak_memory_usage_counter = nullptr;
     RuntimeProfile::HighWaterMarkCounter* _peak_buffer_row_size_counter = nullptr;
@@ -159,7 +170,8 @@ class MultiCastLocalExchangeSinkOperatorFactory final : public OperatorFactory {
 public:
     MultiCastLocalExchangeSinkOperatorFactory(int32_t id, int32_t plan_node_id,
                                               std::shared_ptr<MultiCastLocalExchanger> exchanger)
-            : OperatorFactory(id, "multi_cast_local_exchange_sink", plan_node_id), _exchanger(exchanger) {}
+            : OperatorFactory(id, "multi_cast_local_exchange_sink", plan_node_id),
+              _exchanger(std::move(std::move(exchanger))) {}
 
     ~MultiCastLocalExchangeSinkOperatorFactory() override = default;
 
@@ -172,5 +184,4 @@ private:
     std::shared_ptr<MultiCastLocalExchanger> _exchanger;
 };
 
-} // namespace pipeline
-} // namespace starrocks
+} // namespace starrocks::pipeline

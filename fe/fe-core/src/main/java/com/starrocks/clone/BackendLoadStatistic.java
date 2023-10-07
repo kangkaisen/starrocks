@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/clone/BackendLoadStatistic.java
 
@@ -25,6 +38,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.catalog.DiskInfo;
 import com.starrocks.catalog.DiskInfo.DiskState;
 import com.starrocks.catalog.TabletInvertedIndex;
@@ -32,6 +48,8 @@ import com.starrocks.clone.BalanceStatus.ErrCode;
 import com.starrocks.common.Config;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
+import com.starrocks.monitor.unit.ByteSizeValue;
+import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.system.Backend;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TStorageMedium;
@@ -75,17 +93,24 @@ public class BackendLoadStatistic {
     }
 
     public static class BeStatComparatorForUsedPercent implements Comparator<BackendLoadStatistic> {
-        private TStorageMedium medium;
+        private final TStorageMedium medium;
+        private final boolean isAscending;
 
         public BeStatComparatorForUsedPercent(TStorageMedium medium) {
             this.medium = medium;
+            this.isAscending = true;
+        }
+
+        public BeStatComparatorForUsedPercent(TStorageMedium medium, boolean isAscending) {
+            this.medium = medium;
+            this.isAscending = isAscending;
         }
 
         @Override
         public int compare(BackendLoadStatistic o1, BackendLoadStatistic o2) {
             double percent1 = o1.getUsedPercent(medium);
             double percent2 = o2.getUsedPercent(medium);
-            return Double.compare(percent1, percent2);
+            return isAscending ? Double.compare(percent1, percent2) : -Double.compare(percent1, percent2);
         }
     }
 
@@ -126,10 +151,18 @@ public class BackendLoadStatistic {
     private SystemInfoService infoService;
     private TabletInvertedIndex invertedIndex;
 
+    @SerializedName(value = "beId")
     private long beId;
+    @SerializedName(value = "clusterName")
     private String clusterName;
-
+    @SerializedName(value = "isAvailable")
     private boolean isAvailable;
+    @SerializedName(value = "cpuCores")
+    private int cpuCores;
+    @SerializedName(value = "memLimit")
+    private long memLimit;
+    @SerializedName(value = "memUsed")
+    private long memUsed;
 
     public static class LoadScore {
         public double replicaNumCoefficient = 0.5;
@@ -156,10 +189,6 @@ public class BackendLoadStatistic {
 
     public long getBeId() {
         return beId;
-    }
-
-    public String getClusterName() {
-        return clusterName;
     }
 
     public boolean isAvailable() {
@@ -246,6 +275,9 @@ public class BackendLoadStatistic {
         }
 
         isAvailable = be.isAvailable();
+        cpuCores = be.getCpuCores();
+        memLimit = be.getMemLimitBytes();
+        memUsed = be.getMemUsedBytes();
 
         ImmutableMap<String, DiskInfo> disks = be.getDisks();
         for (DiskInfo diskInfo : disks.values()) {
@@ -304,7 +336,7 @@ public class BackendLoadStatistic {
             }
 
             if (Math.abs(pathStat.getUsedPercent() - avgUsedPercent)
-                    / avgUsedPercent > Config.balance_load_score_threshold) {
+                    / (avgUsedPercent == 0.0 ? 1 : avgUsedPercent) > Config.tablet_sched_balance_load_score_threshold) {
                 if (pathStat.getUsedPercent() > avgUsedPercent) {
                     pathStat.setClazz(Classification.HIGH);
                     highCounter++;
@@ -375,7 +407,7 @@ public class BackendLoadStatistic {
                 continue;
             }
 
-            BalanceStatus bStatus = pathStatistic.isFit(tabletSize, isSupplement);
+            BalanceStatus bStatus = pathStatistic.isFit(tabletSize);
             if (!bStatus.ok()) {
                 status.addErrMsgs(bStatus.getErrMsgs());
                 continue;
@@ -388,7 +420,7 @@ public class BackendLoadStatistic {
         // if this is a supplement task, ignore the storage medium
         if (isSupplement || !Config.enable_strict_storage_medium_check) {
             for (RootPathLoadStatistic filteredPathStatistic : mediumNotMatchedPath) {
-                BalanceStatus bStatus = filteredPathStatistic.isFit(tabletSize, isSupplement);
+                BalanceStatus bStatus = filteredPathStatistic.isFit(tabletSize);
                 if (!bStatus.ok()) {
                     status.addErrMsgs(bStatus.getErrMsgs());
                     continue;
@@ -481,19 +513,30 @@ public class BackendLoadStatistic {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("be id: ").append(beId).append(", is available: ").append(isAvailable).append(", mediums: [");
+        // Basic information
+        JsonObject json = (JsonObject) GsonUtils.GSON.toJsonTree(this);
+
+        // Mediums
+        JsonArray mediums = new JsonArray();
         for (TStorageMedium medium : TStorageMedium.values()) {
-            sb.append("{medium: ").append(medium).append(", replica: ").append(totalReplicaNumMap.get(medium));
-            sb.append(", used: ").append(totalUsedCapacityMap.getOrDefault(medium, 0L));
-            sb.append(", total: ").append(totalCapacityMap.getOrDefault(medium, 0L));
-            sb.append(", score: ").append(loadScoreMap.getOrDefault(medium, LoadScore.DUMMY).score).append("},");
+            JsonObject mediumJson = new JsonObject();
+            mediumJson.addProperty("medium", medium.toString());
+            mediumJson.addProperty("replica", totalReplicaNumMap.get(medium));
+            mediumJson.addProperty("used", totalUsedCapacityMap.getOrDefault(medium, 0L));
+            mediumJson.addProperty("total", new ByteSizeValue(totalCapacityMap.getOrDefault(medium, 0L)).toString());
+            mediumJson.addProperty("score", loadScoreMap.getOrDefault(medium, LoadScore.DUMMY).score);
+            mediums.add(mediumJson);
         }
-        sb.append("], paths: [");
+        json.add("mediums", mediums);
+
+        // Paths
+        JsonArray paths = new JsonArray();
         for (RootPathLoadStatistic pathStat : pathStatistics) {
-            sb.append("{").append(pathStat).append("},");
+            paths.add(pathStat.toJson());
         }
-        return sb.append("]").toString();
+        json.add("paths", paths);
+
+        return json.toString();
     }
 
     public List<String> getInfo(TStorageMedium medium) {

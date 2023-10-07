@@ -21,6 +21,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.Gson;
+import com.starrocks.common.PartitionType;
 import com.starrocks.common.SparkDppException;
 import com.starrocks.load.loadv2.etl.EtlJobConfig;
 import org.apache.commons.lang3.StringUtils;
@@ -63,12 +64,12 @@ import scala.Tuple2;
 import scala.collection.JavaConverters;
 
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -217,6 +218,7 @@ public final class SparkDpp implements java.io.Serializable {
         // data type may affect sorting logic
         StructType dstSchema = DppUtils.createDstTableSchema(indexMeta.columns, false, true);
         ExpressionEncoder encoder = RowEncoder.apply(dstSchema);
+        ExpressionEncoderHelper encoderHelper = new ExpressionEncoderHelper(encoder);
 
         resultRDD.repartitionAndSortWithinPartitions(new BucketPartitioner(bucketKeyMap), new BucketComparator())
                 .foreachPartition(new VoidFunction<Iterator<Tuple2<List<Object>, Object[]>>>() {
@@ -247,7 +249,7 @@ public final class SparkDpp implements java.io.Serializable {
                                 columnObjects.add(keyColumns.get(i));
                             }
                             for (int i = 0; i < valueColumns.length; ++i) {
-                                columnObjects.add(sparkRDDAggregators[i].finalize(valueColumns[i]));
+                                columnObjects.add(sparkRDDAggregators[i].finish(valueColumns[i]));
                             }
 
                             Row rowWithoutBucketKey = RowFactory.create(columnObjects.toArray());
@@ -294,7 +296,7 @@ public final class SparkDpp implements java.io.Serializable {
                                 }
                                 lastBucketKey = curBucketKey;
                             }
-                            InternalRow internalRow = encoder.toRow(rowWithoutBucketKey);
+                            InternalRow internalRow = encoderHelper.toRow(rowWithoutBucketKey);
                             parquetWriter.write(internalRow);
                         }
                         if (parquetWriter != null) {
@@ -373,12 +375,16 @@ public final class SparkDpp implements java.io.Serializable {
                                                                     List<String> parentRollupKeyColumns,
                                                                     List<String> parentRollupValueColumns)
             throws SparkDppException {
+        List<String> parentRollupColumns = new ArrayList<>();
+        parentRollupColumns.addAll(parentRollupKeyColumns);
+        parentRollupColumns.addAll(parentRollupValueColumns);
+
         List<Integer> keyMap = new ArrayList<>();
         List<Integer> valueMap = new ArrayList<>();
         // find column index in parent rollup schema
         for (int i = 0; i < childRollupKeyColumns.size(); i++) {
-            for (int j = 0; j < parentRollupKeyColumns.size(); j++) {
-                if (StringUtils.equalsIgnoreCase(childRollupKeyColumns.get(i), parentRollupKeyColumns.get(j))) {
+            for (int j = 0; j < parentRollupColumns.size(); j++) {
+                if (StringUtils.equalsIgnoreCase(childRollupKeyColumns.get(i), parentRollupColumns.get(j))) {
                     keyMap.add(j);
                     break;
                 }
@@ -386,8 +392,8 @@ public final class SparkDpp implements java.io.Serializable {
         }
 
         for (int i = 0; i < childRollupValueColumns.size(); i++) {
-            for (int j = 0; j < parentRollupValueColumns.size(); j++) {
-                if (StringUtils.equalsIgnoreCase(childRollupValueColumns.get(i), parentRollupValueColumns.get(j))) {
+            for (int j = 0; j < parentRollupColumns.size(); j++) {
+                if (StringUtils.equalsIgnoreCase(childRollupValueColumns.get(i), parentRollupColumns.get(j))) {
                     valueMap.add(j);
                     break;
                 }
@@ -428,18 +434,14 @@ public final class SparkDpp implements java.io.Serializable {
             case "CHAR":
             case "VARCHAR":
                 // TODO(wb) padding char type
-                try {
-                    int strSize = 0;
-                    if (srcValue != null &&
-                            (strSize = srcValue.toString().getBytes("UTF-8").length) > etlColumn.stringLength) {
-                        LOG.warn(String.format(
-                                "the length of input is too long than schema. column_name:%s," +
-                                        "input_str[%s],schema length:%s,actual length:%s",
-                                etlColumn.columnName, row.toString(), etlColumn.stringLength, strSize));
-                        return false;
-                    }
-                } catch (UnsupportedEncodingException e) {
-                    LOG.warn("input string value can not encode with utf-8,value=" + srcValue.toString());
+                int strSize = 0;
+                if (srcValue != null &&
+                        (strSize = srcValue.toString().getBytes(StandardCharsets.UTF_8).length) >
+                                etlColumn.stringLength) {
+                    LOG.warn(String.format(
+                            "the length of input is too long than schema. column_name:%s," +
+                                    "input_str[%s],schema length:%s,actual length:%s",
+                            etlColumn.columnName, row.toString(), etlColumn.stringLength, strSize));
                     return false;
                 }
                 break;
@@ -457,13 +459,39 @@ public final class SparkDpp implements java.io.Serializable {
             EtlJobConfig.EtlPartitionInfo partitionInfo,
             List<Integer> partitionKeyIndex,
             List<StarRocksRangePartitioner.PartitionRangeKey> partitionRangeKeys,
+            List<StarRocksListPartitioner.PartitionListKey> partitionListKeys,
             List<String> keyColumnNames,
             List<String> valueColumnNames,
             StructType dstTableSchema,
             EtlJobConfig.EtlIndex baseIndex) throws SparkDppException {
-        List<String> distributeColumns = partitionInfo.distributionColumnRefs;
-        Partitioner partitioner = new StarRocksRangePartitioner(partitionInfo, partitionKeyIndex, partitionRangeKeys);
+        List<String> distributeColumnRefs = partitionInfo.distributionColumnRefs;
+        List<EtlJobConfig.EtlColumn> distributeColumns = new ArrayList<>();
+        for (String columnName : distributeColumnRefs) {
+            for (EtlJobConfig.EtlColumn column : baseIndex.columns) {
+                if (columnName.equals(column.columnName)) {
+                    distributeColumns.add(column);
+                    break;
+                }
+            }
+        }
+        if (distributeColumnRefs.size() != distributeColumns.size()) {
+            throw new SparkDppException("wrong distribution columns size: " + distributeColumns.size());
+        }
 
+        Partitioner partitioner = null;
+        PartitionType partitionType = PartitionType.getByType(partitionInfo.partitionType);
+        if (partitionType == null) {
+            throw new SparkDppException("partition type is illegal");
+        }
+        switch (partitionType) {
+            case LIST:
+                partitioner = new StarRocksListPartitioner(partitionInfo, partitionKeyIndex, partitionListKeys);
+                break;
+            case RANGE:
+            case UNPARTITIONED:
+                partitioner = new StarRocksRangePartitioner(partitionInfo, partitionKeyIndex, partitionRangeKeys);
+                break;
+        }
         List<ColumnParser> parsers = new ArrayList<>();
         for (EtlJobConfig.EtlColumn column : baseIndex.columns) {
             parsers.add(ColumnParser.create(column));
@@ -471,6 +499,7 @@ public final class SparkDpp implements java.io.Serializable {
 
         // use PairFlatMapFunction instead of PairMapFunction because the there will be
         // 0 or 1 output row for 1 input row
+        Partitioner finalPartitioner = partitioner;
         JavaPairRDD<List<Object>, Object[]> resultPairRDD =
                 dataframe.toJavaRDD().flatMapToPair(new PairFlatMapFunction<Row, List<Object>, Object[]>() {
                     @Override
@@ -503,7 +532,7 @@ public final class SparkDpp implements java.io.Serializable {
                             loadEstimateSizeAcc.add(SizeEstimator.estimate(columnObject));
                         }
 
-                        int pid = partitioner.getPartition(new DppColumns(allColumns));
+                        int pid = finalPartitioner.getPartition(new DppColumns(allColumns));
                         if (pid < 0) {
                             abnormalRowAcc.add(1);
                             LOG.warn("invalid partition for row:" + row + ", abnormal rows num:" +
@@ -553,13 +582,13 @@ public final class SparkDpp implements java.io.Serializable {
         List<String> dstColumnNames = new ArrayList<>();
         List<Column> dstColumns = new ArrayList<>();
         for (StructField dstField : dstTableSchema.fields()) {
+            if (mappingColumns != null && mappingColumns.contains(dstField.name())) {
+                // mapping columns will be processed in next step
+                continue;
+            }
             Column dstColumn = null;
             EtlJobConfig.EtlColumn column = baseIndex.getColumn(dstField.name());
             if (!srcColumnNames.contains(dstField.name())) {
-                if (mappingColumns != null && mappingColumns.contains(dstField.name())) {
-                    // mapping columns will be processed in next step
-                    continue;
-                }
                 if (column.defaultValue != null) {
                     if (column.defaultValue.equals(NULL_FLAG)) {
                         dstColumn = functions.lit(null);
@@ -817,6 +846,10 @@ public final class SparkDpp implements java.io.Serializable {
         if (dstClass.equals(Float.class) || dstClass.equals(Double.class)) {
             return null;
         }
+
+        // PartitionKey is initialized according to the value of Json deserialization,
+        // because the data type is Double after deserialization,
+        // so there will be a conditional judgment of "if (srcValue instanceof Double)"
         if (srcValue instanceof Double) {
             if (dstClass.equals(Short.class)) {
                 return ((Double) srcValue).shortValue();
@@ -839,6 +872,11 @@ public final class SparkDpp implements java.io.Serializable {
                 // dst type is string
                 return srcValue.toString();
             }
+        } else if (dstClass.equals(String.class)
+                || dstClass.equals(java.sql.Date.class)
+                || dstClass.equals(java.util.Date.class)
+                || dstClass.equals(java.sql.Timestamp.class)) {
+            return srcValue;
         } else {
             LOG.warn("unsupport partition key:" + srcValue);
             throw new SparkDppException("unsupport partition key:" + srcValue);
@@ -903,6 +941,30 @@ public final class SparkDpp implements java.io.Serializable {
             partitionRangeKeys.add(partitionRangeKey);
         }
         return partitionRangeKeys;
+    }
+
+    private List<StarRocksListPartitioner.PartitionListKey> createPartitionListKeys(
+            EtlJobConfig.EtlPartitionInfo partitionInfo, List<Class> partitionKeySchema) throws SparkDppException {
+        List<StarRocksListPartitioner.PartitionListKey> partitionListKeys = new ArrayList<>();
+        PartitionType partitionType = PartitionType.getByType(partitionInfo.partitionType);
+        if (partitionType != PartitionType.LIST) {
+            return partitionListKeys;
+        }
+        for (EtlJobConfig.EtlPartition partition : partitionInfo.partitions) {
+            StarRocksListPartitioner.PartitionListKey partitionListKey = new StarRocksListPartitioner.PartitionListKey();
+            if (!partition.inKeys.isEmpty()) {
+                for (List<Object> objectList : partition.inKeys) {
+                    List<Object> inKeyColumns = new ArrayList<>();
+                    for (int i = 0; i < objectList.size(); i++) {
+                        Object value = objectList.get(i);
+                        inKeyColumns.add(convertPartitionKey(value, partitionKeySchema.get(i)));
+                    }
+                    partitionListKey.inKeys.add(new DppColumns(inKeyColumns));
+                }
+                partitionListKeys.add(partitionListKey);
+            }
+        }
+        return partitionListKeys;
     }
 
     private Dataset<Row> loadDataFromFilePaths(SparkSession spark,
@@ -1128,6 +1190,8 @@ public final class SparkDpp implements java.io.Serializable {
                 }
                 List<StarRocksRangePartitioner.PartitionRangeKey> partitionRangeKeys =
                         createPartitionRangeKeys(partitionInfo, partitionKeySchema);
+                List<StarRocksListPartitioner.PartitionListKey> partitionListKeys =
+                        createPartitionListKeys(partitionInfo, partitionKeySchema);
                 StructType dstTableSchema = DppUtils.createDstTableSchema(baseIndex.columns, false, false);
                 RollupTreeBuilder rollupTreeParser = new MinimumCoverageRollupTreeBuilder();
                 RollupTreeNode rootNode = rollupTreeParser.build(etlTable);
@@ -1170,12 +1234,18 @@ public final class SparkDpp implements java.io.Serializable {
 
                     List<EtlJobConfig.EtlPartition> fileGroupPartitions = Lists.newArrayList();
                     List<StarRocksRangePartitioner.PartitionRangeKey> fileGroupPartitionRangeKeys = Lists.newArrayList();
+                    List<StarRocksListPartitioner.PartitionListKey> fileGroupPartitionListKeys = Lists.newArrayList();
                     int partitionSize = partitionInfo.partitions.size();
                     for (int i = 0; i < partitionSize; ++i) {
                         EtlJobConfig.EtlPartition partition = partitionInfo.partitions.get(i);
                         if (fileGroup.partitions.contains(partition.partitionId)) {
                             fileGroupPartitions.add(partition);
-                            fileGroupPartitionRangeKeys.add(partitionRangeKeys.get(i));
+                            if (!partitionRangeKeys.isEmpty()) {
+                                fileGroupPartitionRangeKeys.add(partitionRangeKeys.get(i));
+                            }
+                            if (!partitionListKeys.isEmpty()) {
+                                fileGroupPartitionListKeys.add(partitionListKeys.get(i));
+                            }
                         }
                     }
                     EtlJobConfig.EtlPartitionInfo fileGroupPartitionInfo = new EtlJobConfig.EtlPartitionInfo(
@@ -1184,7 +1254,7 @@ public final class SparkDpp implements java.io.Serializable {
 
                     JavaPairRDD<List<Object>, Object[]> ret = fillTupleWithPartitionColumn(
                             fileGroupDataframe, fileGroupPartitionInfo, partitionKeyIndex, fileGroupPartitionRangeKeys,
-                            keyColumnNames, valueColumnNames, dstTableSchema, baseIndex);
+                            fileGroupPartitionListKeys, keyColumnNames, valueColumnNames, dstTableSchema, baseIndex);
                     if (tablePairRDD == null) {
                         tablePairRDD = ret;
                     } else {

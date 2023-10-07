@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/gensrc/thrift/BackendService.thrift
 
@@ -28,6 +41,7 @@ include "PlanNodes.thrift"
 include "AgentService.thrift"
 include "InternalService.thrift"
 include "StarrocksExternalService.thrift"
+include "MVMaintenance.thrift"
 
 struct TExportTaskRequest {
     1: required InternalService.TExecPlanFragmentParams params
@@ -37,6 +51,7 @@ struct TTabletStat {
     1: required i64 tablet_id
     2: optional i64 data_size
     3: optional i64 row_num
+    4: optional i64 version_count
 }
 
 struct TTabletStatResult {
@@ -48,6 +63,16 @@ struct TKafkaLoadInfo {
     2: required string topic;
     3: required map<i32, i64> partition_begin_offset;
     4: optional map<string, string> properties;
+    5: optional string confluent_schema_registry_url;
+}
+
+struct TPulsarLoadInfo {
+    1: required string service_url;
+    2: required string topic;
+    3: required string subscription;
+    4: required list<string> partitions;
+    5: optional map<string, i64> initial_positions;
+    6: optional map<string, string> properties;
 }
 
 struct TRoutineLoadTask {
@@ -65,6 +90,8 @@ struct TRoutineLoadTask {
     12: optional TKafkaLoadInfo kafka_load_info
     13: optional InternalService.TExecPlanFragmentParams params
     14: optional PlanNodes.TFileFormatType format
+    15: optional TPulsarLoadInfo pulsar_load_info
+    16: optional double max_filter_ratio
 }
 
 struct TKafkaMetaProxyRequest {
@@ -82,6 +109,11 @@ struct TProxyRequest {
 struct TProxyResult {
     1: required Status.TStatus status;
     2: optional TKafkaMetaProxyResult kafka_meta_result;
+}
+
+struct TStreamLoadChannel {
+    1: optional string label
+    2: optional i32 channel_id
 }
 
 service BackendService {
@@ -114,8 +146,7 @@ service BackendService {
 
     AgentService.TAgentResult submit_etl_task(1:AgentService.TMiniLoadEtlTaskRequest request);
 
-    AgentService.TMiniLoadEtlStatusResult get_etl_status(
-            1:AgentService.TMiniLoadEtlStatusRequest request);
+    AgentService.TMiniLoadEtlStatusResult get_etl_status(1:AgentService.TMiniLoadEtlStatusRequest request);
 
     AgentService.TAgentResult delete_etl_files(1:AgentService.TDeleteEtlFilesRequest request);
 
@@ -128,6 +159,8 @@ service BackendService {
     TTabletStatResult get_tablet_stat();
 
     Status.TStatus submit_routine_load_task(1:list<TRoutineLoadTask> tasks);
+
+    Status.TStatus finish_stream_load_channel(1:TStreamLoadChannel stream_load_channel);
 
     // starrocks will build  a scan context for this session, context_id returned if success
     StarrocksExternalService.TScanOpenResult open_scanner(1: StarrocksExternalService.TScanOpenParams params);

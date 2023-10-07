@@ -1,7 +1,3 @@
-# This file is made available under Elastic License 2.0.
-# This file is based on code available under the Apache license here:
-#   https://github.com/apache/incubator-doris/blob/master/be/src/gutil/CMakeLists.txt
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -68,12 +64,6 @@ set_target_properties(Gutil PROPERTIES COMPILE_FLAGS "-funsigned-char -Wno-depre
 #set(GUTIL_LIBS
 #  glog
 #  protobuf)
-
-#if (NOT APPLE)
-#  set(GUTIL_LIBS
-#    ${GUTIL_LIBS}
-#    rt) # clock_gettime() requires -lrt
-#endif()
 
 #ADD_EXPORTABLE_LIBRARY(gutil
 #  SRCS ${GUTIL_SRCS}

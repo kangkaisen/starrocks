@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -23,10 +35,10 @@ class CString {
     friend void swap(CString& lhs, CString& rhs);
 
 public:
-    CString() {}
+    CString() = default;
     ~CString() { _dealloc_if_needed(); }
 
-    explicit CString(const std::string_view& v) {
+    explicit CString(std::string_view v) {
         assert(v.size() == ::strnlen(v.data(), v.size()));
         assign(v.data(), v.size());
     }
@@ -35,7 +47,7 @@ public:
     CString(const CString& rhs) { assign(rhs.data(), rhs.size()); }
 
     // Move ctor
-    CString(CString&& rhs) : _data(rhs._data) { rhs._data = &kStaticStorage; }
+    CString(CString&& rhs) noexcept : _data(rhs._data) { rhs._data = &kStaticStorage; }
 
     // Copy assignment
     CString& operator=(const CString& rhs) {
@@ -44,7 +56,7 @@ public:
     }
 
     // Move assignment
-    CString& operator=(CString&& rhs) {
+    CString& operator=(CString&& rhs) noexcept {
         _dealloc_if_needed();
         _data = rhs._data;
         rhs._data = &kStaticStorage;
@@ -53,7 +65,7 @@ public:
 
     // NOTE: it's caller's duty to ensure that the no zero character exist in |s|, otherwize
     // size() may return a value different from |s.size()|.
-    CString& assign(const std::string_view& s) {
+    CString& assign(std::string_view s) {
         assert(s.size() == ::strnlen(s.data(), s.size()));
         return assign(s.data(), s.size());
     }

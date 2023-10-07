@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/export_sink.cpp
 
@@ -25,10 +38,9 @@
 #include <sstream>
 
 #include "column/column.h"
-#include "env/env_broker.h"
-#include "exec/broker_writer.h"
 #include "exec/plain_text_builder.h"
 #include "exprs/expr.h"
+#include "fs/fs_broker.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
@@ -40,19 +52,18 @@ namespace starrocks {
 ExportSink::ExportSink(ObjectPool* pool, const RowDescriptor& row_desc, const std::vector<TExpr>& t_exprs)
         : _state(nullptr),
           _pool(pool),
-          _row_desc(row_desc),
           _t_output_expr(t_exprs),
           _profile(nullptr),
           _bytes_written_counter(nullptr),
           _rows_written_counter(nullptr),
           _write_timer(nullptr) {}
 
-Status ExportSink::init(const TDataSink& t_sink) {
-    RETURN_IF_ERROR(DataSink::init(t_sink));
+Status ExportSink::init(const TDataSink& t_sink, RuntimeState* state) {
+    RETURN_IF_ERROR(DataSink::init(t_sink, state));
     _t_export_sink = t_sink.export_sink;
 
     // From the thrift expressions create the real exprs.
-    RETURN_IF_ERROR(Expr::create_expr_trees(_pool, _t_output_expr, &_output_expr_ctxs));
+    RETURN_IF_ERROR(Expr::create_expr_trees(_pool, _t_output_expr, &_output_expr_ctxs, state));
     return Status::OK();
 }
 
@@ -89,12 +100,17 @@ Status ExportSink::open(RuntimeState* state) {
 }
 
 Status ExportSink::close(RuntimeState* state, Status exec_status) {
+    if (_closed) {
+        return Status::OK();
+    }
     Expr::close(_output_expr_ctxs, state);
     if (_file_builder != nullptr) {
         Status st = _file_builder->finish();
         _file_builder.reset();
+        _closed = true;
         return st;
     }
+    _closed = true;
     return Status::OK();
 }
 
@@ -103,19 +119,29 @@ Status ExportSink::open_file_writer(int timeout_ms) {
     std::string file_name;
     RETURN_IF_ERROR(gen_file_name(&file_name));
     std::string file_path = _t_export_sink.export_path + "/" + file_name;
-    WritableFileOptions options{.sync_on_close = false, .mode = Env::MUST_CREATE};
+    WritableFileOptions options{.sync_on_close = false, .mode = FileSystem::MUST_CREATE};
 
     const auto& file_type = _t_export_sink.file_type;
     switch (file_type) {
     case TFileType::FILE_LOCAL: {
-        ASSIGN_OR_RETURN(output_file, Env::Default()->new_writable_file(options, file_path));
+        ASSIGN_OR_RETURN(output_file, FileSystem::Default()->new_writable_file(options, file_path));
         break;
     }
     case TFileType::FILE_BROKER: {
-        const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
-        EnvBroker env_broker(broker_addr, _t_export_sink.properties, timeout_ms);
-        ASSIGN_OR_RETURN(output_file, env_broker.new_writable_file(options, file_path));
-        break;
+        if (_t_export_sink.__isset.use_broker && !_t_export_sink.use_broker) {
+            ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(file_path, FSOptions(&_t_export_sink)));
+            ASSIGN_OR_RETURN(output_file, fs->new_writable_file(options, file_path));
+            break;
+        } else {
+            if (_t_export_sink.broker_addresses.empty()) {
+                LOG(WARNING) << "ExportSink broker_addresses empty";
+                return Status::InternalError("ExportSink broker_addresses empty");
+            }
+            const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
+            BrokerFileSystem fs_broker(broker_addr, _t_export_sink.properties, timeout_ms);
+            ASSIGN_OR_RETURN(output_file, fs_broker.new_writable_file(options, file_path));
+            break;
+        }
     }
     case TFileType::FILE_STREAM:
         return Status::NotSupported(strings::Substitute("Unsupported file type $0", file_type));
@@ -144,8 +170,13 @@ Status ExportSink::gen_file_name(std::string* file_name) {
     return Status::OK();
 }
 
-Status ExportSink::send_chunk(RuntimeState*, vectorized::Chunk* chunk) {
-    return _file_builder->add_chunk(chunk);
+Status ExportSink::send_chunk(RuntimeState* state, Chunk* chunk) {
+    Status status = _file_builder->add_chunk(chunk);
+    if (!status.ok()) {
+        Status status;
+        close(state, status);
+    }
+    return status;
 }
 
 } // namespace starrocks

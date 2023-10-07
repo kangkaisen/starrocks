@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/message_body_sink.h
 
@@ -32,11 +45,13 @@ class MessageBodySink {
 public:
     virtual ~MessageBodySink() = default;
     virtual Status append(const char* data, size_t size) = 0;
-    virtual Status append(const ByteBufferPtr& buf) { return append(buf->ptr, buf->remaining()); }
-    // called when all data has been append
+    virtual Status append(ByteBufferPtr&& buf) = 0;
+    // called when all data has been appended
     virtual Status finish() { return Status::OK(); }
     // called when read HTTP failed
     virtual void cancel(const Status& status) {}
+    // check if all data has consume
+    virtual bool exhausted() { return false; }
 };
 
 // write message to a local file
@@ -48,6 +63,7 @@ public:
     Status open();
 
     Status append(const char* data, size_t size) override;
+    Status append(ByteBufferPtr&& buf) override;
     Status finish() override;
     void cancel(const Status& status) override;
 

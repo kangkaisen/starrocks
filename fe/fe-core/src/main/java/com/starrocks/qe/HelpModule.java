@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/qe/HelpModule.java
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -96,37 +92,37 @@ public class HelpModule {
     // Files in zip is not recursive, so we only need to traverse it
     public void setUpByZip(String path) throws IOException, UserException {
         initBuild();
-        ZipFile zf = new ZipFile(path);
-        Enumeration<? extends ZipEntry> entries = zf.entries();
-        while (entries.hasMoreElements()) {
-            ZipEntry entry = entries.nextElement();
-            if (entry.isDirectory()) {
-                setUpDirInZip(entry.getName());
-            } else {
-                long size = entry.getSize();
-                String line;
-                List<String> lines = Lists.newArrayList();
-                if (size > 0) {
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(zf.getInputStream(entry),
-                            CHARSET_UTF_8));
-                    while ((line = reader.readLine()) != null) {
-                        lines.add(line);
-                    }
-                    reader.close();
+        try (ZipFile zf = new ZipFile(path)) {
+            Enumeration<? extends ZipEntry> entries = zf.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                if (entry.isDirectory()) {
+                    setUpDirInZip(entry.getName());
+                } else {
+                    long size = entry.getSize();
+                    String line;
+                    List<String> lines = Lists.newArrayList();
+                    if (size > 0) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(zf.getInputStream(entry),
+                                CHARSET_UTF_8));
+                        while ((line = reader.readLine()) != null) {
+                            lines.add(line);
+                        }
+                        reader.close();
 
-                    // note that we only need basename
-                    String parentPathStr = null;
-                    Path pathObj = Paths.get(entry.getName());
-                    if (pathObj.getParent() != null) {
-                        parentPathStr = pathObj.getParent().getFileName().toString();
+                        // note that we only need basename
+                        String parentPathStr = null;
+                        Path pathObj = Paths.get(entry.getName());
+                        if (pathObj.getParent() != null) {
+                            parentPathStr = pathObj.getParent().getFileName().toString();
+                        }
+                        HelpObjectLoader<HelpTopic> topicLoader = HelpObjectLoader.createTopicLoader();
+                        List<HelpTopic> topics = topicLoader.loadAll(lines);
+                        updateTopic(parentPathStr, topics);
                     }
-                    HelpObjectLoader<HelpTopic> topicLoader = HelpObjectLoader.createTopicLoader();
-                    List<HelpTopic> topics = topicLoader.loadAll(lines);
-                    updateTopic(parentPathStr, topics);
                 }
             }
         }
-        zf.close();
         build();
         isloaded = true;
     }
@@ -264,7 +260,8 @@ public class HelpModule {
         URL helpResource = instance.getClass().getClassLoader()
                 .getResource(HELP_ZIP_FILE_NAME);
         if (helpResource == null) {
-            throw new IOException("Can not find help zip file: " + HELP_ZIP_FILE_NAME);
+            //throw new IOException("Can not find help zip file: " + HELP_ZIP_FILE_NAME);
+            return;
         }
         zipFilePath = helpResource.getPath();
         setUpByZip(zipFilePath);
@@ -302,8 +299,10 @@ public class HelpModule {
     // Every query will begin at this method, so we add check logic here to check 
     // whether need reload ZipFile
     public static HelpModule getInstance() {
-        if (instance == null) {
-            instance = new HelpModule();
+        synchronized (HelpModule.class) {
+            if (instance == null) {
+                instance = new HelpModule();
+            }
         }
 
         try {

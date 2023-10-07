@@ -1,50 +1,34 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/be/src/exec/parquet_reader.cpp
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
 #include "exec/parquet_reader.h"
 
 #include <arrow/array.h>
 #include <arrow/status.h>
+#include <gutil/strings/substitute.h>
 
-#include <ctime>
+#include <utility>
 
+#include "common/config.h"
 #include "common/logging.h"
-#include "exec/file_reader.h"
-#include "gen_cpp/FileBrokerService_types.h"
-#include "gen_cpp/TFileBrokerService.h"
-#include "gutil/strings/substitute.h"
-#include "runtime/broker_mgr.h"
-#include "runtime/client_cache.h"
+#include "fmt/format.h"
+#include "parquet/schema.h"
+#include "parquet_schema_builder.h"
 #include "runtime/descriptors.h"
-#include "runtime/exec_env.h"
-#include "runtime/mem_pool.h"
-#include "util/thrift_util.h"
 
 namespace starrocks {
-
-// Broker
-
-ParquetReaderWrap::ParquetReaderWrap(FileReader* file_reader, int32_t num_of_columns_from_file, int64_t read_offset,
-                                     int64_t read_size)
-        : ParquetReaderWrap(std::shared_ptr<arrow::io::RandomAccessFile>(new ParquetFile(file_reader)),
-                            num_of_columns_from_file, read_offset, read_size) {}
+// ====================================================================================================================
 
 ParquetReaderWrap::~ParquetReaderWrap() {
     close();
@@ -65,6 +49,7 @@ ParquetReaderWrap::ParquetReaderWrap(std::shared_ptr<arrow::io::RandomAccessFile
     _properties = parquet::ReaderProperties();
     _properties.enable_buffered_stream();
     _properties.set_buffer_size(8 * 1024 * 1024);
+    _filename = (reinterpret_cast<ParquetChunkFile*>(_parquet.get()))->filename();
 }
 
 Status ParquetReaderWrap::next_selected_row_group() {
@@ -88,15 +73,26 @@ Status ParquetReaderWrap::next_selected_row_group() {
     return Status::EndOfFile("End of row group");
 }
 
-Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>& tuple_slot_descs,
-                                              const std::string& timezone) {
+Status ParquetReaderWrap::_init_parquet_reader() {
     try {
+        parquet::ArrowReaderProperties arrow_reader_properties;
+        /*
+        * timestamp unit to use for INT96-encoded timestamps in parquet.
+        * SECOND, MICRO, MILLI, NANO
+        * We use MICRO second as the unit to parse int96 timestamp, which is the precision of DATETIME/TIMESTAMP in MySQL.
+        * https://dev.mysql.com/doc/refman/8.0/en/datetime.html
+        * A DATETIME or TIMESTAMP value can include a trailing fractional seconds part in up to microseconds (6 digits) precision
+        */
+        arrow_reader_properties.set_coerce_int96_timestamp_unit(arrow::TimeUnit::MICRO);
+
         // new file reader for parquet file
         auto st = parquet::arrow::FileReader::Make(arrow::default_memory_pool(),
-                                                   parquet::ParquetFileReader::Open(_parquet, _properties), &_reader);
+                                                   parquet::ParquetFileReader::Open(_parquet, _properties),
+                                                   arrow_reader_properties, &_reader);
         if (!st.ok()) {
-            LOG(WARNING) << "failed to create parquet file reader, errmsg=" << st.ToString();
-            return Status::InternalError("Failed to create file reader");
+            LOG(WARNING) << "Failed to create parquet file reader. error: " << st.ToString()
+                         << ", filename: " << _filename;
+            return Status::InternalError(fmt::format("Failed to create file reader. filename: {}", _filename));
         }
 
         if (!_reader || !_reader->parquet_reader()) {
@@ -108,6 +104,8 @@ Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>
             LOG(INFO) << "Ignore the parquet file because of unexpected nullptr FileMetaData";
             return Status::EndOfFile("Unexpected nullptr FileMetaData");
         }
+
+        _num_rows = _file_metadata->num_rows();
         // initial members
         _total_groups = _file_metadata->num_row_groups();
         if (_total_groups == 0) {
@@ -128,15 +126,25 @@ Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>
             }
         }
 
-        _timezone = timezone;
+        return Status::OK();
+    } catch (parquet::ParquetException& e) {
+        std::stringstream str_error;
+        str_error << "Init parquet reader fail. " << e.what() << ", filename: " << _filename;
+        LOG(WARNING) << str_error.str();
+        return Status::InternalError(str_error.str());
+    }
+}
 
+Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>& tuple_slot_descs) {
+    RETURN_IF_ERROR(_init_parquet_reader());
+    try {
         if (_current_line_of_group == 0) { // the first read
             RETURN_IF_ERROR(column_indices(tuple_slot_descs));
             arrow::Status status = _reader->GetRecordBatchReader({_current_group}, _parquet_column_ids, &_rb_batch);
 
             if (!status.ok()) {
-                LOG(WARNING) << "Get RecordBatch Failed. " << status.ToString();
-                return Status::InternalError(status.ToString());
+                LOG(WARNING) << "Get RecordBatch Failed. error: " << status.ToString() << ", filename: " << _filename;
+                return Status::InternalError(fmt::format("{}. filename: {}", status.ToString(), _filename));
             }
             if (!_rb_batch) {
                 LOG(INFO) << "Ignore the parquet file because of an unexpected nullptr "
@@ -145,8 +153,8 @@ Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>
             }
             status = _rb_batch->ReadNext(&_batch);
             if (!status.ok()) {
-                LOG(WARNING) << "The first read record. " << status.ToString();
-                return Status::InternalError(status.ToString());
+                LOG(WARNING) << "The first read record. error: " << status.ToString() << ", filename: " << _filename;
+                return Status::InternalError(fmt::format("{}. filename: {}", status.ToString(), _filename));
             }
             if (!_batch) {
                 LOG(INFO) << "Ignore the parquet file because of an expected nullptr RecordBatch";
@@ -164,13 +172,31 @@ Status ParquetReaderWrap::init_parquet_reader(const std::vector<SlotDescriptor*>
     } catch (parquet::ParquetException& e) {
         std::stringstream str_error;
         str_error << "Init parquet reader fail. " << e.what();
-        LOG(WARNING) << str_error.str();
-        return Status::InternalError(str_error.str());
+        LOG(WARNING) << str_error.str() << " filename: " << _filename;
+        return Status::InternalError(fmt::format("{}. filename: {}", str_error.str(), _filename));
     }
 }
 
+Status ParquetReaderWrap::get_schema(std::vector<SlotDescriptor>* schema) {
+    RETURN_IF_ERROR(_init_parquet_reader());
+
+    const auto& file_schema = _file_metadata->schema();
+
+    for (auto i = 0; i < file_schema->group_node()->field_count(); i++) {
+        const auto& field = file_schema->group_node()->field(i);
+        const auto& name = field->name();
+
+        TypeDescriptor tp;
+        RETURN_IF_ERROR(get_parquet_type(field, &tp));
+
+        schema->emplace_back(i, name, tp);
+    }
+
+    return Status::OK();
+}
+
 void ParquetReaderWrap::close() {
-    _parquet->Close();
+    [[maybe_unused]] auto st = _parquet->Close();
 }
 
 Status ParquetReaderWrap::size(int64_t* size) {
@@ -223,19 +249,19 @@ Status ParquetReaderWrap::read_record_batch(const std::vector<SlotDescriptor*>& 
         // read batch
         arrow::Status status = _reader->GetRecordBatchReader({_current_group}, _parquet_column_ids, &_rb_batch);
         if (!status.ok()) {
-            return Status::InternalError("Get RecordBatchReader Failed.");
+            return Status::InternalError(fmt::format("Get RecordBatchReader Failed. filename: {}", _filename));
         }
         status = _rb_batch->ReadNext(&_batch);
         if (!status.ok()) {
-            return Status::InternalError("Read Batch Error With Libarrow.");
+            return Status::InternalError(fmt::format("Read Batch Error With Libarrow. filename: {}", _filename));
         }
 
         // arrow::RecordBatchReader::ReadNext returns null at end of stream.
         // Since we count the batches read, EOF implies reader source failure.
         if (_batch == nullptr) {
             LOG(WARNING) << "Unexpected EOF. Row groups less than expected. expected: " << _total_groups
-                         << " got: " << _current_group;
-            return Status::InternalError("Unexpected EOF");
+                         << " got: " << _current_group << ", filename" << _filename;
+            return Status::InternalError(fmt::format("Unexpected EOF. filename: {}", _filename));
         }
 
         _current_line_of_batch = 0;
@@ -245,15 +271,15 @@ Status ParquetReaderWrap::read_record_batch(const std::vector<SlotDescriptor*>& 
                 << " is larger than batch size:" << _batch->num_rows() << ". start to read next batch";
         arrow::Status status = _rb_batch->ReadNext(&_batch);
         if (!status.ok()) {
-            return Status::InternalError("Read Batch Error With Libarrow.");
+            return Status::InternalError(fmt::format("Read Batch Error With Libarrow. filename: {}", _filename));
         }
 
         // arrow::RecordBatchReader::ReadNext returns null at end of stream.
         // Since we count the batches read, EOF implies reader source failure.
         if (_batch == nullptr) {
             LOG(WARNING) << "Unexpected EOF. Row groups less than expected. expected: " << _total_groups
-                         << " got: " << _current_group;
-            return Status::InternalError("Unexpected EOF");
+                         << " got: " << _current_group << ", filename: " << _filename;
+            return Status::InternalError(fmt::format("Unexpected EOF. filename: {}", _filename));
         }
 
         _current_line_of_batch = 0;
@@ -267,109 +293,104 @@ const std::shared_ptr<arrow::RecordBatch>& ParquetReaderWrap::get_batch() {
     return _batch;
 }
 
-Status ParquetReaderWrap::handle_timestamp(const std::shared_ptr<arrow::TimestampArray>& ts_array, uint8_t* buf,
-                                           int32_t* wbytes) {
-    const auto type = std::dynamic_pointer_cast<arrow::TimestampType>(ts_array->type());
-    // StarRocks only supports seconds
-    int64_t timestamp = 0;
-    switch (type->unit()) {
-    case arrow::TimeUnit::type::NANO: {                                    // INT96
-        timestamp = ts_array->Value(_current_line_of_batch) / 1000000000L; // convert to Second
-        break;
-    }
-    case arrow::TimeUnit::type::SECOND: {
-        timestamp = ts_array->Value(_current_line_of_batch);
-        break;
-    }
-    case arrow::TimeUnit::type::MILLI: {
-        timestamp = ts_array->Value(_current_line_of_batch) / 1000; // convert to Second
-        break;
-    }
-    case arrow::TimeUnit::type::MICRO: {
-        timestamp = ts_array->Value(_current_line_of_batch) / 1000000; // convert to Second
-        break;
-    }
-    default:
-        return Status::InternalError("Invalid Time Type.");
-    }
+// ====================================================================================================================
+ParquetChunkReader::ParquetChunkReader(std::shared_ptr<ParquetReaderWrap>&& parquet_reader,
+                                       const std::vector<SlotDescriptor*>& src_slot_desc, std::string time_zone)
+        : _parquet_reader(std::move(parquet_reader)),
+          _src_slot_descs(src_slot_desc),
+          _time_zone(std::move(time_zone)),
+          _state(State::UNINITIALIZED) {}
 
-    DateTimeValue dtv;
-    if (!dtv.from_unixtime(timestamp, _timezone)) {
-        std::stringstream str_error;
-        str_error << "Parse timestamp (" + std::to_string(timestamp) + ") error";
-        LOG(WARNING) << str_error.str();
-        return Status::InternalError(str_error.str());
+ParquetChunkReader::~ParquetChunkReader() {
+    _parquet_reader->close();
+}
+
+int64_t ParquetChunkReader::total_num_rows() const {
+    return _parquet_reader->num_rows();
+}
+
+Status ParquetChunkReader::next_batch(RecordBatchPtr* batch) {
+    switch (_state) {
+    case State::UNINITIALIZED: {
+        RETURN_IF_ERROR(_parquet_reader->init_parquet_reader(_src_slot_descs));
+        _state = INITIALIZED;
+        break;
     }
-    char* buf_end = (char*)buf;
-    buf_end = dtv.to_string((char*)buf_end);
-    *wbytes = buf_end - (char*)buf - 1;
+    case State::INITIALIZED: {
+        bool eof = false;
+        auto status = _parquet_reader->read_record_batch(_src_slot_descs, &eof);
+        if (status.is_end_of_file() || eof) {
+            *batch = nullptr;
+            _state = END_OF_FILE;
+            return Status::EndOfFile(Slice());
+        } else if (!status.ok()) {
+            return status;
+        }
+        break;
+    }
+    case State::END_OF_FILE: {
+        *batch = nullptr;
+        return Status::EndOfFile(Slice());
+    }
+    }
+    *batch = _parquet_reader->get_batch();
     return Status::OK();
 }
 
-ParquetFile::ParquetFile(FileReader* file) : _file(file) {}
-
-ParquetFile::~ParquetFile() {
-    Close();
+Status ParquetChunkReader::get_schema(std::vector<SlotDescriptor>* schema) {
+    RETURN_IF_ERROR(_parquet_reader->init_parquet_reader(_src_slot_descs));
+    return _parquet_reader->get_schema(schema);
 }
 
-arrow::Status ParquetFile::Close() {
-    if (_file != nullptr) {
-        _file->close();
-        delete _file;
-        _file = nullptr;
-    }
-    return arrow::Status::OK();
+using StarRocksStatusCode = ::starrocks::TStatusCode::type;
+using ArrowStatusCode = ::arrow::StatusCode;
+using StarRocksStatus = ::starrocks::Status;
+using ArrowStatus = ::arrow::Status;
+
+ParquetChunkFile::ParquetChunkFile(std::shared_ptr<starrocks::RandomAccessFile> file, uint64_t pos)
+        : _file(std::move(file)), _pos(pos) {}
+
+ParquetChunkFile::~ParquetChunkFile() {
+    [[maybe_unused]] auto st = Close();
 }
 
-bool ParquetFile::closed() const {
-    if (_file != nullptr) {
-        return _file->closed();
-    } else {
-        return true;
-    }
+arrow::Status ParquetChunkFile::Close() {
+    _file.reset();
+    return ArrowStatus::OK();
 }
 
-arrow::Result<int64_t> ParquetFile::Read(int64_t nbytes, void* buffer) {
+bool ParquetChunkFile::closed() const {
+    return false;
+}
+
+arrow::Result<int64_t> ParquetChunkFile::Read(int64_t nbytes, void* buffer) {
     return ReadAt(_pos, nbytes, buffer);
 }
 
-arrow::Result<int64_t> ParquetFile::ReadAt(int64_t position, int64_t nbytes, void* out) {
-    int64_t reads = 0;
-    int64_t bytes_read = 0;
+arrow::Result<int64_t> ParquetChunkFile::ReadAt(int64_t position, int64_t nbytes, void* out) {
+    _pos += nbytes;
+    auto status = _file->read_at_fully(position, out, nbytes);
+    return status.ok() ? nbytes
+                       : arrow::Result<int64_t>(arrow::Status(arrow::StatusCode::IOError, status.get_error_msg()));
+}
+
+arrow::Result<int64_t> ParquetChunkFile::GetSize() {
+    const StatusOr<uint64_t> status_or = _file->get_size();
+    return status_or.ok() ? status_or.value()
+                          : arrow::Result<int64_t>(
+                                    arrow::Status(arrow::StatusCode::IOError, status_or.status().get_error_msg()));
+}
+
+arrow::Status ParquetChunkFile::Seek(int64_t position) {
     _pos = position;
-    while (nbytes > 0) {
-        Status result = _file->readat(_pos, nbytes, &reads, out);
-        if (!result.ok()) {
-            bytes_read = 0;
-            return arrow::Status::IOError("Readat failed.");
-        }
-        if (reads == 0) {
-            break;
-        }
-        bytes_read += reads; // total read bytes
-        nbytes -= reads;     // remained bytes
-        _pos += reads;
-        out = (char*)out + reads;
-    }
-    return bytes_read;
+    return ArrowStatus::OK();
 }
 
-arrow::Result<int64_t> ParquetFile::GetSize() {
-    int64_t size = _file->size();
-    return size;
-}
-
-arrow::Status ParquetFile::Seek(int64_t position) {
-    _pos = position;
-    // NOTE: Only readat operation is used, so _file seek is not called here.
-    return arrow::Status::OK();
-}
-
-arrow::Result<int64_t> ParquetFile::Tell() const {
+arrow::Result<int64_t> ParquetChunkFile::Tell() const {
     return _pos;
 }
 
-arrow::Result<std::shared_ptr<arrow::Buffer>> ParquetFile::Read(int64_t nbytes) {
+arrow::Result<std::shared_ptr<arrow::Buffer>> ParquetChunkFile::Read(int64_t nbytes) {
     auto buffer_res = arrow::AllocateBuffer(nbytes, arrow::default_memory_pool());
     ARROW_RETURN_NOT_OK(buffer_res);
     std::shared_ptr<arrow::Buffer> read_buf = std::move(buffer_res.ValueOrDie());
@@ -381,6 +402,10 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> ParquetFile::Read(int64_t nbytes) 
     } else {
         return arrow::SliceBuffer(read_buf, 0, bytes_read_res.ValueOrDie());
     }
+}
+
+const std::string& ParquetChunkFile::filename() const {
+    return _file->filename();
 }
 
 } // namespace starrocks

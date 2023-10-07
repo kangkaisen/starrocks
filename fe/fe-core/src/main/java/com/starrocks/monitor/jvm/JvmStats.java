@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/monitor/jvm/JvmStats.java
 
@@ -42,24 +55,24 @@ import java.util.concurrent.TimeUnit;
 
 public class JvmStats {
 
-    private static final RuntimeMXBean runtimeMXBean;
-    private static final MemoryMXBean memoryMXBean;
-    private static final ThreadMXBean threadMXBean;
-    private static final ClassLoadingMXBean classLoadingMXBean;
+    private static final RuntimeMXBean RUNTIME_MX_BEAN;
+    private static final MemoryMXBean MEMORY_MX_BEAN;
+    private static final ThreadMXBean THREAD_MX_BEAN;
+    private static final ClassLoadingMXBean CLASS_LOADING_MX_BEAN;
 
     static {
-        runtimeMXBean = ManagementFactory.getRuntimeMXBean();
-        memoryMXBean = ManagementFactory.getMemoryMXBean();
-        threadMXBean = ManagementFactory.getThreadMXBean();
-        classLoadingMXBean = ManagementFactory.getClassLoadingMXBean();
+        RUNTIME_MX_BEAN = ManagementFactory.getRuntimeMXBean();
+        MEMORY_MX_BEAN = ManagementFactory.getMemoryMXBean();
+        THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
+        CLASS_LOADING_MX_BEAN = ManagementFactory.getClassLoadingMXBean();
     }
 
     public static JvmStats jvmStats() {
-        MemoryUsage memUsage = memoryMXBean.getHeapMemoryUsage();
+        MemoryUsage memUsage = MEMORY_MX_BEAN.getHeapMemoryUsage();
         long heapUsed = memUsage.getUsed() < 0 ? 0 : memUsage.getUsed();
         long heapCommitted = memUsage.getCommitted() < 0 ? 0 : memUsage.getCommitted();
         long heapMax = memUsage.getMax() < 0 ? 0 : memUsage.getMax();
-        memUsage = memoryMXBean.getNonHeapMemoryUsage();
+        memUsage = MEMORY_MX_BEAN.getNonHeapMemoryUsage();
         long nonHeapUsed = memUsage.getUsed() < 0 ? 0 : memUsage.getUsed();
         long nonHeapCommitted = memUsage.getCommitted() < 0 ? 0 : memUsage.getCommitted();
         List<MemoryPoolMXBean> memoryPoolMXBeans = ManagementFactory.getMemoryPoolMXBeans();
@@ -87,7 +100,7 @@ public class JvmStats {
         }
         Mem mem = new Mem(heapCommitted, heapUsed, heapMax, nonHeapCommitted, nonHeapUsed,
                 Collections.unmodifiableList(pools));
-        Threads threads = new Threads(threadMXBean.getThreadCount(), threadMXBean.getPeakThreadCount());
+        Threads threads = new Threads(THREAD_MX_BEAN.getThreadCount(), THREAD_MX_BEAN.getPeakThreadCount());
 
         List<GarbageCollectorMXBean> gcMxBeans = ManagementFactory.getGarbageCollectorMXBeans();
         GarbageCollector[] collectors = new GarbageCollector[gcMxBeans.size()];
@@ -109,11 +122,11 @@ public class JvmStats {
             // buffer pools are not available
         }
 
-        Classes classes = new Classes(classLoadingMXBean.getLoadedClassCount(),
-                classLoadingMXBean.getTotalLoadedClassCount(),
-                classLoadingMXBean.getUnloadedClassCount());
+        Classes classes = new Classes(CLASS_LOADING_MX_BEAN.getLoadedClassCount(),
+                CLASS_LOADING_MX_BEAN.getTotalLoadedClassCount(),
+                CLASS_LOADING_MX_BEAN.getUnloadedClassCount());
 
-        return new JvmStats(System.currentTimeMillis(), runtimeMXBean.getUptime(), mem, threads,
+        return new JvmStats(System.currentTimeMillis(), RUNTIME_MX_BEAN.getUptime(), mem, threads,
                 garbageCollectors, bufferPoolsList, classes);
     }
 

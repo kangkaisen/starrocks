@@ -93,7 +93,7 @@ logical project (col)
 select sum(v1) from t0 having avg(v1) - avg(v2) > 10
 [result]
 logical project (col)
-    logical filter (col - col > 10.0)
+    logical filter (col - col > 10)
         logical aggregate () (sum(col),avg(col),avg(col))
             logical project (col,col)
                 logical project (col,col,col)
@@ -164,29 +164,4 @@ logical project (-1 * col)
             logical project (col,col,col)
                 logical project (col,col,col)
                     logical scan
-[end]
-
-[sql]
-select distinct v1, v2 from t0 order by v2
-[result]
-logical sort (col)
-    logical project (col,col)
-        logical aggregate (col,col) ()
-            logical project (col,col)
-                logical project (col,col,col)
-                    logical project (col,col,col)
-                        logical scan
-[end]
-
-[sql]
-select distinct v1, v2 from t0 order by v1 + 1
-[result]
-logical project (col,col)
-    logical sort (col)
-        logical project (col,col,col + 1)
-            logical aggregate (col,col) ()
-                logical project (col,col)
-                    logical project (col,col,col)
-                        logical project (col,col,col)
-                            logical scan
 [end]

@@ -1,17 +1,33 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
+#include <memory>
 #include <utility>
 
 #include "column/column.h"
-#include "runtime/date_value.hpp"
+#include "column/datum.h"
+#include "column/vectorized_fwd.h"
+#include "common/statusor.h"
 #include "runtime/decimalv2_value.h"
-#include "runtime/timestamp_value.h"
+#include "types/date_value.hpp"
+#include "types/timestamp_value.h"
 #include "util/raw_container.h"
 #include "util/value_generator.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
 template <typename T>
 constexpr bool IsDecimal = false;
@@ -27,6 +43,11 @@ template <typename T>
 constexpr bool IsTimestamp = false;
 template <>
 inline constexpr bool IsTimestamp<TimestampValue> = true;
+
+template <typename T>
+constexpr bool IsTemporal() {
+    return std::is_same_v<T, DateValue> || std::is_same_v<T, TimestampValue> || std::is_same_v<T, DateTimeValue>;
+}
 
 template <typename T>
 class FixedLengthColumnBase : public ColumnFactory<Column, FixedLengthColumnBase<T>> {
@@ -46,8 +67,8 @@ public:
 
     // Only used as a underlying type for other column type(i.e. DecimalV3Column), C++
     // is weak to implement delegation for composite type like golang, so we have to use
-    // inheritance to wrap a underlying type. When constructing a wrapper object, we must
-    // constructor the wrapped object first, move constructor is used to prevent the unnecessary
+    // inheritance to wrap an underlying type. When constructing a wrapper object, we must
+    // construct the wrapped object first, move constructor is used to prevent the unnecessary
     // time-consuming copy operation.
     FixedLengthColumnBase(FixedLengthColumnBase&& src) noexcept : _data(std::move(src._data)) {}
 
@@ -73,6 +94,11 @@ public:
 
     size_t byte_size(size_t idx __attribute__((unused))) const override { return sizeof(ValueType); }
 
+    size_t byte_size(size_t from, size_t size) const override {
+        DCHECK_LE(from + size, this->size()) << "Range error";
+        return sizeof(ValueType) * size;
+    }
+
     void reserve(size_t n) override { _data.reserve(n); }
 
     void resize(size_t n) override { _data.resize(n); }
@@ -93,13 +119,13 @@ public:
 
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
 
-    bool append_nulls(size_t count __attribute__((unused))) override { return false; }
+    [[nodiscard]] bool append_nulls(size_t count __attribute__((unused))) override { return false; }
 
-    bool append_strings(const Buffer<Slice>& slices __attribute__((unused))) override { return false; }
+    [[nodiscard]] bool append_strings(const Buffer<Slice>& slices __attribute__((unused))) override { return false; }
 
-    bool contain_value(size_t start, size_t end, T value) const {
+    [[nodiscard]] bool contain_value(size_t start, size_t end, T value) const {
         DCHECK_LE(start, end);
         DCHECK_LE(start, _data.size());
         DCHECK_LE(end, _data.size());
@@ -112,9 +138,12 @@ public:
     }
 
     size_t append_numbers(const void* buff, size_t length) override {
+        DCHECK(length % sizeof(ValueType) == 0);
         const size_t count = length / sizeof(ValueType);
-        const T* const ptr = reinterpret_cast<const T*>(buff);
-        _data.insert(_data.end(), ptr, ptr + count);
+        size_t dst_offset = _data.size();
+        raw::stl_vector_resize_uninitialized(&_data, _data.size() + count);
+        T* dst = _data.data() + dst_offset;
+        memcpy(dst, buff, length);
         return count;
     }
 
@@ -128,7 +157,21 @@ public:
         _data.resize(_data.size() + count, DefaultValueGenerator<ValueType>::next_value());
     }
 
-    Status update_rows(const Column& src, const uint32_t* indexes) override;
+    ColumnPtr replicate(const std::vector<uint32_t>& offsets) override;
+
+    void fill_default(const Filter& filter) override;
+
+    [[nodiscard]] Status fill_range(const Buffer<T>& ids, const std::vector<uint8_t>& filter);
+
+    void update_rows(const Column& src, const uint32_t* indexes) override;
+
+    // The `_data` support one size(> 2^32), but some interface such as update_rows() will use uint32_t to
+    // access the item, so we should use 2^32 as the limit
+    StatusOr<ColumnPtr> upgrade_if_overflow() override;
+
+    StatusOr<ColumnPtr> downgrade() override { return nullptr; }
+
+    bool has_large_column() const override { return false; }
 
     uint32_t serialize(size_t idx, uint8_t* pos) override;
 
@@ -153,7 +196,7 @@ public:
 
     MutableColumnPtr clone_empty() const override { return this->create_mutable(); }
 
-    size_t filter_range(const Column::Filter& filter, size_t from, size_t to) override;
+    size_t filter_range(const Filter& filter, size_t from, size_t to) override;
 
     int compare_at(size_t left, size_t right, const Column& rhs, int nan_direction_hint) const override;
 
@@ -173,12 +216,12 @@ public:
 
     Datum get(size_t n) const override { return Datum(_data[n]); }
 
-    std::string debug_item(uint32_t idx) const override;
+    std::string debug_item(size_t idx) const override;
 
     std::string debug_string() const override;
 
     size_t container_memory_usage() const override { return _data.capacity() * sizeof(ValueType); }
-    size_t shrink_memory_usage() const override { return _data.size() * sizeof(ValueType); }
+    size_t reference_memory_usage(size_t from, size_t size) const override { return 0; }
 
     void swap_column(Column& rhs) override {
         auto& r = down_cast<FixedLengthColumnBase&>(rhs);
@@ -191,12 +234,26 @@ public:
         _data.clear();
     }
 
-    bool reach_capacity_limit() const override { return _data.size() >= Column::MAX_CAPACITY_LIMIT; }
+    // The `_data` support one size(> 2^32), but some interface such as update_rows() will use index of uint32_t to
+    // access the item, so we should use 2^32 as the limit
+    bool capacity_limit_reached(std::string* msg = nullptr) const override {
+        if (_data.size() > Column::MAX_CAPACITY_LIMIT) {
+            if (msg != nullptr) {
+                msg->append("row count of fixed length column exceend the limit: " +
+                            std::to_string(Column::MAX_CAPACITY_LIMIT));
+            }
+            return true;
+        }
+        return false;
+    }
 
     void check_or_die() const override {}
 
 protected:
     Container _data;
+
+private:
+    using Column::append;
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

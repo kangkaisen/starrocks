@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exprs/anyval_util.cpp
 
@@ -25,7 +38,6 @@
 #include "runtime/mem_tracker.h"
 
 namespace starrocks {
-using starrocks_udf::AnyVal;
 
 FunctionContext::TypeDesc AnyValUtil::column_type_to_type_desc(const TypeDescriptor& type) {
     FunctionContext::TypeDesc out;
@@ -93,11 +105,33 @@ FunctionContext::TypeDesc AnyValUtil::column_type_to_type_desc(const TypeDescrip
         out.type = TYPE_NULL;
         break;
     case TYPE_ARRAY:
-        // NOTE: Since `TYPE_ARRAY` only supported in vectorized engine now, reaching here
-        // means we are executing a vectorized built-in function and the return type is unused, so
-        // here we can return any value.
-        out.type = TYPE_NULL;
+    case TYPE_MAP: {
+        out.type = type.type;
+        for (const auto& child : type.children) {
+            if (child.is_unknown_type()) {
+                // TODO(SmithCruise)
+                // For Map type, if map's key or value is pruned, that column's type will be set to unknown for
+                // partial materialize.
+                // We should not use TYPE_UNKNOWN in the future, use another type, it may misleading other people.
+                FunctionContext::TypeDesc child_out;
+                child_out.type = TYPE_UNKNOWN;
+                out.children.emplace_back(child_out);
+            } else {
+                out.children.emplace_back(column_type_to_type_desc(child));
+            }
+        }
         break;
+    }
+    case TYPE_STRUCT: {
+        out.type = type.type;
+        for (const auto& name : type.field_names) {
+            out.field_names.emplace_back(name);
+        }
+        for (const auto& child : type.children) {
+            out.children.emplace_back(column_type_to_type_desc(child));
+        }
+        break;
+    }
     case TYPE_DECIMAL32:
         out.type = TYPE_DECIMAL32;
         out.precision = type.precision;
@@ -115,6 +149,13 @@ FunctionContext::TypeDesc AnyValUtil::column_type_to_type_desc(const TypeDescrip
         break;
     case TYPE_JSON:
         out.type = TYPE_JSON;
+        break;
+    case TYPE_FUNCTION:
+        out.type = TYPE_FUNCTION;
+        break;
+    case TYPE_VARBINARY:
+        out.type = TYPE_VARBINARY;
+        out.len = type.len;
         break;
     default:
         DCHECK(false) << "Unknown type: " << type;

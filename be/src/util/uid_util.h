@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/util/uid_util.h
 
@@ -23,6 +36,7 @@
 
 #include <ostream>
 #include <string>
+#include <string_view>
 
 #include "gen_cpp/Types_types.h" // for TUniqueId
 #include "gen_cpp/types.pb.h"    // for PUniqueId
@@ -41,14 +55,14 @@ inline void to_hex(T val, char* buf) {
 }
 
 template <typename T>
-inline void from_hex(T* ret, const std::string& buf) {
+inline void from_hex(T* ret, std::string_view buf) {
     T val = 0;
-    for (int i = 0; i < buf.length(); ++i) {
+    for (char c : buf) {
         int buf_val = 0;
-        if (buf.c_str()[i] >= '0' && buf.c_str()[i] <= '9')
-            buf_val = buf.c_str()[i] - '0';
+        if (c >= '0' && c <= '9')
+            buf_val = c - '0';
         else {
-            buf_val = buf.c_str()[i] - 'a' + 10;
+            buf_val = c - 'a' + 10;
         }
         val <<= 4;
         val = val | buf_val;
@@ -60,10 +74,11 @@ struct UniqueId {
     int64_t hi = 0;
     int64_t lo = 0;
 
+    UniqueId() {}
     UniqueId(int64_t hi_, int64_t lo_) : hi(hi_), lo(lo_) {}
     UniqueId(const TUniqueId& tuid) : hi(tuid.hi), lo(tuid.lo) {}
     UniqueId(const PUniqueId& puid) : hi(puid.hi()), lo(puid.lo()) {}
-    UniqueId(const std::string& hi_str, const std::string& lo_str) {
+    UniqueId(std::string_view hi_str, std::string_view lo_str) {
         from_hex(&hi, hi_str);
         from_hex(&lo, lo_str);
     }

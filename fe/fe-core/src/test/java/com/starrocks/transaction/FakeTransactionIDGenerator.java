@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/transaction/FakeTransactionIDGenerator.java
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -34,7 +30,7 @@ public final class FakeTransactionIDGenerator extends MockUp<TransactionIdGenera
     private long currentId = 1000L;
 
     @Mock
-    public void $init() {
+    public void init() {
         // do nothing
     }
 

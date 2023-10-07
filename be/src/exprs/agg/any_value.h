@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -8,124 +20,42 @@
 #include "column/fixed_length_column.h"
 #include "column/type_traits.h"
 #include "exprs/agg/aggregate.h"
+#include "exprs/agg/aggregate_traits.h"
 #include "gutil/casts.h"
 #include "util/raw_container.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
-template <PrimitiveType PT, typename = guard::Guard>
-struct AnyValueAggregateData {};
+template <LogicalType LT>
+struct AnyValueAggregateData {
+    using T = AggDataValueType<LT>;
 
-template <PrimitiveType PT>
-struct AnyValueAggregateData<PT, IntegralPTGuard<PT>> {
-    using T = RunTimeCppType<PT>;
-    T result = std::numeric_limits<T>::max();
+    T result;
     bool has_value = false;
 
     void reset() {
-        result = std::numeric_limits<T>::max();
+        result = T{};
         has_value = false;
     }
 };
 
-template <PrimitiveType PT>
-struct AnyValueAggregateData<PT, FloatPTGuard<PT>> {
-    using T = RunTimeCppType<PT>;
-    T result = std::numeric_limits<T>::max();
-    bool has_value = false;
-
-    void reset() {
-        result = std::numeric_limits<T>::max();
-        has_value = false;
-    }
-};
-
-template <>
-struct AnyValueAggregateData<TYPE_DECIMALV2, guard::Guard> {
-    bool has_value = false;
-    DecimalV2Value result = DecimalV2Value::get_max_decimal();
-
-    void reset() {
-        result = DecimalV2Value::get_max_decimal();
-        has_value = false;
-    }
-};
-
-template <PrimitiveType PT>
-struct AnyValueAggregateData<PT, DecimalPTGuard<PT>> {
-    bool has_value = false;
-    using T = RunTimeCppType<PT>;
-    T result = get_max_decimal<T>();
-    void reset() {
-        result = get_max_decimal<T>();
-        has_value = false;
-    }
-};
-
-template <>
-struct AnyValueAggregateData<TYPE_DATETIME, guard::Guard> {
-    bool has_value = false;
-    TimestampValue result = TimestampValue::MAX_TIMESTAMP_VALUE;
-
-    void reset() {
-        result = TimestampValue::MAX_TIMESTAMP_VALUE;
-        has_value = false;
-    }
-};
-
-template <>
-struct AnyValueAggregateData<TYPE_DATE, guard::Guard> {
-    bool has_value = false;
-    DateValue result = DateValue::MAX_DATE_VALUE;
-
-    void reset() {
-        result = DateValue::MAX_DATE_VALUE;
-        has_value = false;
-    }
-};
-
-template <PrimitiveType PT>
-struct AnyValueAggregateData<PT, BinaryPTGuard<PT>> {
-    int32_t size = -1;
-    Buffer<uint8_t> buffer;
-
-    bool has_value() const { return size > -1; }
-
-    Slice slice() const { return {buffer.data(), buffer.size()}; }
-
-    void reset() {
-        buffer.clear();
-        size = -1;
-    }
-};
-
-template <PrimitiveType PT, typename State, typename = guard::Guard>
+template <LogicalType LT, typename State>
 struct AnyValueElement {
-    using T = RunTimeCppType<PT>;
-    void operator()(State& state, const T& right) const {
+    using RefType = AggDataRefType<LT>;
+
+    void operator()(State& state, RefType right) const {
         if (UNLIKELY(!state.has_value)) {
-            state.result = right;
+            AggDataTypeTraits<LT>::assign_value(state.result, right);
             state.has_value = true;
         }
     }
 };
 
-template <PrimitiveType PT>
-struct AnyValueElement<PT, AnyValueAggregateData<PT>, BinaryPTGuard<PT>> {
-    void operator()(AnyValueAggregateData<PT>& state, const Slice& right) const {
-        if (UNLIKELY(!state.has_value())) {
-            state.buffer.resize(right.size);
-            memcpy(state.buffer.data(), right.data, right.size);
-            state.size = right.size;
-        }
-    }
-};
-
-template <PrimitiveType PT, typename State, class OP, typename T = RunTimeCppType<PT>, typename = guard::Guard>
+template <LogicalType LT, typename State, class OP, typename T = RunTimeCppType<LT>, typename = guard::Guard>
 class AnyValueAggregateFunction final
-        : public AggregateFunctionBatchHelper<State, AnyValueAggregateFunction<PT, State, OP, T>> {
+        : public AggregateFunctionBatchHelper<State, AnyValueAggregateFunction<LT, State, OP, T>> {
 public:
-    using InputColumnType = RunTimeColumnType<PT>;
+    using InputColumnType = RunTimeColumnType<LT>;
 
     void reset(FunctionContext* ctx, const Columns& args, AggDataPtr state) const override {
         this->data(state).reset();
@@ -133,10 +63,9 @@ public:
 
     void update(FunctionContext* ctx, const Column** columns, AggDataPtr __restrict state,
                 size_t row_num) const override {
-        DCHECK(!columns[0]->is_nullable() && !columns[0]->is_binary());
+        DCHECK(!columns[0]->is_nullable());
         const auto& column = down_cast<const InputColumnType&>(*columns[0]);
-        const T& value = column.get_data()[row_num];
-        OP()(this->data(state), value);
+        OP()(this->data(state), AggDataTypeTraits<LT>::get_row_ref(column, row_num));
     }
 
     void update_batch_single_state(FunctionContext* ctx, size_t chunk_size, const Column** columns,
@@ -145,15 +74,14 @@ public:
     }
 
     void merge(FunctionContext* ctx, const Column* column, AggDataPtr __restrict state, size_t row_num) const override {
-        DCHECK(!column->is_nullable() && !column->is_binary());
-        const auto* input_column = down_cast<const InputColumnType*>(column);
-        T value = input_column->get_data()[row_num];
-        OP()(this->data(state), value);
+        DCHECK(!column->is_nullable());
+        const auto& input_column = down_cast<const InputColumnType&>(*column);
+        OP()(this->data(state), AggDataTypeTraits<LT>::get_row_ref(input_column, row_num));
     }
 
     void serialize_to_column(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* to) const override {
-        DCHECK(!to->is_nullable() && !to->is_binary());
-        down_cast<InputColumnType*>(to)->append(this->data(state).result);
+        DCHECK(!to->is_nullable());
+        AggDataTypeTraits<LT>::append_value(down_cast<InputColumnType*>(to), this->data(state).result);
     }
 
     void convert_to_serialize_format(FunctionContext* ctx, const Columns& src, size_t chunk_size,
@@ -162,52 +90,56 @@ public:
     }
 
     void finalize_to_column(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* to) const override {
-        DCHECK(!to->is_nullable() && !to->is_binary());
-        down_cast<InputColumnType*>(to)->append(this->data(state).result);
+        DCHECK(!to->is_nullable());
+        AggDataTypeTraits<LT>::append_value(down_cast<InputColumnType*>(to), this->data(state).result);
     }
 
     void get_values(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* dst, size_t start,
                     size_t end) const override {
         DCHECK_GT(end, start);
-        InputColumnType* column = down_cast<InputColumnType*>(dst);
+        auto* column = down_cast<InputColumnType*>(dst);
         for (size_t i = start; i < end; ++i) {
-            column->get_data()[i] = this->data(state).result;
+            AggDataTypeTraits<LT>::append_value(column, this->data(state).result);
         }
     }
 
     std::string get_name() const override { return "any_value"; }
 };
 
-template <PrimitiveType PT, typename State, class OP>
-class AnyValueAggregateFunction<PT, State, OP, RunTimeCppType<PT>, BinaryPTGuard<PT>> final
-        : public AggregateFunctionBatchHelper<State, AnyValueAggregateFunction<PT, State, OP, RunTimeCppType<PT>>> {
-public:
-    void reset(FunctionContext* ctx, const Columns& args, AggDataPtr __restrict state) const override {
-        this->data(state).reset();
+struct AnyValueSemiState {
+    void update(FunctionContext* ctx, const Column& column, size_t offset) {
+        if (!has_fill) {
+            data_column = ctx->create_column(*ctx->get_arg_type(0), false);
+            data_column->append(column, offset, 1);
+            has_fill = true;
+        }
     }
 
+    ColumnPtr data_column = nullptr;
+    bool has_fill = false;
+};
+
+class AnyValueSemiAggregateFunction final
+        : public AggregateFunctionBatchHelper<AnyValueSemiState, AnyValueSemiAggregateFunction> {
+public:
     void update(FunctionContext* ctx, const Column** columns, AggDataPtr __restrict state,
                 size_t row_num) const override {
-        DCHECK((*columns[0]).is_binary());
-        Slice value = columns[0]->get(row_num).get_slice();
-        OP()(this->data(state), value);
+        this->data(state).update(ctx, *columns[0], row_num);
     }
 
     void update_batch_single_state(FunctionContext* ctx, size_t chunk_size, const Column** columns,
                                    AggDataPtr __restrict state) const override {
-        update(ctx, columns, state, 0);
+        this->data(state).update(ctx, *columns[0], 0);
     }
 
     void merge(FunctionContext* ctx, const Column* column, AggDataPtr __restrict state, size_t row_num) const override {
-        DCHECK(column->is_binary());
-        Slice value = column->get(row_num).get_slice();
-        OP()(this->data(state), value);
+        this->data(state).update(ctx, *column, row_num);
     }
 
     void serialize_to_column(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* to) const override {
-        DCHECK(to->is_binary());
-        BinaryColumn* column = down_cast<BinaryColumn*>(to);
-        column->append(this->data(state).slice());
+        if (this->data(state).data_column != nullptr) {
+            to->append(*(this->data(state).data_column.get()));
+        }
     }
 
     void convert_to_serialize_format(FunctionContext* ctx, const Columns& src, size_t chunk_size,
@@ -216,21 +148,12 @@ public:
     }
 
     void finalize_to_column(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* to) const override {
-        DCHECK(to->is_binary());
-        BinaryColumn* column = down_cast<BinaryColumn*>(to);
-        column->append(this->data(state).slice());
-    }
-
-    void get_values(FunctionContext* ctx, ConstAggDataPtr __restrict state, Column* dst, size_t start,
-                    size_t end) const override {
-        DCHECK_GT(end, start);
-        BinaryColumn* column = down_cast<BinaryColumn*>(dst);
-        for (size_t i = start; i < end; ++i) {
-            column->append(this->data(state).slice());
+        if (this->data(state).data_column != nullptr) {
+            to->append(*(this->data(state).data_column.get()));
         }
     }
 
     std::string get_name() const override { return "any_value"; }
 };
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

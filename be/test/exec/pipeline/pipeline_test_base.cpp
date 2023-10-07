@@ -1,16 +1,30 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "pipeline_test_base.h"
 
 #include <random>
 
 #include "column/nullable_column.h"
+#include "common/config.h"
 #include "exec/pipeline/fragment_context.h"
 #include "exec/pipeline/pipeline_driver_executor.h"
-#include "runtime/date_value.h"
-#include "runtime/timestamp_value.h"
-#include "storage/vectorized/chunk_helper.h"
-#include "udf/udf.h"
+#include "exec/workgroup/work_group.h"
+#include "exprs/function_context.h"
+#include "storage/chunk_helper.h"
+#include "types/date_value.h"
+#include "types/timestamp_value.h"
 #include "util/thrift_util.h"
 
 namespace starrocks::pipeline {
@@ -29,7 +43,8 @@ OpFactories PipelineTestBase::maybe_interpolate_local_passthrough_exchange(OpFac
     auto* source_operator = down_cast<SourceOperatorFactory*>(pred_operators[0].get());
     if (source_operator->degree_of_parallelism() > 1) {
         auto pseudo_plan_node_id = -200;
-        auto mem_mgr = std::make_shared<LocalExchangeMemoryManager>(config::vector_chunk_size);
+        auto mem_mgr = std::make_shared<ChunkBufferMemoryManager>(_vector_chunk_size,
+                                                                  config::local_exchange_buffer_mem_limit_per_driver);
         auto local_exchange_source =
                 std::make_shared<LocalExchangeSourceOperatorFactory>(next_operator_id(), pseudo_plan_node_id, mem_mgr);
         auto local_exchange = std::make_shared<PassthroughExchanger>(mem_mgr, local_exchange_source.get());
@@ -60,10 +75,15 @@ void PipelineTestBase::_prepare() {
     const auto& query_id = params.query_id;
     const auto& fragment_id = params.fragment_instance_id;
 
-    _query_ctx = QueryContextManager::instance()->get_or_register(query_id);
+    _query_ctx = _exec_env->query_context_mgr()->get_or_register(query_id);
     _query_ctx->set_total_fragments(1);
-    _query_ctx->set_expire_seconds(60);
-    _query_ctx->extend_lifetime();
+    _query_ctx->set_delivery_expire_seconds(60);
+    _query_ctx->set_query_expire_seconds(60);
+    _query_ctx->extend_delivery_lifetime();
+    _query_ctx->extend_query_lifetime();
+    _query_ctx->init_mem_tracker(GlobalEnv::GetInstance()->query_pool_mem_tracker()->limit(),
+                                 GlobalEnv::GetInstance()->query_pool_mem_tracker());
+    _query_ctx->set_query_trace(std::make_shared<starrocks::debug::QueryTrace>(query_id, false));
 
     _fragment_ctx = _query_ctx->fragment_mgr()->get_or_register(fragment_id);
     _fragment_ctx->set_query_id(query_id);
@@ -71,64 +91,47 @@ void PipelineTestBase::_prepare() {
     _fragment_ctx->set_runtime_state(
             std::make_unique<RuntimeState>(_request.params.query_id, _request.params.fragment_instance_id,
                                            _request.query_options, _request.query_globals, _exec_env));
+    _fragment_ctx->set_workgroup(workgroup::WorkGroupManager::instance()->get_default_workgroup());
 
     _fragment_future = _fragment_ctx->finish_future();
     _runtime_state = _fragment_ctx->runtime_state();
 
-    _runtime_state->set_chunk_size(config::vector_chunk_size);
-    _runtime_state->init_mem_trackers(query_id);
+    _runtime_state->set_chunk_size(_vector_chunk_size);
+    _runtime_state->init_mem_trackers(_query_ctx->mem_tracker());
     _runtime_state->set_be_number(_request.backend_num);
+    _runtime_state->set_query_ctx(_query_ctx);
+    _runtime_state->set_fragment_ctx(_fragment_ctx);
 
     _obj_pool = _runtime_state->obj_pool();
 
     ASSERT_TRUE(_pipeline_builder != nullptr);
     _pipelines.clear();
     _pipeline_builder(_fragment_ctx->runtime_state());
-    _pipelines[_pipelines.size() - 1]->set_root();
     _fragment_ctx->set_pipelines(std::move(_pipelines));
     ASSERT_TRUE(_fragment_ctx->prepare_all_pipelines().ok());
 
-    Drivers drivers;
     const auto& pipelines = _fragment_ctx->pipelines();
     const size_t num_pipelines = pipelines.size();
     for (auto n = 0; n < num_pipelines; ++n) {
         const auto& pipeline = pipelines[n];
-        const auto degree_of_parallelism = pipeline->source_operator_factory()->degree_of_parallelism();
-        const bool is_root = pipeline->is_root();
-
-        LOG(INFO) << "Pipeline " << pipeline->to_readable_string() << " parallel=" << degree_of_parallelism
-                  << " fragment_instance_id=" << print_id(params.fragment_instance_id);
-
-        if (pipeline->source_operator_factory()->with_morsels()) {
-            // TODO(hcf) missing branch of with_morsels()
-        } else {
-            if (is_root) {
-                _fragment_ctx->set_num_root_drivers(degree_of_parallelism);
-            }
-
-            for (size_t i = 0; i < degree_of_parallelism; ++i) {
-                auto&& operators = pipeline->create_operators(degree_of_parallelism, i);
-                DriverPtr driver =
-                        std::make_shared<PipelineDriver>(std::move(operators), _query_ctx, _fragment_ctx, i, is_root);
-                drivers.emplace_back(driver);
-            }
-        }
+        pipeline->instantiate_drivers(_fragment_ctx->runtime_state());
     }
-
-    _fragment_ctx->set_drivers(std::move(drivers));
 }
 
 void PipelineTestBase::_execute() {
-    for (const auto& driver : _fragment_ctx->drivers()) {
-        ASSERT_TRUE(driver->prepare(_fragment_ctx->runtime_state()).ok());
-    }
-    for (const auto& driver : _fragment_ctx->drivers()) {
-        _exec_env->driver_executor()->submit(driver.get());
-    }
+    Status prepare_status = _fragment_ctx->iterate_drivers(
+            [state = _fragment_ctx->runtime_state()](const DriverPtr& driver) { return driver->prepare(state); });
+    ASSERT_TRUE(prepare_status.ok());
+
+    ASSERT_TRUE(_fragment_ctx
+                        ->iterate_drivers([exec_env = _exec_env](const DriverPtr& driver) {
+                            exec_env->wg_driver_executor()->submit(driver.get());
+                            return Status::OK();
+                        })
+                        .ok());
 }
 
-vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(const std::vector<SlotDescriptor*>& slots,
-                                                              size_t row_num) {
+ChunkPtr PipelineTestBase::_create_and_fill_chunk(const std::vector<SlotDescriptor*>& slots, size_t row_num) {
     static std::default_random_engine e;
     static std::uniform_int_distribution<int8_t> u8;
     static std::uniform_int_distribution<int16_t> u16;
@@ -138,16 +141,16 @@ vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(const std::vector<
     static std::uniform_real_distribution<float> uf;
     static std::uniform_real_distribution<double> ud;
 
-    auto chunk = vectorized::ChunkHelper::new_chunk(slots, row_num);
+    auto chunk = ChunkHelper::new_chunk(slots, row_num);
 
     // add data
     for (size_t i = 0; i < slots.size(); ++i) {
         auto* slot = slots[i];
         auto& column = chunk->columns()[i];
 
-        vectorized::Column* data_column = column.get();
+        Column* data_column = column.get();
         if (data_column->is_nullable()) {
-            auto* nullable_column = down_cast<vectorized::NullableColumn*>(data_column);
+            auto* nullable_column = down_cast<NullableColumn*>(data_column);
             data_column = nullable_column->data_column().get();
         }
 
@@ -182,12 +185,12 @@ vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(const std::vector<
                 data_column->append_datum(ud(e));
                 break;
             case TYPE_DATE: {
-                vectorized::DateValue value;
+                DateValue value;
                 data_column->append_datum(value);
                 break;
             }
             case TYPE_DATETIME: {
-                vectorized::TimestampValue value;
+                TimestampValue value;
                 data_column->append_datum(value);
                 break;
             }
@@ -214,7 +217,7 @@ vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(const std::vector<
     return chunk;
 }
 
-vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(size_t row_num) {
+ChunkPtr PipelineTestBase::_create_and_fill_chunk(size_t row_num) {
     // the following content is TDescriptorTable serialized in json format
     // CREATE TABLE IF NOT EXISTS `test_aggregate` (
     //   `id_int` INT(11) NOT NULL,
@@ -300,7 +303,7 @@ vectorized::ChunkPtr PipelineTestBase::_create_and_fill_chunk(size_t row_num) {
     TDescriptorTable tbl;
     const uint8_t* buf = reinterpret_cast<uint8_t*>(content.data());
     uint32_t len = content.size();
-    deserialize_thrift_msg(buf, &len, TProtocolType::JSON, &tbl);
+    CHECK(deserialize_thrift_msg(buf, &len, TProtocolType::JSON, &tbl).ok());
 
     std::vector<SlotDescriptor> slots;
     for (auto& t_slot : tbl.slotDescriptors) {

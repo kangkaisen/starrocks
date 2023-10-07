@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/backup/BackupMeta.java
 
@@ -22,9 +35,11 @@
 package com.starrocks.backup;
 
 import com.google.common.collect.Maps;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.io.Writable;
 import com.starrocks.meta.MetaContext;
+import com.starrocks.persist.gson.GsonPostProcessable;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -39,10 +54,11 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-public class BackupMeta implements Writable {
+public class BackupMeta implements Writable, GsonPostProcessable {
     private static final Logger LOG = LogManager.getLogger(BackupMeta.class);
 
     // tbl name -> tbl
+    @SerializedName(value = "tblNameMap")
     private Map<String, Table> tblNameMap = Maps.newHashMap();
     // tbl id -> tbl
     private Map<Long, Table> tblIdMap = Maps.newHashMap();
@@ -70,10 +86,9 @@ public class BackupMeta implements Writable {
         return tblIdMap.get(tblId);
     }
 
-    public static BackupMeta fromFile(String filePath, int metaVersion, int starrocksMetaVersion) throws IOException {
+    public static BackupMeta fromFile(String filePath, int starrocksMetaVersion) throws IOException {
         File file = new File(filePath);
         MetaContext metaContext = new MetaContext();
-        metaContext.setMetaVersion(metaVersion);
         metaContext.setStarRocksMetaVersion(starrocksMetaVersion);
         metaContext.setThreadLocalInfo();
         try (DataInputStream dis = new DataInputStream(new FileInputStream(file))) {
@@ -119,6 +134,14 @@ public class BackupMeta implements Writable {
             Table tbl = Table.read(in);
             tblNameMap.put(tbl.getName(), tbl);
             tblIdMap.put(tbl.getId(), tbl);
+        }
+    }
+
+    @Override
+    public void gsonPostProcess() throws IOException {
+        tblIdMap = Maps.newHashMap();
+        for (Map.Entry<String, Table> entry : tblNameMap.entrySet()) {
+            tblIdMap.put(entry.getValue().getId(), entry.getValue());
         }
     }
 }

@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/catalog/ColumnTest.java
 
@@ -21,12 +34,16 @@
 
 package com.starrocks.catalog;
 
-import com.starrocks.analysis.ColumnDef;
-import com.starrocks.analysis.FunctionCallExpr;
+import com.starrocks.analysis.IndexDef.IndexType;
+import com.starrocks.analysis.NullLiteral;
 import com.starrocks.analysis.StringLiteral;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.jmockit.Deencapsulation;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.ColumnDef;
+import com.starrocks.sql.ast.ColumnDef.DefaultValueDef;
+import com.starrocks.thrift.TColumn;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -36,24 +53,25 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.Collections;
 
-import static com.starrocks.analysis.ColumnDef.DefaultValueDef.CURRENT_TIMESTAMP_VALUE;
-import static com.starrocks.analysis.ColumnDef.DefaultValueDef.NOT_SET;
-import static com.starrocks.analysis.ColumnDef.DefaultValueDef.NULL_DEFAULT_VALUE;
+import static com.starrocks.sql.ast.ColumnDef.DefaultValueDef.CURRENT_TIMESTAMP_VALUE;
+import static com.starrocks.sql.ast.ColumnDef.DefaultValueDef.NOT_SET;
+import static com.starrocks.sql.ast.ColumnDef.DefaultValueDef.NULL_DEFAULT_VALUE;
 
 public class ColumnTest {
 
-    private Catalog catalog;
+    private GlobalStateMgr globalStateMgr;
 
-    private FakeCatalog fakeCatalog;
+    private FakeGlobalStateMgr fakeGlobalStateMgr;
 
     @Before
     public void setUp() {
-        fakeCatalog = new FakeCatalog();
-        catalog = Deencapsulation.newInstance(Catalog.class);
+        fakeGlobalStateMgr = new FakeGlobalStateMgr();
+        globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
 
-        FakeCatalog.setCatalog(catalog);
-        FakeCatalog.setMetaVersion(FeConstants.meta_version);
+        FakeGlobalStateMgr.setGlobalStateMgr(globalStateMgr);
+        FakeGlobalStateMgr.setMetaVersion(FeConstants.META_VERSION);
     }
 
     @Test
@@ -114,6 +132,24 @@ public class ColumnTest {
         // 4. delete files
         dis.close();
         file.delete();
+    }
+
+    @Test
+    public void testSchemaChangeNotAllow() throws DdlException {
+        Column oldColumn = new Column("user", ScalarType.createType(PrimitiveType.JSON), false, null, false,
+                NULL_DEFAULT_VALUE, "");
+        Column newColumn = new Column("user", ScalarType.createVarcharType(1), true, null, false,
+                NULL_DEFAULT_VALUE, "");
+        try {
+            oldColumn.checkSchemaChangeAllowed(newColumn);
+            Assert.fail();
+        } catch (DdlException e) {
+            Assert.assertTrue(e.getMessage().contains("JSON needs minimum length of "));
+        }
+
+        Column largeColumn = new Column("user", ScalarType.createVarcharType(1025), true, null, false,
+                NULL_DEFAULT_VALUE, "");
+        oldColumn.checkSchemaChangeAllowed(largeColumn);
     }
 
     @Test
@@ -211,7 +247,6 @@ public class ColumnTest {
 
     }
 
-
     @Test(expected = DdlException.class)
     public void testSchemaChangeAllowedNullToNonNull() throws DdlException {
         Column oldColumn = new Column("user", ScalarType.createType(PrimitiveType.INT), true, null, true,
@@ -220,6 +255,14 @@ public class ColumnTest {
                 new ColumnDef.DefaultValueDef(true, new StringLiteral("0")), "");
         oldColumn.checkSchemaChangeAllowed(newColumn);
         Assert.fail("No exception throws.");
+    }
+
+    @Test
+    public void testAutoIncrement() {
+        Column col = new Column("col", ScalarType.createType(PrimitiveType.BIGINT), true, null, Boolean.FALSE,
+                ColumnDef.DefaultValueDef.NOT_SET, "");
+        col.setIsAutoIncrement(true);
+        Assert.assertTrue(col.isAutoIncrement() == true);
     }
 
     @Test
@@ -284,5 +327,25 @@ public class ColumnTest {
         } catch (DdlException ex) {
 
         }
+    }
+
+    @Test
+    public void testLscColumn() {
+        Column f0 = new Column("f0", Type.INT, true, AggregateType.NONE, false,
+                new DefaultValueDef(true, NullLiteral.create(Type.INT)), "", 0);
+
+        Index i0 = new Index("i0",
+                Collections.singletonList("f0"), IndexType.BITMAP, "");
+
+        TColumn t0 = f0.toThrift();
+        f0.setIndexFlag(t0, Collections.singletonList(i0));
+
+        Assert.assertEquals(t0.has_bitmap_index, true);
+
+        Assert.assertEquals(f0.getUniqueId(), 0);
+        f0.setUniqueId(1);
+
+        Assert.assertEquals(f0.getUniqueId(), 1);
+
     }
 }

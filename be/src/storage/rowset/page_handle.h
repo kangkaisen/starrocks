@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/page_handle.h
 
@@ -21,7 +34,7 @@
 
 #pragma once
 
-#include "gutil/macros.h" // for DISALLOW_COPY_AND_ASSIGN
+#include "gutil/macros.h" // for DISALLOW_COPY
 #include "storage/page_cache.h"
 #include "util/slice.h"
 
@@ -42,7 +55,8 @@ public:
 
     // This class will take the content of cache data, and will make input
     // cache_data to a invalid cache handle.
-    explicit PageHandle(PageCacheHandle cache_data) : _cache_data(std::move(cache_data)) {}
+    explicit PageHandle(PageCacheHandle&& cache_data)
+            : _data(static_cast<uint8_t*>(nullptr), 0), _cache_data(std::move(cache_data)) {}
 
     // Move constructor
     PageHandle(PageHandle&& other) noexcept : _data(other._data), _cache_data(std::move(other._cache_data)) {
@@ -64,12 +78,12 @@ public:
         }
     }
 
-    void release_memory() {
+    void reset() {
         if (_is_data_owner) {
             delete[] _data.data;
-            _data.data = nullptr;
-            _data.size = 0;
+            _is_data_owner = false;
         }
+        _data.clear();
     }
 
     // the return slice contains uncompressed page body, page footer, and footer size

@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "io/fd_input_stream.h"
 
@@ -89,15 +101,18 @@ PARALLEL_TEST(FdInputStreamTest, test_read_at) {
 
     ASSERT_EQ(1, *in.read_at(0, buff, 1));
     ASSERT_EQ("0", std::string_view(buff, 1));
-    ASSERT_EQ(0, *in.position());
+    ASSERT_EQ(1, *in.position());
 
     ASSERT_EQ(5, *in.read_at(1, buff + 1, 5));
     ASSERT_EQ("012345", std::string_view(buff, 6));
-    ASSERT_EQ(0, *in.position());
+    ASSERT_EQ(6, *in.position());
 
     ASSERT_EQ(4, *in.read_at(6, buff + 6, 10));
     ASSERT_EQ("0123456789", std::string_view(buff, 10));
-    ASSERT_EQ(0, *in.position());
+    ASSERT_EQ(10, *in.position());
+
+    ASSERT_EQ(0, *in.read(buff, 1));
+    ASSERT_EQ(0, *in.read_at(12, buff, 1));
 
     ASSERT_EQ(0, in.get_errno());
 }
@@ -114,22 +129,11 @@ PARALLEL_TEST(FdInputStreamTest, test_seek) {
 
     char buff[10];
 
-    ASSERT_EQ(1, *in.seek(1, SEEK_SET));
+    ASSERT_OK(in.seek(1));
     ASSERT_EQ(1, *in.position());
     ASSERT_EQ(5, *in.read(buff, 5));
     ASSERT_EQ("12345", std::string_view(buff, 5));
     ASSERT_EQ(6, *in.position());
-
-    ASSERT_EQ(16, *in.seek(10, SEEK_CUR));
-    ASSERT_EQ(16, *in.position());
-    ASSERT_EQ(0, *in.read(buff, 1));
-
-    ASSERT_EQ(6, *in.seek(-4, SEEK_END));
-    ASSERT_EQ(6, *in.position());
-    ASSERT_EQ(4, *in.read(buff, 10));
-    ASSERT_EQ(10, *in.position());
-    ASSERT_EQ("6789", std::string_view(buff, 4));
-
     ASSERT_EQ(0, in.get_errno());
 }
 
@@ -166,16 +170,12 @@ PARALLEL_TEST(FdInputStreamTest, test_op_after_close) {
     res = in.read_at(0, buff, 2);
     ASSERT_ERROR(res.status());
 
-    res = in.seek(0, SEEK_CUR);
-    ASSERT_ERROR(res.status());
+    ASSERT_OK(in.seek(0));
 
     res = in.skip(10);
     ASSERT_ERROR(res.status());
 
     res = in.get_size();
-    ASSERT_ERROR(res.status());
-
-    res = in.position();
     ASSERT_ERROR(res.status());
 
     ASSERT_ERROR(in.close());

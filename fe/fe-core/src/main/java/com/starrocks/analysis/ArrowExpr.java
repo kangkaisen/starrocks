@@ -1,4 +1,17 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.analysis;
 
@@ -7,6 +20,7 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.sql.ast.AstVisitor;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
+import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.thrift.TExprNode;
 
 /**
@@ -16,6 +30,11 @@ import com.starrocks.thrift.TExprNode;
 public class ArrowExpr extends Expr {
 
     public ArrowExpr(Expr left, Expr right) {
+        this(left, right, NodePosition.ZERO);
+    }
+
+    public ArrowExpr(Expr left, Expr right, NodePosition pos) {
+        super(pos);
         this.children.add(left);
         this.children.add(right);
     }
@@ -24,12 +43,12 @@ public class ArrowExpr extends Expr {
         super(rhs);
     }
 
-    private Expr getItem() {
+    public Expr getItem() {
         Preconditions.checkState(getChildren().size() == 2);
         return getChild(0);
     }
 
-    private Expr getKey() {
+    public Expr getKey() {
         Preconditions.checkState(getChildren().size() == 2);
         return getChild(1);
     }

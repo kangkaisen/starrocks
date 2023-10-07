@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/catalog/PartitionKey.java
 
@@ -29,27 +42,55 @@ import com.starrocks.analysis.IntLiteral;
 import com.starrocks.analysis.LargeIntLiteral;
 import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.analysis.MaxLiteral;
-import com.starrocks.analysis.PartitionValue;
+import com.starrocks.analysis.NullLiteral;
+import com.starrocks.analysis.StringLiteral;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.sql.ast.PartitionValue;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Calendar;
 import java.util.List;
 
 public class PartitionKey implements Comparable<PartitionKey>, Writable {
     private static final Logger LOG = LogManager.getLogger(PartitionKey.class);
     private List<LiteralExpr> keys;
     private List<PrimitiveType> types;
+    // Records the string corresponding to partition value when the partition value is null
+    // for hive, it's __HIVE_DEFAULT_PARTITION__
+    // for hudi， it's __HIVE_DEFAULT_PARTITION__ or default
+    private String nullPartitionValue = "";
+
+    private static final DateLiteral SHADOW_DATE_LITERAL = new DateLiteral(0, 0, 0);
+    private static final DateLiteral SHADOW_DATETIME_LITERAL = new DateLiteral(0, 0, 0, 0, 0, 0, 0);
 
     // constructor for partition prune
     public PartitionKey() {
         keys = Lists.newArrayList();
         types = Lists.newArrayList();
+    }
+
+    // used for UT
+    public PartitionKey(List<LiteralExpr> keyValue, List<PrimitiveType> keyType) {
+        keys = keyValue;
+        types = keyType;
+    }
+
+    public void setNullPartitionValue(String nullPartitionValue) {
+        this.nullPartitionValue = nullPartitionValue;
+    }
+
+    public String getNullPartitionValue() {
+        return nullPartitionValue;
     }
 
     // Factory methods
@@ -58,6 +99,28 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
         PartitionKey partitionKey = new PartitionKey();
         for (Column column : columns) {
             partitionKey.keys.add(LiteralExpr.createInfinity(Type.fromPrimitiveType(column.getPrimitiveType()), isMax));
+            partitionKey.types.add(column.getPrimitiveType());
+        }
+        return partitionKey;
+    }
+
+    public static PartitionKey createShadowPartitionKey(List<Column> columns)
+            throws AnalysisException {
+        PartitionKey partitionKey = new PartitionKey();
+        for (Column column : columns) {
+            PrimitiveType primitiveType = column.getPrimitiveType();
+            LiteralExpr shadowLiteral;
+            switch (primitiveType) {
+                case DATE:
+                    shadowLiteral = SHADOW_DATE_LITERAL;
+                    break;
+                case DATETIME:
+                    shadowLiteral = SHADOW_DATETIME_LITERAL;
+                    break;
+                default:
+                    throw new AnalysisException("Unsupported shadow partition type:" + primitiveType);
+            }
+            partitionKey.keys.add(shadowLiteral);
             partitionKey.types.add(column.getPrimitiveType());
         }
         return partitionKey;
@@ -82,6 +145,20 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
         }
 
         Preconditions.checkState(partitionKey.keys.size() == columns.size());
+        return partitionKey;
+    }
+
+    public static PartitionKey ofDateTime(LocalDateTime dateTime) throws AnalysisException {
+        PartitionKey partitionKey = new PartitionKey();
+        partitionKey.keys.add(new DateLiteral(dateTime, Type.DATETIME));
+        partitionKey.types.add(PrimitiveType.DATETIME);
+        return partitionKey;
+    }
+
+    public static PartitionKey ofDate(LocalDate date) throws AnalysisException {
+        PartitionKey partitionKey = new PartitionKey();
+        partitionKey.keys.add(new DateLiteral(LocalDateTime.of(date, LocalTime.MIN), Type.DATE));
+        partitionKey.types.add(PrimitiveType.DATE);
         return partitionKey;
     }
 
@@ -159,6 +236,148 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
         return Integer.compare(thisKeyLen, otherKeyLen);
     }
 
+    public PartitionKey predecessor() {
+        Preconditions.checkArgument(keys.size() == 1);
+        if (isMinValue() || isMaxValue()) {
+            return this;
+        }
+        LiteralExpr literal = keys.get(0);
+        PrimitiveType type = types.get(0);
+        PartitionKey key = new PartitionKey();
+
+        switch (type) {
+            case TINYINT:
+            case SMALLINT:
+            case INT:
+            case BIGINT: {
+                IntLiteral intLiteral = (IntLiteral) literal;
+                final long minValue = -(1L << ((type.getSlotSize() << 3) - 1));
+                long pred = intLiteral.getValue();
+                pred -= pred > minValue ? 1L : 0L;
+                key.pushColumn(new IntLiteral(pred, Type.fromPrimitiveType(type)), type);
+                return key;
+            }
+            case LARGEINT: {
+                LargeIntLiteral largeIntLiteral = (LargeIntLiteral) literal;
+                final BigInteger minValue = BigInteger.ONE.shiftLeft(127).negate();
+                BigInteger pred = largeIntLiteral.getValue();
+                pred = pred.subtract(pred.compareTo(minValue) > 0 ? BigInteger.ONE : BigInteger.ZERO);
+                try {
+                    key.pushColumn(new LargeIntLiteral(pred.toString()), type);
+                    return key;
+                } catch (Exception ignored) {
+                    Preconditions.checkArgument(false, "Never reach here");
+                }
+            }
+            case DATE:
+            case DATETIME: {
+                DateLiteral dateLiteral = (DateLiteral) literal;
+                Calendar calendar = Calendar.getInstance();
+                int year = (int) dateLiteral.getYear();
+                int mon = (int) dateLiteral.getMonth() - 1;
+                int day = (int) dateLiteral.getDay();
+                int hour = (int) dateLiteral.getHour();
+                int min = (int) dateLiteral.getMinute();
+                int sec = (int) dateLiteral.getSecond();
+                calendar.set(year, mon, day, hour, min, sec);
+                calendar.add(type == PrimitiveType.DATE ? Calendar.DATE : Calendar.SECOND, -1);
+                year = calendar.get(Calendar.YEAR);
+                mon = calendar.get(Calendar.MONTH) + 1;
+                day = calendar.get(Calendar.DATE);
+                hour = calendar.get(Calendar.HOUR_OF_DAY);
+                min = calendar.get(Calendar.MINUTE);
+                sec = calendar.get(Calendar.SECOND);
+                if (type == PrimitiveType.DATE) {
+                    dateLiteral = new DateLiteral(year, mon, day);
+                } else {
+                    dateLiteral = new DateLiteral(year, mon, day, hour, min, sec, 0);
+                }
+                key.pushColumn(dateLiteral, type);
+                return key;
+            }
+            case CHAR:
+            case VARCHAR: {
+                StringLiteral stringLiteral = (StringLiteral) literal;
+                key.pushColumn(new StringLiteral(stringLiteral.getStringValue()), type);
+                return key;
+            }
+            default:
+                Preconditions.checkArgument(false, "Never reach here");
+                return null;
+        }
+    }
+
+    public PartitionKey successor() {
+        Preconditions.checkArgument(keys.size() == 1);
+        if (isMaxValue()) {
+            return this;
+        }
+        LiteralExpr literal = keys.get(0);
+        PrimitiveType type = types.get(0);
+        PartitionKey key = new PartitionKey();
+
+        switch (type) {
+            case TINYINT:
+            case SMALLINT:
+            case INT:
+            case BIGINT: {
+                IntLiteral intLiteral = (IntLiteral) literal;
+                final long maxValue = (1L << ((type.getSlotSize() << 3) - 1)) - 1L;
+                long succ = intLiteral.getValue();
+                succ += succ < maxValue ? 1L : 0L;
+                key.pushColumn(new IntLiteral(succ, Type.fromPrimitiveType(type)), type);
+                return key;
+            }
+            case LARGEINT: {
+                LargeIntLiteral largeIntLiteral = (LargeIntLiteral) literal;
+                final BigInteger maxValue = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+                BigInteger succ = largeIntLiteral.getValue();
+                succ = succ.add(succ.compareTo(maxValue) < 0 ? BigInteger.ONE : BigInteger.ZERO);
+                try {
+                    key.pushColumn(new LargeIntLiteral(succ.toString()), type);
+                    return key;
+                } catch (Exception ignored) {
+                    Preconditions.checkArgument(false, "Never reach here");
+                }
+            }
+            case DATE:
+            case DATETIME: {
+                DateLiteral dateLiteral = (DateLiteral) literal;
+                Calendar calendar = Calendar.getInstance();
+                int year = (int) dateLiteral.getYear();
+                int mon = (int) dateLiteral.getMonth() - 1;
+                int day = (int) dateLiteral.getDay();
+                int hour = (int) dateLiteral.getHour();
+                int min = (int) dateLiteral.getMinute();
+                int sec = (int) dateLiteral.getSecond();
+                calendar.set(year, mon, day, hour, min, sec);
+                calendar.add(type == PrimitiveType.DATE ? Calendar.DATE : Calendar.SECOND, 1);
+                year = calendar.get(Calendar.YEAR);
+                mon = calendar.get(Calendar.MONTH) + 1;
+                day = calendar.get(Calendar.DATE);
+                hour = calendar.get(Calendar.HOUR_OF_DAY);
+                min = calendar.get(Calendar.MINUTE);
+                sec = calendar.get(Calendar.SECOND);
+                if (type == PrimitiveType.DATE) {
+                    dateLiteral = new DateLiteral(year, mon, day);
+                } else {
+                    dateLiteral = new DateLiteral(year, mon, day, hour, min, sec, 0);
+                }
+                key.pushColumn(dateLiteral, type);
+                return key;
+            }
+            case CHAR:
+            case VARCHAR: {
+                StringLiteral stringLiteral = (StringLiteral) literal;
+                key.pushColumn(new StringLiteral(stringLiteral.getStringValue()), type);
+                return key;
+            }
+            default:
+                Preconditions.checkArgument(false, "Never reach here");
+                return null;
+        }
+    }
+
     // return: ("100", "200", "300")
     public String toSql() {
         StringBuilder sb = new StringBuilder("(");
@@ -170,11 +389,7 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
                 sb.append(value);
                 continue;
             } else {
-                value = "\"" + expr.getRealValue() + "\"";
-                if (expr instanceof DateLiteral) {
-                    DateLiteral dateLiteral = (DateLiteral) expr;
-                    value = dateLiteral.toSql();
-                }
+                value = "\"" + expr.getStringValue() + "\"";
             }
             sb.append(value);
 
@@ -201,11 +416,7 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
             if (expr == MaxLiteral.MAX_VALUE) {
                 value = expr.toSql();
             } else {
-                value = expr.getRealValue();
-                if (expr instanceof DateLiteral) {
-                    DateLiteral dateLiteral = (DateLiteral) expr;
-                    value = dateLiteral.getStringValue();
-                }
+                value = expr.getStringValue();
             }
             if (keys.size() - 1 == i) {
                 builder.append(value);
@@ -217,6 +428,36 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
         builder.append("]; ");
 
         return builder.toString();
+    }
+
+    public static PartitionKey fromString(String partitionKey) {
+        String[] partitionKeyArray = partitionKey.split(";");
+        String types = partitionKeyArray[0];
+        String keys = partitionKeyArray[1];
+
+        String typeContent = types.substring(types.indexOf("[") + 1, types.indexOf("]"));
+        String keyContent = keys.substring(keys.indexOf("[") + 1, keys.indexOf("]"));
+        if (typeContent.isEmpty() || keyContent.isEmpty()) {
+            return new PartitionKey();
+        }
+
+        String[] typeArray = typeContent.split(",");
+        String[] keyArray = keyContent.split(",");
+        Preconditions.checkState(typeArray.length == keyArray.length);
+
+        List<LiteralExpr> keyList = Lists.newArrayList();
+        List<PrimitiveType> typeList = Lists.newArrayList();
+        for (int index = 0; index < typeArray.length; ++index) {
+            PrimitiveType type = PrimitiveType.valueOf(typeArray[index].toUpperCase());
+            LiteralExpr expr = NullLiteral.create(Type.fromPrimitiveType(type));
+            try {
+                expr = LiteralExpr.create(keyArray[index], Type.fromPrimitiveType(type));
+            } catch (AnalysisException ignored) {
+            }
+            typeList.add(type);
+            keyList.add(expr);
+        }
+        return new PartitionKey(keyList, typeList);
     }
 
     @Override
@@ -263,6 +504,10 @@ public class PartitionKey implements Comparable<PartitionKey>, Writable {
                     case DATE:
                     case DATETIME:
                         literal = DateLiteral.read(in);
+                        break;
+                    case CHAR:
+                    case VARCHAR:
+                        literal =  StringLiteral.read(in);
                         break;
                     default:
                         throw new IOException("type[" + type.name() + "] not supported: ");

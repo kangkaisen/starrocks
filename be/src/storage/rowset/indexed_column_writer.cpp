@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/indexed_column_writer.cpp
 
@@ -26,8 +39,7 @@
 #include <utility>
 
 #include "common/logging.h"
-#include "env/env.h"
-#include "storage/fs/block_manager.h"
+#include "fs/fs.h"
 #include "storage/key_coder.h"
 #include "storage/rowset/encoding_info.h"
 #include "storage/rowset/index_page.h"
@@ -36,16 +48,16 @@
 #include "storage/rowset/page_io.h"
 #include "storage/rowset/page_pointer.h"
 #include "storage/types.h"
-#include "util/block_compression.h"
 #include "util/coding.h"
+#include "util/compression/block_compression.h"
 
 namespace starrocks {
 
 IndexedColumnWriter::IndexedColumnWriter(const IndexedColumnWriterOptions& options, TypeInfoPtr typeinfo,
-                                         fs::WritableBlock* wblock)
+                                         WritableFile* wfile)
         : _options(options),
           _typeinfo(std::move(typeinfo)),
-          _wblock(wblock),
+          _wfile(wfile),
           _num_values(0),
           _num_data_pages(0),
           _validx_key_coder(nullptr),
@@ -111,13 +123,13 @@ Status IndexedColumnWriter::_finish_current_data_page() {
     footer.mutable_data_page_footer()->set_num_values(num_values_in_page);
     footer.mutable_data_page_footer()->set_nullmap_size(0);
 
-    RETURN_IF_ERROR(PageIO::compress_and_write_page(_compress_codec, _options.compression_min_space_saving, _wblock,
+    RETURN_IF_ERROR(PageIO::compress_and_write_page(_compress_codec, _options.compression_min_space_saving, _wfile,
                                                     {*page_body}, footer, &_last_data_page));
     _num_data_pages++;
 
     if (_options.write_ordinal_index) {
         std::string key;
-        KeyCoderTraits<OLAP_FIELD_TYPE_UNSIGNED_BIGINT>::full_encode_ascending(&first_ordinal, &key);
+        KeyCoderTraits<TYPE_UNSIGNED_BIGINT>::full_encode_ascending(&first_ordinal, &key);
         _ordinal_index_builder->add(key, _last_data_page);
     }
 
@@ -157,7 +169,7 @@ Status IndexedColumnWriter::_flush_index(IndexPageBuilder* index_builder, BTreeM
         index_builder->finish(&page_body, &page_footer);
 
         PagePointer pp;
-        RETURN_IF_ERROR(PageIO::compress_and_write_page(_compress_codec, _options.compression_min_space_saving, _wblock,
+        RETURN_IF_ERROR(PageIO::compress_and_write_page(_compress_codec, _options.compression_min_space_saving, _wfile,
                                                         {page_body.slice()}, page_footer, &pp));
 
         meta->set_is_root_data_page(false);

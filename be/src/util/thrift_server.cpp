@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/util/thrift_server.cpp
 
@@ -33,11 +46,11 @@
 #include <thrift/transport/TSocket.h>
 
 #include <condition_variable>
-#include <memory>
 #include <sstream>
 #include <thread>
 #include <utility>
 
+#include "common/config.h"
 #include "util/thread.h"
 
 namespace starrocks {
@@ -47,7 +60,7 @@ namespace starrocks {
 // correctly.
 class ThriftServer::ThriftServerEventProcessor : public apache::thrift::server::TServerEventHandler {
 public:
-    ThriftServerEventProcessor(ThriftServer* thrift_server) : _thrift_server(thrift_server), _signal_fired(false) {}
+    ThriftServerEventProcessor(ThriftServer* thrift_server) : _thrift_server(thrift_server) {}
 
     // friendly to code style
     ~ThriftServerEventProcessor() override = default;
@@ -88,7 +101,7 @@ private:
     ThriftServer* _thrift_server;
 
     // Guards against spurious condition variable wakeups
-    bool _signal_fired;
+    bool _signal_fired{false};
 
     // The time, in milliseconds, to wait for a server to come up
     static constexpr int TIMEOUT_MS = 2500;
@@ -121,7 +134,7 @@ Status ThriftServer::ThriftServerEventProcessor::start_and_wait_for_server() {
 
     // _started == true only if preServe was called. May be false if there was an exception
     // after preServe that was caught by Supervise, causing it to reset the error condition.
-    if (_thrift_server->_started == false) {
+    if (!_thrift_server->_started) {
         std::stringstream ss;
         ss << "ThriftServer '" << _thrift_server->_name << "' (on port: " << _thrift_server->_port
            << ") did not start correctly ";
@@ -194,10 +207,6 @@ void ThriftServer::ThriftServerEventProcessor::preServe() {
 // thrift server is currently serving a request on the current thread.
 __thread ThriftServer::SessionKey* _session_key;
 
-ThriftServer::SessionKey* ThriftServer::get_thread_session_key() {
-    return _session_key;
-}
-
 void* ThriftServer::ThriftServerEventProcessor::createContext(
         std::shared_ptr<apache::thrift::protocol::TProtocol> input,
         std::shared_ptr<apache::thrift::protocol::TProtocol> output) {
@@ -238,10 +247,6 @@ void* ThriftServer::ThriftServerEventProcessor::createContext(
         _thrift_server->_session_keys[key_ptr.get()] = key_ptr;
     }
 
-    if (_thrift_server->_session_handler != nullptr) {
-        _thrift_server->_session_handler->session_start(*_session_key);
-    }
-
     if (_thrift_server->_metrics_enabled) {
         _thrift_server->_connections_total->increment(1L);
         _thrift_server->_current_connections->increment(1L);
@@ -263,10 +268,6 @@ void ThriftServer::ThriftServerEventProcessor::deleteContext(
         std::shared_ptr<apache::thrift::protocol::TProtocol> output) {
     _session_key = (SessionKey*)serverContext;
 
-    if (_thrift_server->_session_handler != nullptr) {
-        _thrift_server->_session_handler->session_end(*_session_key);
-    }
-
     {
         std::lock_guard<std::mutex> _l(_thrift_server->_session_keys_lock);
         _thrift_server->_session_keys.erase(_session_key);
@@ -286,8 +287,7 @@ ThriftServer::ThriftServer(const std::string& name, std::shared_ptr<apache::thri
           _name(name),
           _server_thread(nullptr),
           _server(nullptr),
-          _processor(std::move(processor)),
-          _session_handler(nullptr) {
+          _processor(std::move(processor)) {
     if (metrics != nullptr) {
         _metrics_enabled = true;
         _current_connections = std::make_unique<IntGauge>(MetricUnit::CONNECTIONS);
@@ -304,11 +304,13 @@ ThriftServer::ThriftServer(const std::string& name, std::shared_ptr<apache::thri
 
 Status ThriftServer::start() {
     DCHECK(!_started);
-    std::shared_ptr<apache::thrift::protocol::TProtocolFactory> protocol_factory(
-            new apache::thrift::protocol::TBinaryProtocolFactory());
+    auto protocol_factory = std::make_shared<apache::thrift::protocol::TBinaryProtocolFactory>();
+    protocol_factory->setStrict(config::thrift_rpc_strict_mode, true);
+    protocol_factory->setStringSizeLimit(config::thrift_rpc_max_body_size);
+
+    auto thread_factory = std::make_shared<apache::thrift::concurrency::ThreadFactory>();
+
     std::shared_ptr<apache::thrift::concurrency::ThreadManager> thread_mgr;
-    std::shared_ptr<apache::thrift::concurrency::ThreadFactory> thread_factory(
-            new apache::thrift::concurrency::ThreadFactory());
     std::shared_ptr<apache::thrift::transport::TServerTransport> fe_server_transport;
     std::shared_ptr<apache::thrift::transport::TTransportFactory> transport_factory;
 
@@ -372,7 +374,7 @@ Status ThriftServer::start() {
 
     RETURN_IF_ERROR(event_processor->start_and_wait_for_server());
 
-    LOG(INFO) << "ThriftServer '" << _name << "' started on port: " << _port;
+    LOG(INFO) << _name << " has started listening port on " << _port;
 
     DCHECK(_started);
     return Status::OK();
@@ -385,18 +387,7 @@ void ThriftServer::stop() {
 
 void ThriftServer::join() {
     DCHECK(_server_thread != nullptr);
-    DCHECK(_started);
     _server_thread->join();
 }
 
-void ThriftServer::stop_for_testing() {
-    DCHECK(_server_thread != nullptr);
-    DCHECK(_server);
-    DCHECK_EQ(_server_type, THREADED);
-    _server->stop();
-
-    if (_started) {
-        join();
-    }
-}
 } // namespace starrocks

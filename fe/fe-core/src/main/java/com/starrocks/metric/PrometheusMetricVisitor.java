@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/metric/PrometheusMetricVisitor.java
 
@@ -24,12 +37,12 @@ package com.starrocks.metric;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Snapshot;
 import com.google.common.base.Joiner;
-import com.starrocks.catalog.Catalog;
 import com.starrocks.monitor.jvm.JvmStats;
 import com.starrocks.monitor.jvm.JvmStats.BufferPool;
 import com.starrocks.monitor.jvm.JvmStats.GarbageCollector;
 import com.starrocks.monitor.jvm.JvmStats.MemoryPool;
 import com.starrocks.monitor.jvm.JvmStats.Threads;
+import com.starrocks.server.GlobalStateMgr;
 
 import java.util.HashSet;
 import java.util.Iterator;
@@ -204,19 +217,20 @@ public class PrometheusMetricVisitor extends MetricVisitor {
         final String NODE_INFO = "node_info";
         sb.append(Joiner.on(" ").join(TYPE, NODE_INFO, "gauge\n"));
         sb.append(NODE_INFO).append("{type=\"fe_node_num\", state=\"total\"} ")
-                .append(Catalog.getCurrentCatalog().getFrontends(null).size()).append("\n");
+                .append(GlobalStateMgr.getCurrentState().getFrontends(null).size()).append("\n");
         sb.append(NODE_INFO).append("{type=\"be_node_num\", state=\"total\"} ")
-                .append(Catalog.getCurrentSystemInfo().getBackendIds(false).size()).append("\n");
+                .append(GlobalStateMgr.getCurrentSystemInfo().getTotalBackendNumber()).append("\n");
         sb.append(NODE_INFO).append("{type=\"be_node_num\", state=\"alive\"} ")
-                .append(Catalog.getCurrentSystemInfo().getBackendIds(true).size()).append("\n");
+                .append(GlobalStateMgr.getCurrentSystemInfo().getAliveBackendNumber()).append("\n");
         sb.append(NODE_INFO).append("{type=\"be_node_num\", state=\"decommissioned\"} ")
-                .append(Catalog.getCurrentSystemInfo().getDecommissionedBackendIds().size()).append("\n");
+                .append(GlobalStateMgr.getCurrentSystemInfo().getDecommissionedBackendIds().size()).append("\n");
         sb.append(NODE_INFO).append("{type=\"broker_node_num\", state=\"dead\"} ").append(
-                Catalog.getCurrentCatalog().getBrokerMgr().getAllBrokers().stream().filter(b -> !b.isAlive).count())
+                        GlobalStateMgr.getCurrentState().getBrokerMgr().getAllBrokers().stream().filter(b -> !b.isAlive)
+                                .count())
                 .append("\n");
 
-        // only master FE has this metrics, to help the Grafana knows who is the master
-        if (Catalog.getCurrentCatalog().isMaster()) {
+        // only master FE has this metrics, to help the Grafana knows who is the leader
+        if (GlobalStateMgr.getCurrentState().isLeader()) {
             sb.append(NODE_INFO).append("{type=\"is_master\"} ").append(1).append("\n");
         }
         return;

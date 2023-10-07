@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/runtime/runtime_state.cpp
 
@@ -33,12 +46,14 @@
 #include "common/status.h"
 #include "exec/exec_node.h"
 #include "exec/pipeline/query_context.h"
+#include "fs/fs_util.h"
+#include "runtime/datetime_value.h"
 #include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
 #include "runtime/load_path_mgr.h"
 #include "runtime/mem_tracker.h"
+#include "runtime/query_statistics.h"
 #include "runtime/runtime_filter_worker.h"
-#include "util/load_error_hub.h"
 #include "util/pretty_printer.h"
 #include "util/timezone_utils.h"
 #include "util/uid_util.h"
@@ -52,13 +67,15 @@ RuntimeState::RuntimeState(const TUniqueId& fragment_instance_id, const TQueryOp
           _obj_pool(new ObjectPool()),
           _is_cancelled(false),
           _per_fragment_instance_idx(0),
-          _num_rows_load_total(0),
+          _num_rows_load_total_from_source(0),
+          _num_bytes_load_from_source(0),
+          _num_rows_load_sink(0),
+          _num_bytes_load_sink(0),
           _num_rows_load_filtered(0),
           _num_rows_load_unselected(0),
           _num_print_error_rows(0) {
     _profile = std::make_shared<RuntimeProfile>("Fragment " + print_id(fragment_instance_id));
-    Status status = init(fragment_instance_id, query_options, query_globals, exec_env);
-    DCHECK(status.ok());
+    _init(fragment_instance_id, query_options, query_globals, exec_env);
 }
 
 RuntimeState::RuntimeState(const TUniqueId& query_id, const TUniqueId& fragment_instance_id,
@@ -66,15 +83,16 @@ RuntimeState::RuntimeState(const TUniqueId& query_id, const TUniqueId& fragment_
         : _unreported_error_idx(0),
           _query_id(query_id),
           _obj_pool(new ObjectPool()),
-          _is_cancelled(false),
           _per_fragment_instance_idx(0),
-          _num_rows_load_total(0),
+          _num_rows_load_total_from_source(0),
+          _num_bytes_load_from_source(0),
+          _num_rows_load_sink(0),
+          _num_bytes_load_sink(0),
           _num_rows_load_filtered(0),
           _num_rows_load_unselected(0),
           _num_print_error_rows(0) {
     _profile = std::make_shared<RuntimeProfile>("Fragment " + print_id(fragment_instance_id));
-    Status status = init(fragment_instance_id, query_options, query_globals, exec_env);
-    DCHECK(status.ok());
+    _init(fragment_instance_id, query_options, query_globals, exec_env);
 }
 
 RuntimeState::RuntimeState(const TQueryGlobals& query_globals)
@@ -99,6 +117,13 @@ RuntimeState::RuntimeState(const TQueryGlobals& query_globals)
     TimezoneUtils::find_cctz_time_zone(_timezone, _timezone_obj);
 }
 
+RuntimeState::RuntimeState(ExecEnv* exec_env) : _exec_env(exec_env) {
+    _profile = std::make_shared<RuntimeProfile>("<unnamed>");
+    _query_options.batch_size = DEFAULT_CHUNK_SIZE;
+    _timezone = TimezoneUtils::default_time_zone;
+    _timestamp_ms = 0;
+}
+
 RuntimeState::~RuntimeState() {
     // close error log file
     if (_error_log_file != nullptr && _error_log_file->is_open()) {
@@ -106,18 +131,15 @@ RuntimeState::~RuntimeState() {
         delete _error_log_file;
         _error_log_file = nullptr;
     }
-
-    if (_error_hub != nullptr) {
-        _error_hub->close();
+    // close rejected record file
+    if (_rejected_record_file != nullptr && _rejected_record_file->is_open()) {
+        _rejected_record_file->close();
     }
-
-    if (_exec_env != nullptr && _exec_env->thread_mgr() != nullptr) {
-        _exec_env->thread_mgr()->unregister_pool(_resource_pool);
-    }
+    _process_status.permit_unchecked_error();
 }
 
-Status RuntimeState::init(const TUniqueId& fragment_instance_id, const TQueryOptions& query_options,
-                          const TQueryGlobals& query_globals, ExecEnv* exec_env) {
+void RuntimeState::_init(const TUniqueId& fragment_instance_id, const TQueryOptions& query_options,
+                         const TQueryGlobals& query_globals, ExecEnv* exec_env) {
     _fragment_instance_id = fragment_instance_id;
     _query_options = query_options;
     if (query_globals.__isset.time_zone) {
@@ -155,30 +177,38 @@ Status RuntimeState::init(const TUniqueId& fragment_instance_id, const TQueryOpt
         _query_options.batch_size = DEFAULT_CHUNK_SIZE;
     }
 
-    // Register with the thread mgr
-    if (exec_env != nullptr) {
-        _resource_pool = exec_env->thread_mgr()->register_pool();
-        DCHECK(_resource_pool != nullptr);
-    }
     _runtime_filter_port = _obj_pool->add(new RuntimeFilterPort(this));
-
-    return Status::OK();
 }
 
 void RuntimeState::init_mem_trackers(const TUniqueId& query_id, MemTracker* parent) {
     bool has_query_mem_tracker = _query_options.__isset.mem_limit && (_query_options.mem_limit > 0);
     int64_t bytes_limit = has_query_mem_tracker ? _query_options.mem_limit : -1;
-    auto* mem_tracker_counter = ADD_COUNTER(_profile.get(), "MemoryLimit", TUnit::BYTES);
+    auto* mem_tracker_counter =
+            ADD_COUNTER_SKIP_MERGE(_profile.get(), "MemoryLimit", TUnit::BYTES, TCounterMergeType::SKIP_ALL);
     mem_tracker_counter->set(bytes_limit);
 
     if (parent == nullptr) {
-        parent = _exec_env->query_pool_mem_tracker();
+        parent = GlobalEnv::GetInstance()->query_pool_mem_tracker();
     }
 
     _query_mem_tracker =
             std::make_shared<MemTracker>(MemTracker::QUERY, bytes_limit, runtime_profile()->name(), parent);
-    _instance_mem_tracker =
-            std::make_shared<MemTracker>(_profile.get(), -1, runtime_profile()->name(), _query_mem_tracker.get());
+    _instance_mem_tracker = std::make_shared<MemTracker>(_profile.get(), std::make_tuple(true, true, true), "Instance",
+                                                         -1, runtime_profile()->name(), _query_mem_tracker.get());
+    _instance_mem_pool = std::make_unique<MemPool>();
+}
+
+void RuntimeState::init_mem_trackers(const std::shared_ptr<MemTracker>& query_mem_tracker) {
+    DCHECK(query_mem_tracker != nullptr);
+
+    auto* mem_tracker_counter =
+            ADD_COUNTER_SKIP_MERGE(_profile.get(), "QueryMemoryLimit", TUnit::BYTES, TCounterMergeType::SKIP_ALL);
+    mem_tracker_counter->set(query_mem_tracker->limit());
+
+    // all fragment instances in a BE shared a common query_mem_tracker.
+    _query_mem_tracker = query_mem_tracker;
+    _instance_mem_tracker = std::make_shared<MemTracker>(_profile.get(), std::make_tuple(true, true, true), "Instance",
+                                                         -1, runtime_profile()->name(), _query_mem_tracker.get());
     _instance_mem_pool = std::make_unique<MemPool>();
 }
 
@@ -228,6 +258,27 @@ void RuntimeState::get_unreported_errors(std::vector<std::string>* new_errors) {
     }
 }
 
+bool RuntimeState::use_page_cache() {
+    if (config::disable_storage_page_cache) {
+        return false;
+    }
+    if (_query_options.__isset.use_page_cache) {
+        return _query_options.use_page_cache;
+    }
+    return true;
+}
+
+bool RuntimeState::use_column_pool() const {
+    if (config::disable_column_pool) {
+        return false;
+    }
+
+    if (_query_options.__isset.use_column_pool) {
+        return _query_options.use_column_pool;
+    }
+    return true;
+}
+
 Status RuntimeState::set_mem_limit_exceeded(MemTracker* tracker, int64_t failed_allocation_size,
                                             const std::string* msg) {
     DCHECK_GE(failed_allocation_size, 0);
@@ -265,10 +316,12 @@ Status RuntimeState::check_query_state(const std::string& msg) {
 }
 
 Status RuntimeState::check_mem_limit(const std::string& msg) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wnonnull-compare"
+    DIAGNOSTIC_PUSH
+#if defined(__GNUC__) && !defined(__clang__)
+    DIAGNOSTIC_IGNORE("-Wnonnull-compare")
+#endif
     RETURN_IF_LIMIT_EXCEEDED(this, msg);
-#pragma pop
+    DIAGNOSTIC_POP
     return Status::OK();
 }
 
@@ -288,7 +341,33 @@ Status RuntimeState::create_error_log_file() {
     return Status::OK();
 }
 
+Status RuntimeState::create_rejected_record_file() {
+    auto rejected_record_absolute_path = _exec_env->load_path_mgr()->get_load_rejected_record_absolute_path(
+            "", _db, _load_label, _txn_id, _fragment_instance_id);
+    RETURN_IF_ERROR(fs::create_directories(std::filesystem::path(rejected_record_absolute_path).parent_path()));
+
+    _rejected_record_file = std::make_unique<std::ofstream>(rejected_record_absolute_path, std::ifstream::out);
+    if (!_rejected_record_file->is_open()) {
+        std::stringstream error_msg;
+        error_msg << "Fail to open rejected record file: [" << rejected_record_absolute_path << "].";
+        LOG(WARNING) << error_msg.str();
+        return Status::InternalError(error_msg.str());
+    }
+    LOG(WARNING) << "rejected record file path " << rejected_record_absolute_path;
+    _rejected_record_file_path = rejected_record_absolute_path;
+    return Status::OK();
+}
+
+bool RuntimeState::has_reached_max_error_msg_num(bool is_summary) {
+    if (_num_print_error_rows.load(std::memory_order_relaxed) > MAX_ERROR_NUM && !is_summary) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 void RuntimeState::append_error_msg_to_file(const std::string& line, const std::string& error_msg, bool is_summary) {
+    std::lock_guard<std::mutex> l(_error_log_lock);
     if (_query_options.query_type != TQueryType::LOAD) {
         return;
     }
@@ -323,23 +402,33 @@ void RuntimeState::append_error_msg_to_file(const std::string& line, const std::
 
     if (!out.str().empty()) {
         (*_error_log_file) << out.str() << std::endl;
-        export_load_error(out.str());
     }
 }
 
-const int64_t HUB_MAX_ERROR_NUM = 10;
-
-void RuntimeState::export_load_error(const std::string& err_msg) {
-    if (_error_hub == nullptr) {
-        if (_load_error_hub_info == nullptr) {
-            return;
-        }
-        LoadErrorHub::create_hub(_exec_env, _load_error_hub_info.get(), _error_log_file_path, &_error_hub);
+void RuntimeState::append_rejected_record_to_file(const std::string& record, const std::string& error_msg,
+                                                  const std::string& source) {
+    std::lock_guard<std::mutex> l(_rejected_record_lock);
+    // Only load job need to write rejected record
+    if (_query_options.query_type != TQueryType::LOAD) {
+        return;
     }
 
-    LoadErrorHub::ErrorMsg err(_load_job_id, err_msg);
-    // TODO(lingbin): think if should check return value?
-    _error_hub->export_error(err);
+    // If file havn't been opened, open it here
+    if (_rejected_record_file == nullptr) {
+        Status status = create_rejected_record_file();
+        if (!status.ok()) {
+            LOG(WARNING) << "Create rejected record file failed. because: " << status.get_error_msg();
+            if (_rejected_record_file != nullptr) {
+                _rejected_record_file->close();
+                _rejected_record_file.reset();
+            }
+            return;
+        }
+    }
+    _num_log_rejected_rows.fetch_add(1, std::memory_order_relaxed);
+
+    // TODO(meegoo): custom delimiter
+    (*_rejected_record_file) << record << "\t" << error_msg << "\t" << source << std::endl;
 }
 
 int64_t RuntimeState::get_load_mem_limit() const {
@@ -349,31 +438,32 @@ int64_t RuntimeState::get_load_mem_limit() const {
     return 0;
 }
 
-const vectorized::GlobalDictMaps& RuntimeState::get_query_global_dict_map() const {
+const GlobalDictMaps& RuntimeState::get_query_global_dict_map() const {
     return _query_global_dicts;
 }
 
-const vectorized::GlobalDictMaps& RuntimeState::get_load_global_dict_map() const {
+const GlobalDictMaps& RuntimeState::get_load_global_dict_map() const {
     return _load_global_dicts;
 }
 
-vectorized::GlobalDictMaps* RuntimeState::mutable_query_global_dict_map() {
+GlobalDictMaps* RuntimeState::mutable_query_global_dict_map() {
     return &_query_global_dicts;
 }
 
 Status RuntimeState::init_query_global_dict(const GlobalDictLists& global_dict_list) {
-    return _build_global_dict(global_dict_list, &_query_global_dicts);
+    return _build_global_dict(global_dict_list, &_query_global_dicts, nullptr);
 }
 
 Status RuntimeState::init_load_global_dict(const GlobalDictLists& global_dict_list) {
-    return _build_global_dict(global_dict_list, &_load_global_dicts);
+    return _build_global_dict(global_dict_list, &_load_global_dicts, &_load_dict_versions);
 }
 
-Status RuntimeState::_build_global_dict(const GlobalDictLists& global_dict_list, vectorized::GlobalDictMaps* result) {
+Status RuntimeState::_build_global_dict(const GlobalDictLists& global_dict_list, GlobalDictMaps* result,
+                                        phmap::flat_hash_map<uint32_t, int64_t>* column_id_to_version) {
     for (const auto& global_dict : global_dict_list) {
         DCHECK_EQ(global_dict.ids.size(), global_dict.strings.size());
-        vectorized::GlobalDictMap dict_map;
-        vectorized::RGlobalDictMap rdict_map;
+        GlobalDictMap dict_map;
+        RGlobalDictMap rdict_map;
         int dict_sz = global_dict.ids.size();
         for (int i = 0; i < dict_sz; ++i) {
             const std::string& dict_key = global_dict.strings[i];
@@ -385,7 +475,29 @@ Status RuntimeState::_build_global_dict(const GlobalDictLists& global_dict_list,
             rdict_map.emplace(global_dict.ids[i], slice);
         }
         result->emplace(uint32_t(global_dict.columnId), std::make_pair(std::move(dict_map), std::move(rdict_map)));
+        if (column_id_to_version != nullptr) {
+            column_id_to_version->emplace(uint32_t(global_dict.columnId), global_dict.version);
+        }
     }
+    return Status::OK();
+}
+
+std::shared_ptr<QueryStatistics> RuntimeState::intermediate_query_statistic() {
+    return _query_ctx->intermediate_query_statistic();
+}
+
+std::shared_ptr<QueryStatisticsRecvr> RuntimeState::query_recv() {
+    return _query_ctx->maintained_query_recv();
+}
+
+std::atomic_int64_t* RuntimeState::mutable_total_spill_bytes() {
+    return _query_ctx->mutable_total_spill_bytes();
+}
+
+Status RuntimeState::reset_epoch() {
+    std::lock_guard<std::mutex> l(_tablet_infos_lock);
+    _tablet_commit_infos.clear();
+    _tablet_fail_infos.clear();
     return Status::OK();
 }
 

@@ -1,16 +1,29 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 
 package com.starrocks.sql.optimizer.rule.join;
 
 import com.google.common.base.Preconditions;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.Utils;
+import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.Operator;
 import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJoinOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
-import com.starrocks.sql.optimizer.rule.transformation.JoinPredicateUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,7 +39,7 @@ public class MultiJoinNode {
     // other operator like a group by or a full outer join.
     private final LinkedHashSet<OptExpression> atoms;
     private final List<ScalarOperator> predicates;
-    private Map<ColumnRefOperator, ScalarOperator> expressionMap;
+    private final Map<ColumnRefOperator, ScalarOperator> expressionMap;
 
     public MultiJoinNode(LinkedHashSet<OptExpression> atoms, List<ScalarOperator> predicates,
                          Map<ColumnRefOperator, ScalarOperator> expressionMap) {
@@ -45,6 +58,19 @@ public class MultiJoinNode {
 
     public Map<ColumnRefOperator, ScalarOperator> getExpressionMap() {
         return expressionMap;
+    }
+
+    public boolean checkDependsPredicate() {
+        // check join on-predicate depend on child join result. e.g.
+        // select * from t2 join (select abs(t0.v1) x1 from t0 join t1 on t0.v1 = t1.v1) on abs(t2.v1) = x1
+        ColumnRefSet checkColumns = new ColumnRefSet(this.expressionMap.keySet());
+
+        for (ScalarOperator value : expressionMap.values()) {
+            if (checkColumns.isIntersect(value.getUsedColumns())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static MultiJoinNode toMultiJoinNode(OptExpression node) {
@@ -67,7 +93,7 @@ public class MultiJoinNode {
         }
 
         LogicalJoinOperator joinOperator = (LogicalJoinOperator) operator;
-        if (!joinOperator.isInnerOrCrossJoin()) {
+        if (!joinOperator.isInnerOrCrossJoin() || !joinOperator.getJoinHint().isEmpty()) {
             atoms.add(node);
             return;
         }
@@ -79,7 +105,7 @@ public class MultiJoinNode {
          * means the predicate can't bind to any child, join reorder can't handle the predicate
          *
          * */
-        if (JoinPredicateUtils.isEqualBinaryPredicate(joinPredicate)) {
+        if (Utils.isEqualBinaryPredicate(joinPredicate)) {
             atoms.add(node);
             return;
         }
@@ -104,7 +130,7 @@ public class MultiJoinNode {
         flattenJoinNode(node.inputAt(0), atoms, predicates, expressionMap);
         flattenJoinNode(node.inputAt(1), atoms, predicates, expressionMap);
         predicates.addAll(Utils.extractConjuncts(joinOperator.getOnPredicate()));
-        Preconditions.checkState(!JoinPredicateUtils.isEqualBinaryPredicate(joinPredicate));
+        Preconditions.checkState(!Utils.isEqualBinaryPredicate(joinPredicate));
         predicates.addAll(Utils.extractConjuncts(joinPredicate));
     }
 }

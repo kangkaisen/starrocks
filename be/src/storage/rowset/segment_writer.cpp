@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/olap/rowset/segment_v2/segment_writer.cpp
 
@@ -22,19 +35,19 @@
 #include "storage/rowset/segment_writer.h"
 
 #include <memory>
+#include <utility>
 
 #include "column/chunk.h"
 #include "column/datum_tuple.h"
 #include "column/nullable_column.h"
 #include "common/logging.h" // LOG
-#include "env/env.h"        // Env
+#include "fs/fs.h"          // FileSystem
 #include "gen_cpp/segment.pb.h"
-#include "storage/fs/block_manager.h"
 #include "storage/rowset/column_writer.h" // ColumnWriter
 #include "storage/rowset/page_io.h"
-#include "storage/schema.h"
+#include "storage/seek_tuple.h"
 #include "storage/short_key_index.h"
-#include "storage/vectorized/seek_tuple.h"
+#include "types/logical_type.h"
 #include "util/crc32c.h"
 #include "util/faststring.h"
 #include "util/json.h"
@@ -44,13 +57,20 @@ namespace starrocks {
 const char* const k_segment_magic = "D0R1";
 const uint32_t k_segment_magic_length = 4;
 
-SegmentWriter::SegmentWriter(std::unique_ptr<fs::WritableBlock> wblock, uint32_t segment_id,
-                             const TabletSchema* tablet_schema, const SegmentWriterOptions& opts)
-        : _segment_id(segment_id), _tablet_schema(tablet_schema), _opts(opts), _wblock(std::move(wblock)) {
-    CHECK_NOTNULL(_wblock.get());
+SegmentWriter::SegmentWriter(std::unique_ptr<WritableFile> wfile, uint32_t segment_id, TabletSchemaCSPtr tablet_schema,
+                             SegmentWriterOptions opts)
+        : _segment_id(segment_id),
+          _tablet_schema(std::move(tablet_schema)),
+          _opts(std::move(opts)),
+          _wfile(std::move(wfile)) {
+    CHECK_NOTNULL(_wfile.get());
 }
 
-SegmentWriter::~SegmentWriter() {}
+SegmentWriter::~SegmentWriter() = default;
+
+std::string SegmentWriter::segment_path() const {
+    return _wfile->filename();
+}
 
 void SegmentWriter::_init_column_meta(ColumnMetaPB* meta, uint32_t column_id, const TabletColumn& column) {
     meta->set_column_id(column_id);
@@ -58,11 +78,15 @@ void SegmentWriter::_init_column_meta(ColumnMetaPB* meta, uint32_t column_id, co
     meta->set_type(column.type());
     meta->set_length(column.length());
     meta->set_encoding(DEFAULT_ENCODING);
-    meta->set_compression(LZ4_FRAME);
+    // For column_writer, data_page_body includes two slices: `encoded values` + `nullmap`.
+    // However, LZ4 doesn't support compressing multiple slices. In order to use LZ4, one solution is to
+    // copy the contents of the slice `nullmap` into the slice `encoded values`, but the cost of copying is still not small.
+    // Here we set the compression from _tablet_schema which given from CREATE TABLE statement.
+    meta->set_compression(_tablet_schema->compression_type());
     meta->set_is_nullable(column.is_nullable());
 
     // TODO(mofei) set the format_version from column
-    if (column.type() == OLAP_FIELD_TYPE_JSON) {
+    if (column.type() == TYPE_JSON) {
         JsonMetaPB* json_meta = meta->mutable_json_meta();
         json_meta->set_format_version(kJsonMetaDefaultFormatVersion);
     }
@@ -73,21 +97,20 @@ void SegmentWriter::_init_column_meta(ColumnMetaPB* meta, uint32_t column_id, co
 }
 
 Status SegmentWriter::init() {
+    return init(true);
+}
+
+Status SegmentWriter::init(bool has_key) {
     std::vector<uint32_t> all_column_indexes;
     for (uint32_t i = 0; i < _tablet_schema->num_columns(); ++i) {
         all_column_indexes.emplace_back(i);
     }
-    return init(all_column_indexes, true);
+    return init(all_column_indexes, has_key);
 }
 
 Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has_key, SegmentFooterPB* footer) {
     DCHECK(_column_writers.empty());
     DCHECK(_column_indexes.empty());
-
-    if (_opts.storage_format_version != 1 && _opts.storage_format_version != 2) {
-        auto v = _opts.storage_format_version;
-        return Status::InvalidArgument(strings::Substitute("Invalid storage_format_version $0", v));
-    }
 
     // merge partial segment footer
     // in partial update, key columns and some value columns have been written in partial segment
@@ -108,7 +131,9 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
     _column_indexes.insert(_column_indexes.end(), column_indexes.begin(), column_indexes.end());
     _column_writers.reserve(_column_indexes.size());
     size_t num_columns = _tablet_schema->num_columns();
-    for (uint32_t column_index : _column_indexes) {
+    std::map<uint32_t, uint32_t> sort_column_idx_by_column_index;
+    for (uint32_t i = 0; i < _column_indexes.size(); i++) {
+        uint32_t column_index = _column_indexes[i];
         if (column_index >= num_columns) {
             return Status::InternalError(
                     strings::Substitute("column index $0 out of range $1", column_index, num_columns));
@@ -116,8 +141,7 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
 
         const auto& column = _tablet_schema->column(column_index);
         ColumnWriterOptions opts;
-        opts.page_format = (_opts.storage_format_version == 1) ? 1 : 2;
-        opts.adaptive_page_format = (_opts.storage_format_version > 1);
+        opts.page_format = 2;
         opts.meta = _footer.add_columns();
 
         if (!_opts.referenced_column_ids.empty()) {
@@ -130,16 +154,18 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
         // now we create zone map for key columns
         // and not support zone map for array type.
         // TODO(mofei) refactor it to type specification
-        opts.need_zone_map = column.is_key() || (_tablet_schema->keys_type() == KeysType::DUP_KEYS &&
-                                                 column.type() != FieldType::OLAP_FIELD_TYPE_CHAR &&
-                                                 column.type() != FieldType::OLAP_FIELD_TYPE_VARCHAR &&
-                                                 column.type() != FieldType::OLAP_FIELD_TYPE_JSON);
-        if (column.type() == FieldType::OLAP_FIELD_TYPE_ARRAY) {
+        const bool enable_pk_zone_map = config::enable_pk_value_column_zonemap &&
+                                        _tablet_schema->keys_type() == KeysType::PRIMARY_KEYS &&
+                                        is_zone_map_key_type(column.type());
+        const bool enable_dup_zone_map =
+                _tablet_schema->keys_type() == KeysType::DUP_KEYS && is_zone_map_key_type(column.type());
+        opts.need_zone_map = column.is_key() || enable_pk_zone_map || enable_dup_zone_map || column.is_sort_key();
+        if (column.type() == LogicalType::TYPE_ARRAY) {
             opts.need_zone_map = false;
         }
         opts.need_bloom_filter = column.is_bf_column();
         opts.need_bitmap_index = column.has_bitmap_index();
-        if (column.type() == FieldType::OLAP_FIELD_TYPE_ARRAY) {
+        if (column.type() == LogicalType::TYPE_ARRAY) {
             if (opts.need_bloom_filter) {
                 return Status::NotSupported("Do not support bloom filter for array type");
             }
@@ -148,19 +174,37 @@ Status SegmentWriter::init(const std::vector<uint32_t>& column_indexes, bool has
             }
         }
 
-        if (column.type() == FieldType::OLAP_FIELD_TYPE_CHAR && column.type() != FieldType::OLAP_FIELD_TYPE_VARCHAR,
-            _opts.global_dicts != nullptr) {
+        if (column.type() == LogicalType::TYPE_VARCHAR && _opts.global_dicts != nullptr) {
             auto iter = _opts.global_dicts->find(column.name().data());
             if (iter != _opts.global_dicts->end()) {
-                opts.global_dict = &iter->second;
+                opts.global_dict = &iter->second.dict;
                 _global_dict_columns_valid_info[iter->first] = true;
             }
         }
 
-        std::unique_ptr<ColumnWriter> writer;
-        RETURN_IF_ERROR(ColumnWriter::create(opts, &column, _wblock.get(), &writer));
+        ASSIGN_OR_RETURN(auto writer, ColumnWriter::create(opts, &column, _wfile.get()));
         RETURN_IF_ERROR(writer->init());
         _column_writers.push_back(std::move(writer));
+        if (column.is_sort_key()) {
+            sort_column_idx_by_column_index[column_index] = i;
+        }
+    }
+    if (!sort_column_idx_by_column_index.empty()) {
+        for (auto& column_idx : _tablet_schema->sort_key_idxes()) {
+            auto iter = sort_column_idx_by_column_index.find(column_idx);
+            if (iter != sort_column_idx_by_column_index.end()) {
+                _sort_column_indexes.emplace_back(iter->second);
+            } else {
+                // Currently we have the following two scenarios：
+                //  1. data load or horizontal compaction, we will write the whole row data once a time
+                //  2. vertical compaction, we will first write all sort key columns and write value columns by group
+                // So the all sort key columns should be found in `_column_indexes` so far.
+                std::string err_msg =
+                        strings::Substitute("column[$0]: $1 is sort key but not find while init segment writer",
+                                            column_idx, _tablet_schema->column(column_idx).name().data());
+                return Status::InternalError(err_msg);
+            }
+        }
     }
 
     _has_key = has_key;
@@ -186,12 +230,13 @@ uint64_t SegmentWriter::estimate_segment_size() {
 
 Status SegmentWriter::finalize(uint64_t* segment_file_size, uint64_t* index_size, uint64_t* footer_position) {
     RETURN_IF_ERROR(finalize_columns(index_size));
-    *footer_position = _wblock->bytes_appended();
+    *footer_position = _wfile->size();
     return finalize_footer(segment_file_size);
 }
 
 Status SegmentWriter::finalize_columns(uint64_t* index_size) {
-    if (_has_key) {
+    if (_has_key || _num_rows == 0) {
+        // _num_rows == 0 && !_has_key means this segment not contains key columns
         _num_rows = _num_rows_written;
     } else if (_num_rows != _num_rows_written) {
         return Status::InternalError(strings::Substitute("num rows written $0 is not equal to segment num rows $1",
@@ -212,17 +257,17 @@ Status SegmentWriter::finalize_columns(uint64_t* index_size) {
         // write data
         RETURN_IF_ERROR(column_writer->write_data());
         // write index
-        uint64_t index_offset = _wblock->bytes_appended();
+        uint64_t index_offset = _wfile->size();
         RETURN_IF_ERROR(column_writer->write_ordinal_index());
         RETURN_IF_ERROR(column_writer->write_zone_map());
         RETURN_IF_ERROR(column_writer->write_bitmap_index());
         RETURN_IF_ERROR(column_writer->write_bloom_filter_index());
-        *index_size += _wblock->bytes_appended() - index_offset;
+        *index_size += _wfile->size() - index_offset;
 
-        // global dict
-        if (!column_writer->is_global_dict_valid()) {
-            std::string col_name(_tablet_schema->columns()[column_index].name().data(),
-                                 _tablet_schema->columns()[column_index].name().size());
+        // check global dict valid
+        const auto& column = _tablet_schema->column(column_index);
+        if (!column_writer->is_global_dict_valid() && is_string_type(column.type())) {
+            std::string col_name(column.name());
             _global_dict_columns_valid_info[col_name] = false;
         }
 
@@ -233,19 +278,21 @@ Status SegmentWriter::finalize_columns(uint64_t* index_size) {
     _column_indexes.clear();
 
     if (_has_key) {
-        uint64_t index_offset = _wblock->bytes_appended();
+        uint64_t index_offset = _wfile->size();
         RETURN_IF_ERROR(_write_short_key_index());
-        *index_size += _wblock->bytes_appended() - index_offset;
+        *index_size += _wfile->size() - index_offset;
         _index_builder.reset();
     }
     return Status::OK();
 }
 
-Status SegmentWriter::finalize_footer(uint64_t* segment_file_size) {
+Status SegmentWriter::finalize_footer(uint64_t* segment_file_size, uint64_t* footer_position) {
+    if (footer_position != nullptr) {
+        *footer_position = _wfile->size();
+    }
     RETURN_IF_ERROR(_write_footer());
-    RETURN_IF_ERROR(_wblock->finalize());
-    *segment_file_size = _wblock->bytes_appended();
-    return _wblock->close();
+    *segment_file_size = _wfile->size();
+    return _wfile->close();
 }
 
 Status SegmentWriter::_write_short_key_index() {
@@ -254,13 +301,13 @@ Status SegmentWriter::_write_short_key_index() {
     RETURN_IF_ERROR(_index_builder->finalize(_num_rows, &body, &footer));
     PagePointer pp;
     // short key index page is not compressed right now
-    RETURN_IF_ERROR(PageIO::write_page(_wblock.get(), body, footer, &pp));
+    RETURN_IF_ERROR(PageIO::write_page(_wfile.get(), body, footer, &pp));
     pp.to_proto(_footer.mutable_short_key_index_page());
     return Status::OK();
 }
 
 Status SegmentWriter::_write_footer() {
-    _footer.set_version(_opts.storage_format_version);
+    _footer.set_version(2);
     _footer.set_num_rows(_num_rows);
 
     // Footer := SegmentFooterPB, FooterPBSize(4), FooterPBChecksum(4), MagicNumber(4)
@@ -284,14 +331,14 @@ Status SegmentWriter::_write_footer() {
 }
 
 Status SegmentWriter::_write_raw_data(const std::vector<Slice>& slices) {
-    RETURN_IF_ERROR(_wblock->appendv(&slices[0], slices.size()));
+    RETURN_IF_ERROR(_wfile->appendv(&slices[0], slices.size()));
     return Status::OK();
 }
 
-Status SegmentWriter::append_chunk(const vectorized::Chunk& chunk) {
+Status SegmentWriter::append_chunk(const Chunk& chunk) {
     DCHECK_EQ(_column_writers.size(), chunk.num_columns());
     for (size_t i = 0; i < _column_writers.size(); ++i) {
-        const vectorized::Column* col = chunk.get_column_by_index(i).get();
+        const Column* col = chunk.get_column_by_index(i).get();
         RETURN_IF_ERROR(_column_writers[i]->append(*col));
     }
 
@@ -301,8 +348,9 @@ Status SegmentWriter::append_chunk(const vectorized::Chunk& chunk) {
             // At the begin of one block, so add a short key index entry
             if ((_num_rows_written % _opts.num_rows_per_block) == 0) {
                 size_t keys = _tablet_schema->num_short_key_columns();
-                vectorized::SeekTuple tuple(*chunk.schema(), chunk.get(i).datums());
-                std::string encoded_key = tuple.short_key_encode(keys, 0);
+                SeekTuple tuple(*chunk.schema(), chunk.get(i).datums());
+                std::string encoded_key;
+                encoded_key = tuple.short_key_encode(keys, _sort_column_indexes, 0);
                 RETURN_IF_ERROR(_index_builder->add_item(encoded_key));
             }
             ++_num_rows_written;

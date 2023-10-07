@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/test/runtime/datetime_value_test.cpp
 
@@ -21,11 +34,13 @@
 
 #include "runtime/datetime_value.h"
 
+#include <gtest/gtest-param-test.h>
 #include <gtest/gtest.h>
 
 #include <string>
 
 #include "common/logging.h"
+#include "testutil/assert.h"
 #include "util/logging.h"
 #include "util/timezone_utils.h"
 
@@ -33,11 +48,11 @@ namespace starrocks {
 
 class DateTimeValueTest : public testing::Test {
 public:
-    DateTimeValueTest() {}
+    DateTimeValueTest() = default;
 
 protected:
-    virtual void SetUp() {}
-    virtual void TearDown() {}
+    void SetUp() override {}
+    void TearDown() override {}
 };
 
 // Assert size
@@ -106,7 +121,7 @@ TEST_F(DateTimeValueTest, random_convert) {
 
     DateTimeValue value_check;
 
-    DateTimeValue* value = (DateTimeValue*)buf;
+    auto* value = (DateTimeValue*)buf;
     value->from_date_daynr(366);
     value_check.from_date_daynr(366);
     ASSERT_STREQ("0001-01-01", value->debug_string().c_str());
@@ -1402,22 +1417,125 @@ TEST_F(DateTimeValueTest, packed_time) {
     }
 }
 
-TEST_F(DateTimeValueTest, utc_to_offset) {
-    cctz::time_zone ctz;
-    bool ok = TimezoneUtils::find_cctz_time_zone("Asia/Shanghai", ctz);
-    EXPECT_TRUE(ok);
-    int64_t offset = TimezoneUtils::to_utc_offset(ctz);
-    EXPECT_EQ(offset, 28800);
+using TestParseDatetimeParam = std::tuple<std::string, std::string>;
 
-    ok = TimezoneUtils::find_cctz_time_zone("+08:00", ctz);
-    EXPECT_TRUE(ok);
-    offset = TimezoneUtils::to_utc_offset(ctz);
-    EXPECT_EQ(offset, 28800);
+class ParseDateTimeTestFixture : public ::testing::TestWithParam<TestParseDatetimeParam> {};
 
-    ok = TimezoneUtils::find_cctz_time_zone("-08:00", ctz);
-    EXPECT_TRUE(ok);
-    offset = TimezoneUtils::to_utc_offset(ctz);
-    EXPECT_EQ(offset, -28800);
+TEST_P(ParseDateTimeTestFixture, parse_datetime) {
+    auto& [datetime_str, format] = GetParam();
+    DateTimeValue datetime;
+    char str[50];
+    joda::JodaFormat joda;
+    EXPECT_TRUE(joda.prepare(format));
+    EXPECT_TRUE(joda.parse(datetime_str, &datetime));
+
+    // to joda format
+    EXPECT_TRUE(datetime.to_joda_format_string(format.data(), format.length(), str));
+    if (format.find("z") != std::string::npos || format.find('Z') != std::string::npos) {
+        // to_joda does not output the timezone
+    } else {
+        EXPECT_EQ(datetime_str, str);
+    }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+        ParseDateTimeTest, ParseDateTimeTestFixture,
+        ::testing::Values(
+                // clang-format: off
+                // Components
+                TestParseDatetimeParam("1994", "yyyy"), TestParseDatetimeParam("04", "MM"),
+                TestParseDatetimeParam("04", "dd"),
+
+                TestParseDatetimeParam("1994-09-09", "yyyy-MM-dd"), TestParseDatetimeParam("1994 09 09", "yyyy MM dd"),
+                TestParseDatetimeParam("1994/09/09", "yyyy/MM/dd"), TestParseDatetimeParam("1994-09", "yyyy-MM"),
+                TestParseDatetimeParam("1994 09", "yyyy MM"), TestParseDatetimeParam("1994/09", "yyyy/MM"),
+
+                TestParseDatetimeParam("1994-09-09 01:02:03", "yyyy-MM-dd HH:mm:ss"),
+                TestParseDatetimeParam("1994/09/09 01:02:03", "yyyy/MM/dd HH:mm:ss"),
+
+                // Month
+                TestParseDatetimeParam("Sep/09/1994 01:02:03", "MMM/dd/yyyy HH:mm:ss"),
+                TestParseDatetimeParam("September/09/1994 01:02:03", "MMMM/dd/yyyy HH:mm:ss"),
+                TestParseDatetimeParam("December/09/1994 01:02:03", "MMMM/dd/yyyy HH:mm:ss"),
+                TestParseDatetimeParam("09/Sep/1994 01:02:03", "dd/MMM/yyyy HH:mm:ss"),
+
+                // Year
+                TestParseDatetimeParam("09/09/94 01:02:03", "MM/dd/yy HH:mm:ss"),
+                TestParseDatetimeParam("09/09/94 01:02:03", "MM/dd/yy HH:mm:ss"),
+
+                // Week
+                TestParseDatetimeParam("2023 01 2 Monday", "yyyy MM w EEEE"),
+                TestParseDatetimeParam("2023 01 2 Mon", "yyyy MM w EEE"),
+
+                // Hour
+                TestParseDatetimeParam("1994-09-09 02:02:03 AM", "yyyy-MM-dd hh:mm:ss aa"),
+                TestParseDatetimeParam("1994-09-09 02:02:03 AM", "yyyy-MM-dd KK:mm:ss aa"),
+                TestParseDatetimeParam("1994-09-09 02:02:03 PM", "yyyy-MM-dd hh:mm:ss aa"),
+                TestParseDatetimeParam("1994-09-09 02:02:03 PM", "yyyy-MM-dd KK:mm:ss aa"),
+                TestParseDatetimeParam("1994-09-09 02:02:03", "yyyy-MM-dd KK:mm:ss"),
+
+                // Second
+                TestParseDatetimeParam("1994-09-09 01:02:03.123", "yyyy-MM-dd HH:mm:ss.SSS"),
+
+                // Timezone
+                TestParseDatetimeParam("1994-09-09 01:02:03 CST", "yyyy-MM-dd HH:mm:ss zzz"),
+                TestParseDatetimeParam("1994-09-09 01:02:03 UTC", "yyyy-MM-dd HH:mm:ss zzz"),
+                TestParseDatetimeParam("1994-09-09 01:02:03 +08:00", "yyyy-MM-dd HH:mm:ss zzz"),
+                TestParseDatetimeParam("1994-09-09 01:02:03 America/Los_Angeles", "yyyy-MM-dd HH:mm:ss ZZZZ"),
+                TestParseDatetimeParam("1994-09-09 01:02:03 Asia/Shanghai", "yyyy-MM-dd HH:mm:ss ZZZZ")
+
+                // clang-format: on
+                ));
+
+using SpecialTestParseDatetimeParam = std::tuple<std::string, std::string, std::string>;
+class ParseDateTimeSpecialTestFixture : public ::testing::TestWithParam<SpecialTestParseDatetimeParam> {};
+
+TEST_P(ParseDateTimeSpecialTestFixture, parse_datetime) {
+    auto& [datetime_str, format, expected] = GetParam();
+    DateTimeValue datetime;
+    char str[50];
+    joda::JodaFormat joda;
+    EXPECT_TRUE(joda.prepare(format));
+    bool res = (joda.parse(datetime_str, &datetime));
+
+    // to joda format
+    if (format.find("z") != std::string::npos || format.find('Z') != std::string::npos) {
+        // to_joda does not output the timezone
+    } else {
+        EXPECT_TRUE(datetime.to_joda_format_string(format.data(), format.length(), str));
+        if (!res) {
+            strcpy(str, "NULL");
+        }
+        EXPECT_EQ(expected, str);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+        ParseDateTimeSpecialTest, ParseDateTimeSpecialTestFixture,
+        ::testing::Values(
+                // clang-format: off
+
+                // Halfday Hour
+                SpecialTestParseDatetimeParam("1994-09-09 12:02:03 AM", "yyyy-MM-dd hh:mm:ss aa",
+                                              "1994-09-09 12:02:03 PM"),
+                SpecialTestParseDatetimeParam("1994-09-09 12:02:03 PM", "yyyy-MM-dd hh:mm:ss aa",
+                                              "1994-09-09 12:02:03 PM"),
+                SpecialTestParseDatetimeParam("1994-09-09 12:02:03 AM", "yyyy-MM-dd KK:mm:ss aa",
+                                              "1994-09-09 00:02:03 PM"),
+                SpecialTestParseDatetimeParam("1994-09-09 12:02:03 PM", "yyyy-MM-dd KK:mm:ss aa",
+                                              "1994-09-09 00:02:03 PM"),
+                SpecialTestParseDatetimeParam("1994-09-09 00:02:03 AM", "yyyy-MM-dd KK:mm:ss aa",
+                                              "1994-09-09 00:02:03 AM"),
+                SpecialTestParseDatetimeParam("1994-09-09 00:02:03 PM", "yyyy-MM-dd KK:mm:ss aa",
+                                              "1994-09-09 00:02:03 PM"),
+
+                // Day Hour
+                SpecialTestParseDatetimeParam("1994-09-09 24:02:03", "yyyy-MM-dd HH:mm:ss", "NULL"),
+                SpecialTestParseDatetimeParam("1994-09-09 24:02:03", "yyyy-MM-dd kk:mm:ss", "NULL"),
+                SpecialTestParseDatetimeParam("1994-09-09 00:02:03", "yyyy-MM-dd HH:mm:ss", "1994-09-09 00:02:03"),
+                SpecialTestParseDatetimeParam("1994-09-09 00:02:03", "yyyy-MM-dd kk:mm:ss", "1994-09-09 24:02:03")
+
+                // clang-format: on
+                ));
 
 } // namespace starrocks

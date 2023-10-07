@@ -1,4 +1,16 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #pragma once
 
@@ -13,9 +25,9 @@ namespace starrocks::pipeline {
 // For more detail information, see the comments of class IntersectBuildSinkOperator.
 class IntersectOutputSourceOperator final : public SourceOperator {
 public:
-    IntersectOutputSourceOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id,
+    IntersectOutputSourceOperator(OperatorFactory* factory, int32_t id, int32_t plan_node_id, int32_t driver_sequence,
                                   std::shared_ptr<IntersectContext> intersect_ctx, const int32_t dependency_index)
-            : SourceOperator(factory, id, "intersect_output_source", plan_node_id),
+            : SourceOperator(factory, id, "intersect_output_source", plan_node_id, false, driver_sequence),
               _intersect_ctx(std::move(intersect_ctx)),
               _dependency_index(dependency_index) {
         _intersect_ctx->ref();
@@ -34,7 +46,7 @@ public:
         return Status::OK();
     }
 
-    StatusOr<vectorized::ChunkPtr> pull_chunk(RuntimeState* state) override;
+    StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
     void close(RuntimeState* state) override;
 
@@ -54,8 +66,8 @@ public:
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
         return std::make_shared<IntersectOutputSourceOperator>(
-                this, _id, _plan_node_id, _intersect_partition_ctx_factory->get_or_create(driver_sequence),
-                _dependency_index);
+                this, _id, _plan_node_id, driver_sequence,
+                _intersect_partition_ctx_factory->get_or_create(driver_sequence), _dependency_index);
     }
 
     void close(RuntimeState* state) override;

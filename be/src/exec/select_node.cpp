@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/be/src/exec/select_node.cpp
 
@@ -25,14 +38,12 @@
 #include "exec/pipeline/pipeline_builder.h"
 #include "exec/pipeline/select_operator.h"
 #include "exprs/expr.h"
-#include "gen_cpp/PlanNodes_types.h"
-#include "runtime/raw_value.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks {
 
 SelectNode::SelectNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs)
-        : ExecNode(pool, tnode, descs), _child_eos(false) {}
+        : ExecNode(pool, tnode, descs) {}
 
 SelectNode::~SelectNode() {
     if (runtime_state() != nullptr) {
@@ -42,9 +53,7 @@ SelectNode::~SelectNode() {
 
 Status SelectNode::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ExecNode::prepare(state));
-    if (use_vectorized()) {
-        _conjunct_evaluate_timer = ADD_TIMER(_runtime_profile, "ConjunctEvaluateTimer");
-    }
+    _conjunct_evaluate_timer = ADD_TIMER(_runtime_profile, "ConjunctEvaluateTime");
     return Status::OK();
 }
 
@@ -72,7 +81,7 @@ Status SelectNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) {
     }
     {
         SCOPED_TIMER(_conjunct_evaluate_timer);
-        ExecNode::eval_conjuncts(_conjunct_ctxs, (*chunk).get());
+        RETURN_IF_ERROR(ExecNode::eval_conjuncts(_conjunct_ctxs, (*chunk).get()));
     }
     _num_rows_returned += (*chunk)->num_rows();
 
@@ -87,11 +96,11 @@ Status SelectNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) {
     return Status::OK();
 }
 
-Status SelectNode::close(RuntimeState* state) {
+void SelectNode::close(RuntimeState* state) {
     if (is_closed()) {
-        return Status::OK();
+        return;
     }
-    return ExecNode::close(state);
+    ExecNode::close(state);
 }
 
 pipeline::OpFactories SelectNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {

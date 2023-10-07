@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/persist/gson/RuntimeTypeAdapterFactory.java
 
@@ -348,18 +361,24 @@ public final class RuntimeTypeAdapterFactory<T> implements TypeAdapterFactory {
                     labelJsonElement = jsonElement.getAsJsonObject().remove(typeFieldName);
                 }
 
+                //1. if the typeFieldName is specified in the json string, then use this class.
+                //2. if default class if specified, then use the default class.
+                //3. if the type specified (the second param of GSON.fromJson) is in the register list,
+                //   then use this class.
                 String label;
                 if (labelJsonElement != null) {
                     label = labelJsonElement.getAsString();
                 } else if (defaultLabel != null) {
                     label = defaultLabel;
+                } else if (subtypeToLabel.containsKey(type.getRawType())) {
+                    label = subtypeToLabel.get(type.getRawType());
                 } else {
                     throw new JsonParseException("cannot deserialize " + baseType
                             + " because it does not define a field named " + typeFieldName);
                 }
 
                 @SuppressWarnings("unchecked") // registration requires that subtype extends T
-                        TypeAdapter<R> delegate = (TypeAdapter<R>) labelToDelegate.get(label);
+                TypeAdapter<R> delegate = (TypeAdapter<R>) labelToDelegate.get(label);
                 if (delegate == null) {
                     throw new JsonParseException("cannot deserialize " + baseType + " subtype named " + label
                             + "; did you forget to register a subtype?");
@@ -372,7 +391,7 @@ public final class RuntimeTypeAdapterFactory<T> implements TypeAdapterFactory {
                 Class<?> srcType = value.getClass();
                 String label = subtypeToLabel.get(srcType);
                 @SuppressWarnings("unchecked") // registration requires that subtype extends T
-                        TypeAdapter<R> delegate = (TypeAdapter<R>) subtypeToDelegate.get(srcType);
+                TypeAdapter<R> delegate = (TypeAdapter<R>) subtypeToDelegate.get(srcType);
                 if (delegate == null) {
                     throw new JsonParseException(
                             "cannot serialize " + srcType.getName() + "; did you forget to register a subtype?");

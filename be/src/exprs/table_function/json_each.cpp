@@ -1,19 +1,36 @@
-// This file is licensed under the Elastic License 2.0. Copyright 2021-present, StarRocks Limited.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include "exprs/table_function/json_each.h"
 
-#include "column/column_builder.h"
 #include "column/column_helper.h"
 #include "column/vectorized_fwd.h"
 #include "exprs/table_function/table_function.h"
-#include "exprs/table_function/table_function_factory.h"
 #include "velocypack/vpack.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 
-std::pair<Columns, ColumnPtr> JsonEach::process(TableFunctionState* state, bool* eos) const {
-    Column* arg0 = state->get_columns()[0].get();
-    JsonColumn* json_column = down_cast<JsonColumn*>(ColumnHelper::get_data_column(arg0));
+std::pair<Columns, UInt32Column::Ptr> JsonEach::process(TableFunctionState* state) const {
+    size_t num_input_rows = 0;
+    JsonColumn* json_column = nullptr;
+    if (!state->get_columns().empty()) {
+        Column* arg0 = state->get_columns()[0].get();
+        num_input_rows = arg0->size();
+        json_column = down_cast<JsonColumn*>(ColumnHelper::get_data_column(arg0));
+    }
+    state->set_processed_rows(num_input_rows);
+
     Columns result;
     auto key_column_ptr = BinaryColumn::create();
     auto value_column_ptr = JsonColumn::create();
@@ -21,9 +38,9 @@ std::pair<Columns, ColumnPtr> JsonEach::process(TableFunctionState* state, bool*
     result.emplace_back(value_column_ptr);
     auto offset_column = UInt32Column::create();
     int offset = 0;
-
     offset_column->append(offset);
-    for (int i = 0; i < json_column->size(); i++) {
+
+    for (int i = 0; i < num_input_rows; i++) {
         const JsonValue* json = json_column->get_object(i);
         DCHECK(!!json);
         vpack::Slice json_slice = json->to_vslice();
@@ -43,15 +60,12 @@ std::pair<Columns, ColumnPtr> JsonEach::process(TableFunctionState* state, bool*
                 offset++;
                 arr_idx++;
             }
-        } else {
-            continue;
         }
+
         offset_column->append(offset);
     }
 
-    *eos = true;
-    state->set_offset(offset);
     return std::make_pair(result, offset_column);
 }
 
-} // namespace starrocks::vectorized
+} // namespace starrocks

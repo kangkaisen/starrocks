@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/analysis/LimitElement.java
 
@@ -22,6 +35,7 @@
 package com.starrocks.analysis;
 
 import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.parser.NodePosition;
 
 /**
  * Combination of limit and offset expressions.
@@ -38,22 +52,30 @@ public class LimitElement implements ParseNode {
     // END: Members that need to be reset()
     /////////////////////////////////////////
 
+    private final NodePosition pos;
+
     public LimitElement() {
+        pos = NodePosition.ZERO;
         limit = -1;
         offset = 0;
     }
 
     public LimitElement(long limit) {
-        this.limit = limit;
-        offset = 0;
+        this(0, limit, NodePosition.ZERO);
     }
 
     public LimitElement(long offset, long limit) {
+        this(offset, limit, NodePosition.ZERO);
+    }
+
+    public LimitElement(long offset, long limit, NodePosition pos) {
+        this.pos = pos;
         this.offset = offset;
         this.limit = limit;
     }
 
     protected LimitElement(LimitElement other) {
+        pos = other.pos;
         limit = other.limit;
         offset = other.offset;
     }
@@ -99,6 +121,11 @@ public class LimitElement implements ParseNode {
         return sb.toString();
     }
 
+    @Override
+    public NodePosition getPos() {
+        return pos;
+    }
+
     public String toDigest() {
         if (limit == -1) {
             return "";
@@ -109,12 +136,6 @@ public class LimitElement implements ParseNode {
         }
         sb.append("").append(" ? ");
         return sb.toString();
-    }
-
-    public void analyze(Analyzer analyzer) {
-        if (limit == 0) {
-            analyzer.setHasEmptyResultSet();
-        }
     }
 
     public void reset() {

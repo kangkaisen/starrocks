@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/catalog/Function.java
 
@@ -22,14 +35,17 @@
 package com.starrocks.catalog;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
+import com.google.gson.annotations.SerializedName;
 import com.starrocks.analysis.FunctionName;
-import com.starrocks.analysis.HdfsURI;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.sql.ast.HdfsURI;
 import com.starrocks.thrift.TFunction;
 import com.starrocks.thrift.TFunctionBinaryType;
+import org.apache.commons.lang.ArrayUtils;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -73,39 +89,48 @@ public class Function implements Writable {
         // Nonstrict supertypes broaden the definition of supertype to accept implicit casts
         // of arguments that may result in loss of precision - e.g. decimal to float.
         IS_NONSTRICT_SUPERTYPE_OF,
-
-        // Used to drop UDF. User can drop function through name or name and arguments.
-        // If X is matchable with Y, this will only check X's element is identical with Y's.
-        // e.g. fn is matchable with fn(int), fn(float) and fn(int) is only matchable with fn(int).
-        IS_MATCHABLE
     }
 
-    // Function id, every function has a unique id. Now all built-in functions' id is 0
-    private long id = 0;
-    // User specified function name e.g. "Add"
+    // for vectorized engine, function-id
+    @SerializedName(value = "fid")
+    protected long functionId;
+
+    @SerializedName(value = "name")
     private FunctionName name;
+
+    @SerializedName(value = "retType")
     private Type retType;
+
     // Array of parameter types.  empty array if this function does not have parameters.
+    @SerializedName(value = "argTypes")
     private Type[] argTypes;
+
     // If true, this function has variable arguments.
     // TODO: we don't currently support varargs with no fixed types. i.e. fn(...)
+    @SerializedName(value = "hasVarArgs")
     private boolean hasVarArgs;
 
     // If true (default), this function is called directly by the user. For operators,
     // this is false. If false, it also means the function is not visible from
     // 'show functions'.
+    @SerializedName(value = "userVisible")
     private boolean userVisible;
+
+    @SerializedName(value = "binaryType")
+    private TFunctionBinaryType binaryType;
 
     // Absolute path in HDFS for the binary that contains this function.
     // e.g. /udfs/udfs.jar
+    @SerializedName(value = "location")
     private HdfsURI location;
-    private TFunctionBinaryType binaryType;
 
     // library's checksum to make sure all backends use one library to serve user's request
+    @SerializedName(value = "checksum")
     protected String checksum = "";
 
-    // for vectorized engine, function-id
-    private long functionId;
+    // Function id, every function has a unique id. Now all built-in functions' id is 0
+    private long id = 0;
+    // User specified function name e.g. "Add"
 
     private boolean isPolymorphic = false;
 
@@ -127,22 +152,9 @@ public class Function implements Writable {
         this(0, name, args, retType, varArgs);
     }
 
-    public Function(long functionId, FunctionName name, List<Type> argTypes, Type retType, boolean hasVarArgs,
-                    boolean isVectorized) {
-        this.functionId = functionId;
-        this.name = name;
-        this.hasVarArgs = hasVarArgs;
-        if (argTypes == null) {
-            this.argTypes = new Type[0];
-        } else {
-            this.argTypes = argTypes.toArray(new Type[argTypes.size()]);
-        }
-        this.retType = retType;
-        this.isPolymorphic = Arrays.stream(this.argTypes).anyMatch(Type::isPseudoType);
-    }
-
     public Function(long id, FunctionName name, Type[] argTypes, Type retType, boolean hasVarArgs) {
         this.id = id;
+        this.functionId = id;
         this.name = name;
         this.hasVarArgs = hasVarArgs;
         if (argTypes == null) {
@@ -155,13 +167,34 @@ public class Function implements Writable {
     }
 
     public Function(long id, FunctionName name, List<Type> argTypes, Type retType, boolean hasVarArgs) {
-        this(id, name, (Type[]) null, retType, hasVarArgs);
-        if (argTypes.size() > 0) {
-            this.argTypes = argTypes.toArray(new Type[argTypes.size()]);
-        } else {
+        this.id = id;
+        this.functionId = id;
+        this.name = name;
+        this.hasVarArgs = hasVarArgs;
+        if (argTypes == null) {
             this.argTypes = new Type[0];
+        } else {
+            this.argTypes = argTypes.toArray(new Type[0]);
         }
+        this.retType = retType;
         this.isPolymorphic = Arrays.stream(this.argTypes).anyMatch(Type::isPseudoType);
+    }
+
+    // copy constructor
+    public Function(Function other) {
+        id = other.id;
+        name = other.name;
+        retType = other.retType;
+        argTypes = other.argTypes;
+        hasVarArgs = other.hasVarArgs;
+        userVisible = other.userVisible;
+        location = other.location;
+        binaryType = other.binaryType;
+        checksum = other.checksum;
+        functionId = other.functionId;
+        isPolymorphic = other.isPolymorphic;
+        couldApplyDictOptimize = other.couldApplyDictOptimize;
+        isNullable = other.isNullable;
     }
 
     public FunctionName getFunctionName() {
@@ -217,16 +250,18 @@ public class Function implements Writable {
         this.userVisible = userVisible;
     }
 
+    // TODO: It's dangerous to change this directly because it may change the global function state.
+    // Make sure you use a copy of the global function.
+    public void setArgsType(Type[] newTypes) {
+        argTypes = newTypes;
+    }
+
     public Type getVarArgsType() {
         if (!hasVarArgs) {
             return Type.INVALID;
         }
         Preconditions.checkState(argTypes.length > 0);
         return argTypes[argTypes.length - 1];
-    }
-
-    public boolean isVectorized() {
-        return true;
     }
 
     public boolean isPolymorphic() {
@@ -259,6 +294,12 @@ public class Function implements Writable {
 
     public String getChecksum() {
         return checksum;
+    }
+
+    // TODO: It's dangerous to change this directly because it may change the global function state.
+    // Make sure you use a copy of the global function.
+    public void setRetType(Type retType) {
+        this.retType = retType;
     }
 
     // TODO(cmy): Currently we judge whether it is UDF by wheter the 'location' is set.
@@ -307,8 +348,6 @@ public class Function implements Writable {
                 return isSubtype(other);
             case IS_NONSTRICT_SUPERTYPE_OF:
                 return isAssignCompatible(other);
-            case IS_MATCHABLE:
-                return isMatchable(other);
             default:
                 Preconditions.checkState(false);
                 return false;
@@ -389,27 +428,6 @@ public class Function implements Writable {
             }
         }
         return true;
-    }
-
-    private boolean isMatchable(Function o) {
-        if (!o.name.equals(name)) {
-            return false;
-        }
-        if (argTypes != null) {
-            if (o.argTypes.length != this.argTypes.length) {
-                return false;
-            }
-            if (o.hasVarArgs != this.hasVarArgs) {
-                return false;
-            }
-            for (int i = 0; i < this.argTypes.length; ++i) {
-                if (!o.argTypes[i].matchesType(this.argTypes[i])) {
-                    return false;
-                }
-            }
-        }
-        return true;
-
     }
 
     private boolean isIdentical(Function o) {
@@ -508,7 +526,6 @@ public class Function implements Writable {
 
     public TFunction toThrift() {
         TFunction fn = new TFunction();
-        fn.setSignature(signatureString());
         fn.setName(name.toThrift());
         fn.setBinary_type(binaryType);
         if (location != null) {
@@ -577,7 +594,8 @@ public class Function implements Writable {
         ORIGIN(0),
         SCALAR(1),
         AGGREGATE(2),
-        TABLE(3);
+        TABLE(3),
+        UNSUPPORTED(-1);
 
         private int code;
 
@@ -599,8 +617,9 @@ public class Function implements Writable {
                     return AGGREGATE;
                 case 3:
                     return TABLE;
+                default:
+                    return UNSUPPORTED;
             }
-            return null;
         }
 
         public void write(DataOutput output) throws IOException {
@@ -613,7 +632,7 @@ public class Function implements Writable {
     }
 
     protected void writeFields(DataOutput output) throws IOException {
-        output.writeLong(id);
+        output.writeLong(functionId);
         name.write(output);
         ColumnType.write(output, retType);
         output.writeInt(argTypes.length);
@@ -638,7 +657,8 @@ public class Function implements Writable {
     }
 
     public void readFields(DataInput input) throws IOException {
-        id = input.readLong();
+        id = 0;
+        functionId = input.readLong();
         name = FunctionName.read(input);
         retType = ColumnType.read(input);
         int numArgs = input.readInt();
@@ -735,10 +755,32 @@ public class Function implements Writable {
     }
 
     @Override
+    public int hashCode() {
+        return Objects.hashCode(name, hasVarArgs, argTypes.length);
+    }
+
+    @Override
     public boolean equals(Object obj) {
         if (this == obj) {
             return true;
         }
         return obj != null && obj.getClass() == this.getClass() && isIdentical((Function) obj);
     }
+
+
+    // just shallow copy
+    public Function copy() {
+        return new Function(this);
+    }
+
+    public Function updateArgType(Type[] newTypes) {
+        if (!ArrayUtils.isEquals(argTypes, newTypes)) {
+            Function newFunc = copy();
+            newFunc.setArgsType(newTypes);
+            return newFunc;
+        }
+
+        return this;
+    }
+
 }

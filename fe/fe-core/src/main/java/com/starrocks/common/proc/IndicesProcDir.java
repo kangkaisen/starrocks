@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/proc/IndicesProcDir.java
 
@@ -30,7 +43,6 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.common.AnalysisException;
-import com.starrocks.common.Config;
 import com.starrocks.common.util.ListComparator;
 import com.starrocks.common.util.TimeUtils;
 
@@ -43,16 +55,9 @@ import java.util.List;
  * show index's detail info within a partition
  */
 public class IndicesProcDir implements ProcDirInterface {
-    public static final ImmutableList<String> TITLE_NAMES;
-
-    static {
-        ImmutableList.Builder<String> builder = new ImmutableList.Builder<String>()
-                .add("IndexId").add("IndexName").add("State").add("LastConsistencyCheckTime");
-        if (Config.use_staros) {
-            builder.add("UseStarOS");
-        }
-        TITLE_NAMES = builder.build();
-    }
+    public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
+            .add("IndexId").add("IndexName").add("State").add("LastConsistencyCheckTime")
+            .build();
 
     private Database db;
     private OlapTable olapTable;
@@ -81,9 +86,6 @@ public class IndicesProcDir implements ProcDirInterface {
                 indexInfo.add(olapTable.getIndexNameById(materializedIndex.getId()));
                 indexInfo.add(materializedIndex.getState());
                 indexInfo.add(TimeUtils.longToTimeString(materializedIndex.getLastCheckTime()));
-                if (Config.use_staros) {
-                    indexInfo.add(materializedIndex.isUseStarOS());
-                }
 
                 indexInfos.add(indexInfo);
             }
@@ -133,7 +135,11 @@ public class IndicesProcDir implements ProcDirInterface {
             if (materializedIndex == null) {
                 throw new AnalysisException("Index[" + indexId + "] does not exist.");
             }
-            return new TabletsProcDir(db, partition, materializedIndex);
+            if (olapTable.isCloudNativeTableOrMaterializedView()) {
+                return new LakeTabletsProcDir(db, olapTable, materializedIndex);
+            } else {
+                return new LocalTabletsProcDir(db, olapTable, materializedIndex);
+            }
         } finally {
             db.readUnlock();
         }

@@ -6,15 +6,15 @@
 #include "column/fixed_length_column.h"
 #include "common/status.h"
 #include "common/statusor.h"
-#include "runtime/primitive_type.h"
+#include "types/logical_type.h"
 #include "udf/java/java_udf.h"
 
-namespace starrocks::vectorized {
+namespace starrocks {
 struct JavaUDAFState {
-    JavaUDAFState(jobject&& handle_) : handle(std::move(handle_)){};
+    JavaUDAFState(int handle_) : handle(std::move(handle_)) {}
     ~JavaUDAFState() = default;
     // UDAF State
-    jobject handle;
+    int handle;
 };
 // Column to DirectByteBuffer, which could avoid some memory copy,
 // directly access the C++ address space in Java
@@ -28,7 +28,7 @@ public:
     Status do_visit(const BinaryColumn& column);
 
     template <typename T>
-    Status do_visit(const vectorized::FixedLengthColumn<T>& column) {
+    Status do_visit(const FixedLengthColumn<T>& column) {
         get_buffer_data(column, &_buffers);
         return Status::OK();
     }
@@ -51,11 +51,16 @@ private:
 
 class JavaDataTypeConverter {
 public:
-    static jobject convert_to_object_array(uint8_t** data, size_t offset, int num_rows);
+    static jobject convert_to_states(FunctionContext* ctx, uint8_t** data, size_t offset, int num_rows);
+    static jobject convert_to_states_with_filter(FunctionContext* ctx, uint8_t** data, size_t offset,
+                                                 const uint8_t* filter, int num_rows);
 
-    static void convert_to_boxed_array(FunctionContext* ctx, std::vector<DirectByteBuffer>* buffers,
-                                       const Column** columns, int num_cols, int num_rows, std::vector<jobject>* res);
-    static void convert_to_native_array(FunctionContext* ctx, std::vector<DirectByteBuffer>* buffers,
-                                        const Column** columns, int num_cols, int num_rows, std::vector<jobject>* res);
+    static Status convert_to_boxed_array(FunctionContext* ctx, std::vector<DirectByteBuffer>* buffers,
+                                         const Column** columns, int num_cols, int num_rows, std::vector<jobject>* res);
 };
-} // namespace starrocks::vectorized
+
+template <bool handle_null>
+jvalue cast_to_jvalue(LogicalType type, bool is_boxed, const Column* col, int row_num);
+void release_jvalue(bool is_boxed, jvalue val);
+void append_jvalue(MethodTypeDescriptor method_type_desc, Column* col, jvalue val);
+} // namespace starrocks

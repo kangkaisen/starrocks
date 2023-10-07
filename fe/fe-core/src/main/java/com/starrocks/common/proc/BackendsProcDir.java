@@ -1,4 +1,17 @@
-// This file is made available under Elastic License 2.0.
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // This file is based on code available under the Apache license here:
 //   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/main/java/org/apache/doris/common/proc/BackendsProcDir.java
 
@@ -27,16 +40,16 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.gson.Gson;
-import com.starrocks.alter.DecommissionBackendJob.DecommissionType;
-import com.starrocks.catalog.Catalog;
-import com.starrocks.cluster.Cluster;
+import com.starrocks.alter.DecommissionType;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.ListComparator;
 import com.starrocks.common.util.TimeUtils;
-import com.starrocks.service.FrontendOptions;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.RunMode;
 import com.starrocks.system.Backend;
+import com.starrocks.system.BackendCoreStat;
 import com.starrocks.system.SystemInfoService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -49,15 +62,20 @@ import java.util.concurrent.TimeUnit;
 public class BackendsProcDir implements ProcDirInterface {
     private static final Logger LOG = LogManager.getLogger(BackendsProcDir.class);
 
-    public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
-            .add("BackendId").add("Cluster").add("IP").add("HostName").add("HeartbeatPort")
-            .add("BePort").add("HttpPort").add("BrpcPort").add("LastStartTime").add("LastHeartbeat").add("Alive")
-            .add("SystemDecommissioned").add("ClusterDecommissioned").add("TabletNum")
-            .add("DataUsedCapacity").add("AvailCapacity").add("TotalCapacity").add("UsedPct")
-            .add("MaxDiskUsedPct").add("ErrMsg").add("Version").add("Status").add("DataTotalCapacity")
-            .add("DataUsedPct").build();
-
-    public static final int HOSTNAME_INDEX = 3;
+    public static final ImmutableList<String> TITLE_NAMES;
+    static {
+        ImmutableList.Builder<String> builder = new ImmutableList.Builder<String>()
+                .add("BackendId").add("IP").add("HeartbeatPort")
+                .add("BePort").add("HttpPort").add("BrpcPort").add("LastStartTime").add("LastHeartbeat")
+                .add("Alive").add("SystemDecommissioned").add("ClusterDecommissioned").add("TabletNum")
+                .add("DataUsedCapacity").add("AvailCapacity").add("TotalCapacity").add("UsedPct")
+                .add("MaxDiskUsedPct").add("ErrMsg").add("Version").add("Status").add("DataTotalCapacity")
+                .add("DataUsedPct").add("CpuCores").add("NumRunningQueries").add("MemUsedPct").add("CpuUsedPct");
+        if (RunMode.allowCreateLakeTable()) {
+            builder.add("StarletPort").add("WorkerId");
+        }
+        TITLE_NAMES = builder.build();
+    }
 
     private SystemInfoService clusterInfoService;
 
@@ -72,7 +90,7 @@ public class BackendsProcDir implements ProcDirInterface {
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
 
-        final List<List<String>> backendInfos = getClusterBackendInfos(null);
+        final List<List<String>> backendInfos = getClusterBackendInfos();
         for (List<String> backendInfo : backendInfos) {
             List<String> oneInfo = new ArrayList<>(backendInfo.size());
             oneInfo.addAll(backendInfo);
@@ -81,28 +99,13 @@ public class BackendsProcDir implements ProcDirInterface {
         return result;
     }
 
-    /**
-     * get backends of cluster
-     *
-     * @param clusterName
-     * @return
-     */
-    public static List<List<String>> getClusterBackendInfos(String clusterName) {
-        final SystemInfoService clusterInfoService = Catalog.getCurrentSystemInfo();
+    // get backends of cluster
+    public static List<List<String>> getClusterBackendInfos() {
+        final SystemInfoService clusterInfoService = GlobalStateMgr.getCurrentSystemInfo();
         List<List<String>> backendInfos = new LinkedList<>();
-        List<Long> backendIds;
-        if (!Strings.isNullOrEmpty(clusterName)) {
-            final Cluster cluster = Catalog.getCurrentCatalog().getCluster(clusterName);
-            // root not in any cluster
-            if (null == cluster) {
-                return backendInfos;
-            }
-            backendIds = cluster.getBackendIdList();
-        } else {
-            backendIds = clusterInfoService.getBackendIds(false);
-            if (backendIds == null) {
-                return backendInfos;
-            }
+        List<Long> backendIds = clusterInfoService.getBackendIds(false);
+        if (backendIds == null) {
+            return backendInfos;
         }
 
         long start = System.currentTimeMillis();
@@ -115,19 +118,15 @@ public class BackendsProcDir implements ProcDirInterface {
             }
 
             watch.start();
-            long tabletNum = Catalog.getCurrentInvertedIndex().getTabletNumByBackendId(backendId);
+            long tabletNum = GlobalStateMgr.getCurrentInvertedIndex().getTabletNumByBackendId(backendId);
             watch.stop();
             List<Comparable> backendInfo = Lists.newArrayList();
             backendInfo.add(String.valueOf(backendId));
-            backendInfo.add(backend.getOwnerClusterName());
             backendInfo.add(backend.getHost());
-            if (Strings.isNullOrEmpty(clusterName)) {
-                backendInfo.add(FrontendOptions.getHostnameByIp(backend.getHost()));
-                backendInfo.add(String.valueOf(backend.getHeartbeatPort()));
-                backendInfo.add(String.valueOf(backend.getBePort()));
-                backendInfo.add(String.valueOf(backend.getHttpPort()));
-                backendInfo.add(String.valueOf(backend.getBrpcPort()));
-            }
+            backendInfo.add(String.valueOf(backend.getHeartbeatPort()));
+            backendInfo.add(String.valueOf(backend.getBePort()));
+            backendInfo.add(String.valueOf(backend.getHttpPort()));
+            backendInfo.add(String.valueOf(backend.getBrpcPort()));
             backendInfo.add(TimeUtils.longToTimeString(backend.getLastStartTime()));
             backendInfo.add(TimeUtils.longToTimeString(backend.getLastUpdateMs()));
             backendInfo.add(String.valueOf(backend.isAlive()));
@@ -187,6 +186,20 @@ public class BackendsProcDir implements ProcDirInterface {
             }
             backendInfo.add(String.format("%.2f", dataUsed) + " %");
 
+            // Num CPU cores
+            backendInfo.add(BackendCoreStat.getCoresOfBe(backendId));
+
+            backendInfo.add(backend.getNumRunningQueries());
+            double memUsedPct = backend.getMemUsedPct();
+            backendInfo.add(String.format("%.2f", memUsedPct * 100) + " %");
+            backendInfo.add(String.format("%.1f", backend.getCpuUsedPermille() / 10.0) + " %");
+
+            if (RunMode.allowCreateLakeTable()) {
+                backendInfo.add(String.valueOf(backend.getStarletPort()));
+                long workerId = GlobalStateMgr.getCurrentStarOSAgent().getWorkerIdByBackendId(backendId);
+                backendInfo.add(String.valueOf(workerId));
+            }
+
             comparableBackendInfos.add(backendInfo);
         }
 
@@ -211,7 +224,7 @@ public class BackendsProcDir implements ProcDirInterface {
 
     @Override
     public boolean register(String name, ProcNodeInterface node) {
-        return false;
+        return true;
     }
 
     @Override

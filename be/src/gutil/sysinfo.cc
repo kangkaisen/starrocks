@@ -54,7 +54,6 @@
 
 #include <algorithm>
 #include <cerrno>  // for errno
-#include <cstdio>  // for snprintf(), sscanf()
 #include <cstdlib> // for getenv()
 #include <cstring> // for memmove(), memchr(), etc.
 #include <ctime>
@@ -109,7 +108,7 @@ static int64 EstimateCyclesPerSecond(const int estimate_time_ms) {
 
     const int64 start_ticks = CycleClock::Now();
     SleepForMilliseconds(estimate_time_ms);
-    const int64 guess = int64(multiplier * (CycleClock::Now() - start_ticks));
+    const auto guess = int64(multiplier * (CycleClock::Now() - start_ticks));
     return guess;
 }
 
@@ -446,16 +445,6 @@ static void InitializeSystemInfo() {
 double CyclesPerSecond() {
     InitializeSystemInfo();
     return cpuinfo_cycles_per_second;
-}
-
-int NumCPUs() {
-    InitializeSystemInfo();
-    return cpuinfo_num_cpus;
-}
-
-int MaxCPUIndex() {
-    InitializeSystemInfo();
-    return cpuinfo_max_cpu_index;
 }
 
 } // namespace base

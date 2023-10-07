@@ -1,7 +1,3 @@
-// This file is made available under Elastic License 2.0.
-// This file is based on code available under the Apache license here:
-//   https://github.com/apache/incubator-doris/blob/master/fe/fe-core/src/test/java/org/apache/doris/utframe/MockedBackend.java
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -23,20 +19,36 @@ package com.starrocks.utframe;
 
 import com.google.common.collect.Queues;
 import com.starrocks.common.ClientPool;
-import com.starrocks.master.MasterImpl;
+import com.starrocks.leader.LeaderImpl;
+import com.starrocks.proto.ExecuteCommandRequestPB;
+import com.starrocks.proto.ExecuteCommandResultPB;
 import com.starrocks.proto.PCancelPlanFragmentRequest;
 import com.starrocks.proto.PCancelPlanFragmentResult;
+import com.starrocks.proto.PCollectQueryStatisticsResult;
+import com.starrocks.proto.PExecBatchPlanFragmentsResult;
 import com.starrocks.proto.PExecPlanFragmentResult;
 import com.starrocks.proto.PFetchDataResult;
+import com.starrocks.proto.PGetFileSchemaResult;
+import com.starrocks.proto.PListFailPointResponse;
+import com.starrocks.proto.PMVMaintenanceTaskResult;
 import com.starrocks.proto.PProxyRequest;
 import com.starrocks.proto.PProxyResult;
+import com.starrocks.proto.PPulsarProxyRequest;
+import com.starrocks.proto.PPulsarProxyResult;
 import com.starrocks.proto.PQueryStatistics;
-import com.starrocks.proto.PStatus;
 import com.starrocks.proto.PTriggerProfileReportResult;
-import com.starrocks.rpc.BackendServiceProxy;
+import com.starrocks.proto.PUpdateFailPointStatusRequest;
+import com.starrocks.proto.PUpdateFailPointStatusResponse;
+import com.starrocks.proto.StatusPB;
+import com.starrocks.rpc.BrpcProxy;
 import com.starrocks.rpc.PBackendService;
+import com.starrocks.rpc.PCollectQueryStatisticsRequest;
+import com.starrocks.rpc.PExecBatchPlanFragmentsRequest;
 import com.starrocks.rpc.PExecPlanFragmentRequest;
 import com.starrocks.rpc.PFetchDataRequest;
+import com.starrocks.rpc.PGetFileSchemaRequest;
+import com.starrocks.rpc.PListFailPointRequest;
+import com.starrocks.rpc.PMVMaintenanceTaskRequest;
 import com.starrocks.rpc.PTriggerProfileReportRequest;
 import com.starrocks.thrift.BackendService;
 import com.starrocks.thrift.HeartbeatService;
@@ -79,9 +91,11 @@ import com.starrocks.thrift.TTransmitDataResult;
 import com.starrocks.thrift.TUniqueId;
 import mockit.Mock;
 import mockit.MockUp;
+import org.apache.commons.lang3.NotImplementedException;
 
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -100,7 +114,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * In MockedBackendFactory, there default rpc service for above 3 rpc services.
  */
 public class MockedBackend {
-    private static final AtomicInteger basePort = new AtomicInteger(8000);
+    private static final AtomicInteger BASE_PORT = new AtomicInteger(8000);
 
     private final String host;
     private final int brpcPort;
@@ -114,27 +128,41 @@ public class MockedBackend {
 
     private final MockPBackendService pbService;
 
-    public MockedBackend(String host) throws Exception {
+    public MockedBackend(String host) {
+        this(host, BASE_PORT.getAndIncrement());
+    }
+
+    public MockedBackend(String host, int beThriftPort) {
         this.host = host;
-        brpcPort = basePort.getAndIncrement();
-        heartBeatPort = basePort.getAndIncrement();
-        beThriftPort = basePort.getAndIncrement();
-        httpPort = basePort.getAndIncrement();
+        this.beThriftPort = beThriftPort;
+
+        brpcPort = BASE_PORT.getAndIncrement();
+        heartBeatPort = BASE_PORT.getAndIncrement();
+        httpPort = BASE_PORT.getAndIncrement();
 
         heatBeatClient = new MockHeatBeatClient(beThriftPort, httpPort, brpcPort);
         thriftClient = new MockBeThriftClient(this);
         pbService = new MockPBackendService();
 
-        ((MockGenericPool) ClientPool.heartbeatPool).register(this);
-        ((MockGenericPool) ClientPool.backendPool).register(this);
+        ((MockGenericPool<?>) ClientPool.heartbeatPool).register(this);
+        ((MockGenericPool<?>) ClientPool.backendPool).register(this);
 
-        new MockUp<BackendServiceProxy>() {
+        new MockUp<BrpcProxy>() {
             @Mock
-            protected synchronized PBackendService getProxy(TNetworkAddress address) {
+            private synchronized PBackendService getBackendService(TNetworkAddress address) {
                 return pbService;
             }
         };
 
+    }
+
+    public void setBackendService(PBackendService backendService) {
+        new MockUp<BrpcProxy>() {
+            @Mock
+            private synchronized PBackendService getBackendService(TNetworkAddress address) {
+                return backendService;
+            }
+        };
     }
 
     public String getHost() {
@@ -170,14 +198,14 @@ public class MockedBackend {
         }
 
         @Override
-        public THeartbeatResult heartbeat(TMasterInfo master_info) {
+        public THeartbeatResult heartbeat(TMasterInfo masterInfo) {
             TBackendInfo backendInfo = new TBackendInfo(beThriftPort, httpPort);
             backendInfo.setBrpc_port(brpcPort);
             return new THeartbeatResult(new TStatus(TStatusCode.OK), backendInfo);
         }
 
         @Override
-        public void send_heartbeat(TMasterInfo master_info) {
+        public void send_heartbeat(TMasterInfo masterInfo) {
         }
 
         @Override
@@ -193,7 +221,7 @@ public class MockedBackend {
         private final BlockingQueue<TAgentTaskRequest> taskQueue = Queues.newLinkedBlockingQueue();
         private final TBackend tBackend;
         private long reportVersion = 0;
-        private final MasterImpl master = new MasterImpl();
+        private final LeaderImpl master = new LeaderImpl();
 
         public MockBeThriftClient(MockedBackend backend) {
             super(null);
@@ -241,12 +269,12 @@ public class MockedBackend {
         }
 
         @Override
-        public TAgentResult make_snapshot(TSnapshotRequest snapshot_request) {
+        public TAgentResult make_snapshot(TSnapshotRequest snapshotRequest) {
             return new TAgentResult(new TStatus(TStatusCode.OK));
         }
 
         @Override
-        public TAgentResult release_snapshot(String snapshot_path) {
+        public TAgentResult release_snapshot(String snapshotPath) {
             return new TAgentResult(new TStatus(TStatusCode.OK));
         }
 
@@ -276,12 +304,12 @@ public class MockedBackend {
         }
 
         @Override
-        public TExportStatusResult get_export_status(TUniqueId task_id) {
+        public TExportStatusResult get_export_status(TUniqueId taskId) {
             return new TExportStatusResult(new TStatus(TStatusCode.OK), TExportState.FINISHED);
         }
 
         @Override
-        public TStatus erase_export_task(TUniqueId task_id) {
+        public TStatus erase_export_task(TUniqueId taskId) {
             return new TStatus(TStatusCode.OK);
         }
 
@@ -318,14 +346,30 @@ public class MockedBackend {
         }
     }
 
-    private static class MockPBackendService implements PBackendService {
+    public static class MockPBackendService implements PBackendService {
         private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        public <T> Future<T> submit(Callable<T> task) {
+            return executor.submit(task);
+        }
 
         @Override
         public Future<PExecPlanFragmentResult> execPlanFragmentAsync(PExecPlanFragmentRequest request) {
-            return executor.submit(() -> {
+            return submit(() -> {
                 PExecPlanFragmentResult result = new PExecPlanFragmentResult();
-                PStatus pStatus = new PStatus();
+                StatusPB pStatus = new StatusPB();
+                pStatus.statusCode = 0;
+                result.status = pStatus;
+                return result;
+            });
+        }
+
+        @Override
+        public Future<PExecBatchPlanFragmentsResult> execBatchPlanFragmentsAsync(
+                PExecBatchPlanFragmentsRequest request) {
+            return submit(() -> {
+                PExecBatchPlanFragmentsResult result = new PExecBatchPlanFragmentsResult();
+                StatusPB pStatus = new StatusPB();
                 pStatus.statusCode = 0;
                 result.status = pStatus;
                 return result;
@@ -334,9 +378,9 @@ public class MockedBackend {
 
         @Override
         public Future<PCancelPlanFragmentResult> cancelPlanFragmentAsync(PCancelPlanFragmentRequest request) {
-            return executor.submit(() -> {
+            return submit(() -> {
                 PCancelPlanFragmentResult result = new PCancelPlanFragmentResult();
-                PStatus pStatus = new PStatus();
+                StatusPB pStatus = new StatusPB();
                 pStatus.statusCode = 0;
                 result.status = pStatus;
                 return result;
@@ -345,14 +389,16 @@ public class MockedBackend {
 
         @Override
         public Future<PFetchDataResult> fetchDataAsync(PFetchDataRequest request) {
-            return executor.submit(() -> {
+            return submit(() -> {
                 PFetchDataResult result = new PFetchDataResult();
-                PStatus pStatus = new PStatus();
+                StatusPB pStatus = new StatusPB();
                 pStatus.statusCode = 0;
 
                 PQueryStatistics pQueryStatistics = new PQueryStatistics();
                 pQueryStatistics.scanRows = 0L;
                 pQueryStatistics.scanBytes = 0L;
+                pQueryStatistics.cpuCostNs = 0L;
+                pQueryStatistics.memCostBytes = 0L;
 
                 result.status = pStatus;
                 result.packetSeq = 0L;
@@ -368,7 +414,42 @@ public class MockedBackend {
         }
 
         @Override
+        public Future<PCollectQueryStatisticsResult> collectQueryStatistics(PCollectQueryStatisticsRequest request) {
+            return null;
+        }
+
+        @Override
         public Future<PProxyResult> getInfo(PProxyRequest request) {
+            return null;
+        }
+
+        @Override
+        public Future<PPulsarProxyResult> getPulsarInfo(PPulsarProxyRequest request) {
+            return null;
+        }
+
+        @Override
+        public Future<PGetFileSchemaResult> getFileSchema(PGetFileSchemaRequest request) {
+            throw new NotImplementedException("TODO");
+        }
+
+        @Override
+        public Future<PMVMaintenanceTaskResult> submitMVMaintenanceTaskAsync(PMVMaintenanceTaskRequest request) {
+            throw new NotImplementedException("TODO");
+        }
+
+        @Override
+        public Future<ExecuteCommandResultPB> executeCommandAsync(ExecuteCommandRequestPB request) {
+            throw new NotImplementedException("TODO");
+        }
+
+        @Override
+        public Future<PUpdateFailPointStatusResponse> updateFailPointStatusAsync(PUpdateFailPointStatusRequest request) {
+            return null;
+        }
+
+        @Override
+        public Future<PListFailPointResponse> listFailPointAsync(PListFailPointRequest request) {
             return null;
         }
     }
