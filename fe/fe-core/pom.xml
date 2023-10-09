@@ -605,6 +605,18 @@ under the License.
             <artifactId>hadoop-aws</artifactId>
         </dependency>
 
+        <!-- https://mvnrepository.com/artifact/com.qcloud.cos/hadoop-cos -->
+        <dependency>
+            <groupId>com.qcloud.cos</groupId>
+            <artifactId>hadoop-cos</artifactId>
+        </dependency>
+
+        <!-- https://mvnrepository.com/artifact/com.qcloud/chdfs_hadoop_plugin_network -->
+        <dependency>
+            <groupId>com.qcloud</groupId>
+            <artifactId>chdfs_hadoop_plugin_network</artifactId>
+        </dependency>
+
         <!-- https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-azure-datalake -->
         <dependency>
             <groupId>org.apache.hadoop</groupId>
@@ -724,6 +736,11 @@ under the License.
             <groupId>org.apache.paimon</groupId>
             <artifactId>paimon-s3</artifactId>
             <version>${paimon.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial.snappy</groupId>
+            <artifactId>snappy-java</artifactId>
+            <version>1.1.9.1</version>
         </dependency>
 
         <dependency>

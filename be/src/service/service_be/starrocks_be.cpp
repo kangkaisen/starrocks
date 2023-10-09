@@ -97,7 +97,7 @@ StorageEngine* init_storage_engine(GlobalEnv* global_env, std::vector<StorePath>
     options.backend_uid = UniqueId::gen_uid();
     options.compaction_mem_tracker = global_env->compaction_mem_tracker();
     options.update_mem_tracker = global_env->update_mem_tracker();
-    options.as_cn = as_cn;
+    options.need_write_cluster_id = !as_cn;
     StorageEngine* engine = nullptr;
 
     EXIT_IF_ERROR(StorageEngine::open(options, &engine));
@@ -183,6 +183,15 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     if (config::brpc_num_threads != -1) {
         options.num_threads = config::brpc_num_threads;
     }
+    const auto lake_service_max_concurrency = config::lake_service_max_concurrency;
+    const auto service_name = "starrocks.lake.LakeService";
+    const auto methods = {"abort_txn",           "abort_compaction", "compact",          "drop_table",
+                          "delete_data",         "delete_tablet",    "get_tablet_stats", "publish_version",
+                          "publish_log_version", "vacuum",           "vacuum_full"};
+    for (auto method : methods) {
+        brpc_server->MaxConcurrencyOf(service_name, method) = lake_service_max_concurrency;
+    }
+
     if (auto ret = brpc_server->Start(config::brpc_port, &options); ret != 0) {
         LOG(ERROR) << "BRPC service did not start correctly, exiting errcoe: " << ret;
         shutdown_logging();

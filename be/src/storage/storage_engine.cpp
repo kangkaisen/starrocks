@@ -69,6 +69,7 @@
 #include "storage/tablet_meta_manager.h"
 #include "storage/task/engine_task.h"
 #include "storage/update_manager.h"
+#include "testutil/sync_point.h"
 #include "util/bthreads/executor.h"
 #include "util/lru_cache.h"
 #include "util/scoped_cleanup.h"
@@ -92,7 +93,7 @@ static Status _validate_options(const EngineOptions& options) {
 }
 
 Status StorageEngine::open(const EngineOptions& options, StorageEngine** engine_ptr) {
-    if (!options.as_cn) {
+    if (options.need_write_cluster_id) {
         RETURN_IF_ERROR(_validate_options(options));
     }
 
@@ -181,12 +182,11 @@ void StorageEngine::load_data_dirs(const std::vector<DataDir*>& data_dirs) {
 }
 
 Status StorageEngine::_open(const EngineOptions& options) {
-    _as_cn = options.as_cn;
-    _effective_cluster_id = config::cluster_id;
-
     // init store_map
     RETURN_IF_ERROR_WITH_WARN(_init_store_map(), "_init_store_map failed");
 
+    _effective_cluster_id = config::cluster_id;
+    _need_write_cluster_id = options.need_write_cluster_id;
     RETURN_IF_ERROR_WITH_WARN(_check_all_root_path_cluster_id(), "fail to check cluster id");
 
     _update_storage_medium_type_count();
@@ -200,9 +200,7 @@ Status StorageEngine::_open(const EngineOptions& options) {
     auto dirs = get_stores<false>();
 
     // `load_data_dirs` depend on |_update_manager|.
-    if (!_as_cn) {
-        load_data_dirs(dirs);
-    }
+    load_data_dirs(dirs);
 
     std::unique_ptr<ThreadPool> thread_pool;
     RETURN_IF_ERROR(ThreadPoolBuilder("delta_writer")
@@ -257,11 +255,8 @@ Status StorageEngine::_init_store_map() {
         ScopedCleanup store_release_guard([&]() { delete store; });
         tmp_stores.emplace_back(true, store);
         store_release_guard.cancel();
-        auto& as_cn = _as_cn;
-        threads.emplace_back([store, &error_msg_lock, &error_msg, as_cn]() {
-            // for debug
-            LOG(INFO) << "as_cn captured in _init_store_map is " << as_cn;
-            auto st = store->init(false, as_cn);
+        threads.emplace_back([store, &error_msg_lock, &error_msg]() {
+            auto st = store->init();
             if (!st.ok()) {
                 {
                     std::lock_guard<SpinLock> l(error_msg_lock);
@@ -448,7 +443,7 @@ Status StorageEngine::_check_all_root_path_cluster_id() {
     RETURN_IF_ERROR(_judge_and_update_effective_cluster_id(cluster_id));
 
     // write cluster id into cluster_id_path if get effective cluster id success
-    if (_effective_cluster_id != -1 && !_is_all_cluster_id_exist && !_as_cn) {
+    if (_effective_cluster_id != -1 && !_is_all_cluster_id_exist && _need_write_cluster_id) {
         RETURN_IF_ERROR(set_cluster_id(_effective_cluster_id));
     }
 
@@ -1397,6 +1392,7 @@ Status StorageEngine::get_next_increment_id_interval(int64_t tableid, size_t num
             _auto_increment_meta_map.insert({tableid, std::make_shared<AutoIncrementMeta>()});
         }
         meta = _auto_increment_meta_map[tableid];
+        TEST_SYNC_POINT_CALLBACK("StorageEngine::get_next_increment_id_interval.1", &meta);
     }
 
     // lock for different tableid
