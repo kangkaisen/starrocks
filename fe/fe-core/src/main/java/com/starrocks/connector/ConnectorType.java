@@ -74,14 +74,14 @@ public enum ConnectorType {
     }
 
     public static boolean isSupport(String name) {
-        ConnectorType type = from(name);
-        return SUPPORT_TYPE_SET.contains(type);
+        ConnectorType type = EnumUtils.getEnumIgnoreCase(ConnectorType.class, name);
+        return type != null && SUPPORT_TYPE_SET.contains(type);
     }
 
     public static ConnectorType from(String name) {
         ConnectorType res = EnumUtils.getEnumIgnoreCase(ConnectorType.class, name);
         if (res == null) {
-            throw new IllegalArgumentException("unsupported catalog type: " + name);
+            throw new IllegalStateException("unsupported catalog type: " + name);
         }
         return res;
     }

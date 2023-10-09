@@ -342,7 +342,7 @@ public class AnalyzeTestUtil {
                 Assert.assertTrue(e.getMessage(), e.getMessage().contains(exceptMessage));
             }
         } catch (Exception e) {
-            Assert.fail("analyze exception");
+            Assert.fail("analyze exception: " + e);
         }
     }
 }
