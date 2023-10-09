@@ -85,6 +85,7 @@ public class JDBCTable extends Table {
         return resourceName;
     }
 
+    @Override
     public String getCatalogName() {
         return catalogName;
     }

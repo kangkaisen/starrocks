@@ -3626,4 +3626,11 @@ public class CreateMaterializedViewTest {
         });
         Assert.assertTrue(e.getMessage().contains("Do not support create synchronous materialized view(rollup) on"));
     }
+
+    @Test
+    public void createDeltaLakeMV() throws Exception {
+        starRocksAssert.withMaterializedView("create materialized view mv_deltalake " +
+                " refresh manual" +
+                " as select * from deltalake_catalog.deltalake_db.tbl");
+    }
 }

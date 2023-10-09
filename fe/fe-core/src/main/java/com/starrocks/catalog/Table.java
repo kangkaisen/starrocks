@@ -250,6 +250,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         this.id = id;
     }
 
+    public String getCatalogName() {
+        return "default";
+    }
+
     public String getName() {
         return name;
     }
