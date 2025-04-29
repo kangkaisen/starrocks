@@ -10,6 +10,7 @@
 #   image: copy the artifacts from a artifact docker image.
 #   local: copy the artifacts from a local repo. Mainly used for local development and test.
 ARG ARTIFACT_SOURCE=image
+ARG WITH_DEBUG_INFO=false
 
 ARG ARTIFACTIMAGE=starrocks/artifacts-centos7:latest
 FROM ${ARTIFACTIMAGE} as artifacts-from-image
@@ -20,30 +21,29 @@ ARG LOCAL_REPO_PATH
 
 COPY ${LOCAL_REPO_PATH}/output/fe /release/fe_artifacts/fe
 COPY ${LOCAL_REPO_PATH}/output/be /release/be_artifacts/be
-COPY ${LOCAL_REPO_PATH}/fs_brokers/apache_hdfs_broker/output/apache_hdfs_broker /release/broker_artifacts/apache_hdfs_broker
 
 
 FROM artifacts-from-${ARTIFACT_SOURCE} as artifacts
-RUN rm -f /release/be_artifacts/be/lib/starrocks_be.debuginfo
+ARG WITH_DEBUG_INFO
 
+RUN if [ "$WITH_DEBUG_INFO" = "false" ]; then rm -f /release/be_artifacts/be/lib/starrocks_be.debuginfo; fi
 
 FROM registry.access.redhat.com/ubi8/ubi:8.7
 ARG DEPLOYDIR=/data/deploy
 ENV SR_HOME=${DEPLOYDIR}/starrocks
 
-RUN yum install -y java-1.8.0-openjdk-devel tzdata openssl curl vim ca-certificates fontconfig gzip tar less hostname procps-ng lsof python3-pip nginx nc && \
+RUN yum install -y java-11-openjdk-devel tzdata openssl curl vim ca-certificates fontconfig gzip tar less hostname procps-ng lsof python3-pip nginx nc && \
     rpm -ivh https://repo.mysql.com/mysql80-community-release-el8-7.noarch.rpm && \
     yum -y install mysql-community-client --nogpgcheck && \
     yum remove -y mysql80-community-release && \
     pip3 install supervisor
-ENV JAVA_HOME=/usr/lib/jvm/java-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-11
 
 WORKDIR $DEPLOYDIR
 
 # Copy all artifacts to the runtime container image
 COPY --from=artifacts /release/be_artifacts/ $DEPLOYDIR/starrocks
 COPY --from=artifacts /release/fe_artifacts/ $DEPLOYDIR/starrocks
-COPY --from=artifacts /release/broker_artifacts/ $DEPLOYDIR/starrocks
 
 # Copy setup script and config files
 COPY docker/dockerfiles/allin1/*.sh docker/dockerfiles/allin1/*.conf docker/dockerfiles/allin1/*.txt $DEPLOYDIR

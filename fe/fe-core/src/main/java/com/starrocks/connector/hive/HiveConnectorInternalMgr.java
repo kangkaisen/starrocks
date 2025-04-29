@@ -49,6 +49,7 @@ public class HiveConnectorInternalMgr {
     private final CachingRemoteFileConf remoteFileConf;
 
     private ExecutorService refreshHiveMetastoreExecutor;
+    private ExecutorService refreshHiveExternalTableExecutor;
     private ExecutorService refreshRemoteFileExecutor;
     private ExecutorService pullRemoteFileExecutor;
     private ExecutorService updateRemoteFilesExecutor;
@@ -100,6 +101,9 @@ public class HiveConnectorInternalMgr {
         if (enableMetastoreCache && refreshHiveMetastoreExecutor != null) {
             refreshHiveMetastoreExecutor.shutdown();
         }
+        if (enableMetastoreCache && refreshHiveExternalTableExecutor != null) {
+            refreshHiveExternalTableExecutor.shutdown();
+        }
         if (enableRemoteFileCache && refreshRemoteFileExecutor != null) {
             refreshRemoteFileExecutor.shutdown();
         }
@@ -111,16 +115,19 @@ public class HiveConnectorInternalMgr {
     public IHiveMetastore createHiveMetastore() {
         // TODO(stephen): Abstract the creator class to construct hive meta client
         HiveMetaClient metaClient = HiveMetaClient.createHiveMetaClient(hdfsEnvironment, properties);
-        IHiveMetastore hiveMetastore = new HiveMetastore(metaClient, catalogName);
+        IHiveMetastore hiveMetastore = new HiveMetastore(metaClient, catalogName, metastoreType);
         IHiveMetastore baseHiveMetastore;
         if (!enableMetastoreCache) {
             baseHiveMetastore = hiveMetastore;
         } else {
             refreshHiveMetastoreExecutor = Executors.newCachedThreadPool(
                     new ThreadFactoryBuilder().setNameFormat("hive-metastore-refresh-%d").build());
+            refreshHiveExternalTableExecutor = Executors.newCachedThreadPool(
+                    new ThreadFactoryBuilder().setNameFormat("hive-external-table-refresh-%d").build());
             baseHiveMetastore = CachingHiveMetastore.createCatalogLevelInstance(
                     hiveMetastore,
                     new ReentrantExecutor(refreshHiveMetastoreExecutor, hmsConf.getCacheRefreshThreadMaxNum()),
+                    new ReentrantExecutor(refreshHiveExternalTableExecutor, hmsConf.getCacheRefreshThreadMaxNum()),
                     hmsConf.getCacheTtlSec(),
                     enableHmsEventsIncrementalSync ? NEVER_REFRESH : hmsConf.getCacheRefreshIntervalSec(),
                     hmsConf.getCacheMaxNum(),

@@ -19,8 +19,30 @@
 
 namespace starrocks::parquet {
 
-CompressionTypePB convert_compression_codec(tparquet::CompressionCodec::type parquet_codec);
-
 enum ColumnContentType { VALUE, DICT_CODE };
+
+enum ColumnIOType { INVALID = 0, PAGE_INDEX = 1, PAGES = 2, BLOOM_FILTER = 4 };
+enum CacheType { META, PAGE };
+
+using ColumnIOTypeFlags = int32_t;
+
+class ParquetUtils {
+public:
+    static CompressionTypePB convert_compression_codec(tparquet::CompressionCodec::type parquet_codec);
+
+    static int decimal_precision_to_byte_count(int precision);
+
+    static int64_t get_column_start_offset(const tparquet::ColumnMetaData& column);
+
+    static int64_t get_row_group_start_offset(const tparquet::RowGroup& row_group);
+
+    static int64_t get_row_group_end_offset(const tparquet::RowGroup& row_group);
+
+    static std::string get_file_cache_key(CacheType type, const std::string& filename, int64_t modification_time,
+                                          uint64_t file_size);
+
+private:
+    inline static const std::vector<std::string> cache_key_prefix{"ft", "pg"};
+};
 
 } // namespace starrocks::parquet

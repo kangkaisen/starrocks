@@ -50,6 +50,7 @@ public class HudiConnectorInternalMgr {
     private CachingRemoteFileConf remoteFileConf;
 
     private ExecutorService refreshHiveMetastoreExecutor;
+    private ExecutorService refreshHudiExternalTableExecutor;
     private ExecutorService refreshRemoteFileExecutor;
     private ExecutorService pullRemoteFileExecutor;
 
@@ -94,6 +95,9 @@ public class HudiConnectorInternalMgr {
         if (enableMetastoreCache && refreshHiveMetastoreExecutor != null) {
             refreshHiveMetastoreExecutor.shutdown();
         }
+        if (enableMetastoreCache && refreshHudiExternalTableExecutor != null) {
+            refreshHudiExternalTableExecutor.shutdown();
+        }
         if (enableRemoteFileCache && refreshRemoteFileExecutor != null) {
             refreshRemoteFileExecutor.shutdown();
         }
@@ -105,16 +109,19 @@ public class HudiConnectorInternalMgr {
     public IHiveMetastore createHiveMetastore() {
         // TODO(stephen): Abstract the creator class to construct hive meta client
         HiveMetaClient metaClient = HiveMetaClient.createHiveMetaClient(hdfsEnvironment, properties);
-        IHiveMetastore hiveMetastore = new HiveMetastore(metaClient, catalogName);
+        IHiveMetastore hiveMetastore = new HiveMetastore(metaClient, catalogName, metastoreType);
         IHiveMetastore baseHiveMetastore;
         if (!enableMetastoreCache) {
             baseHiveMetastore = hiveMetastore;
         } else {
             refreshHiveMetastoreExecutor = Executors.newCachedThreadPool(
                     new ThreadFactoryBuilder().setNameFormat("hive-metastore-refresh-%d").build());
+            refreshHudiExternalTableExecutor = Executors.newCachedThreadPool(
+                    new ThreadFactoryBuilder().setNameFormat("hudi-external-table-refresh-%d").build());
             baseHiveMetastore = CachingHiveMetastore.createCatalogLevelInstance(
                     hiveMetastore,
                     new ReentrantExecutor(refreshHiveMetastoreExecutor, hmsConf.getCacheRefreshThreadMaxNum()),
+                    new ReentrantExecutor(refreshHudiExternalTableExecutor, hmsConf.getCacheRefreshThreadMaxNum()),
                     hmsConf.getCacheTtlSec(),
                     hmsConf.getCacheRefreshIntervalSec(),
                     hmsConf.getCacheMaxNum(),

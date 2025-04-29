@@ -134,6 +134,7 @@ private:
     uint64_t _threads_started_metric{0};
     uint64_t _threads_running_metric{0};
 
+public:
     ThreadMgr(const ThreadMgr&) = delete;
     const ThreadMgr& operator=(const ThreadMgr&) = delete;
 };
@@ -196,6 +197,7 @@ void ThreadMgr::get_thread_infos(std::vector<BeThreadInfo>& infos) {
             info.tid = thread.second.thread_id();
             info.idle = thread.second.thread()->idle();
             info.finished_tasks = thread.second.thread()->finished_tasks();
+            info.num_bound_cpu_cores = thread.second.thread()->num_bound_cpu_cores();
         }
     }
 }
@@ -213,8 +215,7 @@ Thread::~Thread() {
 }
 
 void Thread::join() {
-    auto st = ThreadJoiner(this).join();
-    st.permit_unchecked_error();
+    (void)ThreadJoiner(this).join();
 }
 
 int64_t Thread::tid() const {

@@ -12,14 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 package com.starrocks.connector.jdbc;
 
+import com.starrocks.analysis.BinaryPredicate;
+import com.starrocks.analysis.BinaryType;
+import com.starrocks.analysis.Expr;
+import com.starrocks.analysis.LargeStringLiteral;
+import com.starrocks.analysis.SlotRef;
+import com.starrocks.analysis.StringLiteral;
+import com.starrocks.analysis.TableName;
+import com.starrocks.sql.analyzer.AstToStringBuilder;
+import com.starrocks.sql.parser.NodePosition;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.util.Objects;
-
 
 public class JDBCTableTest {
 
@@ -51,4 +58,23 @@ public class JDBCTableTest {
         }
     }
 
+    @Test
+    public void testJDBCPredicateRewrite() {
+        {
+            Expr left = new SlotRef(new TableName("db", "tbl"), "k1");
+            Expr right = new LargeStringLiteral("main_interface_of_live#all_module#null#write_real_time_start#0",
+                    NodePosition.ZERO);
+            Expr expr = new BinaryPredicate(BinaryType.EQ, left, right);
+            String str = AstToStringBuilder.toString(expr);
+            Assert.assertEquals(str, "db.tbl.k1 = 'main_interface_of_live#all_module#null#write_real_time_start#0'");
+        }
+
+        {
+            Expr left = new SlotRef(new TableName("db", "tbl"), "k1");
+            Expr right = new StringLiteral("123", NodePosition.ZERO);
+            Expr expr = new BinaryPredicate(BinaryType.LE, left, right);
+            String str = AstToStringBuilder.toString(expr);
+            Assert.assertEquals(str, "db.tbl.k1 <= '123'");
+        }
+    }
 }

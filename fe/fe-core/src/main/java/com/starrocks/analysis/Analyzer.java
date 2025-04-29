@@ -229,11 +229,11 @@ public class Analyzer {
     }
 
     public Table getTable(TableName tblName) {
-        Database db = globalState.globalStateMgr.getDb(tblName.getDb());
+        Database db = globalState.globalStateMgr.getLocalMetastore().getDb(tblName.getDb());
         if (db == null) {
             return null;
         }
-        return db.getTable(tblName.getTbl());
+        return GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), tblName.getTbl());
     }
 
     public TupleDescriptor getTupleDesc(TupleId id) {
@@ -365,10 +365,6 @@ public class Analyzer {
 
     public String getDefaultCatalog() {
         return globalState.context.getCurrentCatalog();
-    }
-
-    public String getQualifiedUser() {
-        return globalState.context.getQualifiedUser();
     }
 
     public ConnectContext getContext() {

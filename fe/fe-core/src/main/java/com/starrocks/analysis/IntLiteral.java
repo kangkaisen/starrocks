@@ -112,7 +112,7 @@ public class IntLiteral extends LiteralExpr {
         }
 
         if (!valid) {
-            throw new ArithmeticException("Number out of range[" + value + "]. type: " + type);
+            throw new ArithmeticException("Number out of range[" + longValue + "]. type: " + type);
         }
 
         this.value = longValue;
@@ -394,11 +394,6 @@ public class IntLiteral extends LiteralExpr {
     public int hashCode() {
         // IntLiteral(0) equals to LargeIntLiteral(0), so their hash codes must equal.
         return Objects.hash(getLongValue());
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-        return super.equals(obj);
     }
 
     @Override

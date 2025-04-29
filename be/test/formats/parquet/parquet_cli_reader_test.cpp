@@ -46,7 +46,7 @@ protected:
         if (status.ok()) {
             res = fmt::format("File path: {}, OK", filepath);
         } else {
-            res = fmt::format("File path: {}, FAILED: {}", filepath, status.get_error_msg());
+            res = fmt::format("File path: {}, FAILED: {}", filepath, status.message());
         }
         std::cout << res << std::endl;
     }
@@ -104,7 +104,7 @@ TEST_F(ParquetCLIReaderTest, ReadAllParquetFiles) {
             if (unsupported_paths_get_next.find(path) != unsupported_paths_get_next.end()) {
                 ASSERT_FALSE(res.ok());
             } else {
-                ASSERT_TRUE(res.ok()) << res.status().get_error_msg();
+                ASSERT_TRUE(res.ok()) << res.status().message();
             }
             st = res.status();
         }
@@ -131,12 +131,16 @@ TEST_F(ParquetCLIReaderTest, ReadArrowFuzzingParquetFiles) {
         ignore_dcheck_paths.emplace(
                 "./be/test/formats/parquet/arrow_fuzzing_data/fuzzing/"
                 "clusterfuzz-testcase-minimized-parquet-arrow-fuzz-5667493425446912");
+        ignore_dcheck_paths.emplace(
+                "./be/test/formats/parquet/arrow_fuzzing_data/fuzzing/"
+                "clusterfuzz-testcase-minimized-parquet-arrow-fuzz-5106889906585600");
     }
 #endif
     for (const std::string& path : read_paths) {
         if (ignore_dcheck_paths.find(path) != ignore_dcheck_paths.end()) {
             continue;
         }
+        LOG(INFO) << "Testing file: " << path;
         ParquetCLIReader reader{path};
         auto st = reader.init();
         if (st.ok()) {

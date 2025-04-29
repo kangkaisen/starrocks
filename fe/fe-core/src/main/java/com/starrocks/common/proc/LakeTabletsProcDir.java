@@ -25,8 +25,11 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.util.ListComparator;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.lake.LakeTablet;
 import com.starrocks.monitor.unit.ByteSizeValue;
+import com.starrocks.qe.ConnectContext;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,7 +42,7 @@ import java.util.List;
  */
 public class LakeTabletsProcDir implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
-            .add("TabletId").add("BackendId").add("DataSize").add("RowCount")
+            .add("TabletId").add("BackendId").add("DataSize").add("RowCount").add("MinVersion")
             .build();
 
     private final Database db;
@@ -69,19 +72,22 @@ public class LakeTabletsProcDir implements ProcDirInterface {
         Preconditions.checkState(table.isCloudNativeTableOrMaterializedView());
 
         List<List<Comparable>> tabletInfos = Lists.newArrayList();
-        db.readLock();
+
+        Locker locker = new Locker();
+        locker.lockDatabase(db.getId(), LockType.READ);
         try {
             for (Tablet tablet : index.getTablets()) {
                 List<Comparable> tabletInfo = Lists.newArrayList();
                 LakeTablet lakeTablet = (LakeTablet) tablet;
                 tabletInfo.add(lakeTablet.getId());
-                tabletInfo.add(new Gson().toJson(lakeTablet.getBackendIds()));
+                tabletInfo.add(new Gson().toJson(lakeTablet.getBackendIds(ConnectContext.get().getCurrentWarehouseId())));
                 tabletInfo.add(new ByteSizeValue(lakeTablet.getDataSize(true)));
                 tabletInfo.add(lakeTablet.getRowCount(0L));
+                tabletInfo.add(lakeTablet.getMinVersion());
                 tabletInfos.add(tabletInfo);
             }
         } finally {
-            db.readUnlock();
+            locker.unLockDatabase(db.getId(), LockType.READ);
         }
         return tabletInfos;
     }
@@ -127,7 +133,8 @@ public class LakeTabletsProcDir implements ProcDirInterface {
             throw new AnalysisException("Invalid tablet id format: " + tabletIdStr);
         }
 
-        db.readLock();
+        Locker locker = new Locker();
+        locker.lockDatabase(db.getId(), LockType.READ);
         try {
             Tablet tablet = index.getTablet(tabletId);
             if (tablet == null) {
@@ -136,29 +143,34 @@ public class LakeTabletsProcDir implements ProcDirInterface {
             Preconditions.checkState(tablet instanceof LakeTablet);
             return new LakeTabletProcNode((LakeTablet) tablet);
         } finally {
-            db.readUnlock();
+            locker.unLockDatabase(db.getId(), LockType.READ);
         }
     }
 
     // Handle showing single tablet info
     public static class LakeTabletProcNode implements ProcNodeInterface {
         private final LakeTablet tablet;
+
         public LakeTabletProcNode(LakeTablet tablet) {
             this.tablet = tablet;
         }
 
         @Override
-        public ProcResult fetchResult() throws AnalysisException {
+        public ProcResult fetchResult() {
             BaseProcResult result = new BaseProcResult();
             result.setNames(TITLE_NAMES);
+
+            // get current warehouse
+            long warehouseId = ConnectContext.get().getCurrentWarehouseId();
             List<String> row = Arrays.asList(
                     String.valueOf(tablet.getId()),
-                    new Gson().toJson(tablet.getBackendIds()),
+                    new Gson().toJson(tablet.getBackendIds(warehouseId)),
                     new ByteSizeValue(tablet.getDataSize(true)).toString(),
                     String.valueOf(tablet.getRowCount(0L))
             );
             result.addRow(row);
+
             return result;
         }
-    };
+    }
 }

@@ -19,13 +19,14 @@ import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.Pair;
 import com.starrocks.common.io.Writable;
+import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.persist.EditLog;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
-import com.starrocks.qe.VariableMgr;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.optimizer.dump.QueryDumpInfo;
-import com.starrocks.system.BackendCoreStat;
+import com.starrocks.system.BackendResourceStat;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
@@ -56,6 +57,7 @@ public class ReplayFromDumpTestBase {
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         // Should disable Dynamic Partition in replay dump test
+        Config.show_execution_groups = false;
         Config.dynamic_partition_enable = false;
         Config.tablet_sched_disable_colocate_overall_balance = true;
         // create connect context
@@ -65,9 +67,10 @@ public class ReplayFromDumpTestBase {
         connectContext.getSessionVariable().setCboPushDownAggregateMode(-1);
         starRocksAssert = new StarRocksAssert(connectContext);
         FeConstants.runningUnitTest = true;
-        FeConstants.showLocalShuffleColumnsInExplain = false;
+        FeConstants.showScanNodeLocalShuffleColumnsInExplain = false;
         FeConstants.enablePruneEmptyOutputScan = false;
-
+        FeConstants.showJoinLocalShuffleInExplain = false;
+        FeConstants.setLengthForVarchar = false;
         new MockUp<EditLog>() {
             @Mock
             protected void logEdit(short op, Writable writable) {
@@ -77,15 +80,17 @@ public class ReplayFromDumpTestBase {
     }
 
     @Before
-    public void before() {
-        BackendCoreStat.reset();
+    public void before() throws Exception {
+        BackendResourceStat.getInstance().reset();
         connectContext.getSessionVariable().setCboPushDownAggregateMode(-1);
+        connectContext.setQueryId(UUIDUtil.genUUID());
+        connectContext.setExecutionId(UUIDUtil.toTUniqueId(connectContext.getQueryId()));
     }
 
     @AfterClass
     public static void afterClass() throws Exception {
         connectContext.getSessionVariable().setEnableLocalShuffleAgg(true);
-        FeConstants.showLocalShuffleColumnsInExplain = true;
+        FeConstants.showScanNodeLocalShuffleColumnsInExplain = true;
     }
 
     public String getModelContent(String filename, String model) {
@@ -117,12 +122,12 @@ public class ReplayFromDumpTestBase {
         return modelContentBuilder.toString();
     }
 
-    public QueryDumpInfo getDumpInfoFromJson(String dumpInfoString) {
+    public static QueryDumpInfo getDumpInfoFromJson(String dumpInfoString) {
         return GsonUtils.GSON.fromJson(dumpInfoString, QueryDumpInfo.class);
     }
 
     public SessionVariable getTestSessionVariable() {
-        SessionVariable sessionVariable = VariableMgr.newSessionVariable();
+        SessionVariable sessionVariable = GlobalStateMgr.getCurrentState().getVariableMgr().newSessionVariable();
         sessionVariable.setMaxTransformReorderJoins(8);
         sessionVariable.setEnableGlobalRuntimeFilter(true);
         sessionVariable.setEnableMultiColumnsOnGlobbalRuntimeFilter(true);
@@ -139,7 +144,7 @@ public class ReplayFromDumpTestBase {
         Assert.assertEquals(originCostPlan, replayCostPlan);
     }
 
-    protected String getDumpInfoFromFile(String fileName) throws Exception {
+    protected static String getDumpInfoFromFile(String fileName) throws Exception {
         String path = Objects.requireNonNull(ClassLoader.getSystemClassLoader().getResource("sql")).getPath();
         File file = new File(path + "/" + fileName + ".json");
         StringBuilder sb = new StringBuilder();

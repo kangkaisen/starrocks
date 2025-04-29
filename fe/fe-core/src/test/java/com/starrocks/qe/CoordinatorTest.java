@@ -38,6 +38,7 @@ import com.starrocks.qe.scheduler.dag.ExecutionFragment;
 import com.starrocks.qe.scheduler.dag.FragmentInstance;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.plan.PlanTestBase;
+import com.starrocks.statistic.StatisticUtils;
 import com.starrocks.system.Backend;
 import com.starrocks.thrift.TBinlogOffset;
 import com.starrocks.thrift.TDescriptorTable;
@@ -66,7 +67,8 @@ public class CoordinatorTest extends PlanTestBase {
     CoordinatorPreprocessor coordinatorPreprocessor;
 
     @Before
-    public void setUp() throws IOException {
+    public void setUp() {
+        super.setUp();
         ctx = UtFrameUtils.createDefaultCtx();
         ctx.setExecutionId(new TUniqueId(0xdeadbeef, 0xdeadbeef));
         ConnectContext.threadLocalInfo.set(ctx);
@@ -114,7 +116,7 @@ public class CoordinatorTest extends PlanTestBase {
         rf.setJoinMode(mode);
         fragment.getBuildRuntimeFilters().put(1, rf);
         Assert.assertTrue(rf.getBucketSeqToInstance() == null || rf.getBucketSeqToInstance().isEmpty());
-        execFragment.setBucketSeqToInstanceForRuntimeFilters();
+        execFragment.setLayoutInfosForRuntimeFilters();
         Assert.assertEquals(Arrays.asList(0, 1, 0, 2, 1, 2), rf.getBucketSeqToInstance());
     }
 
@@ -136,7 +138,8 @@ public class CoordinatorTest extends PlanTestBase {
 
         OlapTable olapTable = getOlapTable("t0");
         List<Long> olapTableTabletIds =
-                olapTable.getAllPartitions().stream().flatMap(x -> x.getBaseIndex().getTabletIdsInOrder().stream())
+                olapTable.getAllPartitions().stream().flatMap(x -> x.getDefaultPhysicalPartition().getBaseIndex()
+                                .getTabletIdsInOrder().stream())
                         .collect(Collectors.toList());
         Assert.assertFalse(olapTableTabletIds.isEmpty());
         tupleDesc.setTable(olapTable);
@@ -158,12 +161,13 @@ public class CoordinatorTest extends PlanTestBase {
         binlogScan.finalizeStats(null);
 
         List<ScanNode> scanNodes = Arrays.asList(binlogScan);
-        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(Lists.newArrayList(), scanNodes);
+        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(Lists.newArrayList(), scanNodes,
+                StatisticUtils.buildConnectContext());
         prepare.computeFragmentInstances();
 
         FragmentScanRangeAssignment scanRangeMap =
                 prepare.getFragmentScanRangeAssignment(fragmentId);
-        Backend backend = GlobalStateMgr.getCurrentSystemInfo().getBackends().get(0);
+        Backend backend = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends().get(0);
         Assert.assertFalse(scanRangeMap.isEmpty());
         Long expectedWorkerId = backend.getId();
         Assert.assertTrue(scanRangeMap.containsKey(expectedWorkerId));
@@ -216,7 +220,8 @@ public class CoordinatorTest extends PlanTestBase {
         fragments.add(fragment);
 
         // Build topology
-        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(fragments, scanNodes);
+        CoordinatorPreprocessor prepare = new CoordinatorPreprocessor(fragments, scanNodes,
+                StatisticUtils.buildConnectContext());
         prepare.computeFragmentInstances();
 
         // Assert

@@ -17,7 +17,6 @@
 #include <condition_variable>
 #include <utility>
 
-#include "bthread/mutex.h"
 #include "column/vectorized_fwd.h"
 #include "runtime/data_stream_recvr.h"
 #include "serde/protobuf_serde.h"
@@ -148,7 +147,10 @@ private:
 class DataStreamRecvr::PipelineSenderQueue final : public DataStreamRecvr::SenderQueue {
 public:
     PipelineSenderQueue(DataStreamRecvr* parent_recvr, int num_senders, int degree_of_parallism);
-    ~PipelineSenderQueue() override = default;
+    ~PipelineSenderQueue() override {
+        check_leak_closure();
+        close();
+    }
 
     Status get_chunk(Chunk** chunk, const int32_t driver_sequence = -1) override;
 
@@ -211,6 +213,8 @@ private:
 
     void clean_buffer_queues();
 
+    void check_leak_closure();
+
     StatusOr<ChunkList> get_chunks_from_pass_through(const int32_t sender_id, size_t& total_chunk_bytes);
 
     template <bool need_deserialization>
@@ -227,7 +231,7 @@ private:
     std::atomic<bool> _is_cancelled{false};
     std::atomic<int> _num_remaining_senders;
 
-    typedef bthread::Mutex Mutex;
+    typedef SpinLock Mutex;
     Mutex _lock;
 
     // if _is_pipeline_level_shuffle=true, we will create a queue for each driver sequence to avoid competition
@@ -256,11 +260,11 @@ private:
     // distribution of received sequence numbers:
     // part1: { sequence | 1 <= sequence <= _max_processed_sequence }
     // part2: { sequence | seq = _max_processed_sequence + i, i > 1 }
-    phmap::flat_hash_map<int, int64_t> _max_processed_sequences;
+    phmap::flat_hash_map<int, int64_t, StdHash<int>> _max_processed_sequences;
     // chunk request may be out-of-order, but we have to deal with it in order
     // key of first level is be_number
     // key of second level is request sequence
-    phmap::flat_hash_map<int, phmap::flat_hash_map<int64_t, ChunkList>> _buffered_chunk_queues;
+    phmap::flat_hash_map<int, phmap::flat_hash_map<int64_t, ChunkList>, StdHash<int>> _buffered_chunk_queues;
 
     std::atomic<bool> _is_chunk_meta_built{false};
 

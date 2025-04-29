@@ -47,7 +47,7 @@ import com.starrocks.analysis.FunctionCallExpr;
 import com.starrocks.analysis.OrderByElement;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.thrift.TAnalyticNode;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TNormalAnalyticNode;
@@ -72,6 +72,7 @@ public class AnalyticEvalNode extends PlanNode {
     private final AnalyticWindow analyticWindow;
 
     private final boolean useHashBasedPartition;
+    private final boolean isSkewed;
 
     // Physical tuples used/produced by this analytic node.
     private final TupleDescriptor intermediateTupleDesc;
@@ -88,6 +89,7 @@ public class AnalyticEvalNode extends PlanNode {
             List<Expr> partitionExprs, List<OrderByElement> orderByElements,
             AnalyticWindow analyticWindow,
             boolean useHashBasedPartition,
+            boolean isSkewed,
             TupleDescriptor intermediateTupleDesc,
             TupleDescriptor outputTupleDesc,
             Expr partitionByEq, Expr orderByEq, TupleDescriptor bufferedTupleDesc) {
@@ -100,6 +102,7 @@ public class AnalyticEvalNode extends PlanNode {
         this.orderByElements = orderByElements;
         this.analyticWindow = analyticWindow;
         this.useHashBasedPartition = useHashBasedPartition;
+        this.isSkewed = isSkewed;
         this.intermediateTupleDesc = intermediateTupleDesc;
         this.outputTupleDesc = outputTupleDesc;
         this.partitionByEq = partitionByEq;
@@ -122,7 +125,7 @@ public class AnalyticEvalNode extends PlanNode {
     }
 
     @Override
-    public void init(Analyzer analyzer) throws UserException {
+    public void init(Analyzer analyzer) throws StarRocksException {
     }
 
     @Override
@@ -144,6 +147,7 @@ public class AnalyticEvalNode extends PlanNode {
                 .add("orderByElements", Joiner.on(", ").join(orderByElementStrs))
                 .add("window", analyticWindow)
                 .add("useHashBasedPartition", useHashBasedPartition)
+                .add("isSkewed", isSkewed)
                 .add("intermediateTid", intermediateTupleDesc.getId())
                 .add("intermediateTid", outputTupleDesc.getId())
                 .add("outputTid", outputTupleDesc.getId())
@@ -209,9 +213,8 @@ public class AnalyticEvalNode extends PlanNode {
             msg.analytic_node.setOrder_by_eq(orderByEq.treeToThrift());
         }
 
-        if (useHashBasedPartition) {
-            msg.analytic_node.setUse_hash_based_partition(useHashBasedPartition);
-        }
+        msg.analytic_node.setUse_hash_based_partition(useHashBasedPartition);
+        msg.analytic_node.setIs_skewed(isSkewed);
 
         if (bufferedTupleDesc != null) {
             msg.analytic_node.setBuffered_tuple_id(bufferedTupleDesc.getId().asInt());
@@ -278,6 +281,9 @@ public class AnalyticEvalNode extends PlanNode {
         if (useHashBasedPartition) {
             output.append(prefix).append("useHashBasedPartition").append("\n");
         }
+        if (isSkewed) {
+            output.append(prefix).append("isSkewed").append("\n");
+        }
 
         return output.toString();
     }
@@ -306,8 +312,10 @@ public class AnalyticEvalNode extends PlanNode {
     }
 
     @Override
-    public boolean pushDownRuntimeFilters(DescriptorTable descTbl, RuntimeFilterDescription description, Expr probeExpr,
+    public boolean pushDownRuntimeFilters(RuntimeFilterPushDownContext context, Expr probeExpr,
                                           List<Expr> partitionByExprs) {
+        RuntimeFilterDescription description = context.getDescription();
+        DescriptorTable descTbl = context.getDescTbl();
         if (!canPushDownRuntimeFilter()) {
             return false;
         }
@@ -316,7 +324,7 @@ public class AnalyticEvalNode extends PlanNode {
             return false;
         }
 
-        return pushdownRuntimeFilterForChildOrAccept(descTbl, description, probeExpr,
+        return pushdownRuntimeFilterForChildOrAccept(context, probeExpr,
                 candidatesOfSlotExpr(probeExpr, couldBound(description, descTbl)),
                 partitionByExprs, candidatesOfSlotExprs(partitionByExprs, couldBoundForPartitionExpr()), 0, true);
     }

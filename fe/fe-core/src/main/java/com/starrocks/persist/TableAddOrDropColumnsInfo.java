@@ -43,9 +43,7 @@ import com.starrocks.common.io.Writable;
 import com.starrocks.persist.gson.GsonUtils;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -60,19 +58,26 @@ public class TableAddOrDropColumnsInfo implements Writable {
     @SerializedName(value = "tableId")
     private long tableId;
     @SerializedName(value = "indexSchemaMap")
-    private Map<Long, LinkedList<Column>> indexSchemaMap;
+    private Map<Long, List<Column>> indexSchemaMap;
     @SerializedName(value = "indexes")
     private List<Index> indexes;
     @SerializedName(value = "jobId")
     private long jobId;
+    @SerializedName(value = "txnId")
+    private long txnId;
+    @SerializedName(value = "indexToNewSchemaId")
+    private Map<Long, Long> indexToNewSchemaId;
 
-    public TableAddOrDropColumnsInfo(long dbId, long tableId,
-            Map<Long, LinkedList<Column>> indexSchemaMap, List<Index> indexes, long jobId) {
+    public TableAddOrDropColumnsInfo(long dbId, long tableId, Map<Long, List<Column>> indexSchemaMap,
+                                     List<Index> indexes, long jobId, long txnId,
+                                     Map<Long, Long> indexToNewSchemaId) {
         this.dbId = dbId;
         this.tableId = tableId;
         this.indexSchemaMap = indexSchemaMap;
         this.indexes = indexes;
         this.jobId = jobId;
+        this.txnId = txnId;
+        this.indexToNewSchemaId = indexToNewSchemaId;
     }
 
     public long getDbId() {
@@ -83,7 +88,7 @@ public class TableAddOrDropColumnsInfo implements Writable {
         return tableId;
     }
 
-    public Map<Long, LinkedList<Column>> getIndexSchemaMap() {
+    public Map<Long, List<Column>> getIndexSchemaMap() {
         return indexSchemaMap;
     }
 
@@ -95,10 +100,15 @@ public class TableAddOrDropColumnsInfo implements Writable {
         return jobId;
     }
 
-    @Override
-    public void write(DataOutput out) throws IOException {
-        Text.writeString(out, GsonUtils.GSON.toJson(this));
+    public long getTxnId() {
+        return txnId;
     }
+    
+    public Map<Long, Long> getIndexToNewSchemaId() {
+        return indexToNewSchemaId;
+    }
+
+
 
     public static TableAddOrDropColumnsInfo read(DataInput in) throws IOException {
         return GsonUtils.GSON.fromJson(Text.readString(in), TableAddOrDropColumnsInfo.class);
@@ -134,6 +144,8 @@ public class TableAddOrDropColumnsInfo implements Writable {
         sb.append(" indexSchemaMap: ").append(indexSchemaMap);
         sb.append(" indexes: ").append(indexes);
         sb.append(" jobId: ").append(jobId);
+        sb.append(" txnId: ").append(txnId);
+        sb.append(" indexToNewSchemaId: ").append(indexToNewSchemaId);
         return sb.toString();
     }
 }

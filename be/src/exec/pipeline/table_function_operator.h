@@ -46,12 +46,12 @@ public:
 
     Status push_chunk(RuntimeState* state, const ChunkPtr& chunk) override;
 
-    Status reset_state(starrocks::RuntimeState* state, const std::vector<ChunkPtr>& refill_chunks) override;
+    Status reset_state(RuntimeState* state, const std::vector<ChunkPtr>& refill_chunks) override;
 
 private:
-    ChunkPtr _build_chunk(const std::vector<ColumnPtr>& output_columns);
-    Status _process_table_function();
-    void _copy_result(const std::vector<ColumnPtr>& columns, uint32_t max_column_size);
+    ChunkPtr _build_chunk(const Columns& output_columns);
+    Status _process_table_function(RuntimeState* state);
+    void _copy_result(Columns& columns, uint32_t max_column_size);
 
     const TPlanNode& _tnode;
     const TableFunction* _table_function = nullptr;
@@ -73,6 +73,7 @@ private:
     size_t _next_output_row_offset = 0;
     // table function result
     std::pair<Columns, UInt32Column::Ptr> _table_function_result;
+    bool _fn_result_required = true;
     // table function param and return offset
     TableFunctionState* _table_function_state = nullptr;
 

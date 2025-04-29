@@ -41,6 +41,7 @@ import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.catalog.Column;
 import com.starrocks.common.Config;
+import com.starrocks.connector.PartitionUtil;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -94,29 +95,37 @@ public class HashDistributionPruner implements DistributionPruner {
         if (null == filter) {
             // no filter in this column, no partition Key
             // return all subPartition
-            return Lists.newArrayList(bucketsList);
+            return bucketsList;
         }
 
         List<LiteralExpr> inPredicateLiterals = filter.getInPredicateLiterals();
         if (null == inPredicateLiterals ||
                 inPredicateLiterals.size() * complex > Config.max_distribution_pruner_recursion_depth) {
+            LiteralExpr lowerBound = filter.getLowerBound();
+            LiteralExpr upperBound = filter.getUpperBound();
             // equal one value
             if (filter.lowerBoundInclusive && filter.upperBoundInclusive
-                    && filter.lowerBound != null && filter.upperBound != null
-                    && 0 == filter.lowerBound.compareLiteral(filter.upperBound)) {
-                hashKey.pushColumn(filter.lowerBound, keyColumn.getType());
-                Collection<Long> result = prune(columnId + 1, hashKey, complex);
-                hashKey.popColumn();
-                return result;
+                    && lowerBound != null && upperBound != null
+                    && 0 == lowerBound.compareLiteral(upperBound)) {
+                try {
+                    boolean isConvertToDate = PartitionUtil.isConvertToDate(keyColumn.getType(), lowerBound.getType());
+                    hashKey.pushColumn(filter.getLowerBound(isConvertToDate), keyColumn.getType());
+                    Collection<Long> result = prune(columnId + 1, hashKey, complex);
+                    hashKey.popColumn();
+                    return result;
+                } catch (Exception e) {
+                    LOG.warn("Prune distribution key {} with predicate {} failed:", keyColumn, filter, e);
+                    return bucketsList;
+                }
             }
             // return all SubPartition
-            return Lists.newArrayList(bucketsList);
+            return bucketsList;
         }
 
         InPredicate inPredicate = filter.getInPredicate();
         if (null != inPredicate && !(inPredicate.getChild(0) instanceof SlotRef)) {
             // return all SubPartition
-            return Lists.newArrayList(bucketsList);
+            return bucketsList;
         }
 
         Set<Long> resultSet = Sets.newHashSet();

@@ -18,44 +18,52 @@ import com.google.common.base.Strings;
 import com.starrocks.connector.Connector;
 import com.starrocks.connector.ConnectorContext;
 import com.starrocks.connector.ConnectorMetadata;
+import com.starrocks.connector.ConnectorProperties;
+import com.starrocks.connector.ConnectorType;
 import com.starrocks.connector.HdfsEnvironment;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.credential.CloudConfigurationFactory;
 import com.starrocks.credential.CloudType;
-import com.starrocks.credential.aws.AWSCloudConfiguration;
-import com.starrocks.credential.aws.AWSCloudCredential;
+import com.starrocks.credential.aliyun.AliyunCloudConfiguration;
+import com.starrocks.credential.aliyun.AliyunCloudCredential;
+import com.starrocks.credential.aws.AwsCloudConfiguration;
+import com.starrocks.credential.aws.AwsCloudCredential;
+import com.starrocks.server.GlobalStateMgr;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.options.Options;
 
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.apache.paimon.options.CatalogOptions.METASTORE;
 import static org.apache.paimon.options.CatalogOptions.URI;
 import static org.apache.paimon.options.CatalogOptions.WAREHOUSE;
 
 public class PaimonConnector implements Connector {
-    private static final String PAIMON_CATALOG_TYPE = "paimon.catalog.type";
-    private static final String PAIMON_CATALOG_WAREHOUSE = "paimon.catalog.warehouse";
+    public static final String PAIMON_CATALOG_TYPE = "paimon.catalog.type";
+    public static final String PAIMON_CATALOG_WAREHOUSE = "paimon.catalog.warehouse";
     private static final String HIVE_METASTORE_URIS = "hive.metastore.uris";
+    private static final String DLF_CATGALOG_ID = "dlf.catalog.id";
     private final HdfsEnvironment hdfsEnvironment;
     private Catalog paimonNativeCatalog;
-    private final String catalogType;
-    private final String metastoreUris;
-    private final String warehousePath;
     private final String catalogName;
     private final Options paimonOptions;
+    private final ConnectorProperties connectorProperties;
 
     public PaimonConnector(ConnectorContext context) {
         Map<String, String> properties = context.getProperties();
+        this.connectorProperties = new ConnectorProperties(ConnectorType.PAIMON, properties);
         this.catalogName = context.getCatalogName();
         CloudConfiguration cloudConfiguration = CloudConfigurationFactory.buildCloudConfigurationForStorage(properties);
         this.hdfsEnvironment = new HdfsEnvironment(cloudConfiguration);
-        this.catalogType = properties.get(PAIMON_CATALOG_TYPE);
-        this.metastoreUris = properties.get(HIVE_METASTORE_URIS);
-        this.warehousePath = properties.get(PAIMON_CATALOG_WAREHOUSE);
+        String catalogType = properties.get(PAIMON_CATALOG_TYPE);
+        String metastoreUris = properties.get(HIVE_METASTORE_URIS);
+        String warehousePath = properties.get(PAIMON_CATALOG_WAREHOUSE);
 
         this.paimonOptions = new Options();
         if (Strings.isNullOrEmpty(catalogType)) {
@@ -69,17 +77,45 @@ public class PaimonConnector implements Connector {
                 throw new StarRocksConnectorException("The property %s must be set if paimon catalog is hive.",
                         HIVE_METASTORE_URIS);
             }
+        } else if (catalogType.equalsIgnoreCase("dlf")) {
+            String dlfCatalogId = properties.get(DLF_CATGALOG_ID);
+            if (null != dlfCatalogId && !dlfCatalogId.isEmpty()) {
+                paimonOptions.setString(DLF_CATGALOG_ID, dlfCatalogId);
+            }
         }
-        if (Strings.isNullOrEmpty(warehousePath)) {
+        if (Strings.isNullOrEmpty(warehousePath)
+                && !catalogType.equals("hive")
+                && !catalogType.equalsIgnoreCase("dlf")) {
             throw new StarRocksConnectorException("The property %s must be set.", PAIMON_CATALOG_WAREHOUSE);
         }
-        paimonOptions.setString(WAREHOUSE.key(), warehousePath);
+        if (!Strings.isNullOrEmpty(warehousePath)) {
+            paimonOptions.setString(WAREHOUSE.key(), warehousePath);
+        }
+        initFsOption(cloudConfiguration);
 
+        // cache expire time, set to 2h
+        this.paimonOptions.set("cache.expiration-interval", "7200s");
+        // max num of cached partitions of a Paimon catalog
+        this.paimonOptions.set("cache.partition.max-num", "1000");
+        // max size of cached manifest files, 10m means cache all since files usually no more than 8m
+        this.paimonOptions.set("cache.manifest.small-file-threshold", "10m");
+        // max size of memory manifest cache uses
+        this.paimonOptions.set("cache.manifest.small-file-memory", "1g");
+
+        String keyPrefix = "paimon.option.";
+        Set<String> optionKeys = properties.keySet().stream().filter(k -> k.startsWith(keyPrefix)).collect(Collectors.toSet());
+        for (String k : optionKeys) {
+            String key = k.substring(keyPrefix.length());
+            paimonOptions.setString(key, properties.get(k));
+        }
+    }
+
+    public void initFsOption(CloudConfiguration cloudConfiguration) {
         if (cloudConfiguration.getCloudType() == CloudType.AWS) {
-            AWSCloudConfiguration awsCloudConfiguration = (AWSCloudConfiguration) cloudConfiguration;
+            AwsCloudConfiguration awsCloudConfiguration = (AwsCloudConfiguration) cloudConfiguration;
             paimonOptions.set("s3.connection.ssl.enabled", String.valueOf(awsCloudConfiguration.getEnableSSL()));
             paimonOptions.set("s3.path.style.access", String.valueOf(awsCloudConfiguration.getEnablePathStyleAccess()));
-            AWSCloudCredential awsCloudCredential = awsCloudConfiguration.getAWSCloudCredential();
+            AwsCloudCredential awsCloudCredential = awsCloudConfiguration.getAwsCloudCredential();
             if (!awsCloudCredential.getEndpoint().isEmpty()) {
                 paimonOptions.set("s3.endpoint", awsCloudCredential.getEndpoint());
             }
@@ -90,6 +126,19 @@ public class PaimonConnector implements Connector {
                 paimonOptions.set("s3.secret-key", awsCloudCredential.getSecretKey());
             }
         }
+        if (cloudConfiguration.getCloudType() == CloudType.ALIYUN) {
+            AliyunCloudConfiguration aliyunCloudConfiguration = (AliyunCloudConfiguration) cloudConfiguration;
+            AliyunCloudCredential aliyunCloudCredential = aliyunCloudConfiguration.getAliyunCloudCredential();
+            if (!aliyunCloudCredential.getEndpoint().isEmpty()) {
+                paimonOptions.set("fs.oss.endpoint", aliyunCloudCredential.getEndpoint());
+            }
+            if (!aliyunCloudCredential.getAccessKey().isEmpty()) {
+                paimonOptions.set("fs.oss.accessKeyId", aliyunCloudCredential.getAccessKey());
+            }
+            if (!aliyunCloudCredential.getSecretKey().isEmpty()) {
+                paimonOptions.set("fs.oss.accessKeySecret", aliyunCloudCredential.getSecretKey());
+            }
+        }
     }
 
     public Options getPaimonOptions() {
@@ -98,14 +147,22 @@ public class PaimonConnector implements Connector {
 
     public Catalog getPaimonNativeCatalog() {
         if (paimonNativeCatalog == null) {
-            this.paimonNativeCatalog = CatalogFactory.createCatalog(CatalogContext.create(getPaimonOptions()));
+            Configuration configuration = new Configuration();
+            hdfsEnvironment.getCloudConfiguration().applyToConfiguration(configuration);
+            this.paimonNativeCatalog = CatalogFactory.createCatalog(CatalogContext.create(getPaimonOptions(), configuration));
+            GlobalStateMgr.getCurrentState().getConnectorTableMetadataProcessor()
+                    .registerPaimonCatalog(catalogName, this.paimonNativeCatalog);
         }
         return paimonNativeCatalog;
     }
 
     @Override
     public ConnectorMetadata getMetadata() {
-        return new PaimonMetadata(catalogName, hdfsEnvironment, getPaimonNativeCatalog(), catalogType, metastoreUris,
-                warehousePath);
+        return new PaimonMetadata(catalogName, hdfsEnvironment, getPaimonNativeCatalog(), connectorProperties);
+    }
+
+    @Override
+    public void shutdown() {
+        GlobalStateMgr.getCurrentState().getConnectorTableMetadataProcessor().unRegisterPaimonCatalog(catalogName);
     }
 }

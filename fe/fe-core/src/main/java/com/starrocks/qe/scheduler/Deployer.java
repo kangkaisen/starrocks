@@ -17,14 +17,19 @@ package com.starrocks.qe.scheduler;
 import com.google.api.client.util.Sets;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.Status;
-import com.starrocks.common.UserException;
+import com.starrocks.common.ThreadPoolManager;
+import com.starrocks.common.profile.Timer;
+import com.starrocks.common.profile.Tracers;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.ExecuteExceptionHandler;
 import com.starrocks.qe.scheduler.dag.ExecutionDAG;
 import com.starrocks.qe.scheduler.dag.ExecutionFragment;
 import com.starrocks.qe.scheduler.dag.FragmentInstance;
 import com.starrocks.qe.scheduler.dag.FragmentInstanceExecState;
 import com.starrocks.qe.scheduler.dag.JobSpec;
+import com.starrocks.qe.scheduler.slot.DeployState;
 import com.starrocks.rpc.RpcException;
 import com.starrocks.thrift.TDescriptorTable;
 import com.starrocks.thrift.TExecPlanFragmentParams;
@@ -37,8 +42,14 @@ import org.apache.logging.log4j.Logger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.stream.Collectors;
 
 import static com.starrocks.qe.scheduler.dag.FragmentInstanceExecState.DeploymentResult;
 
@@ -47,6 +58,9 @@ import static com.starrocks.qe.scheduler.dag.FragmentInstanceExecState.Deploymen
  */
 public class Deployer {
     private static final Logger LOG = LogManager.getLogger(Deployer.class);
+    private static final ThreadPoolExecutor EXECUTOR =
+            ThreadPoolManager.newDaemonCacheThreadPool(ThreadPoolManager.cpuCores(),
+                    Integer.MAX_VALUE, "deployer", true);
 
     private final JobSpec jobSpec;
     private final ExecutionDAG executionDAG;
@@ -54,8 +68,10 @@ public class Deployer {
     private final TFragmentInstanceFactory tFragmentInstanceFactory;
     private final TDescriptorTable emptyDescTable;
     private final long deliveryTimeoutMs;
+    private boolean enablePlanSerializeConcurrently;
 
     private final FailureHandler failureHandler;
+    private final boolean needDeploy;
 
     private final Set<Long> deployedWorkerIds = Sets.newHashSet();
 
@@ -63,7 +79,8 @@ public class Deployer {
                     JobSpec jobSpec,
                     ExecutionDAG executionDAG,
                     TNetworkAddress coordAddress,
-                    FailureHandler failureHandler) {
+                    FailureHandler failureHandler,
+                    boolean needDeploy) {
         this.jobSpec = jobSpec;
         this.executionDAG = executionDAG;
 
@@ -76,34 +93,63 @@ public class Deployer {
         this.deliveryTimeoutMs = Math.min(queryOptions.query_timeout, queryOptions.query_delivery_timeout) * 1000L;
 
         this.failureHandler = failureHandler;
+        this.needDeploy = needDeploy;
+        this.enablePlanSerializeConcurrently = context.getSessionVariable().getEnablePlanSerializeConcurrently();
     }
 
-    public void deployFragments(List<ExecutionFragment> concurrentFragments, boolean needDeploy)
-            throws RpcException, UserException {
-        // Divide requests of fragments in the current group to two stages.
-        // - stage 1, the first request to a host, which need send descTable.
-        // - stage 2, the non-first requests to a host, which needn't send descTable.
-        List<List<FragmentInstanceExecState>> twoStageExecutionsToDeploy = ImmutableList.of(new ArrayList<>(), new ArrayList<>());
+    public DeployState createFragmentExecStates(List<ExecutionFragment> concurrentFragments) {
+        final DeployState deployState = new DeployState();
+        concurrentFragments.forEach(fragment ->
+                this.createFragmentInstanceExecStates(fragment, deployState.getThreeStageExecutionsToDeploy()));
+        return deployState;
+    }
 
-        concurrentFragments.forEach(fragment -> this.createFragmentInstanceExecStates(fragment, twoStageExecutionsToDeploy));
+    public void deployFragments(DeployState deployState)
+            throws RpcException, StarRocksException {
 
         if (!needDeploy) {
             return;
         }
 
-        for (List<FragmentInstanceExecState> executions : twoStageExecutionsToDeploy) {
-            executions.forEach(FragmentInstanceExecState::deployAsync);
+        final List<List<FragmentInstanceExecState>> threeStageExecutionsToDeploy =
+                deployState.getThreeStageExecutionsToDeploy();
 
-            waitForDeploymentCompletion(executions);
+        if (enablePlanSerializeConcurrently) {
+            try (Timer ignored = Tracers.watchScope(Tracers.Module.SCHEDULER, "DeploySerializeConcurrencyTime")) {
+                List<Future<?>> futures = new LinkedList<>();
+                threeStageExecutionsToDeploy.forEach(
+                        executions -> executions.forEach(e ->
+                            futures.add(EXECUTOR.submit(e::serializeRequest))
+                        )
+                );
+                for (Future<?> future : futures) {
+                    future.get();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException e) {
+                LOG.warn("Error serialize request during deployFragments", e);
+                throw new StarRocksException(e);
+            }
+        }
+
+        for (List<FragmentInstanceExecState> executions : threeStageExecutionsToDeploy) {
+            try (Timer ignored = Tracers.watchScope(Tracers.Module.SCHEDULER, "DeployStageByStageTime")) {
+                executions.forEach(FragmentInstanceExecState::deployAsync);
+            }
+            try (Timer ignored = Tracers.watchScope(Tracers.Module.SCHEDULER, "DeployWaitTime")) {
+                waitForDeploymentCompletion(executions);
+            }
         }
     }
 
     public interface FailureHandler {
-        void apply(Status status, FragmentInstanceExecState execution, Throwable failure) throws RpcException, UserException;
+        void apply(Status status, FragmentInstanceExecState execution, Throwable failure) throws RpcException,
+                StarRocksException;
     }
 
     private void createFragmentInstanceExecStates(ExecutionFragment fragment,
-                                                  List<List<FragmentInstanceExecState>> twoStageExecutionsToDeploy) {
+                                                  List<List<FragmentInstanceExecState>> threeStageExecutionsToDeploy) {
         Preconditions.checkState(!fragment.getInstances().isEmpty());
 
         // This is a load process, and it is the first fragment.
@@ -115,23 +161,36 @@ public class Deployer {
         // calculate the number of all tablet sinks in advance and assign them to each fragment instance
         boolean enablePipelineTableSinkDop = isEnablePipeline && fragment.getPlanFragment().hasTableSink();
 
-        List<List<FragmentInstance>> twoStageInstancesToDeploy = ImmutableList.of(new ArrayList<>(), new ArrayList<>());
+        List<List<FragmentInstance>> threeStageInstancesToDeploy = ImmutableList.of(
+                new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
+
+        // Fragment Instance carrying runtime filter params for runtime filter coordinator
+        // must be delivered at first.
+        Map<Boolean, List<FragmentInstance>> instanceSplits =
+                fragment.getInstances().stream().collect(
+                        Collectors.partitioningBy(instance -> instance.getExecFragment().isRuntimeFilterCoordinator()));
+        // stage 0 holds the instance carrying runtime filter params that used to initialize
+        // global runtime filter coordinator if exists.
+        threeStageInstancesToDeploy.get(0).addAll(instanceSplits.get(true));
+
+        List<FragmentInstance> restInstances = instanceSplits.get(false);
         if (!isEnablePipeline) {
-            twoStageInstancesToDeploy.get(0).addAll(fragment.getInstances());
+            threeStageInstancesToDeploy.get(1).addAll(restInstances);
         } else {
-            fragment.getInstances().forEach(instance -> {
+            threeStageInstancesToDeploy.get(0).forEach(instance -> deployedWorkerIds.add(instance.getWorkerId()));
+            restInstances.forEach(instance -> {
                 if (deployedWorkerIds.contains(instance.getWorkerId())) {
-                    twoStageInstancesToDeploy.get(1).add(instance);
+                    threeStageInstancesToDeploy.get(2).add(instance);
                 } else {
                     deployedWorkerIds.add(instance.getWorkerId());
-                    twoStageInstancesToDeploy.get(0).add(instance);
+                    threeStageInstancesToDeploy.get(1).add(instance);
                 }
             });
         }
 
         int totalTableSinkDop = 0;
         if (enablePipelineTableSinkDop) {
-            totalTableSinkDop = twoStageInstancesToDeploy.stream()
+            totalTableSinkDop = threeStageInstancesToDeploy.stream()
                     .flatMap(Collection::stream)
                     .mapToInt(FragmentInstance::getTableSinkDop)
                     .sum();
@@ -140,14 +199,14 @@ public class Deployer {
                 "tableSinkTotalDop = %d should be >= 0", totalTableSinkDop);
 
         int accTabletSinkDop = 0;
-        for (int stageIndex = 0; stageIndex < twoStageInstancesToDeploy.size(); stageIndex++) {
-            List<FragmentInstance> stageInstances = twoStageInstancesToDeploy.get(stageIndex);
+        for (int stageIndex = 0; stageIndex < threeStageInstancesToDeploy.size(); stageIndex++) {
+            List<FragmentInstance> stageInstances = threeStageInstancesToDeploy.get(stageIndex);
             if (stageInstances.isEmpty()) {
                 continue;
             }
 
             TDescriptorTable curDescTable;
-            if (stageIndex == 0) {
+            if (stageIndex < 2) {
                 curDescTable = jobSpec.getDescTable();
             } else {
                 curDescTable = emptyDescTable;
@@ -166,8 +225,10 @@ public class Deployer {
                         fragment.getFragmentIndex(),
                         request,
                         instance.getWorker());
+                execution.setFragmentInstance(instance);
 
-                twoStageExecutionsToDeploy.get(stageIndex).add(execution);
+                threeStageExecutionsToDeploy.get(stageIndex).add(execution);
+
                 executionDAG.addExecution(execution);
 
                 if (needCheckExecutionState) {
@@ -182,7 +243,11 @@ public class Deployer {
         }
     }
 
-    private void waitForDeploymentCompletion(List<FragmentInstanceExecState> executions) throws RpcException, UserException {
+    private void waitForDeploymentCompletion(List<FragmentInstanceExecState> executions) throws RpcException,
+            StarRocksException {
+        if (executions.isEmpty()) {
+            return;
+        }
         DeploymentResult firstErrResult = null;
         FragmentInstanceExecState firstErrExecution = null;
         for (FragmentInstanceExecState execution : executions) {
@@ -198,6 +263,12 @@ public class Deployer {
             if (firstErrResult == null) {
                 firstErrResult = res;
                 firstErrExecution = execution;
+            } else if (firstErrResult.getStatusCode() == TStatusCode.CANCELLED &&
+                    ExecuteExceptionHandler.isRetryableStatus(res.getStatusCode())) {
+                // If the first error is cancelled and the subsequent error is retryable, we store the latter to give a chance
+                // to retry this query.
+                firstErrResult = res;
+                firstErrExecution = execution;
             }
             if (TStatusCode.TIMEOUT == res.getStatusCode()) {
                 break;
@@ -207,6 +278,10 @@ public class Deployer {
         if (firstErrResult != null) {
             failureHandler.apply(firstErrResult.getStatus(), firstErrExecution, firstErrResult.getFailure());
         }
+    }
+
+    public TExecPlanFragmentParams createIncrementalScanRangesRequest(FragmentInstance instance) {
+        return tFragmentInstanceFactory.createIncrementalScanRanges(instance);
     }
 }
 

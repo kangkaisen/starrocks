@@ -16,13 +16,19 @@
 package com.starrocks.sql.ast;
 
 import com.starrocks.authentication.AuthenticationMgr;
-import com.starrocks.privilege.AuthorizationMgr;
-import com.starrocks.privilege.PrivilegeException;
+import com.starrocks.authentication.UserProperty;
+import com.starrocks.authorization.AuthorizationMgr;
+import com.starrocks.authorization.PrivilegeException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ExecuteAsExecutor;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.analyzer.Analyzer;
 import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.parser.AstBuilder;
+import com.starrocks.sql.parser.SqlParser;
 import mockit.Expectations;
+import mockit.Mock;
+import mockit.MockUp;
 import mockit.Mocked;
 import org.junit.Assert;
 import org.junit.Before;
@@ -49,10 +55,6 @@ public class ExecuteAsStmtTest {
                 minTimes = 0;
                 result = auth;
 
-                globalStateMgr.isUsingNewPrivilege();
-                minTimes = 0;
-                result = false;
-
                 GlobalStateMgr.getCurrentState().getAuthorizationMgr().getDefaultRoleIdsByUser((UserIdentity) any);
                 minTimes = 0;
                 result = new HashSet<>();
@@ -66,6 +68,20 @@ public class ExecuteAsStmtTest {
                 result = globalStateMgr;
             }
         };
+
+        SqlParser sqlParser = new SqlParser(AstBuilder.getInstance());
+        Analyzer analyzer = new Analyzer(Analyzer.AnalyzerVisitor.getInstance());
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            public SqlParser getSqlParser() {
+                return sqlParser;
+            }
+
+            @Mock
+            public Analyzer getAnalyzer() {
+                return analyzer;
+            }
+        };
     }
 
     @Test
@@ -76,13 +92,24 @@ public class ExecuteAsStmtTest {
                 auth.doesUserExist((UserIdentity) any);
                 minTimes = 0;
                 result = true;
+
+                auth.getUserProperty(anyString);
+                minTimes = 0;
+                result = new UserProperty();
+            }
+        };
+
+        new Expectations(ctx) {
+            {
+                ctx.updateByUserProperty((UserProperty) any);
+                minTimes = 0;
             }
         };
 
         ExecuteAsStmt stmt = (ExecuteAsStmt) com.starrocks.sql.parser.SqlParser.parse(
                 "execute as user1 with no revert", 1).get(0);
         com.starrocks.sql.analyzer.Analyzer.analyze(stmt, ctx);
-        Assert.assertEquals("user1", stmt.getToUser().getQualifiedUser());
+        Assert.assertEquals("user1", stmt.getToUser().getUser());
         Assert.assertEquals("%", stmt.getToUser().getHost());
         Assert.assertEquals("EXECUTE AS 'user1'@'%' WITH NO REVERT", stmt.toString());
         Assert.assertFalse(stmt.isAllowRevert());
@@ -90,7 +117,6 @@ public class ExecuteAsStmtTest {
         ExecuteAsExecutor.execute(stmt, ctx);
 
         Assert.assertEquals(new UserIdentity("user1", "%"), ctx.getCurrentUserIdentity());
-        Assert.assertEquals("user1", ctx.getQualifiedUser());
     }
 
     @Test(expected = SemanticException.class)

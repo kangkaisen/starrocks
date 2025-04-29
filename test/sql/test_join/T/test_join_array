@@ -19,8 +19,7 @@ aad_1 Array<Array<Array<DECIMAL(26, 2)>>>
 DUPLICATE KEY(`pk`)
 DISTRIBUTED BY HASH(`pk`) BUCKETS 3
 PROPERTIES (
-"replication_num" = "1",
-"in_memory" = "false"
+"replication_num" = "1"
 );
 
 
@@ -179,3 +178,6 @@ select s.aas_1, t.aas_1 from array_test s full join array_test t on s.aas_1 <=> 
 select s.aad_1, t.aad_1 from array_test s full join array_test t on s.aad_1 != t.aad_1 order by 1, 2;
 select s.aas_1, t.aas_1 from array_test s full join array_test t on s.aas_1 != t.aas_1 order by 1, 2;
 
+select s.i_1, t.d_1 from array_test s join array_test t on array_map(x -> x*3, s.i_1) = array_map(x-> x*3 + 1, t.d_1) order by 1, 2;
+
+select s.i_1, t.d_1 from array_test s join array_test t on array_map(x -> x*3, s.i_1)[0] = array_map(x-> x*3 + 1, t.d_1)[0] order by 1, 2;

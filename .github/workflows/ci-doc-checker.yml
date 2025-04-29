@@ -24,7 +24,7 @@ jobs:
     outputs:
       output1: ${{ steps.doc-changes-info.outputs.doc }}
     steps:
-      - uses: dorny/paths-filter@v2
+      - uses: dorny/paths-filter@v3
         id: changes
         with:
           filters: |
@@ -35,6 +35,18 @@ jobs:
         run: |
           echo "doc=${{ steps.changes.outputs.doc }}" >> $GITHUB_OUTPUT
 
+  remove-doc-label:
+    needs: doc-checker
+    runs-on: ubuntu-latest
+    name: REMOVE DOC LABEL
+    if: ${{ needs.doc-checker.outputs.output1 != 'true' }}
+    steps:
+      - name: remove document label
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          labels: documentation
+
   add-doc-label:
     needs: doc-checker
     runs-on: ubuntu-latest
@@ -44,7 +56,7 @@ jobs:
       - name: add document label
         uses: actions-ecosystem/action-add-labels@v1
         with:
-          github_token: ${{ secrets.PAT }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           labels: documentation
 
   markdownlint:
@@ -63,7 +75,7 @@ jobs:
           echo ${{github.base_ref}}
           echo "branch=${{github.base_ref}}" >> $GITHUB_OUTPUT
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -80,12 +92,52 @@ jobs:
           git checkout -b merge_pr;
           git merge --squash --no-edit ${BRANCH} || (echo "::error::Merge conflict, please check." && exit -1);
 
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
       - uses: articulate/actions-markdownlint@v1.1.0
         with:
-          config: "docs/.markdownlint.yaml"
+          config: "docs/.markdownlint.json"
           files: 'docs/**/*.md'
           ignore: node_modules
           version: 0.28.1
+
+      - name: docusaurus-mdx-checker
+        if: always()
+        run: |
+          npx docusaurus-mdx-checker -c docs
+
+      - name: link check
+        if: always()
+        uses: lycheeverse/lychee-action@v1.8.0
+        with:
+          fail: true
+          args: >
+            --config docs/lychee.toml
+            --offline "docs/**/*.md"
+
+      - name: Docusaurus build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          DISABLE_VERSIONING: true
+        working-directory: ./docs/docusaurus
+        run: |
+          rm -rf ./docs
+          rm -rf ./i18n/zh/docusaurus-plugin-content-dos/current
+          mkdir -p ./i18n/zh/docusaurus-plugin-content-docs
+          mv ../en ./docs
+          rm -rf ./docs/release_notes ./docs/ecosystem_release
+          mv ../zh ./i18n/zh/docusaurus-plugin-content-docs/current
+          rm -rf ./i18n/zh/docusaurus-plugin-content-docs/current/release_notes ./i18n/zh/docusaurus-plugin-content-docs/current/ecosystem_release
+          # Using package.json and yarn.lock from a PR is not safe, so copy from main branch.
+          rm package.json
+          rm yarn.lock
+          curl -O https://raw.githubusercontent.com/StarRocks/starrocks/refs/heads/main/docs/docusaurus/package.json
+          curl -O https://raw.githubusercontent.com/StarRocks/starrocks/refs/heads/main/docs/docusaurus/yarn.lock
+          yarn install --frozen-lockfile
+          yarn clear
+          yarn build
 
   behavior-unchange:
     runs-on: ubuntu-latest
@@ -93,7 +145,7 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.number }}
       REPO: ${{ github.repository }}
-      GITHUB_TOKEN: ${{ secrets.PAT }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Set Body
         run: |

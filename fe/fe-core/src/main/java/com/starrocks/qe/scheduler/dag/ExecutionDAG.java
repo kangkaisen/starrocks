@@ -17,7 +17,8 @@ package com.starrocks.qe.scheduler.dag;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.common.util.DnsCache;
+import com.google.common.collect.Sets;
+import com.starrocks.common.util.DebugUtil;
 import com.starrocks.planner.DataPartition;
 import com.starrocks.planner.DataSink;
 import com.starrocks.planner.DataStreamSink;
@@ -26,9 +27,15 @@ import com.starrocks.planner.MultiCastPlanFragment;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.PlanFragmentId;
 import com.starrocks.planner.ScanNode;
+import com.starrocks.planner.SplitCastDataSink;
+import com.starrocks.planner.SplitCastPlanFragment;
+import com.starrocks.proto.PPlanFragmentCancelReason;
 import com.starrocks.qe.QueryStatisticsItem;
+import com.starrocks.qe.SimpleScheduler;
 import com.starrocks.qe.scheduler.NonRecoverableException;
 import com.starrocks.qe.scheduler.SchedulerException;
+import com.starrocks.rpc.BackendServiceClient;
+import com.starrocks.rpc.RpcException;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.system.ComputeNode;
@@ -38,7 +45,6 @@ import com.starrocks.thrift.TUniqueId;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -68,6 +74,7 @@ public class ExecutionDAG {
 
     private final JobSpec jobSpec;
     private final List<ExecutionFragment> fragments;
+    private ExecutionFragment captureVersionFragment = null;
     private final Map<PlanFragmentId, ExecutionFragment> idToFragment;
 
     /**
@@ -80,7 +87,8 @@ public class ExecutionDAG {
     /**
      * The executions will be added to {@code indexInJobToExecState}, when it is deploying.
      */
-    private final ConcurrentMap<Integer, FragmentInstanceExecState> indexInJobToExecState = new ConcurrentSkipListMap<>();
+    private final ConcurrentMap<Integer, FragmentInstanceExecState> indexInJobToExecState =
+            new ConcurrentSkipListMap<>();
 
     /**
      * Backend which state need to be checked when joining this coordinator.
@@ -114,6 +122,10 @@ public class ExecutionDAG {
             fragments.add(fragment);
             idToFragment.put(planFragment.getFragmentId(), fragment);
         }
+    }
+
+    ExecutionFragment getCaptureVersionFragment() {
+        return captureVersionFragment;
     }
 
     public Set<TUniqueId> getInstanceIds() {
@@ -258,6 +270,20 @@ public class ExecutionDAG {
         return fragments.get(0).getPlanFragment().getDataPartition() == DataPartition.UNPARTITIONED;
     }
 
+    public void prepareCaptureVersion(boolean isPhasedSchedule) {
+        if (!isPhasedSchedule) {
+            return;
+        }
+        final CaptureVersionFragmentBuilder builder =
+                new CaptureVersionFragmentBuilder(fragments);
+        final ExecutionFragment build = builder.build(this);
+        if (build != null) {
+            captureVersionFragment = build;
+            fragments.add(build);
+            idToFragment.put(captureVersionFragment.getFragmentId(), captureVersionFragment);
+        }
+    }
+
     /**
      * Do the finalize work after all the fragment instances have already been added to the DAG, including:
      *
@@ -376,7 +402,10 @@ public class ExecutionDAG {
      */
     private void connectFragmentToDestFragments(ExecutionFragment execFragment) throws SchedulerException {
         if (execFragment.getPlanFragment() instanceof MultiCastPlanFragment) {
-            connectMultiCastFragmentToDestFragments(execFragment, (MultiCastPlanFragment) execFragment.getPlanFragment());
+            connectMultiCastFragmentToDestFragments(execFragment,
+                    (MultiCastPlanFragment) execFragment.getPlanFragment());
+        } else if (execFragment.getPlanFragment() instanceof SplitCastPlanFragment) {
+            connectSplitFragmentToDestFragments(execFragment, (SplitCastPlanFragment) execFragment.getPlanFragment());
         } else {
             connectNormalFragmentToDestFragments(execFragment);
         }
@@ -388,16 +417,6 @@ public class ExecutionDAG {
             return streamSink.getOutputPartition().isBucketShuffle();
         }
         return false;
-    }
-
-    // Because there is no DNS cache when compute node is in container.
-    // Try to avoid flooding the DNS server, we translate the hostname to IP here.
-    private TNetworkAddress toIpAddress(TNetworkAddress address) throws SchedulerException {
-        try {
-            return DnsCache.lookup(address);
-        } catch (UnknownHostException e) {
-            throw new SchedulerException("Unknown hostname:" +  address.hostname);
-        }
     }
 
     private void connectMultiCastFragmentToDestFragments(ExecutionFragment execFragment, MultiCastPlanFragment fragment)
@@ -438,7 +457,7 @@ public class ExecutionDAG {
                     ComputeNode worker = destInstance.getWorker();
                     // NOTE(zc): can be removed in version 4.0
                     dest.setDeprecated_server(worker.getAddress());
-                    dest.setBrpc_server(toIpAddress(worker.getBrpcAddress()));
+                    dest.setBrpc_server(worker.getBrpcIpAddress());
 
                     multiSink.getDestinations().get(i).add(dest);
                 }
@@ -446,7 +465,7 @@ public class ExecutionDAG {
         }
     }
 
-    private void connectNormalFragmentToDestFragments(ExecutionFragment execFragment) throws SchedulerException {
+    private void connectNormalFragmentToDestFragments(ExecutionFragment execFragment) {
         PlanFragment fragment = execFragment.getPlanFragment();
         PlanFragment destFragment = fragment.getDestFragment();
 
@@ -460,6 +479,7 @@ public class ExecutionDAG {
 
         // Set params for pipeline level shuffle.
         fragment.getDestNode().setPartitionType(fragment.getOutputPartition().getType());
+        int destDop = destFragment.getPipelineDop();
         if (sink instanceof DataStreamSink) {
             DataStreamSink dataStreamSink = (DataStreamSink) sink;
             dataStreamSink.setExchDop(destFragment.getPipelineDop());
@@ -487,6 +507,7 @@ public class ExecutionDAG {
 
             TNetworkAddress dummyServer = new TNetworkAddress("0.0.0.0", 0);
             int bucketNum = destExecFragment.getBucketNum();
+            Preconditions.checkArgument(bucketNum != 0);
             for (int bucketSeq = 0; bucketSeq < bucketNum; bucketSeq++) {
                 TPlanFragmentDestination dest = new TPlanFragmentDestination();
 
@@ -503,16 +524,17 @@ public class ExecutionDAG {
                     ComputeNode worker = destInstance.getWorker();
                     // NOTE(zc): can be removed in version 4.0
                     dest.setDeprecated_server(worker.getAddress());
-                    dest.setBrpc_server(toIpAddress(worker.getBrpcAddress()));
+                    dest.setBrpc_server(worker.getBrpcIpAddress());
 
                     int driverSeq = destInstance.getDriverSeqOfBucketSeq(bucketSeq);
                     if (driverSeq != FragmentInstance.ABSENT_DRIVER_SEQUENCE) {
-                        dest.setPipeline_driver_sequence(driverSeq);
+                        dest.setPipeline_driver_sequence(driverSeq % destDop);
                     }
                 }
                 execFragment.addDestination(dest);
             }
         } else {
+            Preconditions.checkArgument(!destExecFragment.getInstances().isEmpty());
             // add destination host to this fragment's destination
             for (FragmentInstance destInstance : destExecFragment.getInstances()) {
                 TPlanFragmentDestination dest = new TPlanFragmentDestination();
@@ -521,9 +543,51 @@ public class ExecutionDAG {
                 ComputeNode worker = destInstance.getWorker();
                 // NOTE(zc): can be removed in version 4.0
                 dest.setDeprecated_server(worker.getAddress());
-                dest.setBrpc_server(toIpAddress(worker.getBrpcAddress()));
+                dest.setBrpc_server(worker.getBrpcIpAddress());
 
                 execFragment.addDestination(dest);
+            }
+        }
+    }
+
+    private void connectSplitFragmentToDestFragments(ExecutionFragment execFragment, SplitCastPlanFragment fragment)
+            throws SchedulerException {
+        Preconditions.checkState(fragment.getSink() instanceof SplitCastDataSink);
+        SplitCastDataSink splitSink = (SplitCastDataSink) fragment.getSink();
+
+        // set # of senders
+        int numDestinations = fragment.getDestFragmentList().size();
+        for (int i = 0; i < numDestinations; i++) {
+            PlanFragment destFragment = fragment.getDestFragmentList().get(i);
+
+            Preconditions.checkState(destFragment != null);
+
+            ExecutionFragment destExecFragment = idToFragment.get(destFragment.getFragmentId());
+            DataStreamSink sink = splitSink.getDataStreamSinks().get(i);
+
+            // Set params for pipeline level shuffle.
+            fragment.getDestNode(i).setPartitionType(fragment.getOutputPartitions().get(i).getType());
+            sink.setExchDop(destFragment.getPipelineDop());
+
+            Integer exchangeId = sink.getExchNodeId().asInt();
+
+            destExecFragment.getNumSendersPerExchange().put(exchangeId, execFragment.getInstances().size());
+
+            if (needScheduleByLocalBucketShuffleJoin(destExecFragment, sink)) {
+                throw new NonRecoverableException("Split fragment cannot be bucket shuffle join");
+            } else {
+                // add destination host to this fragment's destination
+                for (FragmentInstance destInstance : destExecFragment.getInstances()) {
+                    TPlanFragmentDestination dest = new TPlanFragmentDestination();
+
+                    dest.setFragment_instance_id(destInstance.getInstanceId());
+                    ComputeNode worker = destInstance.getWorker();
+                    // NOTE(zc): can be removed in version 4.0
+                    dest.setDeprecated_server(worker.getAddress());
+                    dest.setBrpc_server(worker.getBrpcIpAddress());
+
+                    splitSink.getDestinations().get(i).add(dest);
+                }
             }
         }
     }
@@ -536,6 +600,34 @@ public class ExecutionDAG {
 
         instance.setInstanceId(instanceId);
         instanceIdToInstance.put(instanceId, instance);
+    }
+
+    public void cancelQueryContext(PPlanFragmentCancelReason cancelReason) {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("cancel query context id:{} reason:{}", DebugUtil.printId(jobSpec.getQueryId()),
+                    cancelReason.name());
+        }
+
+        Set<ComputeNode> workers = Sets.newHashSet();
+        for (FragmentInstanceExecState execution : this.getExecutions()) {
+            final ComputeNode worker = execution.getWorker();
+            workers.add(worker);
+        }
+
+        final TUniqueId dummyInstanceId = new TUniqueId(0, 0);
+
+        for (ComputeNode worker : workers) {
+            TNetworkAddress brpcAddress = worker.getBrpcAddress();
+            try {
+                BackendServiceClient.getInstance().cancelPlanFragmentAsync(brpcAddress,
+                        jobSpec.getQueryId(), dummyInstanceId, cancelReason,
+                        jobSpec.isEnablePipeline());
+            } catch (RpcException e) {
+                LOG.warn("cancel plan fragment get a exception, address={}:{}", brpcAddress.getHostname(),
+                        brpcAddress.getPort(), e);
+                SimpleScheduler.addToBlocklist(worker.getId());
+            }
+        }
     }
 
 }

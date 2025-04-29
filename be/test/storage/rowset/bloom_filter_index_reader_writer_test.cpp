@@ -39,11 +39,11 @@
 #include "runtime/mem_tracker.h"
 #include "storage/key_coder.h"
 #include "storage/olap_common.h"
-#include "storage/rowset/bloom_filter.h"
 #include "storage/rowset/bloom_filter_index_reader.h"
 #include "storage/rowset/bloom_filter_index_writer.h"
 #include "storage/types.h"
 #include "testutil/assert.h"
+#include "util/bloom_filter.h"
 
 namespace starrocks {
 
@@ -52,17 +52,14 @@ const std::string kTestDir = "/bloom_filter_index_reader_writer_test";
 class BloomFilterIndexReaderWriterTest : public testing::Test {
 protected:
     void SetUp() override {
-        _mem_tracker = std::make_unique<MemTracker>();
-        StoragePageCache::create_global_cache(_mem_tracker.get(), 1000000000);
         _fs = std::make_shared<MemoryFileSystem>();
         ASSERT_TRUE(_fs->create_dir(kTestDir).ok());
 
         _opts.use_page_cache = true;
         _opts.kept_in_memory = false;
-        _opts.skip_fill_data_cache = false;
         _opts.stats = &_stats;
     }
-    void TearDown() override { StoragePageCache::release_global_cache(); }
+    void TearDown() override { StoragePageCache::instance()->prune(); }
 
     template <LogicalType type>
     void write_bloom_filter_index_file(const std::string& file_name, const void* values, size_t value_count,
@@ -165,7 +162,6 @@ protected:
         }
     }
 
-    std::unique_ptr<MemTracker> _mem_tracker = nullptr;
     std::shared_ptr<MemoryFileSystem> _fs = nullptr;
     IndexReadOptions _opts;
     OlapReaderStatistics _stats;

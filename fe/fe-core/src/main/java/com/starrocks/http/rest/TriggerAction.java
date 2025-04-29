@@ -18,6 +18,8 @@ import com.google.common.base.Strings;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Table;
 import com.starrocks.clone.DynamicPartitionScheduler;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
@@ -76,7 +78,7 @@ public class TriggerAction extends RestBaseAction {
             return;
         }
 
-        Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         if (db == null) {
             response.appendContent("Database[" + dbName + "] does not exist");
             writeResponse(request, response, HttpResponseStatus.BAD_REQUEST);
@@ -88,10 +90,11 @@ public class TriggerAction extends RestBaseAction {
         if (method.equals(HttpMethod.GET)) {
             DynamicPartitionScheduler dynamicPartitionScheduler = globalStateMgr.getDynamicPartitionScheduler();
             Table table = null;
-            db.readLock();
+            Locker locker = new Locker();
+            locker.lockDatabase(db.getId(), LockType.READ);
             try {
                 if (!Strings.isNullOrEmpty(tableName)) {
-                    table = db.getTable(tableName);
+                    table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), tableName);
                 }
 
                 if (table == null) {
@@ -100,7 +103,7 @@ public class TriggerAction extends RestBaseAction {
                     return;
                 }
             } finally {
-                db.readUnlock();
+                locker.unLockDatabase(db.getId(), LockType.READ);
             }
             dynamicPartitionScheduler.executeDynamicPartitionForTable(db.getId(), table.getId());
             response.appendContent("Success");

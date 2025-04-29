@@ -156,6 +156,15 @@ public:
     DEFINE_VECTORIZED_FN(week_of_year);
 
     /**
+     * Get yearweek.
+     * @param context
+     * @param columns [TimestampColumn] Columns that hold timestamps.
+     * @return  IntColumn year_week:
+     */
+    DEFINE_VECTORIZED_FN(year_week_with_default_mode);
+    DEFINE_VECTORIZED_FN(year_week_with_mode);
+
+    /**
      * Get week of the year.
      * @param context
      * @param column[0] [TimestampColumn] Columns that hold timestamps.
@@ -233,6 +242,8 @@ public:
      * Called by datetime_trunc
      * Truncate to the corresponding part
      */
+    DEFINE_VECTORIZED_FN(datetime_trunc_microsecond);
+    DEFINE_VECTORIZED_FN(datetime_trunc_millisecond);
     DEFINE_VECTORIZED_FN(datetime_trunc_second);
     DEFINE_VECTORIZED_FN(datetime_trunc_minute);
     DEFINE_VECTORIZED_FN(datetime_trunc_hour);
@@ -256,6 +267,8 @@ public:
      * Called by time_slice
      * Floor to the corresponding period
      */
+    DEFINE_VECTORIZED_FN(time_slice_datetime_start_microsecond);
+    DEFINE_VECTORIZED_FN(time_slice_datetime_start_millisecond);
     DEFINE_VECTORIZED_FN(time_slice_datetime_start_second);
     DEFINE_VECTORIZED_FN(time_slice_datetime_start_minute);
     DEFINE_VECTORIZED_FN(time_slice_datetime_start_hour);
@@ -265,6 +278,8 @@ public:
     DEFINE_VECTORIZED_FN(time_slice_datetime_start_week);
     DEFINE_VECTORIZED_FN(time_slice_datetime_start_quarter);
 
+    DEFINE_VECTORIZED_FN(time_slice_datetime_end_microsecond);
+    DEFINE_VECTORIZED_FN(time_slice_datetime_end_millisecond);
     DEFINE_VECTORIZED_FN(time_slice_datetime_end_second);
     DEFINE_VECTORIZED_FN(time_slice_datetime_end_minute);
     DEFINE_VECTORIZED_FN(time_slice_datetime_end_hour);
@@ -274,6 +289,8 @@ public:
     DEFINE_VECTORIZED_FN(time_slice_datetime_end_week);
     DEFINE_VECTORIZED_FN(time_slice_datetime_end_quarter);
 
+    DEFINE_VECTORIZED_FN(time_slice_date_start_microsecond);
+    DEFINE_VECTORIZED_FN(time_slice_date_start_millisecond);
     DEFINE_VECTORIZED_FN(time_slice_date_start_second);
     DEFINE_VECTORIZED_FN(time_slice_date_start_minute);
     DEFINE_VECTORIZED_FN(time_slice_date_start_hour);
@@ -283,6 +300,8 @@ public:
     DEFINE_VECTORIZED_FN(time_slice_date_start_week);
     DEFINE_VECTORIZED_FN(time_slice_date_start_quarter);
 
+    DEFINE_VECTORIZED_FN(time_slice_date_end_microsecond);
+    DEFINE_VECTORIZED_FN(time_slice_date_end_millisecond);
     DEFINE_VECTORIZED_FN(time_slice_date_end_second);
     DEFINE_VECTORIZED_FN(time_slice_date_end_minute);
     DEFINE_VECTORIZED_FN(time_slice_date_end_hour);
@@ -684,11 +703,15 @@ public:
      */
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_64);
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_32);
+    DEFINE_VECTORIZED_FN(from_unix_to_datetime_ms_64);
 
     // from_unix_datetime with format's auxiliary method
     static Status from_unix_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
     static Status from_unix_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    static Status from_unix_timezone_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    static Status from_unix_timezone_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
     /**
      * @param: [timestamp, formatstr]
@@ -697,6 +720,7 @@ public:
      */
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_with_format_64);
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_with_format_32);
+    DEFINE_VECTORIZED_FN(from_unix_to_datetime_with_format_timezone);
 
     /**
      * return number of seconds in this day.
@@ -760,7 +784,7 @@ public:
     static int compute_weekday(long daynr, bool sunday_first_day_of_week);
     static uint32_t compute_days_in_year(uint year);
     static uint week_mode(uint mode);
-    static int32_t compute_week(uint year, uint month, uint day, uint week_behaviour);
+    static int32_t compute_week(uint year, uint month, uint day, uint week_behaviour, uint* year_local);
 
     /**
      * calculate a date by year and day of year
@@ -779,8 +803,18 @@ public:
     // so this value is 253402329599(UTC 9999-12-31 23:59:59) - 24 * 3600(for all timezones)
     constexpr static const int64_t MAX_UNIX_TIMESTAMP = 253402243199L;
 
+    /**
+     * Format a time value according to a format string.
+     * @param: [time_value, format_str]
+     * @paramType columns: [TYPE_TIME, TYPE_VARCHAR]
+     * @return ColumnPtr A column holding formatted time strings.
+     */
+    DEFINE_VECTORIZED_FN(time_format);
+
 private:
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_to_datetime);
+
+    DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_to_datetime_ms);
 
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_to_unix_from_datetime);
 
@@ -796,10 +830,16 @@ private:
 
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_with_format);
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_with_format_general);
+    DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_with_format_timezone);
 
     template <LogicalType TIMESTAMP_TYPE>
     static StatusOr<ColumnPtr> _t_from_unix_with_format_const(std::string& format_content, FunctionContext* context,
                                                               const starrocks::Columns& columns);
+    template <LogicalType TIMESTAMP_TYPE>
+    static StatusOr<ColumnPtr> _t_from_unix_with_format_timezone_const(const std::string& format_content,
+                                                                       const std::string& timezone_content,
+                                                                       FunctionContext* context,
+                                                                       const Columns& columns);
 
     static StatusOr<ColumnPtr> convert_tz_general(FunctionContext* context, const Columns& columns);
 
@@ -845,7 +885,9 @@ public:
 private:
     struct FromUnixState {
         bool const_format{false};
+        bool const_timezone{false};
         std::string format_content;
+        std::string timezone_content;
         FromUnixState() = default;
     };
 

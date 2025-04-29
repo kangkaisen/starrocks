@@ -14,38 +14,45 @@
 
 package com.starrocks.sql.analyzer;
 
+import com.google.common.collect.Lists;
 import com.starrocks.analysis.FunctionName;
+import com.starrocks.analysis.HintNode;
+import com.starrocks.analysis.SetVarHint;
 import com.starrocks.analysis.TableName;
 import com.starrocks.analysis.TableRef;
+import com.starrocks.authorization.AccessDeniedException;
+import com.starrocks.authorization.AuthorizationMgr;
+import com.starrocks.authorization.ColumnPrivilege;
+import com.starrocks.authorization.ObjectType;
+import com.starrocks.authorization.PrivilegeBuiltinConstants;
+import com.starrocks.authorization.PrivilegeException;
+import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.backup.AbstractJob;
 import com.starrocks.backup.BackupJob;
+import com.starrocks.catalog.BasicTable;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSearchDesc;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.Resource;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.View;
-import com.starrocks.catalog.system.SystemTable;
-import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.util.PropertyAnalyzer;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.load.ExportJob;
 import com.starrocks.load.loadv2.LoadJob;
 import com.starrocks.load.loadv2.SparkLoadJob;
 import com.starrocks.load.routineload.RoutineLoadJob;
-import com.starrocks.privilege.AccessDeniedException;
-import com.starrocks.privilege.AuthorizationMgr;
-import com.starrocks.privilege.ObjectType;
-import com.starrocks.privilege.PrivilegeBuiltinConstants;
-import com.starrocks.privilege.PrivilegeException;
-import com.starrocks.privilege.PrivilegeType;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.SessionVariable;
 import com.starrocks.server.CatalogMgr;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
+import com.starrocks.sql.ast.AddBackendBlackListStmt;
 import com.starrocks.sql.ast.AddSqlBlackListStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
@@ -82,6 +89,8 @@ import com.starrocks.sql.ast.CancelCompactionStmt;
 import com.starrocks.sql.ast.CancelExportStmt;
 import com.starrocks.sql.ast.CancelLoadStmt;
 import com.starrocks.sql.ast.CancelRefreshMaterializedViewStmt;
+import com.starrocks.sql.ast.CatalogRef;
+import com.starrocks.sql.ast.CleanTemporaryTableStmt;
 import com.starrocks.sql.ast.CreateAnalyzeJobStmt;
 import com.starrocks.sql.ast.CreateCatalogStmt;
 import com.starrocks.sql.ast.CreateDbStmt;
@@ -98,6 +107,8 @@ import com.starrocks.sql.ast.CreateTableAsSelectStmt;
 import com.starrocks.sql.ast.CreateTableLikeStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.CreateViewStmt;
+import com.starrocks.sql.ast.DataCacheSelectStatement;
+import com.starrocks.sql.ast.DelBackendBlackListStmt;
 import com.starrocks.sql.ast.DelSqlBlackListStmt;
 import com.starrocks.sql.ast.DeleteStmt;
 import com.starrocks.sql.ast.DescStorageVolumeStmt;
@@ -119,6 +130,7 @@ import com.starrocks.sql.ast.DropUserStmt;
 import com.starrocks.sql.ast.ExecuteAsStmt;
 import com.starrocks.sql.ast.ExecuteScriptStmt;
 import com.starrocks.sql.ast.ExportStmt;
+import com.starrocks.sql.ast.FunctionRef;
 import com.starrocks.sql.ast.GrantRoleStmt;
 import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.InstallPluginStmt;
@@ -135,6 +147,7 @@ import com.starrocks.sql.ast.RefreshTableStmt;
 import com.starrocks.sql.ast.RestoreStmt;
 import com.starrocks.sql.ast.ResumeRoutineLoadStmt;
 import com.starrocks.sql.ast.RevokeRoleStmt;
+import com.starrocks.sql.ast.SelectRelation;
 import com.starrocks.sql.ast.SetCatalogStmt;
 import com.starrocks.sql.ast.SetDefaultRoleStmt;
 import com.starrocks.sql.ast.SetDefaultStorageVolumeStmt;
@@ -147,6 +160,7 @@ import com.starrocks.sql.ast.ShowAlterStmt;
 import com.starrocks.sql.ast.ShowAnalyzeJobStmt;
 import com.starrocks.sql.ast.ShowAnalyzeStatusStmt;
 import com.starrocks.sql.ast.ShowAuthenticationStmt;
+import com.starrocks.sql.ast.ShowBackendBlackListStmt;
 import com.starrocks.sql.ast.ShowBackendsStmt;
 import com.starrocks.sql.ast.ShowBackupStmt;
 import com.starrocks.sql.ast.ShowBasicStatsMetaStmt;
@@ -156,6 +170,7 @@ import com.starrocks.sql.ast.ShowColumnStmt;
 import com.starrocks.sql.ast.ShowComputeNodesStmt;
 import com.starrocks.sql.ast.ShowCreateDbStmt;
 import com.starrocks.sql.ast.ShowCreateTableStmt;
+import com.starrocks.sql.ast.ShowDataDistributionStmt;
 import com.starrocks.sql.ast.ShowDataStmt;
 import com.starrocks.sql.ast.ShowExportStmt;
 import com.starrocks.sql.ast.ShowFrontendsStmt;
@@ -194,12 +209,46 @@ import com.starrocks.sql.ast.UpdateStmt;
 import com.starrocks.sql.ast.UseCatalogStmt;
 import com.starrocks.sql.ast.UseDbStmt;
 import com.starrocks.sql.ast.UserIdentity;
+import com.starrocks.sql.ast.group.CreateGroupProviderStmt;
+import com.starrocks.sql.ast.group.DropGroupProviderStmt;
+import com.starrocks.sql.ast.group.ShowCreateGroupProviderStmt;
+import com.starrocks.sql.ast.group.ShowGroupProvidersStmt;
+import com.starrocks.sql.ast.integration.AlterSecurityIntegrationStatement;
+import com.starrocks.sql.ast.integration.CreateSecurityIntegrationStatement;
+import com.starrocks.sql.ast.integration.DropSecurityIntegrationStatement;
+import com.starrocks.sql.ast.integration.ShowCreateSecurityIntegrationStatement;
+import com.starrocks.sql.ast.integration.ShowSecurityIntegrationStatement;
+import com.starrocks.sql.ast.pipe.AlterPipeStmt;
+import com.starrocks.sql.ast.pipe.CreatePipeStmt;
+import com.starrocks.sql.ast.pipe.DescPipeStmt;
+import com.starrocks.sql.ast.pipe.DropPipeStmt;
+import com.starrocks.sql.ast.pipe.PipeName;
+import com.starrocks.sql.ast.pipe.ShowPipeStmt;
+import com.starrocks.sql.ast.warehouse.AlterWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.CreateWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.DropWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.ResumeWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.SetWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.ShowClustersStmt;
+import com.starrocks.sql.ast.warehouse.ShowWarehousesStmt;
+import com.starrocks.sql.ast.warehouse.SuspendWarehouseStmt;
+import com.starrocks.sql.common.MetaUtils;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
-public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
+public class AuthorizerStmtVisitor implements AstVisitor<Void, ConnectContext> {
+    // For show tablet detail command, if user has any privilege on the corresponding table, user can run it
+    // TODO(yiming): match "/dbs", not only show tablet detail cmd, need to change privilege check for other proc node
+    private static final Pattern SHOW_TABLET_DETAIL_CMD_PATTERN =
+            Pattern.compile("/dbs/\\d+/\\d+/partitions/\\d+/\\d+/\\d+/?");
+
+    private static final Logger LOG = LogManager.getLogger(AuthorizerStmtVisitor.class);
 
     public AuthorizerStmtVisitor() {
     }
@@ -212,8 +261,28 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitQueryStatement(QueryStatement statement, ConnectContext context) {
-        Map<TableName, Table> allTouchedTables = AnalyzerUtils.collectAllTableAndView(statement);
-        checkSelectTableAction(context, allTouchedTables);
+        checkSelectTableAction(context, statement, Lists.newArrayList());
+
+        List<HintNode> hintNodes = null;
+        if (statement.getQueryRelation() instanceof SelectRelation) {
+            SelectRelation selectRelation = (SelectRelation) statement.getQueryRelation();
+            hintNodes = selectRelation.getSelectList().getHintNodes();
+        }
+
+        if (CollectionUtils.isNotEmpty(hintNodes)) {
+            for (HintNode hintNode : hintNodes) {
+                if (hintNode instanceof SetVarHint) {
+                    Map<String, String> optHints = hintNode.getValue();
+                    if (optHints.containsKey(SessionVariable.WAREHOUSE_NAME)) {
+                        // check warehouse privilege
+                        String warehouseName = optHints.get(SessionVariable.WAREHOUSE_NAME);
+                        if (!warehouseName.equalsIgnoreCase(WarehouseManager.DEFAULT_WAREHOUSE_NAME)) {
+                            checkWarehouseUsagePrivilege(warehouseName, context);
+                        }
+                    }
+                }
+            }
+        }
 
         return null;
     }
@@ -225,7 +294,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         // For table just created by CTAS statement, we ignore the check of 'INSERT' privilege on it.
         if (!statement.isForCTAS()) {
             try {
-                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkTableAction(context,
                         statement.getTableName(), PrivilegeType.INSERT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(statement.getTableName().getCatalog(),
@@ -241,97 +310,53 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDeleteStatement(DeleteStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getTableName(), PrivilegeType.DELETE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(statement.getTableName().getCatalog(),
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.DELETE.name(), ObjectType.TABLE.name(), statement.getTableName().getTbl());
         }
-        Map<TableName, Table> allTouchedTables = AnalyzerUtils.collectAllTableAndView(statement);
-        allTouchedTables.remove(statement.getTableName());
-        checkSelectTableAction(context, allTouchedTables);
+        checkSelectTableAction(context, statement.getQueryStatement(), Lists.newArrayList(statement.getTableName()));
         return null;
     }
 
     @Override
     public Void visitUpdateStatement(UpdateStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getTableName(), PrivilegeType.UPDATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(statement.getTableName().getCatalog(),
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.UPDATE.name(), ObjectType.TABLE.name(), statement.getTableName().getTbl());
         }
-        Map<TableName, Table> allTouchedTables = AnalyzerUtils.collectAllTableAndView(statement);
-        allTouchedTables.remove(statement.getTableName());
-        checkSelectTableAction(context, allTouchedTables);
+        checkSelectTableAction(context, statement.getQueryStatement(), Lists.newArrayList(statement.getTableName()));
         return null;
     }
 
-    void checkSelectTableAction(ConnectContext context, Map<TableName, Table> allTouchedTables) {
-
-        for (Map.Entry<TableName, Table> tableToBeChecked : allTouchedTables.entrySet()) {
-            TableName tableName = tableToBeChecked.getKey();
-            Table table = tableToBeChecked.getValue();
-            if (table instanceof SystemTable && ((SystemTable) table).requireOperatePrivilege()) {
-                try {
-                    Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                            PrivilegeType.OPERATE);
-                } catch (AccessDeniedException e) {
-                    AccessDeniedException.reportAccessDenied(
-                            InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                            context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                            PrivilegeType.OPERATE.name(), ObjectType.SYSTEM.name(), null);
-                }
-            } else {
-                if (table instanceof View) {
-                    try {
-                        Authorizer.checkViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                tableName, PrivilegeType.SELECT);
-                    } catch (AccessDeniedException e) {
-                        AccessDeniedException.reportAccessDenied(
-                                InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                                context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.VIEW.name(), tableName.getTbl());
-                    }
-                } else if (table.isMaterializedView()) {
-                    try {
-                        Authorizer.checkMaterializedViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                tableName, PrivilegeType.SELECT);
-                    } catch (AccessDeniedException e) {
-                        AccessDeniedException.reportAccessDenied(
-                                InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                                context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.MATERIALIZED_VIEW.name(), tableName.getTbl());
-                    }
-                } else {
-                    try {
-                        Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                tableName.getCatalog(), tableName.getDb(), table.getName(), PrivilegeType.SELECT);
-                    } catch (AccessDeniedException e) {
-                        AccessDeniedException.reportAccessDenied(
-                                tableName.getCatalog(),
-                                context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.SELECT.name(), ObjectType.TABLE.name(), tableName.getTbl());
-                    }
-                }
-            }
-        }
+    public void checkSelectTableAction(ConnectContext context, QueryStatement statement, List<TableName> excludeTables) {
+        ColumnPrivilege.check(context, statement, excludeTables);
     }
 
     // --------------------------------- Routine Load Statement ---------------------------------
 
     public Void visitCreateRoutineLoadStatement(CreateRoutineLoadStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(statement.getDBName(), statement.getTableName()), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.INSERT.name(), ObjectType.TABLE.name(), statement.getTableName());
+        }
+
+        // check warehouse privilege
+        Map<String, String> properties = statement.getJobProperties();
+        if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_WAREHOUSE)) {
+            String warehouseName = properties.get(PropertyAnalyzer.PROPERTIES_WAREHOUSE);
+            checkWarehouseUsagePrivilege(warehouseName, context);
         }
         return null;
     }
@@ -340,13 +365,20 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitAlterRoutineLoadStatement(AlterRoutineLoadStmt statement, ConnectContext context) {
         String tableName = getTableNameByRoutineLoadLabel(context, statement.getDbName(), statement.getLabel());
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(statement.getDbName(), tableName), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.INSERT.name(), ObjectType.TABLE.name(), tableName);
+        }
+
+        // check warehouse privilege
+        Map<String, String> properties = statement.getJobProperties();
+        if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_WAREHOUSE)) {
+            String warehouseName = properties.get(PropertyAnalyzer.PROPERTIES_WAREHOUSE);
+            checkWarehouseUsagePrivilege(warehouseName, context);
         }
         return null;
     }
@@ -355,7 +387,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitStopRoutineLoadStatement(StopRoutineLoadStmt statement, ConnectContext context) {
         String tableName = getTableNameByRoutineLoadLabel(context, statement.getDbFullName(), statement.getName());
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(statement.getDbFullName(), tableName), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -370,7 +402,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitPauseRoutineLoadStatement(PauseRoutineLoadStmt statement, ConnectContext context) {
         String tableName = getTableNameByRoutineLoadLabel(context, statement.getDbFullName(), statement.getName());
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(statement.getDbFullName(), tableName), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -385,7 +417,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitResumeRoutineLoadStatement(ResumeRoutineLoadStmt statement, ConnectContext context) {
         String tableName = getTableNameByRoutineLoadLabel(context, statement.getDbFullName(), statement.getName());
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(statement.getDbFullName(), tableName), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -417,6 +449,13 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         return null;
     }
 
+    @Override
+    public Void visitShowDataDistributionStatement(ShowDataDistributionStmt statement, ConnectContext context) {
+        // `show data distribution` only show tables that user has any privilege on, we will check it in
+        // the execution logic, not here, see `ShowExecutor#handleShowDataDistribution()` for details.
+        return null;
+    }
+
     // --------------------------------- Load Statement -------------------------------------
     @Override
     public Void visitAlterLoadStatement(AlterLoadStmt statement, ConnectContext context) {
@@ -430,7 +469,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         if (null != statement.getResourceDesc()) {
             String resourceName = statement.getResourceDesc().getName();
             try {
-                Authorizer.checkResourceAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), resourceName,
+                Authorizer.checkResourceAction(context, resourceName,
                         PrivilegeType.USAGE);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -444,7 +483,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         statement.getDataDescriptions().forEach(dataDescription -> {
             String tableName = dataDescription.getTableName();
             try {
-                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkTableAction(context,
                         new TableName(dbName, tableName), PrivilegeType.INSERT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -453,6 +492,13 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                         PrivilegeType.INSERT.name(), ObjectType.TABLE.name(), tableName);
             }
         });
+
+        // check warehouse privilege
+        Map<String, String> properties = statement.getProperties();
+        if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_WAREHOUSE)) {
+            String warehouseName = properties.get(PropertyAnalyzer.PROPERTIES_WAREHOUSE);
+            checkWarehouseUsagePrivilege(warehouseName, context);
+        }
         return null;
     }
 
@@ -473,7 +519,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitUseDbStatement(UseDbStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnOrInDb(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnOrInDb(context,
                     context.getCurrentCatalog(), statement.getDbName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -487,7 +533,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowCreateDbStatement(ShowCreateDbStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnDb(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnDb(context,
                     statement.getCatalogName(), statement.getDb());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -502,7 +548,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitRecoverDbStatement(RecoverDbStmt statement, ConnectContext context) {
         // Need to check the `CREATE_DATABASE` action on corresponding catalog
         try {
-            Authorizer.checkCatalogAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkCatalogAction(context,
                     statement.getCatalogName(), PrivilegeType.CREATE_DATABASE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -516,7 +562,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterDatabaseQuotaStatement(AlterDatabaseQuotaStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkDbAction(context,
                     statement.getCatalogName(), statement.getDbName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -530,7 +576,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterDatabaseRenameStatement(AlterDatabaseRenameStatement statement, ConnectContext context) {
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkDbAction(context,
                     statement.getCatalogName(), statement.getDbName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -544,7 +590,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropDbStatement(DropDbStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkDbAction(context,
                     statement.getCatalogName(), statement.getDbName(), PrivilegeType.DROP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -558,7 +604,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateDbStatement(CreateDbStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkCatalogAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkCatalogAction(context,
                     context.getCurrentCatalog(), PrivilegeType.CREATE_DATABASE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -570,7 +616,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         if (statement.getProperties().containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME)) {
             String storageVolume = statement.getProperties().get(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME);
             try {
-                Authorizer.checkStorageVolumeAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkStorageVolumeAction(context,
                         storageVolume, PrivilegeType.USAGE);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -587,7 +633,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateResourceStatement(CreateResourceStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.CREATE_RESOURCE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -601,7 +647,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropResourceStatement(DropResourceStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkResourceAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkResourceAction(context,
                     statement.getResourceName(), PrivilegeType.DROP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -615,7 +661,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterResourceStatement(AlterResourceStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkResourceAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkResourceAction(context,
                     statement.getResourceName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -636,7 +682,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     // --------------------------------- Resource Group Statement -------------------------------------
     public Void visitCreateResourceGroupStatement(CreateResourceGroupStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.CREATE_RESOURCE_GROUP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -649,7 +695,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     public Void visitDropResourceGroupStatement(DropResourceGroupStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkResourceGroupAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkResourceGroupAction(context,
                     statement.getName(), PrivilegeType.DROP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -662,8 +708,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     public Void visitAlterResourceGroupStatement(AlterResourceGroupStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkResourceGroupAction(
-                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(), statement.getName(), PrivilegeType.ALTER);
+            Authorizer.checkResourceGroupAction(context, statement.getName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -688,7 +733,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             return null;
         }
         try {
-            Authorizer.checkAnyActionOnCatalog(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), catalogName);
+            Authorizer.checkAnyActionOnCatalog(context, catalogName);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -706,7 +751,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             return null;
         }
         try {
-            Authorizer.checkAnyActionOnCatalog(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), catalogName);
+            Authorizer.checkAnyActionOnCatalog(context, catalogName);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -719,7 +764,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateCatalogStatement(CreateCatalogStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.CREATE_EXTERNAL_CATALOG);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -733,7 +778,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropCatalogStatement(DropCatalogStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkCatalogAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), statement.getName(),
+            Authorizer.checkCatalogAction(context, statement.getName(),
                     PrivilegeType.DROP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -754,7 +799,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterCatalogStatement(AlterCatalogStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkCatalogAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkCatalogAction(context,
                     statement.getCatalogName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -770,7 +815,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitInstallPluginStatement(InstallPluginStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.PLUGIN);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -785,10 +830,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowBackendsStatement(ShowBackendsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.NODE);
+                Authorizer.checkSystemAction(context, PrivilegeType.NODE);
             } catch (AccessDeniedException e2) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -803,10 +848,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowFrontendsStatement(ShowFrontendsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.NODE);
+                Authorizer.checkSystemAction(context, PrivilegeType.NODE);
             } catch (AccessDeniedException e2) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -821,11 +866,11 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowBrokerStatement(ShowBrokerStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkSystemAction(context,
                         PrivilegeType.NODE);
             } catch (AccessDeniedException e2) {
                 AccessDeniedException.reportAccessDenied(
@@ -841,10 +886,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowComputeNodes(ShowComputeNodesStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.NODE);
+                Authorizer.checkSystemAction(context, PrivilegeType.NODE);
             } catch (AccessDeniedException e2) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -859,7 +904,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitUninstallPluginStatement(UninstallPluginStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.PLUGIN);
+            Authorizer.checkSystemAction(context, PrivilegeType.PLUGIN);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -872,7 +917,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowPluginsStatement(ShowPluginsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.PLUGIN);
+            Authorizer.checkSystemAction(context, PrivilegeType.PLUGIN);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -887,7 +932,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateFileStatement(CreateFileStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnOrInDb(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnOrInDb(context,
                     context.getCurrentCatalog(), statement.getDbName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -896,7 +941,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     PrivilegeType.ANY.name(), ObjectType.DATABASE.name(), statement.getDbName());
         }
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.FILE);
+            Authorizer.checkSystemAction(context, PrivilegeType.FILE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -909,7 +954,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropFileStatement(DropFileStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnOrInDb(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnOrInDb(context,
                     context.getCurrentCatalog(), statement.getDbName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -918,7 +963,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     PrivilegeType.ANY.name(), ObjectType.DATABASE.name(), statement.getDbName());
         }
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.FILE);
+            Authorizer.checkSystemAction(context, PrivilegeType.FILE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -931,7 +976,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowSmallFilesStatement(ShowSmallFilesStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnOrInDb(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnOrInDb(context,
                     context.getCurrentCatalog(), statement.getDbName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -946,30 +991,26 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitAnalyzeStatement(AnalyzeStmt statement, ConnectContext context) {
-        Authorizer.checkActionForAnalyzeStatement(context.getCurrentUserIdentity(),
-                context.getCurrentRoleIds(), statement.getTableName());
+        Authorizer.checkActionForAnalyzeStatement(context, statement.getTableName());
         return null;
     }
 
     @Override
     public Void visitCreateAnalyzeJobStatement(CreateAnalyzeJobStmt statement, ConnectContext context) {
         Set<TableName> tableNames = AnalyzerUtils.getAllTableNamesForAnalyzeJobStmt(statement.getDbId(), statement.getTableId());
-        tableNames.forEach(tableName -> Authorizer.checkActionForAnalyzeStatement(context.getCurrentUserIdentity(),
-                context.getCurrentRoleIds(), tableName));
+        tableNames.forEach(tableName -> Authorizer.checkActionForAnalyzeStatement(context, tableName));
         return null;
     }
 
     @Override
     public Void visitDropHistogramStatement(DropHistogramStmt statement, ConnectContext context) {
-        Authorizer.checkActionForAnalyzeStatement(context.getCurrentUserIdentity(),
-                context.getCurrentRoleIds(), statement.getTableName());
+        Authorizer.checkActionForAnalyzeStatement(context, statement.getTableName());
         return null;
     }
 
     @Override
     public Void visitDropStatsStatement(DropStatsStmt statement, ConnectContext context) {
-        Authorizer.checkActionForAnalyzeStatement(context.getCurrentUserIdentity(),
-                context.getCurrentRoleIds(), statement.getTableName());
+        Authorizer.checkActionForAnalyzeStatement(context, statement.getTableName());
         return null;
     }
 
@@ -1014,7 +1055,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAddSqlBlackListStatement(AddSqlBlackListStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.BLACKLIST);
+            Authorizer.checkSystemAction(context, PrivilegeType.BLACKLIST);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1027,7 +1068,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDelSqlBlackListStatement(DelSqlBlackListStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.BLACKLIST);
+            Authorizer.checkSystemAction(context, PrivilegeType.BLACKLIST);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1040,7 +1081,51 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowSqlBlackListStatement(ShowSqlBlackListStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.BLACKLIST);
+            Authorizer.checkSystemAction(context, PrivilegeType.BLACKLIST);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.BLACKLIST.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    // --------------------------------------- Backend BlackList ------------------------------------
+
+    @Override
+    public Void visitAddBackendBlackListStatement(AddBackendBlackListStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context,
+                    PrivilegeType.BLACKLIST);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.BLACKLIST.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitDelBackendBlackListStatement(DelBackendBlackListStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context,
+                    PrivilegeType.BLACKLIST);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.BLACKLIST.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowBackendBlackListStatement(ShowBackendBlackListStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context,
+                    PrivilegeType.BLACKLIST);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1055,7 +1140,12 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitBaseCreateAlterUserStmt(BaseCreateAlterUserStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            if (statement.getUserIdentity().equals(UserIdentity.ROOT)
+                    && !context.getCurrentUserIdentity().equals(UserIdentity.ROOT)) {
+                throw new SemanticException("Can not modify root user, except root itself");
+            }
+
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1068,7 +1158,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropUserStatement(DropUserStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1082,7 +1172,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitShowUserStatement(ShowUserStmt statement, ConnectContext context) {
         if (statement.isAll()) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1098,7 +1188,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         UserIdentity user = statement.getUserIdent();
         if (user != null && !user.equals(context.getCurrentUserIdentity()) || statement.isAll()) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1112,13 +1202,13 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitExecuteAsStatement(ExecuteAsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkUserAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), statement.getToUser(),
+            Authorizer.checkUserAction(context, statement.getToUser(),
                     PrivilegeType.IMPERSONATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                    PrivilegeType.IMPERSONATE.name(), ObjectType.USER.name(), statement.getToUser().getQualifiedUser());
+                    PrivilegeType.IMPERSONATE.name(), ObjectType.USER.name(), statement.getToUser().getUser());
         }
         return null;
     }
@@ -1126,7 +1216,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitExecuteScriptStatement(ExecuteScriptStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1139,7 +1229,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateRoleStatement(CreateRoleStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1152,7 +1242,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterRoleStatement(AlterRoleStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1165,7 +1255,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropRoleStatement(DropRoleStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1178,7 +1268,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowRolesStatement(ShowRolesStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1190,8 +1280,8 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitGrantRoleStatement(GrantRoleStmt statement, ConnectContext context) {
-        if (statement.getGranteeRole().stream().anyMatch(r -> r.equalsIgnoreCase(PrivilegeBuiltinConstants.ROOT_ROLE_NAME)
-                || r.equalsIgnoreCase(PrivilegeBuiltinConstants.CLUSTER_ADMIN_ROLE_NAME))) {
+        if (statement.getGranteeRole().stream().anyMatch(r -> r.equals(PrivilegeBuiltinConstants.ROOT_ROLE_NAME)
+                || r.equals(PrivilegeBuiltinConstants.CLUSTER_ADMIN_ROLE_NAME))) {
             UserIdentity userIdentity = context.getCurrentUserIdentity();
             if (!userIdentity.equals(UserIdentity.ROOT)) {
                 throw new SemanticException("Can not grant root or cluster_admin role except root user");
@@ -1199,7 +1289,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         }
 
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1211,22 +1301,22 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitRevokeRoleStatement(RevokeRoleStmt statement, ConnectContext context) {
-        if (statement.getGranteeRole().stream().anyMatch(r -> r.equalsIgnoreCase(PrivilegeBuiltinConstants.ROOT_ROLE_NAME)
-                || r.equalsIgnoreCase(PrivilegeBuiltinConstants.CLUSTER_ADMIN_ROLE_NAME))) {
+        if (statement.getGranteeRole().stream().anyMatch(r -> r.equals(PrivilegeBuiltinConstants.ROOT_ROLE_NAME)
+                || r.equals(PrivilegeBuiltinConstants.CLUSTER_ADMIN_ROLE_NAME))) {
             UserIdentity userIdentity = context.getCurrentUserIdentity();
             if (!userIdentity.equals(UserIdentity.ROOT)) {
                 throw new SemanticException("Can not grant root or cluster_admin role except root user");
             }
         }
 
-        if (statement.getGranteeRole().stream().anyMatch(r -> r.equalsIgnoreCase(PrivilegeBuiltinConstants.ROOT_ROLE_NAME))) {
+        if (statement.getGranteeRole().stream().anyMatch(r -> r.equals(PrivilegeBuiltinConstants.ROOT_ROLE_NAME))) {
             if (statement.getUserIdentity() != null && statement.getUserIdentity().equals(UserIdentity.ROOT)) {
                 throw new SemanticException("Can not revoke root role from root user");
             }
         }
 
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1241,7 +1331,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         UserIdentity user = statement.getUserIdentity();
         if (user != null && !user.equals(context.getCurrentUserIdentity())) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1255,10 +1345,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitGrantRevokePrivilegeStatement(BaseGrantRevokePrivilegeStmt stmt, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+            Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
         } catch (AccessDeniedException e) {
             try {
-                Authorizer.withGrantOption(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), stmt.getObjectType(),
+                Authorizer.withGrantOption(context, stmt.getObjectType(),
                         stmt.getPrivilegeTypes(), stmt.getObjectList());
             } catch (AccessDeniedException e2) {
                 AccessDeniedException.reportAccessDenied(
@@ -1275,21 +1365,17 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         UserIdentity user = statement.getUserIdent();
         try {
             if (user != null && !user.equals(context.getCurrentUserIdentity())) {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                        PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } else if (statement.getRole() != null) {
                 AuthorizationMgr authorizationManager = context.getGlobalStateMgr().getAuthorizationMgr();
-                try {
-                    List<String> roleNames = authorizationManager.getRoleNamesByUser(context.getCurrentUserIdentity());
-                    if (!roleNames.contains(statement.getRole())) {
-                        Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                                PrivilegeType.GRANT);
-                    }
-                } catch (PrivilegeException e) {
-                    ErrorReport.reportSemanticException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "GRANT");
+                Set<String> roleNames =
+                        authorizationManager.getAllPredecessorRoleNamesByUser(context.getCurrentUserIdentity());
+                if (!roleNames.contains(statement.getRole())) {
+                    Authorizer.checkSystemAction(context,
+                            PrivilegeType.GRANT);
                 }
             }
-        } catch (AccessDeniedException e) {
+        } catch (AccessDeniedException | PrivilegeException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
@@ -1301,9 +1387,9 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowUserPropertyStatement(ShowUserPropertyStmt statement, ConnectContext context) {
         String user = statement.getUser();
-        if (user != null && !user.equals(context.getCurrentUserIdentity().getQualifiedUser())) {
+        if (user != null && !user.equals(context.getCurrentUserIdentity().getUser())) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1317,15 +1403,127 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitSetUserPropertyStatement(SetUserPropertyStmt statement, ConnectContext context) {
         String user = statement.getUser();
-        if (user != null && !user.equals(context.getCurrentUserIdentity().getQualifiedUser())) {
+        if (user != null && !user.equals(context.getCurrentUserIdentity().getUser())) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.GRANT);
+                Authorizer.checkSystemAction(context, PrivilegeType.GRANT);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                         context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                         PrivilegeType.GRANT.name(), ObjectType.SYSTEM.name(), null);
             }
+        }
+        return null;
+    }
+
+    // ---------------------------------------- Security Integration Statement ---------------------------------------
+
+    @Override
+    public Void visitCreateSecurityIntegrationStatement(CreateSecurityIntegrationStatement statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitDropSecurityIntegrationStatement(DropSecurityIntegrationStatement statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitAlterSecurityIntegrationStatement(AlterSecurityIntegrationStatement statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowSecurityIntegrationStatement(ShowSecurityIntegrationStatement statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowCreateSecurityIntegrationStatement(ShowCreateSecurityIntegrationStatement statement,
+                                                            ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+    // ------------------------------------------- Group Provider Statement ----------------------------------------------------
+
+    @Override
+    public Void visitCreateGroupProviderStatement(CreateGroupProviderStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitDropGroupProviderStatement(DropGroupProviderStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowCreateGroupProviderStatement(ShowCreateGroupProviderStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowGroupProvidersStatement(ShowGroupProvidersStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.SECURITY);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.SECURITY.name(), ObjectType.SYSTEM.name(), null);
         }
         return null;
     }
@@ -1341,7 +1539,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             catalog = context.getCurrentCatalog();
         }
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), catalog,
+            Authorizer.checkDbAction(context, catalog,
                     tableName.getDb(), PrivilegeType.CREATE_VIEW);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1366,7 +1564,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitAlterViewStatement(AlterViewStmt statement, ConnectContext context) {
         // 1. check if user can alter view in this db
         try {
-            Authorizer.checkViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkViewAction(context,
                     statement.getTableName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1393,7 +1591,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         }
         String dbName = tableName.getDb() == null ? context.getDatabase() : tableName.getDb();
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), catalog, dbName,
+            Authorizer.checkDbAction(context, catalog, dbName,
                     PrivilegeType.CREATE_TABLE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(catalog, context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
@@ -1407,7 +1605,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                 Resource resource = GlobalStateMgr.getCurrentState().getResourceMgr().getResource(resourceProp);
                 if (resource != null) {
                     try {
-                        Authorizer.checkResourceAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkResourceAction(context,
                                 resource.getName(), PrivilegeType.USAGE);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -1420,7 +1618,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             if (statement.getProperties().containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME)) {
                 String storageVolume = properties.get(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME);
                 try {
-                    Authorizer.checkStorageVolumeAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    Authorizer.checkStorageVolumeAction(context,
                             storageVolume, PrivilegeType.USAGE);
                 } catch (AccessDeniedException e) {
                     AccessDeniedException.reportAccessDenied(
@@ -1445,7 +1643,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitCreateTableLikeStatement(CreateTableLikeStmt statement, ConnectContext context) {
         visitCreateTableStatement(statement.getCreateTableStmt(), context);
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getExistedDbTbl(), PrivilegeType.SELECT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1460,7 +1658,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitDropTableStatement(DropTableStmt statement, ConnectContext context) {
         if (statement.isView()) {
             try {
-                Authorizer.checkViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkViewAction(context,
                         statement.getTbl(), PrivilegeType.DROP);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -1469,14 +1667,22 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                         PrivilegeType.DROP.name(), ObjectType.VIEW.name(), statement.getTbl().getTbl());
             }
         } else {
+            Table table = null;
             try {
-                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                table = MetaUtils.getSessionAwareTable(context, null, statement.getTbl());
+                Authorizer.checkTableAction(context,
                         statement.getTbl(), PrivilegeType.DROP);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
                         statement.getTbl().getCatalog(),
                         context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                         PrivilegeType.DROP.name(), ObjectType.TABLE.name(), statement.getTbl().getTbl());
+            } catch (Exception e) {
+                if (table == null && statement.isSetIfExists()) {
+                    // an exception will be thrown if table is not found, ignore it if `if exists` is set.
+                    return null;
+                }
+                throw e;
             }
         }
         return null;
@@ -1490,7 +1696,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             catalog = context.getCurrentCatalog();
         }
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), catalog,
+            Authorizer.checkDbAction(context, catalog,
                     tableName.getDb(), PrivilegeType.CREATE_TABLE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1504,7 +1710,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitTruncateTableStatement(TruncateTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     new TableName(context.getCurrentCatalog(), statement.getDbName(), statement.getTblName()),
                     PrivilegeType.DELETE);
         } catch (AccessDeniedException e) {
@@ -1519,7 +1725,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitRefreshTableStatement(RefreshTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getTableName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1533,7 +1739,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterTableStatement(AlterTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), statement.getTbl(),
+            Authorizer.checkTableAction(context, statement.getTbl(),
                     PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1547,22 +1753,18 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCancelAlterTableStatement(CancelAlterTableStmt statement, ConnectContext context) {
         if (statement.getAlterType() == ShowAlterStmt.AlterType.MATERIALIZED_VIEW) {
-            Database db = GlobalStateMgr.getCurrentState().getDb(statement.getDbName());
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(statement.getDbName());
             if (db != null) {
-                try {
-                    db.readLock();
-                    Table table = db.getTable(statement.getTableName());
-                    if (table == null || !table.isMaterializedView()) {
-                        // ignore privilege check for old mv
-                        return null;
-                    }
-                } finally {
-                    db.readUnlock();
+                Table table = GlobalStateMgr.getCurrentState().getLocalMetastore()
+                        .getTable(db.getFullName(), statement.getTableName());
+                if (table == null || !table.isMaterializedView()) {
+                    // ignore privilege check for old mv
+                    return null;
                 }
             }
 
             try {
-                Authorizer.checkMaterializedViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkMaterializedViewAction(context,
                         new TableName(statement.getDbName(), statement.getTableName()), PrivilegeType.ALTER);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -1572,7 +1774,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             }
         } else {
             try {
-                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkTableAction(context,
                         statement.getDbTableName(), PrivilegeType.ALTER);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -1586,8 +1788,12 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitDescTableStmt(DescribeStmt statement, ConnectContext context) {
+        if (statement.isTableFunctionTable()) {
+            return null;
+        }
+
         try {
-            Authorizer.checkAnyActionOnTable(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnTable(context,
                     statement.getDbTableName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1601,7 +1807,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowCreateTableStatement(ShowCreateTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnTable(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), statement.getTbl());
+            BasicTable basicTable = GlobalStateMgr.getCurrentState().getMetadataMgr().getBasicTable(
+                    context, statement.getTbl().getCatalog(), statement.getTbl().getDb(), statement.getTbl().getTbl());
+            Authorizer.checkAnyActionOnTableLikeObject(context,
+                    statement.getDb(), basicTable);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     statement.getTbl().getCatalog(),
@@ -1621,7 +1830,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowIndexStatement(ShowIndexStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnTable(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnTable(context,
                     statement.getTableName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1635,7 +1844,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowColumnStatement(ShowColumnStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnTable(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnTable(context,
                     statement.getTableName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1649,7 +1858,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitRecoverPartitionStatement(RecoverPartitionStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getDbTblName(), PrivilegeType.INSERT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1659,7 +1868,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         }
 
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getDbTblName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1673,7 +1882,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowPartitionsStatement(ShowPartitionsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnTable(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnTable(context,
                     new TableName(statement.getDbName(), statement.getTableName()));
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1688,9 +1897,18 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitSubmitTaskStatement(SubmitTaskStmt statement, ConnectContext context) {
         if (statement.getCreateTableAsSelectStmt() != null) {
             visitCreateTableAsSelectStatement(statement.getCreateTableAsSelectStmt(), context);
+        } else if (statement.getDataCacheSelectStmt() != null) {
+            visitDataCacheSelectStatement(statement.getDataCacheSelectStmt(), context);
         } else {
             visitInsertStatement(statement.getInsertStmt(), context);
         }
+        return null;
+    }
+
+    @Override
+    public Void visitDataCacheSelectStatement(DataCacheSelectStatement statement, ConnectContext context) {
+        // check we have permission access source data
+        visitQueryStatement(statement.getInsertStmt().getQueryStatement(), context);
         return null;
     }
 
@@ -1713,14 +1931,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitShowTabletStatement(ShowTabletStmt statement, ConnectContext context) {
-        try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
-        } catch (AccessDeniedException e) {
-            AccessDeniedException.reportAccessDenied(
-                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
-                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                    PrivilegeType.OPERATE.name(), ObjectType.SYSTEM.name(), null);
-        }
+        // Privilege is checked in execution logic, see `ShowExecutor#handleShowTablet()` for details.
         return null;
     }
 
@@ -1729,7 +1940,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminSetConfigStatement(AdminSetConfigStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1742,7 +1953,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminSetReplicaStatusStatement(AdminSetReplicaStatusStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1755,7 +1966,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminShowConfigStatement(AdminShowConfigStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1769,7 +1980,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitAdminShowReplicaDistributionStatement(AdminShowReplicaDistributionStmt statement,
                                                            ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1782,7 +1993,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminShowReplicaStatusStatement(AdminShowReplicaStatusStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1795,7 +2006,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminRepairTableStatement(AdminRepairTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1808,7 +2019,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminCancelRepairTableStatement(AdminCancelRepairTableStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1821,7 +2032,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAdminCheckTabletsStatement(AdminCheckTabletsStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1840,7 +2051,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterSystemStatement(AlterSystemStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.NODE);
+            Authorizer.checkSystemAction(context, PrivilegeType.NODE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1853,7 +2064,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCancelAlterSystemStatement(CancelAlterSystemStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.NODE);
+            Authorizer.checkSystemAction(context, PrivilegeType.NODE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1866,7 +2077,10 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowProcStmt(ShowProcStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            if (!SHOW_TABLET_DETAIL_CMD_PATTERN.matcher(statement.getPath()).matches()) {
+                Authorizer.checkSystemAction(context,
+                        PrivilegeType.OPERATE);
+            }
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1894,7 +2108,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     }
 
                     try {
-                        Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkSystemAction(context,
                                 PrivilegeType.GRANT);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -1907,7 +2121,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                 SetType type = ((SystemVariable) setVar).getType();
                 if (type != null && type.equals(SetType.GLOBAL)) {
                     try {
-                        Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkSystemAction(context,
                                 PrivilegeType.OPERATE);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -1921,11 +2135,24 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         return null;
     }
 
+    @Override
+    public Void visitCleanTemporaryTableStatement(CleanTemporaryTableStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.OPERATE.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
     // ---------------------------------------- restore & backup Statement --------------------------------
     @Override
     public Void visitExportStatement(ExportStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     statement.getTblName(), PrivilegeType.EXPORT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1938,19 +2165,15 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     @Override
     public Void visitCancelExportStatement(CancelExportStmt statement, ConnectContext context) {
-        ExportJob exportJob = null;
-        try {
-            exportJob = GlobalStateMgr.getCurrentState().getExportMgr().getExportJob(statement.getDbName(),
-                    statement.getQueryId());
-        } catch (AnalysisException e) {
-            ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_DB_ERROR, statement.getDbName());
-        }
+        ExportJob exportJob;
+        exportJob = GlobalStateMgr.getCurrentState().getExportMgr().getExportJob(statement.getDbName(),
+                statement.getQueryId());
         if (null == exportJob) {
             ErrorReport.reportSemanticException(ErrorCode.ERR_PRIVILEGE_EXPORT_JOB_NOT_FOUND,
                     statement.getQueryId().toString());
         }
         try {
-            Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkTableAction(context,
                     exportJob.getTableName().getDb(), exportJob.getTableName().getTbl(), PrivilegeType.EXPORT);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1971,7 +2194,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateRepositoryStatement(CreateRepositoryStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -1985,7 +2208,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropRepositoryStatement(DropRepositoryStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -1998,7 +2221,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowSnapshotStatement(ShowSnapshotStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2011,30 +2234,64 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitBackupStatement(BackupStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.REPOSITORY.name(), ObjectType.SYSTEM.name(), null);
         }
-        List<TableRef> tableRefs = statement.getTableRefs();
-        if (tableRefs.size() == 0) {
-            String dBName = statement.getDbName();
-            throw new SemanticException("Database: %s is empty", dBName);
-        }
-        tableRefs.forEach(tableRef -> {
-            TableName tableName = tableRef.getName();
-            try {
-                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), tableName,
-                        PrivilegeType.EXPORT);
-            } catch (AccessDeniedException e) {
-                AccessDeniedException.reportAccessDenied(
-                        tableName.getCatalog(),
-                        context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
-                        PrivilegeType.EXPORT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+        if (!statement.containsExternalCatalog()) {
+            List<TableRef> tableRefs = statement.getTableRefs();
+            List<FunctionRef> functionRefs = statement.getFnRefs();
+            if (tableRefs.isEmpty() && functionRefs.isEmpty()) {
+                String dBName = statement.getDbName();
+                throw new SemanticException("Database: %s is empty", dBName);
             }
-        });
+
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(statement.getDbName());
+            tableRefs.forEach(tableRef -> {
+                TableName tableName = tableRef.getName();
+                try {
+                    Authorizer.checkTableAction(context, tableName,
+                            PrivilegeType.EXPORT);
+                } catch (AccessDeniedException e) {
+                    AccessDeniedException.reportAccessDenied(
+                            tableName.getCatalog(),
+                            context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                            PrivilegeType.EXPORT.name(), ObjectType.TABLE.name(), tableName.getTbl());
+                }
+            });
+
+            functionRefs.forEach(functionRef -> {
+                List<Function> fns = functionRef.getFunctions();
+                for (Function fn : fns) {
+                    try {
+                        Authorizer.checkFunctionAction(context,
+                                db, fn, PrivilegeType.USAGE);
+                    } catch (AccessDeniedException e) {
+                        AccessDeniedException.reportAccessDenied(
+                                InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                                context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                                PrivilegeType.DROP.name(), ObjectType.FUNCTION.name(), fn.getSignature());
+                    }
+                }
+            });
+        } else {
+            List<CatalogRef> externalCatalogs = statement.getExternalCatalogRefs();
+            externalCatalogs.forEach(externalCatalog -> {
+                try {
+                    Authorizer.checkCatalogAction(context,
+                            externalCatalog.getCatalogName(), PrivilegeType.USAGE);
+                } catch (AccessDeniedException e) {
+                    AccessDeniedException.reportAccessDenied(
+                            externalCatalog.getCatalogName(),
+                            context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                            PrivilegeType.CREATE_DATABASE.name(), ObjectType.CATALOG.name(), externalCatalog.getCatalogName());
+                }
+            });
+        }
+
         return null;
     }
 
@@ -2042,7 +2299,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitShowBackupStatement(ShowBackupStmt statement, ConnectContext context) {
         // Step 1 check system.Repository
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2058,7 +2315,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCancelBackupStatement(CancelBackupStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2067,7 +2324,8 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         }
         AbstractJob job = null;
         try {
-            job = GlobalStateMgr.getCurrentState().getBackupHandler().getAbstractJobByDbName(statement.getDbName());
+            job = GlobalStateMgr.getCurrentState().getBackupHandler().getAbstractJob(statement.isExternalCatalog(),
+                                                                                     statement.getDbName());
         } catch (DdlException e) {
             ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_DB_ERROR, statement.getDbName());
         }
@@ -2080,7 +2338,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             tableRefs.forEach(tableRef -> {
                 TableName tableName = tableRef.getName();
                 try {
-                    Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), tableName,
+                    Authorizer.checkTableAction(context, tableName,
                             PrivilegeType.EXPORT);
                 } catch (AccessDeniedException e) {
                     AccessDeniedException.reportAccessDenied(
@@ -2098,7 +2356,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
         // check repository on system
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2106,11 +2364,24 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     PrivilegeType.REPOSITORY.name(), ObjectType.SYSTEM.name(), null);
         }
 
+        if (statement.containsExternalCatalog()) {
+            try {
+                Authorizer.checkSystemAction(context,
+                        PrivilegeType.CREATE_EXTERNAL_CATALOG);
+            } catch (AccessDeniedException e) {
+                AccessDeniedException.reportAccessDenied(
+                        InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                        context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        PrivilegeType.CREATE_EXTERNAL_CATALOG.name(), ObjectType.SYSTEM.name(), null);
+            }
+            return null;
+        }
+
         List<TableRef> tableRefs = statement.getTableRefs();
         // check create_database on current catalog if we're going to restore the whole database
-        if (tableRefs == null || tableRefs.isEmpty()) {
+        if (!statement.withOnClause()) {
             try {
-                Authorizer.checkCatalogAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkCatalogAction(context,
                         context.getCurrentCatalog(), PrivilegeType.CREATE_DATABASE);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -2120,13 +2391,14 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             }
         } else {
             // going to restore some tables in database or some partitions in table
-            Database db = globalStateMgr.getDb(statement.getDbName());
+            Database db = globalStateMgr.getLocalMetastore().getDb(statement.getDbName());
+            Locker locker = new Locker();
             if (db != null) {
                 try {
-                    db.readLock();
+                    locker.lockDatabase(db.getId(), LockType.READ);
                     // check create_table on specified database
                     try {
-                        Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkDbAction(context,
                                 context.getCurrentCatalog(), db.getFullName(), PrivilegeType.CREATE_TABLE);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -2136,10 +2408,11 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     }
                     // check insert on specified table
                     for (TableRef tableRef : tableRefs) {
-                        Table table = db.getTable(tableRef.getName().getTbl());
+                        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore()
+                                .getTable(db.getFullName(), tableRef.getName().getTbl());
                         if (table != null) {
                             try {
-                                Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                                Authorizer.checkTableAction(context,
                                         new TableName(statement.getDbName(), tableRef.getName().getTbl()), PrivilegeType.INSERT);
                             } catch (AccessDeniedException e) {
                                 AccessDeniedException.reportAccessDenied(
@@ -2151,7 +2424,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                         }
                     }
                 } finally {
-                    db.readUnlock();
+                    locker.unLockDatabase(db.getId(), LockType.READ);
                 }
             }
         }
@@ -2162,7 +2435,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitShowRestoreStatement(ShowRestoreStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.REPOSITORY);
+            Authorizer.checkSystemAction(context, PrivilegeType.REPOSITORY);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2177,10 +2450,18 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     public Void visitCreateMaterializedViewStatement(CreateMaterializedViewStatement statement,
                                                      ConnectContext context) {
         try {
-            Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkDbAction(context,
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     statement.getTableName().getDb(), PrivilegeType.CREATE_MATERIALIZED_VIEW);
             visitQueryStatement(statement.getQueryStatement(), context);
+
+            // check warehouse privilege
+            Map<String, String> properties = statement.getProperties();
+            if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_WAREHOUSE)) {
+                String warehouseName = properties.get(PropertyAnalyzer.PROPERTIES_WAREHOUSE);
+                checkWarehouseUsagePrivilege(warehouseName, context);
+            }
+
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
@@ -2193,7 +2474,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterMaterializedViewStatement(AlterMaterializedViewStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkMaterializedViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkMaterializedViewAction(context,
                     statement.getMvName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2207,7 +2488,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitRefreshMaterializedViewStatement(RefreshMaterializedViewStatement statement, ConnectContext context) {
         try {
-            Authorizer.checkMaterializedViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkMaterializedViewAction(context,
                     statement.getMvName(), PrivilegeType.REFRESH);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2221,7 +2502,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCancelRefreshMaterializedViewStatement(CancelRefreshMaterializedViewStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkMaterializedViewAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkMaterializedViewAction(context,
                     statement.getMvName(), PrivilegeType.REFRESH);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2253,7 +2534,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         FunctionName name = statement.getFunctionName();
         if (name.isGlobalFunction()) {
             try {
-                Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkSystemAction(context,
                         PrivilegeType.CREATE_GLOBAL_FUNCTION);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -2263,7 +2544,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             }
         } else {
             try {
-                Authorizer.checkDbAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkDbAction(context,
                         InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME, name.getDb(), PrivilegeType.CREATE_FUNCTION);
             } catch (AccessDeniedException e) {
                 AccessDeniedException.reportAccessDenied(
@@ -2290,7 +2571,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             Function function = GlobalStateMgr.getCurrentState().getGlobalFunctionMgr().getFunction(functionSearchDesc);
             if (function != null) {
                 try {
-                    Authorizer.checkGlobalFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    Authorizer.checkGlobalFunctionAction(context,
                             function, PrivilegeType.DROP);
                 } catch (AccessDeniedException e) {
                     AccessDeniedException.reportAccessDenied(
@@ -2303,14 +2584,15 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         }
 
         // db function.
-        Database db = GlobalStateMgr.getCurrentState().getDb(functionName.getDb());
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(functionName.getDb());
         if (db != null) {
+            Locker locker = new Locker();
             try {
-                db.readLock();
+                locker.lockDatabase(db.getId(), LockType.READ);
                 Function function = db.getFunction(statement.getFunctionSearchDesc());
                 if (null != function) {
                     try {
-                        Authorizer.checkFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkFunctionAction(context,
                                 db, function, PrivilegeType.DROP);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -2320,7 +2602,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                     }
                 }
             } finally {
-                db.readUnlock();
+                locker.unLockDatabase(db.getId(), LockType.READ);
             }
         }
         return null;
@@ -2330,7 +2612,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitCreateStorageVolumeStatement(CreateStorageVolumeStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkSystemAction(context,
                     PrivilegeType.CREATE_STORAGE_VOLUME);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2344,7 +2626,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitAlterStorageVolumeStatement(AlterStorageVolumeStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkStorageVolumeAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkStorageVolumeAction(context,
                     statement.getName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2358,7 +2640,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDropStorageVolumeStatement(DropStorageVolumeStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkStorageVolumeAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkStorageVolumeAction(context,
                     statement.getName(), PrivilegeType.DROP);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2372,7 +2654,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitDescStorageVolumeStatement(DescStorageVolumeStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkAnyActionOnStorageVolume(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkAnyActionOnStorageVolume(context,
                     statement.getName());
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2386,7 +2668,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
     @Override
     public Void visitSetDefaultStorageVolumeStatement(SetDefaultStorageVolumeStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkStorageVolumeAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkStorageVolumeAction(context,
                     statement.getName(), PrivilegeType.ALTER);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
@@ -2397,17 +2679,161 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
         return null;
     }
 
+    // -------------------------------------- Pipe Statement ---------------------------------------- //
+    @Override
+    public Void visitCreatePipeStatement(CreatePipeStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkDbAction(context,
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    statement.getPipeName().getDbName(), PrivilegeType.CREATE_PIPE);
+            visitInsertStatement(statement.getInsertStmt(), context);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.CREATE_PIPE.name(), ObjectType.DATABASE.name(), statement.getPipeName().getDbName());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitDropPipeStatement(DropPipeStmt statement, ConnectContext context) {
+        PipeName pipeName = statement.getPipeName();
+        try {
+            Authorizer.checkPipeAction(context,
+                    pipeName, PrivilegeType.DROP);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.DROP.name(), ObjectType.PIPE.name(), pipeName.toString());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitAlterPipeStatement(AlterPipeStmt statement, ConnectContext context) {
+        PipeName pipeName = statement.getPipeName();
+        try {
+            Authorizer.checkPipeAction(context, pipeName,
+                    PrivilegeType.ALTER);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ALTER.name(), ObjectType.PIPE.name(), pipeName.toString());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitDescPipeStatement(DescPipeStmt statement, ConnectContext context) {
+        PipeName pipeName = statement.getName();
+        try {
+            Authorizer.checkAnyActionOnPipe(context, pipeName);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(
+                    InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ANY.name(), ObjectType.PIPE.name(), pipeName.toString());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitShowPipeStatement(ShowPipeStmt statement, ConnectContext context) {
+        // show pipes with privilege, handled in ShowExecutor.handleShowPipes
+        return null;
+    }
+
     // --------------------------------- Compaction Statement ---------------------------------
 
     @Override
     public Void visitCancelCompactionStatement(CancelCompactionStmt statement, ConnectContext context) {
         try {
-            Authorizer.checkSystemAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(), PrivilegeType.OPERATE);
+            Authorizer.checkSystemAction(context, PrivilegeType.OPERATE);
         } catch (AccessDeniedException e) {
             AccessDeniedException.reportAccessDenied(
                     InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
                     context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     PrivilegeType.OPERATE.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    // --------------------------------- Warehouse Statement ---------------------------------
+    @Override
+    public Void visitCreateWarehouseStatement(CreateWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkSystemAction(context,
+                    PrivilegeType.CREATE_WAREHOUSE);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.CREATE_WAREHOUSE.name(), ObjectType.SYSTEM.name(), null);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitSuspendWarehouseStatement(SuspendWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, statement.getWarehouseName(), PrivilegeType.ALTER);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ALTER.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitResumeWarehouseStatement(ResumeWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, statement.getWarehouseName(), PrivilegeType.ALTER);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ALTER.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
+        }
+        return null;
+    }
+
+    public Void visitDropWarehouseStatement(DropWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, statement.getWarehouseName(), PrivilegeType.DROP);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.DROP.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
+        }
+        return null;
+    }
+
+    public Void visitSetWarehouseStatement(SetWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, statement.getWarehouseName(), PrivilegeType.USAGE);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.USAGE.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
+        }
+        return null;
+    }
+
+    public Void visitShowWarehousesStatement(ShowWarehousesStmt statement, ConnectContext context) {
+        // `show warehouses` only show warehouses that user has any privilege on, we will check it in
+        // the execution logic, not here, see `handleShowWarehouses()` for details.
+        return null;
+    }
+
+    public Void visitShowClusterStatement(ShowClustersStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkAnyActionOnWarehouse(context, statement.getWarehouseName());
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ANY.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
         }
         return null;
     }
@@ -2434,7 +2860,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
 
     private void checkOperateLoadPrivilege(ConnectContext context, String dbName, String label) {
         GlobalStateMgr globalStateMgr = context.getGlobalStateMgr();
-        Database db = globalStateMgr.getDb(dbName);
+        Database db = globalStateMgr.getLocalMetastore().getDb(dbName);
         if (db == null) {
             ErrorReport.reportSemanticException(ErrorCode.ERR_PRIVILEGE_DB_NOT_FOUND, dbName);
         }
@@ -2444,7 +2870,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
             try {
                 if (loadJob instanceof SparkLoadJob) {
                     try {
-                        Authorizer.checkResourceAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkResourceAction(context,
                                 loadJob.getResourceName(), PrivilegeType.USAGE);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -2455,7 +2881,7 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                 }
                 loadJob.getTableNames(true).forEach(tableName -> {
                     try {
-                        Authorizer.checkTableAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                        Authorizer.checkTableAction(context,
                                 dbName, tableName, PrivilegeType.INSERT);
                     } catch (AccessDeniedException e) {
                         AccessDeniedException.reportAccessDenied(
@@ -2468,5 +2894,27 @@ public class AuthorizerStmtVisitor extends AstVisitor<Void, ConnectContext> {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private void checkWarehouseUsagePrivilege(String warehouseName, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, warehouseName, PrivilegeType.USAGE);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.USAGE.name(), ObjectType.WAREHOUSE.name(), warehouseName);
+        }
+    }
+
+    @Override
+    public Void visitAlterWarehouseStatement(AlterWarehouseStmt statement, ConnectContext context) {
+        try {
+            Authorizer.checkWarehouseAction(context, statement.getWarehouseName(), PrivilegeType.ALTER);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME,
+                    context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                    PrivilegeType.ALTER.name(), ObjectType.WAREHOUSE.name(), statement.getWarehouseName());
+        }
+        return null;
     }
 }

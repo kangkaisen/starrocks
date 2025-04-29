@@ -15,8 +15,8 @@
 package com.starrocks.load.pipe.filelist;
 
 import com.starrocks.catalog.CatalogUtils;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.load.pipe.PipeFileRecord;
-import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.statistic.StatsConstants;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
@@ -63,7 +63,7 @@ public class FileListTableRepo extends FileListRepo {
                     "properties('replication_num' = '%d') ";
 
     protected static final String CORRECT_FILE_LIST_REPLICATION_NUM =
-            "ALTER TABLE %s SET ('replication_num'='3')";
+            "ALTER TABLE %s SET ('replication_num'='%d')";
 
     protected static final String ALL_COLUMNS =
             "`pipe_id`, `file_name`, `file_version`, `file_size`, `state`, `last_modified`, `staged_time`," +
@@ -73,6 +73,8 @@ public class FileListTableRepo extends FileListRepo {
             "SELECT " + ALL_COLUMNS + " FROM " + FILE_LIST_FULL_NAME;
 
     protected static final String SELECT_FILES_BY_STATE = SELECT_FILES + " WHERE `pipe_id` = %d AND `state` = %s";
+
+    protected static final String SELECT_FILES_BY_PATH = SELECT_FILES + " WHERE `pipe_id` = %d AND `file_name` = %s";
 
     protected static final String SELECT_FILES_BY_STATE_WITH_LIMIT =
             SELECT_FILES + " WHERE `pipe_id` = %d AND `state` = %s LIMIT %d";
@@ -100,6 +102,11 @@ public class FileListTableRepo extends FileListRepo {
     }
 
     @Override
+    public PipeFileRecord listFilesByPath(String path) {
+        return RepoAccessor.getInstance().listFilesByPath(pipeId.getId(), path);
+    }
+
+    @Override
     public void stageFiles(List<PipeFileRecord> records) {
         records.forEach(file -> file.pipeId = pipeId.getId());
 
@@ -108,7 +115,7 @@ public class FileListTableRepo extends FileListRepo {
             List<PipeFileRecord> stagedFiles = RepoAccessor.getInstance().selectStagedFiles(batch);
             List<PipeFileRecord> newFiles = ListUtils.subtract(batch, stagedFiles);
             if (CollectionUtils.isEmpty(newFiles)) {
-                return;
+                continue;
             }
             stagingFile.addAll(newFiles);
 
@@ -147,15 +154,14 @@ public class FileListTableRepo extends FileListRepo {
      */
     static class SQLBuilder {
 
-        public static String buildCreateTableSql() {
-            int replica = Math.min(3, GlobalStateMgr.getCurrentSystemInfo().getTotalBackendNumber());
+        public static String buildCreateTableSql(int replicationNum) throws StarRocksException {
             return String.format(FILE_LIST_TABLE_CREATE,
-                    CatalogUtils.normalizeTableName(FILE_LIST_DB_NAME, FILE_LIST_TABLE_NAME), replica);
+                    CatalogUtils.normalizeTableName(FILE_LIST_DB_NAME, FILE_LIST_TABLE_NAME), replicationNum);
         }
 
-        public static String buildAlterTableSql() {
+        public static String buildAlterTableSql(int replicationNum) {
             return String.format(CORRECT_FILE_LIST_REPLICATION_NUM,
-                    CatalogUtils.normalizeTableName(FILE_LIST_DB_NAME, FILE_LIST_TABLE_NAME));
+                    CatalogUtils.normalizeTableName(FILE_LIST_DB_NAME, FILE_LIST_TABLE_NAME), replicationNum);
         }
     }
 

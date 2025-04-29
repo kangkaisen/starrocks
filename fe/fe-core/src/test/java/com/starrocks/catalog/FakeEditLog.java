@@ -36,12 +36,15 @@ package com.starrocks.catalog;
 
 import com.starrocks.alter.AlterJobV2;
 import com.starrocks.alter.BatchAlterJobPersistInfo;
+import com.starrocks.backup.BackupJob;
 import com.starrocks.cluster.Cluster;
 import com.starrocks.persist.EditLog;
 import com.starrocks.persist.ModifyTablePropertyOperationLog;
+import com.starrocks.persist.ReplicaPersistInfo;
 import com.starrocks.persist.RoutineLoadOperation;
 import com.starrocks.system.Backend;
 import com.starrocks.transaction.TransactionState;
+import com.starrocks.transaction.TransactionStateBatch;
 import mockit.Mock;
 import mockit.MockUp;
 
@@ -59,6 +62,14 @@ public class FakeEditLog extends MockUp<EditLog> {
     @Mock
     public void logInsertTransactionState(TransactionState transactionState) {
         allTransactionState.put(transactionState.getTransactionId(), transactionState);
+    }
+
+    @Mock
+    public void logInsertTransactionStateBatch(TransactionStateBatch stateBatch) {
+        for (TransactionState transactionState : stateBatch.getTransactionStates()) {
+            allTransactionState.put(transactionState.getTransactionId(), transactionState);
+        }
+
     }
 
     @Mock
@@ -95,6 +106,15 @@ public class FakeEditLog extends MockUp<EditLog> {
     @Mock
     public void logDynamicPartition(ModifyTablePropertyOperationLog info) {
 
+    }
+
+    @Mock
+    public void logAddReplica(ReplicaPersistInfo info) {
+
+    }
+
+    @Mock
+    public void logBackupJob(BackupJob job) {
     }
 
     public TransactionState getTransaction(long transactionId) {

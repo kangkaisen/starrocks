@@ -54,7 +54,7 @@ namespace starrocks {
 class KVStoreTest : public testing::Test {
 public:
     void SetUp() override {
-        _root_path = "./ut_dir/kv_store_test";
+        _root_path = "./kv_store_test";
         fs::remove_all(_root_path);
         fs::create_directories(_root_path);
 
@@ -76,7 +76,7 @@ private:
 
 TEST_F(KVStoreTest, TestGetRootPath) {
     std::string root_path = _kv_store->get_root_path();
-    ASSERT_EQ("./ut_dir/kv_store_test", root_path);
+    ASSERT_EQ("./kv_store_test", root_path);
 }
 
 TEST_F(KVStoreTest, TestPutAndGet) {
@@ -125,6 +125,34 @@ TEST_F(KVStoreTest, TestIterate) {
                                   })
                         .ok());
     ASSERT_EQ(false, error_flag);
+}
+
+TEST_F(KVStoreTest, TestOpDeleteRange) {
+    // insert 10 keys
+    for (int i = 0; i < 10; i++) {
+        std::string key = fmt::format("key_{:016x}", i);
+        std::string value = fmt::format("val_{:016x}", i);
+        ASSERT_TRUE(_kv_store->put(META_COLUMN_FAMILY_INDEX, key, value).ok());
+    }
+    for (int i = 0; i < 10; i++) {
+        std::string key = fmt::format("key_{:016x}", i);
+        std::string value_get;
+        ASSERT_TRUE(_kv_store->get(META_COLUMN_FAMILY_INDEX, key, &value_get).ok());
+        ASSERT_TRUE(value_get == fmt::format("val_{:016x}", i));
+    }
+    // delete range from 0 ~ 9
+    rocksdb::WriteBatch wb;
+    ASSERT_TRUE(_kv_store
+                        ->OptDeleteRange(META_COLUMN_FAMILY_INDEX, fmt::format("key_{:016x}", 0),
+                                         fmt::format("key_{:016x}", 10), &wb)
+                        .ok());
+    ASSERT_TRUE(_kv_store->write_batch(&wb).ok());
+    // check result
+    for (int i = 0; i < 10; i++) {
+        std::string key = fmt::format("key_{:016x}", i);
+        std::string value_get;
+        ASSERT_TRUE(_kv_store->get(META_COLUMN_FAMILY_INDEX, key, &value_get).is_not_found());
+    }
 }
 
 } // namespace starrocks

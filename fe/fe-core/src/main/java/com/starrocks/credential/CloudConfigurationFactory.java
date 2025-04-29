@@ -15,15 +15,18 @@
 package com.starrocks.credential;
 
 import com.google.common.collect.ImmutableList;
+import com.starrocks.connector.share.credential.CloudConfigurationConstants;
 import com.starrocks.credential.aliyun.AliyunCloudConfigurationProvider;
-import com.starrocks.credential.aws.AWSCloudConfigurationProvider;
-import com.starrocks.credential.aws.AWSCloudCredential;
+import com.starrocks.credential.aws.AwsCloudConfigurationProvider;
+import com.starrocks.credential.aws.AwsCloudCredential;
 import com.starrocks.credential.azure.AzureCloudConfigurationProvider;
 import com.starrocks.credential.gcp.GCPCloudConfigurationProvoder;
 import com.starrocks.credential.hdfs.HDFSCloudConfigurationProvider;
+import com.starrocks.credential.hdfs.StrictHDFSCloudConfigurationProvider;
 import com.starrocks.credential.tencent.TencentCloudConfigurationProvider;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.iceberg.aws.AwsProperties;
+import org.apache.iceberg.aws.AwsClientProperties;
+import org.apache.iceberg.aws.s3.S3FileIOProperties;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -31,21 +34,34 @@ import java.util.Map;
 public class CloudConfigurationFactory {
 
     static ImmutableList<CloudConfigurationProvider> cloudConfigurationFactoryChain = ImmutableList.of(
-            new AWSCloudConfigurationProvider(),
+            new AwsCloudConfigurationProvider(),
             new AzureCloudConfigurationProvider(),
             new GCPCloudConfigurationProvoder(),
             new AliyunCloudConfigurationProvider(),
             new TencentCloudConfigurationProvider(),
             new HDFSCloudConfigurationProvider(),
-            new CloudConfigurationProvider() {
-                @Override
-                public CloudConfiguration build(Map<String, String> properties) {
-                    return new CloudConfiguration();
-                }
-            });
+            (Map<String, String> properties) -> new CloudConfiguration());
+
+    static ImmutableList<CloudConfigurationProvider> strictCloudConfigurationFactoryChain = ImmutableList.of(
+            new AwsCloudConfigurationProvider(),
+            new AzureCloudConfigurationProvider(),
+            new GCPCloudConfigurationProvoder(),
+            new AliyunCloudConfigurationProvider(),
+            new TencentCloudConfigurationProvider(),
+            new HDFSCloudConfigurationProvider(),
+            new StrictHDFSCloudConfigurationProvider(),
+            (Map<String, String> properties) -> new CloudConfiguration());
 
     public static CloudConfiguration buildCloudConfigurationForStorage(Map<String, String> properties) {
-        for (CloudConfigurationProvider factory : cloudConfigurationFactoryChain) {
+        return buildCloudConfigurationForStorage(properties, false);
+    }
+
+    public static CloudConfiguration buildCloudConfigurationForStorage(Map<String, String> properties, boolean strictMode) {
+        ImmutableList<CloudConfigurationProvider> factories = cloudConfigurationFactoryChain;
+        if (strictMode) {
+            factories = strictCloudConfigurationFactoryChain;
+        }
+        for (CloudConfigurationProvider factory : factories) {
             CloudConfiguration cloudConfiguration = factory.build(properties);
             if (cloudConfiguration != null) {
                 cloudConfiguration.loadCommonFields(properties);
@@ -56,10 +72,10 @@ public class CloudConfigurationFactory {
         return null;
     }
 
-    public static AWSCloudCredential buildGlueCloudCredential(HiveConf hiveConf) {
+    public static AwsCloudCredential buildGlueCloudCredential(HiveConf hiveConf) {
         for (CloudConfigurationProvider factory : cloudConfigurationFactoryChain) {
-            if (factory instanceof AWSCloudConfigurationProvider) {
-                AWSCloudConfigurationProvider provider = ((AWSCloudConfigurationProvider) factory);
+            if (factory instanceof AwsCloudConfigurationProvider) {
+                AwsCloudConfigurationProvider provider = ((AwsCloudConfigurationProvider) factory);
                 return provider.buildGlueCloudCredential(hiveConf);
             }
         }
@@ -67,17 +83,30 @@ public class CloudConfigurationFactory {
         return null;
     }
 
-    public static CloudConfiguration buildCloudConfigurationForTabular(Map<String, String> properties) {
+    public static CloudConfiguration buildCloudConfigurationForVendedCredentials(Map<String, String> properties) {
         Map<String, String> copiedProperties = new HashMap<>();
-        String sessionAk = properties.getOrDefault(AwsProperties.S3FILEIO_ACCESS_KEY_ID, null);
-        String sessionSk = properties.getOrDefault(AwsProperties.S3FILEIO_SECRET_ACCESS_KEY, null);
-        String sessionToken = properties.getOrDefault(AwsProperties.S3FILEIO_SESSION_TOKEN, null);
-        String region = properties.getOrDefault(AwsProperties.CLIENT_REGION, null);
-        if (sessionAk != null && sessionSk != null && sessionToken != null && region != null) {
+        String sessionAk = properties.getOrDefault(S3FileIOProperties.ACCESS_KEY_ID, null);
+        String sessionSk = properties.getOrDefault(S3FileIOProperties.SECRET_ACCESS_KEY, null);
+        String sessionToken = properties.getOrDefault(S3FileIOProperties.SESSION_TOKEN, null);
+        String region = properties.getOrDefault(AwsClientProperties.CLIENT_REGION,
+                properties.getOrDefault(CloudConfigurationConstants.AWS_S3_REGION, null));
+        String enablePathStyle = properties.getOrDefault(S3FileIOProperties.PATH_STYLE_ACCESS,
+                properties.getOrDefault(CloudConfigurationConstants.AWS_S3_ENABLE_PATH_STYLE_ACCESS, null));
+        String endpoint = properties.getOrDefault(S3FileIOProperties.ENDPOINT,
+                properties.getOrDefault(CloudConfigurationConstants.AWS_S3_ENDPOINT, null));
+        if (sessionAk != null && sessionSk != null && sessionToken != null) {
             copiedProperties.put(CloudConfigurationConstants.AWS_S3_ACCESS_KEY, sessionAk);
             copiedProperties.put(CloudConfigurationConstants.AWS_S3_SECRET_KEY, sessionSk);
             copiedProperties.put(CloudConfigurationConstants.AWS_S3_SESSION_TOKEN, sessionToken);
-            copiedProperties.put(CloudConfigurationConstants.AWS_S3_REGION, region);
+            if (region != null) {
+                copiedProperties.put(CloudConfigurationConstants.AWS_S3_REGION, region);
+            }
+            if (endpoint != null) {
+                copiedProperties.put(CloudConfigurationConstants.AWS_S3_ENDPOINT, endpoint);
+            }
+            if (enablePathStyle != null) {
+                copiedProperties.put(CloudConfigurationConstants.AWS_S3_ENABLE_PATH_STYLE_ACCESS, enablePathStyle);
+            }
         }
         return buildCloudConfigurationForStorage(copiedProperties);
     }

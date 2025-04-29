@@ -15,7 +15,7 @@
 package com.starrocks.qe.scheduler;
 
 import com.starrocks.common.Reference;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.proto.PCancelPlanFragmentRequest;
 import com.starrocks.proto.PCancelPlanFragmentResult;
 import com.starrocks.proto.PFetchDataResult;
@@ -24,6 +24,7 @@ import com.starrocks.proto.StatusPB;
 import com.starrocks.qe.DefaultCoordinator;
 import com.starrocks.qe.RowBatch;
 import com.starrocks.qe.SimpleScheduler;
+import com.starrocks.rpc.ConfigurableSerDesFactory;
 import com.starrocks.rpc.PFetchDataRequest;
 import com.starrocks.rpc.RpcException;
 import com.starrocks.thrift.FrontendServiceVersion;
@@ -115,9 +116,9 @@ public class GetNextTest extends SchedulerTestBase {
             }
         });
 
-        SimpleScheduler.removeFromBlacklist(BACKEND1_ID);
-        SimpleScheduler.removeFromBlacklist(backend2.getId());
-        SimpleScheduler.removeFromBlacklist(backend3.getId());
+        SimpleScheduler.removeFromBlocklist(BACKEND1_ID);
+        SimpleScheduler.removeFromBlocklist(backend2.getId());
+        SimpleScheduler.removeFromBlocklist(backend3.getId());
 
         String sql = "select count(1) from lineitem";
         DefaultCoordinator scheduler = startScheduling(sql);
@@ -159,16 +160,16 @@ public class GetNextTest extends SchedulerTestBase {
             }
         });
 
-        SimpleScheduler.removeFromBlacklist(BACKEND1_ID);
-        SimpleScheduler.removeFromBlacklist(backend2.getId());
-        SimpleScheduler.removeFromBlacklist(backend3.getId());
+        SimpleScheduler.removeFromBlocklist(BACKEND1_ID);
+        SimpleScheduler.removeFromBlocklist(backend2.getId());
+        SimpleScheduler.removeFromBlocklist(backend3.getId());
 
         String sql = "select count(1) from lineitem";
         DefaultCoordinator scheduler;
 
         fetchDataResultStatusCode.setRef(TStatusCode.INTERNAL_ERROR);
         scheduler = startScheduling(sql);
-        Assert.assertThrows("Internal_error", UserException.class, scheduler::getNext);
+        Assert.assertThrows("Internal_error", StarRocksException.class, scheduler::getNext);
 
         fetchDataResultStatusCode.setRef(TStatusCode.THRIFT_RPC_ERROR);
         scheduler = startScheduling(sql);
@@ -245,9 +246,9 @@ public class GetNextTest extends SchedulerTestBase {
         String sql = "select count(1) from lineitem";
         DefaultCoordinator scheduler = startScheduling(sql);
 
-        scheduler.cancel();
+        scheduler.cancel("Cancelled");
 
-        Assert.assertThrows("Cancelled", UserException.class, scheduler::getNext);
+        Assert.assertThrows("Cancelled", StarRocksException.class, scheduler::getNext);
 
         Assert.assertFalse(scheduler.isDone());
         Assert.assertTrue(scheduler.getExecStatus().isCancelled());
@@ -292,7 +293,7 @@ public class GetNextTest extends SchedulerTestBase {
         }
         TResultBatch resultBatch = new TResultBatch(rows, false, 0);
 
-        TSerializer serializer = new TSerializer();
+        TSerializer serializer = ConfigurableSerDesFactory.getTSerializer();
         return serializer.serialize(resultBatch);
     }
 

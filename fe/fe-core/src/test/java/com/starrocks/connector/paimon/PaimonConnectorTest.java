@@ -20,12 +20,13 @@ import com.starrocks.catalog.ScalarType;
 import com.starrocks.connector.ConnectorContext;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.qe.ConnectContext;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.table.AbstractFileStoreTable;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.IntType;
 import org.junit.Assert;
@@ -75,8 +76,17 @@ public class PaimonConnectorTest {
     }
 
     @Test
+    public void testCreateDLFPaimonConnector() {
+        Map<String, String> properties = new HashMap<>();
+        properties.put("paimon.catalog.type", "dlf");
+        properties.put("dlf.catalog.id", "dlf_test");
+
+        new PaimonConnector(new ConnectorContext("paimon_catalog", "paimon", properties));
+    }
+
+    @Test
     public void testCreatePaimonTable(@Mocked Catalog paimonNativeCatalog,
-                                      @Mocked AbstractFileStoreTable paimonNativeTable) throws Catalog.TableNotExistException {
+                                      @Mocked FileStoreTable paimonNativeTable) throws Catalog.TableNotExistException {
         Map<String, String> properties = new HashMap<>();
         properties.put("paimon.catalog.warehouse", "hdfs://127.0.0.1:9999/warehouse");
         properties.put("paimon.catalog.type", "filesystem");
@@ -100,10 +110,10 @@ public class PaimonConnectorTest {
 
         ConnectorMetadata metadata = connector.getMetadata();
         Assert.assertTrue(metadata instanceof PaimonMetadata);
-        com.starrocks.catalog.Table table = metadata.getTable("db1", "tbl1");
+        com.starrocks.catalog.Table table = metadata.getTable(new ConnectContext(), "db1", "tbl1");
         PaimonTable paimonTable = (PaimonTable) table;
-        Assert.assertEquals("db1", paimonTable.getDbName());
-        Assert.assertEquals("tbl1", paimonTable.getTableName());
+        Assert.assertEquals("db1", paimonTable.getCatalogDBName());
+        Assert.assertEquals("tbl1", paimonTable.getCatalogTableName());
         Assert.assertEquals(Lists.newArrayList("col1"), paimonTable.getPartitionColumnNames());
         Assert.assertEquals("hdfs://127.0.0.1:10000/paimon", paimonTable.getTableLocation());
         Assert.assertEquals(ScalarType.INT, paimonTable.getBaseSchema().get(0).getType());
@@ -126,6 +136,27 @@ public class PaimonConnectorTest {
         String accessKeyOption = paimonOptions.get("s3.access-key");
         String secretKeyOption = paimonOptions.get("s3.secret-key");
         String endpointOption = paimonOptions.get("s3.endpoint");
+        Assert.assertEquals(accessKeyOption, accessKeyValue);
+        Assert.assertEquals(secretKeyOption, secretKeyValue);
+        Assert.assertEquals(endpointOption, endpointValue);
+    }
+
+    @Test
+    public void testCreatePaimonConnectorWithOSS() {
+        Map<String, String> properties = new HashMap<>();
+        properties.put("paimon.catalog.warehouse", "oss://bucket/warehouse");
+        properties.put("paimon.catalog.type", "filesystem");
+        String accessKeyValue = "oss_access_key";
+        String secretKeyValue = "oss_secret_key";
+        String endpointValue = "oss_endpoint";
+        properties.put("aliyun.oss.access_key", accessKeyValue);
+        properties.put("aliyun.oss.secret_key", secretKeyValue);
+        properties.put("aliyun.oss.endpoint", endpointValue);
+        PaimonConnector connector = new PaimonConnector(new ConnectorContext("paimon_catalog", "paimon", properties));
+        Options paimonOptions = connector.getPaimonOptions();
+        String accessKeyOption = paimonOptions.get("fs.oss.accessKeyId");
+        String secretKeyOption = paimonOptions.get("fs.oss.accessKeySecret");
+        String endpointOption = paimonOptions.get("fs.oss.endpoint");
         Assert.assertEquals(accessKeyOption, accessKeyValue);
         Assert.assertEquals(secretKeyOption, secretKeyValue);
         Assert.assertEquals(endpointOption, endpointValue);

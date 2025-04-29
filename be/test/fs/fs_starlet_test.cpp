@@ -71,7 +71,6 @@ public:
 
         // cache settings
         shard_info.cache_info.set_enable_cache(false);
-        shard_info.cache_info.set_ttl_seconds(10);
         shard_info.cache_info.set_async_write_back(false);
 
         shard_info.properties["storageGroup"] = "10010";
@@ -163,6 +162,7 @@ TEST_P(StarletFileSystemTest, test_write_and_read) {
     EXPECT_EQ("hello world!", std::string_view(buf, nr));
 
     ASSIGN_OR_ABORT(nr, rf->read_at(3, buf, sizeof(buf)));
+    EXPECT_OK(rf->touch_cache(0 /* offset */, sizeof("hello world!")));
     EXPECT_EQ("lo world!", std::string_view(buf, nr));
 
     EXPECT_OK(fs->delete_file(uri));
@@ -389,14 +389,13 @@ TEST_P(StarletFileSystemTest, test_delete_files) {
 
     // cache settings
     shard_info.cache_info.set_enable_cache(false);
-    shard_info.cache_info.set_ttl_seconds(10);
     shard_info.cache_info.set_async_write_back(false);
 
     (void)g_worker->add_shard(shard_info);
 
     auto uri3 = build_starlet_uri(shard_info.id, "/f1");
     paths.emplace_back(uri3);
-    EXPECT_ERROR(fs->delete_files(paths));
+    EXPECT_OK(fs->delete_files(paths));
     (void)g_worker->remove_shard(shard_info.id);
 }
 

@@ -36,7 +36,7 @@ import com.starrocks.common.InternalErrorCode;
 import com.starrocks.common.LoadException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LogBuilder;
@@ -44,6 +44,8 @@ import com.starrocks.common.util.LogKey;
 import com.starrocks.common.util.PulsarUtil;
 import com.starrocks.common.util.SmallFileMgr;
 import com.starrocks.common.util.SmallFileMgr.SmallFile;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.load.Load;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
@@ -52,7 +54,6 @@ import com.starrocks.system.ComputeNode;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TransactionStatus;
-import com.starrocks.warehouse.Warehouse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -88,7 +89,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     // pulsar properties, property prefix will be mapped to pulsar custom parameters, which can be extended in the future
     @SerializedName("cpt")
     private Map<String, String> customProperties = Maps.newHashMap();
-    private Map<String, String> convertedCustomProperties = Maps.newHashMap();
+    private final Map<String, String> convertedCustomProperties = Maps.newHashMap();
 
     public static final String POSITION_EARLIEST = "POSITION_EARLIEST"; // 1
     public static final String POSITION_LATEST = "POSITION_LATEST"; // 0
@@ -100,6 +101,8 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     public PulsarRoutineLoadJob() {
         // for serialization, id is dummy
         super(-1, LoadDataSourceType.PULSAR);
+        this.progress = new PulsarProgress();
+        this.timestampProgress = new PulsarProgress();
     }
 
     public PulsarRoutineLoadJob(Long id, String name, long dbId, long tableId,
@@ -109,6 +112,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
         this.topic = topic;
         this.subscription = subscription;
         this.progress = new PulsarProgress();
+        this.timestampProgress = new PulsarProgress();
     }
 
     public String getTopic() {
@@ -128,7 +132,19 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     }
 
     @Override
-    public void prepare() throws UserException {
+    protected String getSourceProgressString() {
+        // empty implement.
+        return "";
+    }
+
+    @Override
+    protected String getSourceLagString(String progressJsonStr) {
+        // empty implement.
+        return "";
+    }
+
+    @Override
+    public void prepare() throws StarRocksException {
         super.prepare();
         // should reset converted properties each time the job being prepared.
         // because the file info can be changed anytime.
@@ -171,7 +187,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     }
 
     @Override
-    public void divideRoutineLoadJob(int currentConcurrentTaskNum) throws UserException {
+    public void divideRoutineLoadJob(int currentConcurrentTaskNum) throws StarRocksException {
         List<RoutineLoadTaskInfo> result = new ArrayList<>();
         writeLock();
         try {
@@ -192,9 +208,10 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
                         }
                     }
                     long timeToExecuteMs = System.currentTimeMillis() + taskSchedIntervalS * 1000;
-                    PulsarTaskInfo pulsarTaskInfo = new PulsarTaskInfo(UUID.randomUUID(), id,
+                    PulsarTaskInfo pulsarTaskInfo = new PulsarTaskInfo(UUID.randomUUID(), this,
                             taskSchedIntervalS * 1000, timeToExecuteMs, partitions,
                             initialPositions, getTaskTimeoutSecond() * 1000);
+                    pulsarTaskInfo.setWarehouseId(warehouseId);
                     LOG.debug("pulsar routine load task created: " + pulsarTaskInfo);
                     routineLoadTaskInfoList.add(pulsarTaskInfo);
                     result.add(pulsarTaskInfo);
@@ -215,14 +232,14 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
 
     @Override
     public int calculateCurrentConcurrentTaskNum() throws MetaNotFoundException {
-        SystemInfoService systemInfoService = GlobalStateMgr.getCurrentSystemInfo();
+        SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
         // TODO: need to refactor after be split into cn + dn
         int aliveNodeNum = systemInfoService.getAliveBackendNumber();
-        if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
-            Warehouse warehouse = GlobalStateMgr.getCurrentWarehouseMgr().getDefaultWarehouse();
+        if (RunMode.isSharedDataMode()) {
             aliveNodeNum = 0;
-            for (long nodeId : warehouse.getAnyAvailableCluster().getComputeNodeIds()) {
-                ComputeNode node = GlobalStateMgr.getCurrentSystemInfo().getBackendOrComputeNode(nodeId);
+            List<Long> computeNodeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouseId);
+            for (long nodeId : computeNodeIds) {
+                ComputeNode node = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(nodeId);
                 if (node != null && node.isAlive()) {
                     ++aliveNodeNum;
                 }
@@ -245,19 +262,19 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     @Override
     protected boolean checkCommitInfo(RLTaskTxnCommitAttachment rlTaskTxnCommitAttachment,
                                       TransactionState txnState,
-                                      TransactionState.TxnStatusChangeReason txnStatusChangeReason) {
+                                      TxnStatusChangeReason txnStatusChangeReason) {
         if (txnState.getTransactionStatus() == TransactionStatus.COMMITTED) {
             // For committed txn, update the progress.
             return true;
         }
 
-        // For compatible reason, the default behavior of empty load is still returning "all partitions have no load data" and abort transaction.
+        // For compatible reason, the default behavior of empty load is still returning
+        // "No partitions have data available for loading" and abort transaction.
         // In this situation, we also need update commit info.
-        if (txnStatusChangeReason != null &&
-                txnStatusChangeReason == TransactionState.TxnStatusChangeReason.NO_PARTITIONS) {
+        if (txnStatusChangeReason == TxnStatusChangeReason.NO_PARTITIONS) {
             // Because the max_filter_ratio of routine load task is always 1.
             // Therefore, under normal circumstances, routine load task will not return the error "too many filtered rows".
-            // If no data is imported, the error "all partitions have no load data" may only be returned.
+            // If no data is imported, the error "No partitions have data available for loading" may only be returned.
             // In this case, the status of the transaction is ABORTED,
             // but we still need to update the position to skip these error lines.
             Preconditions.checkState(txnState.getTransactionStatus() == TransactionStatus.ABORTED,
@@ -280,15 +297,16 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     }
 
     @Override
-    protected void updateProgress(RLTaskTxnCommitAttachment attachment) throws UserException {
+    protected void updateProgress(RLTaskTxnCommitAttachment attachment) throws StarRocksException {
         super.updateProgress(attachment);
-        this.progress.update(attachment);
+        this.progress.update(attachment.getProgress());
+        this.timestampProgress.update(attachment.getTimestampProgress());
     }
 
     @Override
     protected void replayUpdateProgress(RLTaskTxnCommitAttachment attachment) {
         super.replayUpdateProgress(attachment);
-        this.progress.update(attachment);
+        this.progress.update(attachment.getProgress());
     }
 
     @Override
@@ -297,6 +315,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
         // add new task
         PulsarTaskInfo pulsarTaskInfo = new PulsarTaskInfo(timeToExecuteMs, oldPulsarTaskInfo,
                 ((PulsarProgress) progress).getPartitionToInitialPosition(oldPulsarTaskInfo.getPartitions()));
+        pulsarTaskInfo.setWarehouseId(routineLoadTaskInfo.getWarehouseId());
         // remove old task
         routineLoadTaskInfoList.remove(routineLoadTaskInfo);
         // add new task
@@ -316,7 +335,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     // update current pulsar partition at the same time
     // current pulsar partitions = customPulsarPartitions == 0 ? all of partition of pulsar topic : customPulsarPartitions
     @Override
-    protected boolean unprotectNeedReschedule() throws UserException {
+    protected boolean unprotectNeedReschedule() throws StarRocksException {
         // only running and need_schedule job need to be changed current pulsar partitions
         if (this.state == JobState.RUNNING || this.state == JobState.NEED_SCHEDULE) {
             if (customPulsarPartitions != null && customPulsarPartitions.size() != 0) {
@@ -377,44 +396,45 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     @Override
     protected String getStatistic() {
         Map<String, Object> summary = Maps.newHashMap();
-        summary.put("totalRows", Long.valueOf(totalRows));
-        summary.put("loadedRows", Long.valueOf(totalRows - errorRows - unselectedRows));
-        summary.put("errorRows", Long.valueOf(errorRows));
-        summary.put("unselectedRows", Long.valueOf(unselectedRows));
-        summary.put("receivedBytes", Long.valueOf(receivedBytes));
-        summary.put("taskExecuteTimeMs", Long.valueOf(totalTaskExcutionTimeMs));
-        summary.put("receivedBytesRate", Long.valueOf(receivedBytes / totalTaskExcutionTimeMs * 1000));
+        summary.put("totalRows", totalRows);
+        summary.put("loadedRows", totalRows - errorRows - unselectedRows);
+        summary.put("errorRows", errorRows);
+        summary.put("unselectedRows", unselectedRows);
+        summary.put("receivedBytes", receivedBytes);
+        summary.put("taskExecuteTimeMs", totalTaskExcutionTimeMs);
+        summary.put("receivedBytesRate", receivedBytes * 1000 / totalTaskExcutionTimeMs);
         summary.put("loadRowsRate",
-                Long.valueOf((totalRows - errorRows - unselectedRows) / totalTaskExcutionTimeMs * 1000));
-        summary.put("committedTaskNum", Long.valueOf(committedTaskNum));
-        summary.put("abortedTaskNum", Long.valueOf(abortedTaskNum));
+                (totalRows - errorRows - unselectedRows) * 1000 / totalTaskExcutionTimeMs);
+        summary.put("committedTaskNum", committedTaskNum);
+        summary.put("abortedTaskNum", abortedTaskNum);
         Gson gson = new GsonBuilder().disableHtmlEscaping().create();
         return gson.toJson(summary);
     }
 
-    private List<String> getAllPulsarPartitions() throws UserException {
+    private List<String> getAllPulsarPartitions() throws StarRocksException {
         // Get custom properties like tokens
         convertCustomProperties(false);
         return PulsarUtil.getAllPulsarPartitions(serviceUrl, topic,
-                subscription, ImmutableMap.copyOf(convertedCustomProperties));
+                subscription, ImmutableMap.copyOf(convertedCustomProperties), warehouseId);
     }
 
-    public static PulsarRoutineLoadJob fromCreateStmt(CreateRoutineLoadStmt stmt) throws UserException {
+    public static PulsarRoutineLoadJob fromCreateStmt(CreateRoutineLoadStmt stmt) throws StarRocksException {
         // check db and table
-        Database db = GlobalStateMgr.getCurrentState().getDb(stmt.getDBName());
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(stmt.getDBName());
         if (db == null) {
             ErrorReport.reportDdlException(ErrorCode.ERR_BAD_DB_ERROR, stmt.getDBName());
         }
 
         long tableId = -1L;
-        db.readLock();
+        Locker locker = new Locker();
+        locker.lockDatabase(db.getId(), LockType.READ);
         try {
             unprotectedCheckMeta(db, stmt.getTableName(), stmt.getRoutineLoadDesc());
-            Table table = db.getTable(stmt.getTableName());
+            Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), stmt.getTableName());
             Load.checkMergeCondition(stmt.getMergeConditionStr(), (OlapTable) table, table.getFullSchema(), false);
             tableId = table.getId();
         } finally {
-            db.readUnlock();
+            locker.unLockDatabase(db.getId(), LockType.READ);
         }
 
         // init pulsar routine load job
@@ -429,7 +449,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
         return pulsarRoutineLoadJob;
     }
 
-    private void checkCustomPartition() throws UserException {
+    private void checkCustomPartition() throws StarRocksException {
         if (customPulsarPartitions.isEmpty()) {
             return;
         }
@@ -457,7 +477,7 @@ public class PulsarRoutineLoadJob extends RoutineLoadJob {
     }
 
     @Override
-    protected void setOptional(CreateRoutineLoadStmt stmt) throws UserException {
+    protected void setOptional(CreateRoutineLoadStmt stmt) throws StarRocksException {
         super.setOptional(stmt);
 
         if (!stmt.getPulsarPartitions().isEmpty()) {

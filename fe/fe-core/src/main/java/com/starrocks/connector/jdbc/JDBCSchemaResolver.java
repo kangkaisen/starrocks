@@ -22,6 +22,7 @@ import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.SchemaConstants;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 
 import java.sql.Connection;
@@ -32,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 
 public abstract class JDBCSchemaResolver {
+
+    boolean supportPartitionInformation = false;
 
     public Collection<String> listSchemas(Connection connection) {
         try (ResultSet resultSet = connection.getMetaData().getSchemas()) {
@@ -87,8 +90,17 @@ public abstract class JDBCSchemaResolver {
                     columnSet.getString("TYPE_NAME"),
                     columnSet.getInt("COLUMN_SIZE"),
                     columnSet.getInt("DECIMAL_DIGITS"));
+
+            String comment = "";
+            // Add try-cache to prevent exceptions when the metadata of some databases does not contain REMARKS
+            try {
+                if (columnSet.getString("REMARKS") != null) {
+                    comment = columnSet.getString("REMARKS");
+                }
+            } catch (SQLException ignored) { }
+
             fullSchema.add(new Column(columnSet.getString("COLUMN_NAME"), type,
-                    columnSet.getString("IS_NULLABLE").equals("YES")));
+                    columnSet.getString("IS_NULLABLE").equals(SchemaConstants.YES), comment));
         }
         return fullSchema;
     }
@@ -96,4 +108,14 @@ public abstract class JDBCSchemaResolver {
     public Type convertColumnType(int dataType, String typeName, int columnSize, int digits) throws SQLException {
         throw new SQLException("should not arrival here");
     }
+
+    public boolean checkAndSetSupportPartitionInformation(Connection connection) {
+        return false;
+
+    }
+
+    public boolean isSupportPartitionInformation() {
+        return supportPartitionInformation;
+    }
+
 }

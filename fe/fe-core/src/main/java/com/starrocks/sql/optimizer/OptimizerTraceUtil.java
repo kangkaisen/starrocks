@@ -46,8 +46,69 @@ public class OptimizerTraceUtil {
                                     String format, Object... object) {
         Tracers.log(Tracers.Module.MV, input -> {
             String str = MessageFormatter.arrayFormat(format, object).getMessage();
-            Object[] args = new Object[] {ctx.getQueryId(), mv == null ? "GLOBAL" : mv.getName(), str};
-            return MessageFormatter.arrayFormat("[MV TRACE] [PREPARE {}][{}] {}", args).getMessage();
+            Object[] args = new Object[] {mv == null ? "GLOBAL" : mv.getName(), str};
+            return MessageFormatter.arrayFormat("[MV TRACE] [PREPARE {}] {}", args).getMessage();
+        });
+    }
+
+    public static void logMVPrepare(String format, Object... object) {
+        Tracers.log(Tracers.Module.MV, input -> {
+            String str = MessageFormatter.arrayFormat(format, object).getMessage();
+            Object[] args = new Object[] {"GLOBAL", str};
+            return MessageFormatter.arrayFormat("[MV TRACE] [PREPARE {}] {}", args).getMessage();
+        });
+    }
+
+    public static void logMVPrepare(MaterializedView mv,
+                                    String format, Object... object) {
+        Tracers.log(Tracers.Module.MV, input -> {
+            String str = MessageFormatter.arrayFormat(format, object).getMessage();
+            Object[] args = new Object[] {mv == null ? "GLOBAL" : mv.getName(), str};
+            return MessageFormatter.arrayFormat("[MV TRACE] [PREPARE {}] {}", args).getMessage();
+        });
+    }
+
+    public static void logMVRewrite(String mvName, String format, Object... objects) {
+        Tracers.log(Tracers.Module.MV, input -> {
+            String str = MessageFormatter.arrayFormat(format, objects).getMessage();
+            return MessageFormatter.format("[MV TRACE] [REWRITE {}] {}", mvName, str).getMessage();
+        });
+    }
+
+    /**
+     * NOTE: Carefully use it, because the log would be print into the query profile, to help understanding why a
+     * materialized view is not chose to rewrite the query.
+     *
+     * Used for mv preprocessor log, the log would be print into the query profile.
+     */
+    public static void logMVRewriteFailReason(String mvName, String format, Object... objects) {
+        String str = MessageFormatter.arrayFormat(format, objects).getMessage();
+        Tracers.reasoning(Tracers.Module.MV, "MV rewrite fail for {}: {} ", mvName, str);
+        logMVRewrite(mvName, format, objects);
+    }
+
+    /**
+     * Used for mv rewrite reason log, the log would be print into the query profile.
+     */
+    public static void logMVRewriteFailReason(MvRewriteContext mvContext, String format, Object... objects) {
+        final String mvName = mvContext.getMVName();
+        final String str = MessageFormatter.arrayFormat(format, objects).getMessage();
+        final OptimizerContext optimizerContext = mvContext.getMaterializationContext().getOptimizerContext();
+        final String memoPhase = optimizerContext.isInMemoPhase() ? "CBO" : "RBO";
+        final String stage = optimizerContext.getQueryMaterializationContext().getCurrentRewriteStage().name();
+        Tracers.reasoning(Tracers.Module.MV, "[{}] [{}] MV rewrite fail for {}: {} ", memoPhase, stage, mvName, str);
+        logMVRewrite(mvName, format, objects);
+    }
+
+    public static void logMVRewrite(MaterializationContext mvContext, String format, Object... object) {
+        Tracers.log(Tracers.Module.MV, input -> {
+            Object[] args = new Object[] {
+                    mvContext.getOptimizerContext().isInMemoPhase(),
+                    mvContext.getMv().getName(),
+                    MessageFormatter.arrayFormat(format, object).getMessage()
+            };
+            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE] [InMemo:{}] [{}] {}",
+                    args).getMessage();
         });
     }
 
@@ -55,12 +116,13 @@ public class OptimizerTraceUtil {
         MaterializationContext mvContext = mvRewriteContext.getMaterializationContext();
         Tracers.log(Tracers.Module.MV, input -> {
             Object[] args = new Object[] {
-                    mvContext.getOptimizerContext().getQueryId(),
                     mvRewriteContext.getRule().type().name(),
+                    mvRewriteContext.getMaterializationContext().getOptimizerContext().isInMemoPhase(),
                     mvContext.getMv().getName(),
                     MessageFormatter.arrayFormat(format, object).getMessage()
             };
-            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE {} {} {}] {}", args).getMessage();
+            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE {}] [InMemo:{}] [{}] {}",
+                    args).getMessage();
         });
     }
 
@@ -68,31 +130,53 @@ public class OptimizerTraceUtil {
                                     String format, Object... object) {
         Tracers.log(Tracers.Module.MV, input -> {
             Object[] args = new Object[] {
-                    optimizerContext.getQueryId(),
                     rule.type().name(),
-                    String.format(format, object)
+                    optimizerContext.isInMemoPhase(),
+                    MessageFormatter.arrayFormat(format, object).getMessage()
             };
-            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE {} {}] {}", args).getMessage();
+            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE {}] [InMemo:{}] {}", args).getMessage();
         });
     }
 
-    public static void logApplyRule(OptimizerContext ctx, Rule rule,
-                                    OptExpression oldExpression, List<OptExpression> newExpressions) {
+    public static void logMVRewriteRule(String ruleName, String format, Object... object) {
+        Tracers.log(Tracers.Module.MV, input -> {
+            Object[] args = new Object[] {
+                    ruleName,
+                    MessageFormatter.arrayFormat(format, object).getMessage()
+            };
+            return MessageFormatter.arrayFormat("[MV TRACE] [REWRITE {}] {}", args).getMessage();
+        });
+    }
+
+    public static void logRuleExhausted(OptimizerContext ctx, Rule rule) {
+        Tracers.log(Tracers.Module.OPTIMIZER,
+                args -> String.format("[TRACE QUERY %s] RULE %s exhausted \n", ctx.getQueryId(), rule));
+    }
+
+    public static void logApplyRuleBefore(OptimizerContext ctx, Rule rule,
+                                          OptExpression oldExpression) {
         Tracers.log(Tracers.Module.OPTIMIZER, args -> {
             StringBuilder sb = new StringBuilder();
             sb.append(String.format("[TRACE QUERY %s] APPLY RULE %s\n", ctx.getQueryId(), rule));
-            sb.append("Original Expression:\n").append(oldExpression.debugString(3));
+            sb.append("Original Expression:\n").append(oldExpression.debugString());
+            return sb.toString();
+        });
+    }
+
+    public static void logApplyRuleAfter(List<OptExpression> newExpressions) {
+        Tracers.log(Tracers.Module.OPTIMIZER, args -> {
+            StringBuilder sb = new StringBuilder();
             sb.append("\nNew Expression:");
             if (newExpressions.isEmpty()) {
                 sb.append("Empty");
             } else {
                 sb.append("\n");
                 for (int i = 0; i < newExpressions.size(); i++) {
-                    sb.append(i).append(":").append(newExpressions.get(i).debugString(3));
+                    sb.append(i).append(":").append(newExpressions.get(i).debugString());
                 }
             }
+            sb.append("\n");
             return sb.toString();
         });
     }
-
 }

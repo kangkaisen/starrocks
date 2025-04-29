@@ -20,7 +20,6 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.json.JSONObject;
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.FixMethodOrder;
 import org.junit.Test;
 import org.junit.runners.MethodSorters;
@@ -33,18 +32,16 @@ public class ExecuteSqlActionTest extends StarRocksHttpTestCase {
     private static final String QUERY_EXECUTE_API = "/api/v1/catalogs/default_catalog/sql";
 
     @Override
-    @Before
-    public void setUp() {
-        super.setUp();
+    protected void doSetUp() throws Exception {
         MetricRepo.init();
         ExecuteEnv.setup();
     }
 
     @Test
-    public void test1ExecuteSqlSuccess() throws IOException {
+    public void test1ExecuteSqlSuccess() throws Exception {
         super.setUpWithCatalog();
         RequestBody body =
-                RequestBody.create(JSON, "{ \"query\" :  \"kill 0\" }");
+                RequestBody.create(JSON, "{ \"query\" :  \"kill 1\" }");
 
         Request request = new Request.Builder()
                 .get()
@@ -183,5 +180,18 @@ public class ExecuteSqlActionTest extends StarRocksHttpTestCase {
         Assert.assertEquals("FAILED", jsonObject.get("status").toString());
         Assert.assertEquals("Need auth information.",
                 jsonObject.get("msg").toString());
+
+        body = RequestBody.create(JSON, "{ \"query\" :  \" select 1;\", \"sessionVariables\":{\"timeout\":\"10\"}}");
+        request = new Request.Builder()
+                .get()
+                .addHeader("Authorization", rootAuth)
+                .url(BASE_URL + QUERY_EXECUTE_API)
+                .post(body)
+                .build();
+        response = networkClient.newCall(request).execute();
+        respStr = Objects.requireNonNull(response.body()).string();
+        jsonObject = new JSONObject(respStr);
+        Assert.assertEquals("FAILED", jsonObject.get("status").toString());
+        Assert.assertTrue(jsonObject.get("msg").toString().contains("Unknown system variable"));
     }
 }

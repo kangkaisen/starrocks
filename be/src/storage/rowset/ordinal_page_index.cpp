@@ -80,7 +80,7 @@ OrdinalIndexReader::OrdinalIndexReader() {
 }
 
 OrdinalIndexReader::~OrdinalIndexReader() {
-    MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->ordinal_index_mem_tracker(), _mem_usage());
+    MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->ordinal_index_mem_tracker(), mem_usage());
 }
 
 StatusOr<bool> OrdinalIndexReader::load(const IndexReadOptions& opts, const OrdinalIndexPB& meta,
@@ -89,7 +89,7 @@ StatusOr<bool> OrdinalIndexReader::load(const IndexReadOptions& opts, const Ordi
         Status st = _do_load(opts, meta, num_values);
         if (st.ok()) {
             MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->ordinal_index_mem_tracker(),
-                                     _mem_usage() - sizeof(OrdinalIndexReader))
+                                     mem_usage() - sizeof(OrdinalIndexReader))
         } else {
             _reset();
         }
@@ -172,6 +172,20 @@ OrdinalPageIndexIterator OrdinalIndexReader::seek_at_or_before(ordinal_t ordinal
         return {this, _num_pages};
     }
     return {this, left};
+}
+
+OrdinalPageIndexIterator OrdinalIndexReader::seek_by_page_index(int page_index) {
+    if (!(page_index < _num_pages && page_index >= 0)) {
+        // mean it's valid
+        return {this, _num_pages};
+    }
+
+    return {this, page_index};
+}
+
+void OrdinalIndexReader::print_debug_info() {
+    LOG(INFO) << fmt::format("ordinals: {}", fmt::join(_ordinals.get(), _ordinals.get() + _num_pages, ", "));
+    LOG(INFO) << fmt::format("pages: {}", fmt::join(_pages.get(), _pages.get() + _num_pages, ", "));
 }
 
 } // namespace starrocks

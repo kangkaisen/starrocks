@@ -19,18 +19,19 @@
 
 #include <utility>
 
+#include "formats/parquet/file_writer.h"
 #include "runtime/exec_env.h"
 #include "util/uid_util.h"
 
 namespace starrocks {
 
 RollingAsyncParquetWriter::RollingAsyncParquetWriter(
-        TableInfo tableInfo, const std::vector<ExprContext*>& output_expr_ctxs, RuntimeProfile* parent_profile,
+        TableInfo tableInfo, std::vector<ExprContext*> output_expr_ctxs, RuntimeProfile* parent_profile,
         std::function<void(starrocks::parquet::AsyncFileWriter*, RuntimeState*)> commit_func, RuntimeState* state,
         int32_t driver_id)
         : _table_info(std::move(tableInfo)),
           _max_file_size(_table_info.max_file_size),
-          _output_expr_ctxs(output_expr_ctxs),
+          _output_expr_ctxs(std::move(output_expr_ctxs)),
           _parent_profile(parent_profile),
           _commit_func(std::move(commit_func)),
           _state(state),
@@ -43,13 +44,11 @@ Status RollingAsyncParquetWriter::init() {
     _partition_location = _table_info.partition_location;
 
     ::parquet::WriterProperties::Builder builder;
-    if (_table_info.enable_dictionary) {
-        builder.enable_dictionary();
-    } else {
-        builder.disable_dictionary();
-    }
-    builder.version(::parquet::ParquetVersion::PARQUET_2_0);
-    starrocks::parquet::ParquetBuildHelper::build_compression_type(builder, _table_info.compress_type);
+    _table_info.enable_dictionary ? builder.enable_dictionary() : builder.disable_dictionary();
+    ASSIGN_OR_RETURN(auto compression_codec,
+                     parquet::ParquetBuildHelper::convert_compression_type(_table_info.compress_type));
+    builder.compression(compression_codec);
+    builder.version(::parquet::ParquetVersion::PARQUET_2_6);
     _properties = builder.build();
 
     return Status::OK();
@@ -64,13 +63,13 @@ std::string RollingAsyncParquetWriter::_new_file_location() {
     return _outfile_location;
 }
 
-Status RollingAsyncParquetWriter::_new_file_writer() {
+Status RollingAsyncParquetWriter::_new_file_writer(RuntimeState* state) {
     std::string new_file_location = _new_file_location();
     WritableFileOptions options{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(auto writable_file, _fs->new_writable_file(options, new_file_location))
     _writer = std::make_shared<starrocks::parquet::AsyncFileWriter>(
             std::move(writable_file), new_file_location, _partition_location, _properties, _schema, _output_expr_ctxs,
-            ExecEnv::GetInstance()->pipeline_sink_io_pool(), _parent_profile, _max_file_size);
+            ExecEnv::GetInstance()->pipeline_sink_io_pool(), _parent_profile, _max_file_size, state);
     auto st = _writer->init();
     return st;
 }
@@ -79,12 +78,12 @@ Status RollingAsyncParquetWriter::append_chunk(Chunk* chunk, RuntimeState* state
     RETURN_IF_ERROR(get_io_status());
 
     if (_writer == nullptr) {
-        RETURN_IF_ERROR(_new_file_writer());
+        RETURN_IF_ERROR(_new_file_writer(state));
     }
     // exceed file size
     if (_max_file_size != -1 && _writer->file_size() > _max_file_size) {
         RETURN_IF_ERROR(close_current_writer(state));
-        RETURN_IF_ERROR(_new_file_writer());
+        RETURN_IF_ERROR(_new_file_writer(state));
     }
     return _writer->write(chunk);
 }

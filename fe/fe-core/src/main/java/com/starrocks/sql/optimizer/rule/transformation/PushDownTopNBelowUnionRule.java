@@ -14,14 +14,14 @@
 
 package com.starrocks.sql.optimizer.rule.transformation;
 
-import autovalue.shaded.com.google.common.common.base.Preconditions;
+import com.google.api.client.util.Sets;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.base.Ordering;
 import com.starrocks.sql.optimizer.operator.OperatorType;
-import com.starrocks.sql.optimizer.operator.SortPhase;
 import com.starrocks.sql.optimizer.operator.logical.LogicalTopNOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalUnionOperator;
 import com.starrocks.sql.optimizer.operator.pattern.Pattern;
@@ -36,9 +36,8 @@ import java.util.stream.Collectors;
 
 public class PushDownTopNBelowUnionRule extends TransformationRule {
     public PushDownTopNBelowUnionRule() {
-        super(RuleType.TF_PUSH_DOWN_TOPN_UNION,
-                Pattern.create(OperatorType.LOGICAL_TOPN).addChildren(
-                        Pattern.create(OperatorType.LOGICAL_UNION, OperatorType.PATTERN_LEAF, OperatorType.PATTERN_LEAF)));
+        super(RuleType.TF_PUSH_DOWN_TOPN_UNION, Pattern.create(OperatorType.LOGICAL_TOPN)
+                .addChildren(Pattern.create(OperatorType.LOGICAL_UNION, OperatorType.PATTERN_MULTI_LEAF)));
     }
 
     @Override
@@ -93,6 +92,7 @@ public class PushDownTopNBelowUnionRule extends TransformationRule {
         for (int i = 0; i < unionAllOutputColumnRefs.size(); i++) {
             unionAllOutputColumnRefIdToIndexMap.put(unionAllOutputColumnRefs.get(i).getId(), i);
         }
+
         List<Integer> orderByIndexes = topn.getOrderByElements().stream()
                 .map(x -> unionAllOutputColumnRefIdToIndexMap.get(x.getColumnRef().getId()))
                 .collect(Collectors.toList());
@@ -105,16 +105,17 @@ public class PushDownTopNBelowUnionRule extends TransformationRule {
                 List<ColumnRefOperator> unionChildOutputColRefs = unionChildrenOutputColumns.get(i);
                 List<Ordering> newOrderings =
                         buildUnionChildOrderings(oldOrderings, orderByIndexes, unionChildOutputColRefs);
-                OptExpression newTopNOperator = OptExpression.create(new LogicalTopNOperator.Builder()
+                LogicalTopNOperator newTopNOperator = new LogicalTopNOperator.Builder()
                         .setOrderByElements(newOrderings)
                         .setLimit(topn.getLimit())
                         .setTopNType(topn.getTopNType())
-                        .setSortPhase(SortPhase.PARTIAL)
-                        .build(), unionChild);
-                newUnionChildren.add(newTopNOperator);
+                        .setSortPhase(topn.getSortPhase())
+                        .setIsSplit(false)
+                        .build();
+                OptExpression newUnionChild = OptExpression.create(newTopNOperator, unionChild);
+                newUnionChildren.add(newUnionChild);
             } else {
                 newUnionChildren.add(unionChild);
-
             }
         }
         OptExpression newUnionOperator = OptExpression.create(unionOperator, newUnionChildren);
@@ -131,10 +132,21 @@ public class PushDownTopNBelowUnionRule extends TransformationRule {
                                                     List<Integer> orderByIndexes,
                                                     List<ColumnRefOperator> unionChildOutputColRefs) {
         List<Ordering> newOrderings = Lists.newArrayList();
+
+        // After push down, the orderings of the ith union child should be the same as the topn's orderings.
+        // But it may contain duplicate orderings, so we need to remove the duplicate orderings.
+        Set<ColumnRefOperator> newOrderingColRefSet = Sets.newHashSet();
         for (int j = 0; j < orderByIndexes.size(); j++) {
             int orderColIdx = orderByIndexes.get(j);
             Preconditions.checkState(orderColIdx < unionChildOutputColRefs.size());
             ColumnRefOperator orderColumnRef = unionChildOutputColRefs.get(orderColIdx);
+
+            Preconditions.checkArgument(orderColumnRef != null);
+            if (newOrderingColRefSet.contains(orderColumnRef)) {
+                continue;
+            }
+            newOrderingColRefSet.add(orderColumnRef);
+
             Ordering oldOrdering = oldOrderings.get(j);
             Ordering newOrdering = new Ordering(orderColumnRef, oldOrdering.isAscending(), oldOrdering.isNullsFirst());
             newOrderings.add(newOrdering);

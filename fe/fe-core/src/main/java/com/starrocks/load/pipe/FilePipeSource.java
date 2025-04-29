@@ -15,10 +15,11 @@
 package com.starrocks.load.pipe;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.catalog.TableFunctionTable;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.fs.HdfsUtil;
 import com.starrocks.load.pipe.filelist.FileListRepo;
 import com.starrocks.load.pipe.filelist.FileListTableRepo;
@@ -86,7 +87,7 @@ public class FilePipeSource implements GsonPostProcessable {
         if (CollectionUtils.isEmpty(fileListRepo.listFilesByState(FileListRepo.PipeFileState.UNLOADED, 1))) {
             BrokerDesc brokerDesc = new BrokerDesc(tableProperties);
             try {
-                List<FileStatus> files = HdfsUtil.listFileMeta(path, brokerDesc);
+                List<FileStatus> files = HdfsUtil.listFileMeta(path, brokerDesc, true);
                 List<PipeFileRecord> records =
                         ListUtils.emptyIfNull(files).stream()
                                 .map(PipeFileRecord::fromHdfsFile)
@@ -97,7 +98,7 @@ public class FilePipeSource implements GsonPostProcessable {
                     // TODO: persist state
                     eos = true;
                 }
-            } catch (UserException e) {
+            } catch (StarRocksException e) {
                 LOG.error("Failed to poll the source: ", e);
                 throw new RuntimeException(e);
             } catch (Throwable e) {
@@ -170,7 +171,11 @@ public class FilePipeSource implements GsonPostProcessable {
     }
 
     public void retryFailedFile(String fileName) {
-        throw new UnsupportedOperationException("retry file not supported");
+        PipeFileRecord record = fileListRepo.listFilesByPath(fileName);
+        if (record != null && record.getLoadState().equals(FileListRepo.PipeFileState.ERROR)) {
+            fileListRepo.updateFileState(Lists.newArrayList(record), FileListRepo.PipeFileState.UNLOADED, null);
+            LOG.info("pipe {} retry error files: {}", pipeId, record);
+        }
     }
 
     public void setAutoIngest(boolean autoIngest) {
@@ -219,7 +224,6 @@ public class FilePipeSource implements GsonPostProcessable {
      */
     public static String buildInsertSql(Pipe pipe, FilePipePiece piece, String label) {
         String originalSql = pipe.getOriginSql();
-        Map<String, String> originalProperties = pipe.getProperties();
         StatementBase sqlStmt = SqlParser.parse(originalSql, new SessionVariable()).get(0);
         sqlStmt.setOrigStmt(new OriginStatement(originalSql, 0));
         Preconditions.checkState(sqlStmt instanceof InsertStmt);
@@ -237,7 +241,7 @@ public class FilePipeSource implements GsonPostProcessable {
 
         FileTableFunctionRelation fileRelation = new FileTableFunctionRelation(properties, NodePosition.ZERO);
         select.setRelation(fileRelation);
-        return AstToSQLBuilder.toSQL(sqlStmt);
+        return AstToSQLBuilder.toSQLWithCredential(sqlStmt);
     }
 
     @Override

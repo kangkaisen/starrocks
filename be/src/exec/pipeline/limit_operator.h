@@ -31,6 +31,8 @@ public:
 
     bool is_finished() const override { return (_is_finished || _limit == 0) && _cur_chunk == nullptr; }
 
+    bool ignore_empty_eos() const override { return false; }
+
     Status set_finishing(RuntimeState* state) override {
         _is_finished = true;
         return Status::OK();
@@ -39,6 +41,8 @@ public:
     StatusOr<ChunkPtr> pull_chunk(RuntimeState* state) override;
 
     Status push_chunk(RuntimeState* state, const ChunkPtr& chunk) override;
+
+    void update_exec_stats(RuntimeState* state) override;
 
 private:
     bool _is_finished = false;
@@ -56,6 +60,8 @@ public:
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override {
         return std::make_shared<LimitOperator>(this, _id, _plan_node_id, driver_sequence, _limit);
     }
+
+    int64_t limit() const { return _limit; }
 
 private:
     std::atomic<int64_t> _limit;

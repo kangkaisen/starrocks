@@ -24,10 +24,9 @@ import com.starrocks.catalog.View;
 import com.starrocks.common.Pair;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
-import com.starrocks.qe.VariableMgr;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.optimizer.MaterializedViewOptimizer;
-import com.starrocks.sql.optimizer.OptimizerConfig;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 
 import java.util.ArrayList;
@@ -63,7 +62,7 @@ public class QueryDumpInfo implements DumpInfo {
     private final List<String> exceptionList = new ArrayList<>();
     private int beNum;
     private int cachedAvgNumOfHardwareCores = -1;
-    private Map<Long, Integer> numOfHardwareCoresPerBe = Maps.newHashMap();
+    private final Map<Long, Integer> numOfHardwareCoresPerBe = Maps.newHashMap();
 
     private SessionVariable sessionVariable;
     private final ConnectContext connectContext;
@@ -79,7 +78,7 @@ public class QueryDumpInfo implements DumpInfo {
 
     public QueryDumpInfo() {
         this.connectContext = null;
-        this.sessionVariable = VariableMgr.newSessionVariable();
+        this.sessionVariable = GlobalStateMgr.getCurrentState().getVariableMgr().newSessionVariable();
     }
 
     @Override
@@ -120,11 +119,10 @@ public class QueryDumpInfo implements DumpInfo {
             connectContext.getSessionVariable().setQueryExcludingMVNames(table.getName());
             {
                 MaterializedViewOptimizer mvOptimizer = new MaterializedViewOptimizer();
-                OptimizerConfig optimizerConfig = new OptimizerConfig(OptimizerConfig.OptimizerAlgorithm.COST_BASED);
                 // NOTE: Since materialized view support unique/foreign constraints, we use `optimize` here to visit
                 // all dependent tables again to add it into `dump info`.
                 // NOTE: The optimizer should not contain self to avoid stack overflow.
-                mvOptimizer.optimize((MaterializedView) table, connectContext, optimizerConfig);
+                mvOptimizer.optimize((MaterializedView) table, connectContext);
                 tableMap.put(table.getId(), new Pair<>(dbName, table));
             }
             connectContext.getSessionVariable().setQueryExcludingMVNames(queryExcludingMVNames);

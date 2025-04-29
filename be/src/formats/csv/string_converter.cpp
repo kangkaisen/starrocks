@@ -19,6 +19,7 @@
 #include "gutil/strings/substitute.h"
 #include "runtime/descriptors.h"
 #include "runtime/types.h"
+#include "util/utf8.h"
 
 namespace starrocks::csv {
 
@@ -55,18 +56,23 @@ Status StringConverter::write_quoted_string(OutputStream* os, const Column& colu
 }
 
 bool StringConverter::read_string(Column* column, const Slice& s, const Options& options) const {
-    int max_size = 0;
+    size_t max_size = 0;
     if (options.type_desc != nullptr) {
         max_size = options.type_desc->len;
     }
 
-    if (config::enable_check_string_lengths &&
-        ((s.size > TypeDescriptor::MAX_VARCHAR_LENGTH) || (max_size > 0 && s.size > max_size))) {
-        VLOG(3) << strings::Substitute("Column [$0]'s length exceed max varchar length. str_size($1), max_size($2)",
-                                       column->get_name(), s.size, max_size);
-        return false;
+    if (options.is_hive) {
+        // truncate directly, support for utf-8 encoding
+        down_cast<BinaryColumn*>(column)->append(truncate_utf8(s, max_size));
+    } else {
+        if (config::enable_check_string_lengths &&
+            ((s.size > TypeDescriptor::MAX_VARCHAR_LENGTH) || (max_size > 0 && s.size > max_size))) {
+            VLOG(3) << strings::Substitute("Column [$0]'s length exceed max varchar length. str_size($1), max_size($2)",
+                                           column->get_name(), s.size, max_size);
+            return false;
+        }
+        down_cast<BinaryColumn*>(column)->append(s);
     }
-    down_cast<BinaryColumn*>(column)->append(s);
     return true;
 }
 
@@ -107,8 +113,20 @@ bool StringConverter::read_quoted_string(Column* column, const Slice& tmp_s, con
         max_size = options.type_desc->len;
     }
     size_t ext_size = new_size - old_size;
-    if (config::enable_check_string_lengths &&
-        ((ext_size > TypeDescriptor::MAX_VARCHAR_LENGTH) || (max_size > 0 && ext_size > max_size))) {
+
+    bool length_check_status = true;
+    // Hive table, not limit string length <= 1mb anymore
+    if (options.is_hive) {
+        if (max_size > 0 && ext_size > max_size) {
+            length_check_status = false;
+        }
+    } else {
+        if (config::enable_check_string_lengths &&
+            ((ext_size > TypeDescriptor::MAX_VARCHAR_LENGTH) || (max_size > 0 && ext_size > max_size))) {
+            length_check_status = false;
+        }
+    }
+    if (!length_check_status) {
         bytes.resize(old_size);
         VLOG(3) << strings::Substitute(
                 "Column [$0]'s length exceed max varchar length. old_size($1), new_size($2), ext_size($3), "
@@ -116,6 +134,7 @@ bool StringConverter::read_quoted_string(Column* column, const Slice& tmp_s, con
                 column->get_name(), old_size, new_size, ext_size, max_size);
         return false;
     }
+
     offsets.push_back(bytes.size());
     return true;
 }

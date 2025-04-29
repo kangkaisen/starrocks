@@ -15,6 +15,8 @@
 package com.starrocks.server;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
+import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
 import com.staros.util.LockCloseable;
 import com.starrocks.common.AlreadyExistsException;
@@ -23,9 +25,11 @@ import com.starrocks.common.InvalidConfException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
-import com.starrocks.credential.CloudConfigurationConstants;
+import com.starrocks.connector.share.credential.CloudConfigurationConstants;
 import com.starrocks.persist.DropStorageVolumeLog;
+import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.SetDefaultStorageVolumeLog;
+import com.starrocks.persist.TableStorageInfos;
 import com.starrocks.persist.gson.GsonPostProcessable;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
@@ -40,10 +44,10 @@ import com.starrocks.sql.ast.SetDefaultStorageVolumeStmt;
 import com.starrocks.storagevolume.StorageVolume;
 
 import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -52,6 +56,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.regex.Pattern;
 
 public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable {
     private static final String ENABLED = "enabled";
@@ -61,6 +66,14 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     public static final String LOCAL = "local";
 
     public static final String BUILTIN_STORAGE_VOLUME = "builtin_storage_volume";
+
+    private static final String S3 = "s3";
+
+    private static final String AZBLOB = "azblob";
+
+    private static final String ADLS2 = "adls2";
+
+    private static final String HDFS = "hdfs";
 
     @SerializedName("defaultSVId")
     protected String defaultStorageVolumeId = "";
@@ -103,10 +116,11 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     }
 
     public String createStorageVolume(String name, String svType, List<String> locations, Map<String, String> params,
-                                      Optional<Boolean> enabled, String comment)
+            Optional<Boolean> enabled, String comment)
             throws DdlException, AlreadyExistsException {
         try (LockCloseable lock = new LockCloseable(rwLock.writeLock())) {
-            validateParams(params);
+            validateParams(svType, params);
+            validateLocations(svType, locations);
             if (exists(name)) {
                 throw new AlreadyExistsException(String.format("Storage volume '%s' already exists", name));
             }
@@ -141,18 +155,30 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     }
 
     public void updateStorageVolume(AlterStorageVolumeStmt stmt) throws DdlException {
-        Map<String, String> params = new HashMap<>();
-        Optional<Boolean> enabled = parseProperties(stmt.getProperties(), params);
-        updateStorageVolume(stmt.getName(), params, enabled, stmt.getComment());
+        updateStorageVolume(stmt.getName(), null, null, stmt.getProperties(), stmt.getComment());
     }
 
-    public void updateStorageVolume(String name, Map<String, String> params, Optional<Boolean> enabled, String comment)
-            throws DdlException {
+    public void updateStorageVolume(String name, String svType, List<String> locations,
+            Map<String, String> properties, String comment) throws DdlException {
+        Map<String, String> params = new HashMap<>();
+        Optional<Boolean> enabled = parseProperties(properties, params);
+        updateStorageVolume(name, svType, locations, params, enabled, comment);
+    }
+
+    public void updateStorageVolume(String name, String svType, List<String> locations,
+            Map<String, String> params, Optional<Boolean> enabled, String comment) throws DdlException {
+        List<String> immutableProperties = Lists.newArrayList(CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX,
+                CloudConfigurationConstants.AWS_S3_ENABLE_PARTITIONED_PREFIX);
+        for (String param : immutableProperties) {
+            if (params.containsKey(param)) {
+                throw new DdlException(String.format("Storage volume property '%s' is immutable!", param));
+            }
+        }
         try (LockCloseable lock = new LockCloseable(rwLock.writeLock())) {
-            validateParams(params);
             StorageVolume sv = getStorageVolumeByName(name);
             Preconditions.checkState(sv != null, "Storage volume '%s' does not exist", name);
             StorageVolume copied = new StorageVolume(sv);
+            validateParams(copied.getType(), params);
 
             if (enabled.isPresent()) {
                 boolean enabledValue = enabled.get();
@@ -163,7 +189,15 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
                 copied.setEnabled(enabledValue);
             }
 
-            if (!comment.isEmpty()) {
+            if (!Strings.isNullOrEmpty(svType)) {
+                copied.setType(svType);
+            }
+
+            if (locations != null) {
+                copied.setLocations(locations);
+            }
+
+            if (!Strings.isNullOrEmpty(comment)) {
                 copied.setComment(comment);
             }
 
@@ -172,6 +206,65 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
             }
 
             updateInternalNoLock(copied);
+        }
+    }
+
+    public void replaceStorageVolume(String name, String svType, List<String> locations,
+            Map<String, String> properties, String comment) throws DdlException {
+        Map<String, String> params = new HashMap<>();
+        Optional<Boolean> enabled = parseProperties(properties, params);
+        validateParams(svType, params);
+
+        String locationChangedStorageVolumeId = null;
+        try (LockCloseable lock = new LockCloseable(rwLock.writeLock())) {
+            StorageVolume oldStorageVolume = getStorageVolumeByName(name);
+            Preconditions.checkState(oldStorageVolume != null, "Storage volume '%s' does not exist", name);
+            if (enabled.isPresent()) {
+                if (!enabled.get()) {
+                    Preconditions.checkState(!oldStorageVolume.getId().equals(defaultStorageVolumeId),
+                            "Default volume can not be disabled");
+                }
+            }
+
+            StorageVolume newStorageVolume = null;
+            if (oldStorageVolume.getType().equalsIgnoreCase(svType)) {
+                newStorageVolume = new StorageVolume(oldStorageVolume);
+                if (enabled.isPresent()) {
+                    newStorageVolume.setEnabled(enabled.get());
+                }
+
+                if (!Strings.isNullOrEmpty(svType)) {
+                    newStorageVolume.setType(svType);
+                }
+
+                if (locations != null) {
+                    if (!oldStorageVolume.getLocations().equals(locations)) {
+                        validateLocations(svType, locations);
+                        newStorageVolume.setLocations(locations);
+                        locationChangedStorageVolumeId = newStorageVolume.getId();
+                    }
+                }
+
+                if (!Strings.isNullOrEmpty(comment)) {
+                    newStorageVolume.setComment(comment);
+                }
+
+                if (!params.isEmpty()) {
+                    newStorageVolume.setCloudConfiguration(params);
+                }
+            } else {
+                Preconditions.checkState(locations != null, "Location is null");
+                validateLocations(svType, locations);
+                newStorageVolume = new StorageVolume(oldStorageVolume.getId(), name, svType, locations, params,
+                        enabled.orElse(oldStorageVolume.getEnabled()), comment);
+                locationChangedStorageVolumeId = newStorageVolume.getId();
+            }
+
+            replaceInternalNoLock(newStorageVolume);
+        }
+
+        if (locationChangedStorageVolumeId != null) {
+            updateTableStorageInfo(locationChangedStorageVolumeId);
         }
     }
 
@@ -272,16 +365,81 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     public void replayDropStorageVolume(DropStorageVolumeLog log) {
     }
 
-    protected void validateParams(Map<String, String> params) throws DdlException {
+    public void replayUpdateTableStorageInfos(TableStorageInfos tableStorageInfos) {
+        throw new RuntimeException("Not implemented");
+    }
+
+    protected void validateParams(String svType, Map<String, String> params) throws DdlException {
+        if (svType.equalsIgnoreCase(HDFS)) {
+            return;
+        }
         for (String key : params.keySet()) {
             if (!PARAM_NAMES.contains(key)) {
                 throw new DdlException("Invalid properties " + key);
             }
         }
+
+        // storage volume type specific checks
+        if (!svType.equalsIgnoreCase(S3)) {
+            // The following two properties can be only set when storage volume type is 'S3'
+            List<String> s3Params = Lists.newArrayList(
+                    CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX,
+                    CloudConfigurationConstants.AWS_S3_ENABLE_PARTITIONED_PREFIX);
+            for (String param : s3Params) {
+                if (params.containsKey(param)) {
+                    throw new DdlException(
+                            String.format("Invalid property '%s' for storage volume type '%s'", param, svType));
+                }
+            }
+        }
+        if (params.containsKey(CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX)) {
+            try {
+                int value = Integer.parseInt(params.get(CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX));
+                if (value < 0) {
+                    throw new DdlException(String.format(
+                            "Invalid property value '%s' for property '%s', expecting a positive integer string.",
+                            params.get(CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX),
+                            CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX));
+                }
+            } catch (NumberFormatException e) {
+                throw new DdlException(String.format(
+                        "Invalid property value '%s' for property '%s', expecting a valid integer string.",
+                        params.get(CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX),
+                        CloudConfigurationConstants.AWS_S3_NUM_PARTITIONED_PREFIX));
+            }
+        }
     }
 
-    public void save(DataOutputStream dos) throws IOException, SRMetaBlockException {
-        SRMetaBlockWriter writer = new SRMetaBlockWriter(dos, SRMetaBlockID.STORAGE_VOLUME_MGR, 1);
+    private void validateLocations(String svType, List<String> locations) throws DdlException {
+        for (String location : locations) {
+            try {
+                URI uri = new URI(location);
+                String scheme = uri.getScheme().toLowerCase();
+                switch (svType.toLowerCase()) {
+                    case S3:
+                    case AZBLOB:
+                    case ADLS2:
+                        if (!scheme.equalsIgnoreCase(svType)) {
+                            throw new DdlException("Invalid location " + location);
+                        }
+                        break;
+                    case HDFS:
+                        String pattern = "[a-z][a-z0-9]*";
+                        if (!Pattern.matches(pattern, scheme)) {
+                            throw new DdlException("Invalid location " + location);
+                        }
+                        break;
+                    default:
+                        throw new DdlException("Unknown storage volume type: " + svType);
+                }
+            } catch (URISyntaxException e) {
+                throw new DdlException(String.format("Invalid location %s, error: %s", location, e.getMessage()));
+            }
+        }
+    }
+
+    public void save(ImageWriter imageWriter) throws IOException, SRMetaBlockException {
+        SRMetaBlockWriter writer = imageWriter.getBlockWriter(SRMetaBlockID.STORAGE_VOLUME_MGR, 1);
         writer.writeJson(this);
         writer.close();
     }
@@ -298,21 +456,21 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
 
     @Override
     public void gsonPostProcess() throws IOException {
+        // If user upgrades from 3.0 and the createTableInfo and createDbInfo is replayed,
+        // the image will look like: "svToDbs":{"null":[12288,81921,49154,65541,20485]}, "svToTables":{"null":[12288]}
+        // The mapping null to dbs and tables should be removed. These code can be removed when 3.0 is not supported.
+        storageVolumeToDbs.remove("null");
         for (Map.Entry<String, Set<Long>> entry : storageVolumeToDbs.entrySet()) {
             for (Long dbId : entry.getValue()) {
                 dbToStorageVolume.put(dbId, entry.getKey());
             }
         }
+        storageVolumeToTables.remove("null");
         for (Map.Entry<String, Set<Long>> entry : storageVolumeToTables.entrySet()) {
             for (Long tableId : entry.getValue()) {
                 tableToStorageVolume.put(tableId, entry.getKey());
             }
         }
-    }
-
-    public long saveStorageVolumes(DataOutputStream dos, long checksum) throws IOException {
-        write(dos);
-        return checksum;
     }
 
     public void load(DataInput in) throws IOException {
@@ -325,11 +483,6 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
         this.tableToStorageVolume = data.tableToStorageVolume;
     }
 
-    @Override
-    public void write(DataOutput out) throws IOException {
-        Text.writeString(out, GsonUtils.GSON.toJson(this));
-    }
-
     public abstract StorageVolume getStorageVolumeByName(String svName);
 
     public abstract StorageVolume getStorageVolume(String svId);
@@ -337,10 +490,12 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     public abstract List<String> listStorageVolumeNames() throws DdlException;
 
     protected abstract String createInternalNoLock(String name, String svType, List<String> locations,
-                                                   Map<String, String> params, Optional<Boolean> enabled, String comment)
+            Map<String, String> params, Optional<Boolean> enabled, String comment)
             throws DdlException;
 
     protected abstract void updateInternalNoLock(StorageVolume sv) throws DdlException;
+
+    protected abstract void replaceInternalNoLock(StorageVolume sv) throws DdlException;
 
     protected abstract void removeInternalNoLock(StorageVolume sv) throws DdlException;
 
@@ -361,4 +516,6 @@ public abstract class StorageVolumeMgr implements Writable, GsonPostProcessable 
     public abstract void validateStorageVolumeConfig() throws InvalidConfException;
 
     protected abstract List<List<Long>> getBindingsOfBuiltinStorageVolume();
+
+    protected abstract void updateTableStorageInfo(String storageVolumeId) throws DdlException;
 }

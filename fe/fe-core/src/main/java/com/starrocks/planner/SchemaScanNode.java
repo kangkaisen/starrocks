@@ -38,12 +38,15 @@ import com.google.common.base.MoreObjects;
 import com.google.common.collect.Lists;
 import com.starrocks.analysis.Analyzer;
 import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.system.SystemTable;
-import com.starrocks.common.UserException;
+import com.starrocks.common.Config;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.system.Backend;
+import com.starrocks.server.RunMode;
+import com.starrocks.system.ComputeNode;
+import com.starrocks.system.Frontend;
+import com.starrocks.thrift.TFrontend;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TPlanNode;
 import com.starrocks.thrift.TPlanNodeType;
@@ -52,8 +55,11 @@ import com.starrocks.thrift.TScanRangeLocation;
 import com.starrocks.thrift.TScanRangeLocations;
 import com.starrocks.thrift.TSchemaScanNode;
 import com.starrocks.thrift.TUserIdentity;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static com.starrocks.catalog.InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME;
 
@@ -61,6 +67,9 @@ import static com.starrocks.catalog.InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAM
  * Full scan of an SCHEMA table.
  */
 public class SchemaScanNode extends ScanNode {
+
+    private static final Logger LOG = LogManager.getLogger(SchemaScanNode.class);
+
     private String catalogName;
     private final String tableName;
     private String schemaDb;
@@ -84,6 +93,7 @@ public class SchemaScanNode extends ScanNode {
     private String logLevel = null;
     private String logPattern = null;
     private Long logLimit = null;
+    private List<TFrontend> frontends = null;
 
     private List<TScanRangeLocations> beScanRanges = null;
 
@@ -137,6 +147,10 @@ public class SchemaScanNode extends ScanNode {
         return tableName;
     }
 
+    public List<TFrontend> getFrontends() {
+        return frontends;
+    }
+
     /**
      * Constructs node to scan given data files of table 'tbl'.
      */
@@ -152,7 +166,7 @@ public class SchemaScanNode extends ScanNode {
     }
 
     @Override
-    public void finalizeStats(Analyzer analyzer) throws UserException {
+    public void finalizeStats(Analyzer analyzer) throws StarRocksException {
     }
 
     @Override
@@ -241,6 +255,9 @@ public class SchemaScanNode extends ScanNode {
         if (getLimit() > 0) {
             msg.schema_scan_node.setLimit(getLimit());
         }
+        if (frontends != null) {
+            msg.schema_scan_node.setFrontends(frontends);
+        }
     }
 
     public void setBeId(long beId) {
@@ -295,18 +312,48 @@ public class SchemaScanNode extends ScanNode {
         return SystemTable.isBeSchemaTable(tableName);
     }
 
+    public void computeFeNodes() {
+        for (Frontend fe : GlobalStateMgr.getCurrentState().getNodeMgr().getFrontends(null /* all */)) {
+            if (!fe.isAlive()) {
+                continue;
+            }
+            if (frontends == null) {
+                frontends = Lists.newArrayList();
+            }
+            TFrontend feInfo = new TFrontend();
+            feInfo.setId(fe.getNodeName());
+            feInfo.setIp(fe.getHost());
+            feInfo.setHttp_port(Config.http_port);
+            frontends.add(feInfo);
+        }
+    }
+
     public void computeBeScanRanges() {
-        for (Backend be : GlobalStateMgr.getCurrentSystemInfo().getIdToBackend().values()) {
+        List<ComputeNode> nodeList;
+        if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
+            long warehouseId = ConnectContext.get().getCurrentWarehouseId();
+            List<Long> computeNodeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouseId);
+
+            nodeList = computeNodeIds.stream()
+                    .map(id -> GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(id))
+                    .collect(Collectors.toList());
+        } else {
+            nodeList = Lists.newArrayList();
+            nodeList.addAll(GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends());
+            nodeList.addAll(GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getComputeNodes());
+        }
+
+        for (ComputeNode node : nodeList) {
             // if user specifies BE id, we try to scan all BEs(including bad BE)
             // if user doesn't specify BE id, we only scan live BEs
-            if ((be.isAlive() && beId == null) || (beId != null && beId.equals(be.getId()))) {
+            if ((node.isAlive() && beId == null) || (beId != null && beId.equals(node.getId()))) {
                 if (beScanRanges == null) {
                     beScanRanges = Lists.newArrayList();
                 }
                 TScanRangeLocations scanRangeLocations = new TScanRangeLocations();
                 TScanRangeLocation location = new TScanRangeLocation();
-                location.setBackend_id(be.getId());
-                location.setServer(new TNetworkAddress(be.getHost(), be.getBePort()));
+                location.setBackend_id(node.getId());
+                location.setServer(new TNetworkAddress(node.getHost(), node.getBePort()));
                 scanRangeLocations.addToLocations(location);
                 TScanRange scanRange = new TScanRange();
                 scanRangeLocations.setScan_range(scanRange);
@@ -325,11 +372,6 @@ public class SchemaScanNode extends ScanNode {
     }
 
     @Override
-    public int getNumInstances() {
-        return beScanRanges == null ? 1 : beScanRanges.size();
-    }
-
-    @Override
     public boolean canUseRuntimeAdaptiveDop() {
         return true;
     }
@@ -340,5 +382,10 @@ public class SchemaScanNode extends ScanNode {
 
     public void setCatalogName(String catalogName) {
         this.catalogName = catalogName;
+    }
+
+    @Override
+    public boolean isRunningAsConnectorOperator() {
+        return false;
     }
 }

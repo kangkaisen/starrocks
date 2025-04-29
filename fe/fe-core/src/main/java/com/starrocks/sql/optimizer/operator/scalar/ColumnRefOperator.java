@@ -15,6 +15,7 @@
 package com.starrocks.sql.optimizer.operator.scalar;
 
 import com.starrocks.catalog.Type;
+import com.starrocks.common.util.SRStringUtils;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 
@@ -92,7 +93,7 @@ public final class ColumnRefOperator extends ScalarOperator {
     }
 
     public ColumnRefSet getUsedColumns() {
-        if (getOpType().equals(OperatorType.LAMBDA_ARGUMENT)) {
+        if (OperatorType.LAMBDA_ARGUMENT.equals(getOpType())) {
             return new ColumnRefSet();
         }
         return new ColumnRefSet(id);
@@ -100,6 +101,9 @@ public final class ColumnRefOperator extends ScalarOperator {
 
     @Override
     public void getColumnRefs(List<ColumnRefOperator> columns) {
+        if (OperatorType.LAMBDA_ARGUMENT.equals(getOpType())) {
+            return;
+        }
         columns.add(this);
     }
 
@@ -170,11 +174,10 @@ public final class ColumnRefOperator extends ScalarOperator {
             return true;
         }
 
-        ColumnRefOperator leftColumn = (ColumnRefOperator) this;
         ColumnRefOperator rightColumn = (ColumnRefOperator) obj;
-        return leftColumn.getName().equals(rightColumn.getName())
-                && leftColumn.getType().equals(rightColumn.getType())
-                && leftColumn.isNullable() == rightColumn.isNullable();
+        return SRStringUtils.areColumnNamesEqual(this.getName(), rightColumn.getName())
+                && this.getType().equals(rightColumn.getType())
+                && this.isNullable() == rightColumn.isNullable();
     }
 
     /**

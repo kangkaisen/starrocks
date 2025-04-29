@@ -23,7 +23,7 @@ StatusOr<ColumnPtr> StructFunctions::new_struct(FunctionContext* context, const 
     ColumnPtr res = context->create_column(context->get_return_type(), false);
 
     StructColumn* st = down_cast<StructColumn*>(res.get());
-    auto fields = st->fields_column();
+    auto& fields = st->fields_column();
 
     DCHECK_EQ(fields.size(), columns.size());
 
@@ -33,7 +33,7 @@ StatusOr<ColumnPtr> StructFunctions::new_struct(FunctionContext* context, const 
             fields[i]->append_nulls(column->size());
         } else if (column->is_constant()) {
             auto* cc = ColumnHelper::get_data_column(column.get());
-            fields[i]->append_value_multiple_times(*cc, 0, column->size(), true);
+            fields[i]->append_value_multiple_times(*cc, 0, column->size());
         } else {
             fields[i]->append(*column, 0, column->size());
         }

@@ -14,6 +14,7 @@
 
 package com.starrocks.qe.scheduler;
 
+import com.google.common.collect.Multimap;
 import com.starrocks.catalog.CatalogIdGenerator;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
@@ -22,7 +23,8 @@ import com.starrocks.rpc.BrpcProxy;
 import com.starrocks.rpc.PBackendService;
 import com.starrocks.sql.plan.PlanTestNoneDBBase;
 import com.starrocks.system.Backend;
-import com.starrocks.system.SystemInfoService;
+import com.starrocks.system.ComputeNode;
+import com.starrocks.system.NodeSelector;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.utframe.UtFrameUtils;
@@ -117,7 +119,7 @@ public class SchedulerTestNoneDBBase extends PlanTestNoneDBBase {
 
     public static void makeCreateTabletStable() {
         resetCatalogIdGenerator();
-        resetChooseBackendIds();
+        resetChooseNodeIds();
     }
 
     public static void setBackendService(PBackendService backendService) {
@@ -187,21 +189,22 @@ public class SchedulerTestNoneDBBase extends PlanTestNoneDBBase {
     }
 
     /**
-     * Mock {@link SystemInfoService#seqChooseBackendIds(int, boolean, List)}.
+     * Mock {@link com.starrocks.system.NodeSelector#seqChooseNodeIds(int, boolean, Multimap, List)}.
      */
-    private static void resetChooseBackendIds() {
-        AtomicInteger nextBackendIndex = new AtomicInteger(0);
-        new MockUp<SystemInfoService>() {
+    private static void resetChooseNodeIds() {
+        AtomicInteger nextNodeIndex = new AtomicInteger(0);
+        new MockUp<NodeSelector>() {
             @Mock
-            public synchronized List<Long> seqChooseBackendIds(int backendNum, boolean isCreate,
-                                                               final List<Backend> srcBackends) {
-                List<Long> backendIds = new ArrayList<>(backendNum);
-                for (int i = 0; i < backendNum; i++) {
-                    int index = nextBackendIndex.getAndIncrement();
-                    long id = srcBackends.get(index % srcBackends.size()).getId();
-                    backendIds.add(id);
+            public synchronized List<Long> seqChooseNodeIds(int nodeNum, boolean isCreate,
+                                                            Multimap<String, String> locReq,
+                                                            final List<ComputeNode> srcNodes) {
+                List<Long> nodeIds = new ArrayList<>(nodeNum);
+                for (int i = 0; i < nodeNum; i++) {
+                    int index = nextNodeIndex.getAndIncrement();
+                    long id = srcNodes.get(index % srcNodes.size()).getId();
+                    nodeIds.add(id);
                 }
-                return backendIds;
+                return nodeIds;
             }
         };
     }

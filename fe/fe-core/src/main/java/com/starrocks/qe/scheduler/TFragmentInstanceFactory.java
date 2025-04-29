@@ -25,6 +25,7 @@ import com.starrocks.qe.scheduler.dag.ExecutionDAG;
 import com.starrocks.qe.scheduler.dag.ExecutionFragment;
 import com.starrocks.qe.scheduler.dag.FragmentInstance;
 import com.starrocks.qe.scheduler.dag.JobSpec;
+import com.starrocks.sql.common.QueryDebugOptions;
 import com.starrocks.thrift.InternalServiceVersion;
 import com.starrocks.thrift.TAdaptiveDopParam;
 import com.starrocks.thrift.TDescriptorTable;
@@ -33,10 +34,14 @@ import com.starrocks.thrift.TFunctionVersion;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TPlanFragmentDestination;
 import com.starrocks.thrift.TPlanFragmentExecParams;
+import com.starrocks.thrift.TPredicateTreeParams;
 import com.starrocks.thrift.TQueryOptions;
+import com.starrocks.thrift.TQueryQueueOptions;
+import org.apache.commons.collections4.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 
 public class TFragmentInstanceFactory {
@@ -88,12 +93,24 @@ public class TFragmentInstanceFactory {
         return result;
     }
 
+    public TExecPlanFragmentParams createIncrementalScanRanges(FragmentInstance instance) {
+        TExecPlanFragmentParams result = new TExecPlanFragmentParams();
+        result.setProtocol_version(InternalServiceVersion.V1);
+        result.setParams(new TPlanFragmentExecParams());
+        result.params.setQuery_id(jobSpec.getQueryId());
+        result.params.setFragment_instance_id(instance.getInstanceId());
+        result.params.setPer_node_scan_ranges(instance.getNode2ScanRanges());
+        result.params.setNode_to_per_driver_seq_scan_ranges(instance.getNode2DriverSeqToScanRanges());
+        result.params.setPer_exch_num_senders(new HashMap<>());
+        return result;
+    }
+
     public void toThriftFromCommonParams(TExecPlanFragmentParams result,
                                          ExecutionFragment execFragment,
                                          TDescriptorTable descTable,
                                          int totalTableSinkDop) {
         // TODO(lzh): move to a more proper place.
-        execFragment.setBucketSeqToInstanceForRuntimeFilters();
+        execFragment.setLayoutInfosForRuntimeFilters();
 
         PlanFragment fragment = execFragment.getPlanFragment();
 
@@ -103,7 +120,7 @@ public class TFragmentInstanceFactory {
         result.setProtocol_version(InternalServiceVersion.V1);
         result.setFragment(fragment.toThrift());
         result.setDesc_tbl(descTable);
-        result.setFunc_version(TFunctionVersion.RUNTIME_FILTER_SERIALIZE_VERSION_2.getValue());
+        result.setFunc_version(TFunctionVersion.RUNTIME_FILTER_SERIALIZE_VERSION_3.getValue());
         result.setCoord(coordAddress);
 
         result.setParams(new TPlanFragmentExecParams());
@@ -131,13 +148,18 @@ public class TFragmentInstanceFactory {
         // For broker load, the ConnectContext.get() is null
         if (context != null) {
             SessionVariable sessionVariable = context.getSessionVariable();
+            final List<QueryDebugOptions.ExecDebugOption> execDebugOptions =
+                    sessionVariable.getQueryDebugOptions().getExecDebugOptions();
 
             if (isEnablePipeline) {
                 result.setIs_pipeline(true);
-                result.getQuery_options().setBatch_size(SessionVariable.PIPELINE_BATCH_SIZE);
+                result.getQuery_options().setBatch_size(sessionVariable.getChunkSize());
                 result.setEnable_shared_scan(sessionVariable.isEnableSharedScan());
                 result.params.setEnable_exchange_pass_through(sessionVariable.isEnableExchangePassThrough());
                 result.params.setEnable_exchange_perf(sessionVariable.isEnableExchangePerf());
+                for (QueryDebugOptions.ExecDebugOption option : execDebugOptions) {
+                    result.params.addToExec_debug_options(option.toThirft());
+                }
 
                 result.setEnable_resource_group(true);
                 if (jobSpec.getResourceGroup() != null) {
@@ -149,6 +171,22 @@ public class TFragmentInstanceFactory {
                             sessionVariable.getAdaptiveDopMaxBlockRowsPerDriverSeq());
                     result.adaptive_dop_param.setMax_output_amplification_factor(
                             sessionVariable.getAdaptiveDopMaxOutputAmplificationFactor());
+                }
+                if (jobSpec.isEnableQueue()) {
+                    TQueryQueueOptions queryQueueOptions = new TQueryQueueOptions();
+                    queryQueueOptions.setEnable_global_query_queue(jobSpec.isEnableQueue());
+                    queryQueueOptions.setEnable_group_level_query_queue(jobSpec.isEnableGroupLevelQueue());
+
+                    TQueryOptions queryOptions = result.getQuery_options();
+                    queryOptions.setQuery_queue_options(queryQueueOptions);
+                }
+
+                result.setPred_tree_params(new TPredicateTreeParams());
+                result.pred_tree_params.setEnable_or(sessionVariable.isEnablePushdownOrPredicate());
+                result.pred_tree_params.setEnable_show_in_profile(sessionVariable.isEnableShowPredicateTreeInProfile());
+
+                if (CollectionUtils.isNotEmpty(fragment.getCollectExecStatsIds())) {
+                    result.setExec_stats_node_ids(fragment.getCollectExecStatsIds());
                 }
             }
         }
@@ -166,6 +204,7 @@ public class TFragmentInstanceFactory {
         result.setBackend_num(instance.getIndexInJob());
         if (isEnablePipeline) {
             result.setPipeline_dop(instance.getPipelineDop());
+            result.setGroup_execution_scan_dop(instance.getGroupExecutionScanDop());
         }
 
         // Add instance number in file name prefix when export job.
@@ -198,6 +237,7 @@ public class TFragmentInstanceFactory {
         result.params.setFragment_instance_id(instance.getInstanceId());
         result.params.setPer_node_scan_ranges(instance.getNode2ScanRanges());
         result.params.setNode_to_per_driver_seq_scan_ranges(instance.getNode2DriverSeqToScanRanges());
+        result.params.setReport_when_finish(execFragment.isNeedReportFragmentFinish());
 
         if (isEnablePipelineTableSinkDop) {
             result.params.setSender_id(accTabletSinkDop);

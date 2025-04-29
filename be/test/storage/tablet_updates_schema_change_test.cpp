@@ -36,7 +36,7 @@ void TabletUpdatesTest::test_link_from(bool enable_persistent_index) {
 
     _tablet2->set_tablet_state(TABLET_NOTREADY);
     auto chunk_changer = std::make_unique<ChunkChanger>(_tablet2->tablet_schema());
-    ASSERT_TRUE(_tablet2->updates()->link_from(_tablet.get(), 4, chunk_changer.get()).ok());
+    ASSERT_TRUE(_tablet2->updates()->link_from(_tablet.get(), 4, chunk_changer.get(), _tablet->tablet_schema()).ok());
 
     ASSERT_EQ(N, read_tablet(_tablet2, 4));
 }
@@ -50,7 +50,6 @@ TEST_F(TabletUpdatesTest, link_from_with_persistent_index) {
 }
 
 void TabletUpdatesTest::test_schema_change_optimiazation_adding_generated_column(bool enable_persistent_index) {
-    sleep(30);
     srand(GetCurrentTimeMicros());
     auto base_tablet = create_tablet(rand(), rand());
     base_tablet->set_enable_persistent_index(enable_persistent_index);
@@ -105,7 +104,7 @@ void TabletUpdatesTest::test_schema_change_optimiazation_adding_generated_column
     std::string alter_msg_header = strings::Substitute("[Alter Job:$0, tablet:$1]: ", 999, base_tablet->tablet_id());
     SchemaChangeHandler handler;
     handler.set_alter_msg_header(alter_msg_header);
-    auto res = handler.process_alter_tablet_v2(request);
+    auto res = handler.process_alter_tablet(request);
     ASSERT_TRUE(res.ok()) << res.to_string();
 }
 
@@ -135,14 +134,16 @@ void TabletUpdatesTest::test_convert_from(bool enable_persistent_index) {
     auto chunk_changer = std::make_unique<ChunkChanger>(tablet_to_schema_change->tablet_schema());
     for (int i = 0; i < tablet_to_schema_change->unsafe_tablet_schema_ref().num_columns(); ++i) {
         const auto& new_column = tablet_to_schema_change->unsafe_tablet_schema_ref().column(i);
-        int32_t column_index = _tablet->field_index(std::string{new_column.name()});
+        int32_t column_index = _tablet->field_index_with_max_version(std::string{new_column.name()});
         auto column_mapping = chunk_changer->get_mutable_column_mapping(i);
         if (column_index >= 0) {
             column_mapping->ref_column = column_index;
         }
     }
     ASSERT_TRUE(chunk_changer->prepare().ok());
-    ASSERT_TRUE(tablet_to_schema_change->updates()->convert_from(_tablet, 4, chunk_changer.get()).ok());
+    ASSERT_TRUE(tablet_to_schema_change->updates()
+                        ->convert_from(_tablet, 4, chunk_changer.get(), _tablet->tablet_schema())
+                        .ok());
 
     ASSERT_EQ(N, read_tablet_and_compare_schema_changed(tablet_to_schema_change, 4, keys));
 }
@@ -170,7 +171,7 @@ void TabletUpdatesTest::test_convert_from_with_pending(bool enable_persistent_in
     auto chunk_changer = std::make_unique<ChunkChanger>(tablet_to_schema_change->tablet_schema());
     for (int i = 0; i < tablet_to_schema_change->unsafe_tablet_schema_ref().num_columns(); ++i) {
         const auto& new_column = tablet_to_schema_change->unsafe_tablet_schema_ref().column(i);
-        int32_t column_index = _tablet->field_index(std::string{new_column.name()});
+        int32_t column_index = _tablet->field_index_with_max_version(std::string{new_column.name()});
         auto column_mapping = chunk_changer->get_mutable_column_mapping(i);
         if (column_index >= 0) {
             column_mapping->ref_column = column_index;
@@ -180,7 +181,9 @@ void TabletUpdatesTest::test_convert_from_with_pending(bool enable_persistent_in
     ASSERT_TRUE(tablet_to_schema_change->rowset_commit(3, create_rowset(tablet_to_schema_change, keys3)).ok());
     ASSERT_TRUE(tablet_to_schema_change->rowset_commit(4, create_rowset(tablet_to_schema_change, keys4)).ok());
 
-    ASSERT_TRUE(tablet_to_schema_change->updates()->convert_from(_tablet, 2, chunk_changer.get()).ok());
+    ASSERT_TRUE(tablet_to_schema_change->updates()
+                        ->convert_from(_tablet, 2, chunk_changer.get(), _tablet->tablet_schema())
+                        .ok());
 
     ASSERT_TRUE(_tablet->rowset_commit(3, create_rowset(_tablet, keys3)).ok());
     ASSERT_TRUE(_tablet->rowset_commit(4, create_rowset(_tablet, keys4)).ok());
@@ -207,7 +210,7 @@ void TabletUpdatesTest::test_convert_from_with_mutiple_segment(bool enable_persi
     auto chunk_changer = std::make_unique<ChunkChanger>(tablet_to_schema_change->tablet_schema());
     for (int i = 0; i < tablet_to_schema_change->unsafe_tablet_schema_ref().num_columns(); ++i) {
         const auto& new_column = tablet_to_schema_change->unsafe_tablet_schema_ref().column(i);
-        int32_t column_index = _tablet->field_index(std::string{new_column.name()});
+        int32_t column_index = _tablet->field_index_with_max_version(std::string{new_column.name()});
         auto column_mapping = chunk_changer->get_mutable_column_mapping(i);
         if (column_index >= 0) {
             column_mapping->ref_column = column_index;
@@ -223,7 +226,9 @@ void TabletUpdatesTest::test_convert_from_with_mutiple_segment(bool enable_persi
     }
     ASSERT_EQ(200, read_tablet_and_compare(_tablet, 2, ori_keys));
 
-    ASSERT_TRUE(tablet_to_schema_change->updates()->convert_from(_tablet, 2, chunk_changer.get()).ok());
+    ASSERT_TRUE(tablet_to_schema_change->updates()
+                        ->convert_from(_tablet, 2, chunk_changer.get(), _tablet->tablet_schema())
+                        .ok());
 
     std::vector<int64_t> keys;
     for (int i = 0; i < 200; i++) {
@@ -274,7 +279,7 @@ void TabletUpdatesTest::test_reorder_from(bool enable_persistent_index) {
     auto chunk_changer = std::make_unique<ChunkChanger>(tablet_with_sort_key1->tablet_schema());
     for (int i = 0; i < tablet_with_sort_key1->unsafe_tablet_schema_ref().num_columns(); ++i) {
         const auto& new_column = tablet_with_sort_key1->unsafe_tablet_schema_ref().column(i);
-        int32_t column_index = _tablet->field_index(std::string{new_column.name()});
+        int32_t column_index = _tablet->field_index_with_max_version(std::string{new_column.name()});
         auto column_mapping = chunk_changer->get_mutable_column_mapping(i);
         if (column_index >= 0) {
             column_mapping->ref_column = column_index;
@@ -282,7 +287,9 @@ void TabletUpdatesTest::test_reorder_from(bool enable_persistent_index) {
     }
     ASSERT_TRUE(chunk_changer->prepare().ok());
 
-    ASSERT_TRUE(tablet_with_sort_key1->updates()->reorder_from(_tablet, 4, chunk_changer.get()).ok());
+    ASSERT_TRUE(tablet_with_sort_key1->updates()
+                        ->reorder_from(_tablet, 4, chunk_changer.get(), _tablet->tablet_schema())
+                        .ok());
 
     ASSERT_EQ(N, read_tablet_and_compare_schema_changed_sort_key1(tablet_with_sort_key1, 4, keys));
 
@@ -291,14 +298,17 @@ void TabletUpdatesTest::test_reorder_from(bool enable_persistent_index) {
     chunk_changer = std::make_unique<ChunkChanger>(tablet_with_sort_key2->tablet_schema());
     for (int i = 0; i < tablet_with_sort_key2->unsafe_tablet_schema_ref().num_columns(); ++i) {
         const auto& new_column = tablet_with_sort_key2->unsafe_tablet_schema_ref().column(i);
-        int32_t column_index = _tablet->field_index(std::string{new_column.name()});
+        int32_t column_index = _tablet->field_index_with_max_version(std::string{new_column.name()});
         auto column_mapping = chunk_changer->get_mutable_column_mapping(i);
         if (column_index >= 0) {
             column_mapping->ref_column = column_index;
         }
     }
     ASSERT_TRUE(chunk_changer->prepare().ok());
-    ASSERT_TRUE(tablet_with_sort_key2->updates()->reorder_from(tablet_with_sort_key1, 4, chunk_changer.get()).ok());
+    ASSERT_TRUE(tablet_with_sort_key2->updates()
+                        ->reorder_from(tablet_with_sort_key1, 4, chunk_changer.get(),
+                                       tablet_with_sort_key1->tablet_schema())
+                        .ok());
     ASSERT_EQ(N, read_tablet_and_compare_schema_changed_sort_key2(tablet_with_sort_key2, 4, keys));
 }
 
@@ -332,7 +342,7 @@ TEST_F(TabletUpdatesTest, test_schema_change_using_base_tablet_max_version) {
 
     // alter request reach tablet, using base tablet max version:4 should work
     auto chunk_changer = std::make_unique<ChunkChanger>(_tablet2->tablet_schema());
-    ASSERT_TRUE(_tablet2->updates()->link_from(_tablet.get(), 4, chunk_changer.get()).ok());
+    ASSERT_TRUE(_tablet2->updates()->link_from(_tablet.get(), 4, chunk_changer.get(), _tablet->tablet_schema()).ok());
 
     ASSERT_EQ(N, read_tablet(_tablet2, 4));
 }

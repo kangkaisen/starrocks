@@ -61,7 +61,8 @@ TLoadTxnCommitResult k_stream_load_commit_result;
 TLoadTxnRollbackResult k_stream_load_rollback_result;
 #endif
 
-static Status commit_txn_internal(const TLoadTxnCommitRequest& request, int32_t rpc_timeout_ms, StreamLoadContext* ctx);
+static Status commit_txn_internal(const TLoadTxnCommitRequest& request, int32_t rpc_timeout_ms,
+                                  TLoadTxnCommitResult* result);
 static StatusOr<TTransactionStatus::type> get_txn_status(const AuthInfo& auth, std::string_view db,
                                                          std::string_view table, int64_t txn_id);
 static bool wait_txn_visible_until(const AuthInfo& auth, std::string_view db, std::string_view table, int64_t txn_id,
@@ -110,7 +111,7 @@ Status StreamLoadExecutor::execute_plan_fragment(StreamLoadContext* ctx) {
                 } else {
                     LOG(WARNING) << "fragment execute failed"
                                  << ", query_id=" << UniqueId(ctx->put_result.params.params.query_id)
-                                 << ", err_msg=" << status.get_error_msg() << ", " << ctx->brief();
+                                 << ", err_msg=" << status.message() << ", " << ctx->brief();
                     // cancel body_sink, make sender known it
                     if (ctx->body_sink != nullptr) {
                         ctx->body_sink->cancel(status);
@@ -166,6 +167,11 @@ Status StreamLoadExecutor::begin_txn(StreamLoadContext* ctx) {
     request.db = ctx->db;
     request.tbl = ctx->table;
     request.label = ctx->label;
+    auto backend_id = get_backend_id();
+    if (backend_id.has_value()) {
+        request.__set_backend_id(backend_id.value());
+    }
+
     // set timestamp
     request.__set_timestamp(GetCurrentTimeMicros());
     if (ctx->timeout_second != -1) {
@@ -184,7 +190,7 @@ Status StreamLoadExecutor::begin_txn(StreamLoadContext* ctx) {
 #endif
     Status status(result.status);
     if (!status.ok()) {
-        LOG(WARNING) << "begin transaction failed, errmsg=" << status.get_error_msg() << ctx->brief();
+        LOG(WARNING) << "begin transaction failed, errmsg=" << status.message() << ctx->brief();
         if (result.__isset.job_status) {
             ctx->existing_job_status = result.job_status;
         }
@@ -207,8 +213,9 @@ Status StreamLoadExecutor::commit_txn(StreamLoadContext* ctx) {
     request.txnId = ctx->txn_id;
     request.sync = true;
     request.commitInfos = std::move(ctx->commit_infos);
-    request.failInfos = std::move(ctx->fail_infos);
     request.__isset.commitInfos = true;
+    request.failInfos = std::move(ctx->fail_infos);
+    request.__isset.failInfos = true;
     int32_t rpc_timeout_ms = config::txn_commit_rpc_timeout_ms;
     if (ctx->timeout_second != -1) {
         rpc_timeout_ms = std::min(ctx->timeout_second * 1000 / 2, rpc_timeout_ms);
@@ -223,45 +230,50 @@ Status StreamLoadExecutor::commit_txn(StreamLoadContext* ctx) {
         request.__isset.txnCommitAttachment = true;
     }
 
-    return commit_txn_internal(request, rpc_timeout_ms, ctx);
+    int retry = 0;
+    TLoadTxnCommitResult result;
+    while (true) {
+        RETURN_IF_ERROR(commit_txn_internal(request, rpc_timeout_ms, &result));
+        Status st(result.status);
+        if (st.ok()) {
+            ctx->need_rollback = false;
+            return st;
+        } else if (st.is_publish_timeout()) {
+            ctx->need_rollback = false;
+            bool visible =
+                    wait_txn_visible_until(ctx->auth, request.db, request.tbl, request.txnId, ctx->load_deadline_sec);
+            return visible ? Status::OK() : st;
+        } else if (st.is_eagain()) {
+            LOG(WARNING) << "commit transaction " << request.txnId << " failed, will retry after sleeping "
+                         << result.retry_interval_ms << "ms. errmsg=" << st.message();
+            std::this_thread::sleep_for(std::chrono::milliseconds(result.retry_interval_ms));
+        } else if (st.is_time_out()) {
+            if (++retry > 1) {
+                ctx->need_rollback = true;
+                return st;
+            }
+            LOG(WARNING) << "commit transaction " << request.txnId << " failed, will retry. errmsg=" << st.message();
+            if (ctx->load_deadline_sec > 0) {
+                rpc_timeout_ms = (ctx->load_deadline_sec - UnixSeconds()) * 1000;
+            }
+        } else {
+            ctx->need_rollback = true;
+            return st;
+        }
+    }
 }
 
-Status commit_txn_internal(const TLoadTxnCommitRequest& request, int32_t rpc_timeout_ms, StreamLoadContext* ctx) {
+Status commit_txn_internal(const TLoadTxnCommitRequest& request, int32_t rpc_timeout_ms, TLoadTxnCommitResult* result) {
     TNetworkAddress master_addr = get_master_address();
-    TLoadTxnCommitResult result;
 #ifndef BE_TEST
-    auto st = ThriftRpcHelper::rpc<FrontendServiceClient>(
+    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
             master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->loadTxnCommit(result, request); },
-            rpc_timeout_ms);
-    if (st.is_thrift_rpc_error()) {
-        return Status::ServiceUnavailable(fmt::format(
-                "Commit transaction fail cause {}, Transaction status unknown, you can retry with same label.",
-                st.get_error_msg()));
-    } else if (!st.ok()) {
-        return st;
-    }
+            [&request, &result](FrontendServiceConnection& client) { client->loadTxnCommit(*result, request); },
+            rpc_timeout_ms));
 #else
-    result = k_stream_load_commit_result;
+    *result = k_stream_load_commit_result;
 #endif
-    Status status(result.status);
-    if (status.ok()) {
-        ctx->need_rollback = false;
-        return status;
-    } else if (status.code() == TStatusCode::PUBLISH_TIMEOUT) {
-        ctx->need_rollback = false;
-        bool visible =
-                wait_txn_visible_until(ctx->auth, request.db, request.tbl, request.txnId, ctx->load_deadline_sec);
-        return visible ? Status::OK() : status;
-    } else if (status.code() == TStatusCode::SR_EAGAIN) {
-        LOG(WARNING) << "commit transaction " << request.txnId << " failed, will retry after sleeping "
-                     << result.retry_interval_ms << "ms. errmsg=" << status.get_error_msg();
-        std::this_thread::sleep_for(std::chrono::milliseconds(result.retry_interval_ms));
-        return commit_txn_internal(request, rpc_timeout_ms, ctx);
-    } else {
-        ctx->need_rollback = true;
-        return status;
-    }
+    return Status::OK();
 }
 
 StatusOr<TTransactionStatus::type> get_txn_status(const AuthInfo& auth, std::string_view db, std::string_view table,
@@ -289,7 +301,11 @@ StatusOr<TTransactionStatus::type> get_txn_status(const AuthInfo& auth, std::str
 bool wait_txn_visible_until(const AuthInfo& auth, std::string_view db, std::string_view table, int64_t txn_id,
                             int64_t deadline) {
     while (deadline > UnixSeconds()) {
-        sleep(std::min((int64_t)config::get_txn_status_internal_sec, deadline - UnixSeconds()));
+        auto wait_seconds = std::min((int64_t)config::get_txn_status_internal_sec, deadline - UnixSeconds());
+        LOG(WARNING) << "transaction is not visible now, will wait " << wait_seconds
+                     << " seconds before retrieving the status again, txn_id: " << txn_id;
+        // The following sleep might introduce delay to the commit and publish total time
+        sleep(wait_seconds);
         auto status_or = get_txn_status(auth, db, table, txn_id);
         if (!status_or.ok()) {
             return false;
@@ -314,8 +330,9 @@ Status StreamLoadExecutor::prepare_txn(StreamLoadContext* ctx) {
     request.txnId = ctx->txn_id;
     request.sync = true;
     request.commitInfos = std::move(ctx->commit_infos);
-    request.failInfos = std::move(ctx->fail_infos);
     request.__isset.commitInfos = true;
+    request.failInfos = std::move(ctx->fail_infos);
+    request.__isset.failInfos = true;
     int32_t rpc_timeout_ms = config::txn_commit_rpc_timeout_ms;
     if (ctx->timeout_second != -1) {
         rpc_timeout_ms = std::min(ctx->timeout_second * 1000 / 2, rpc_timeout_ms);
@@ -344,7 +361,7 @@ Status StreamLoadExecutor::prepare_txn(StreamLoadContext* ctx) {
     // to rollback this transaction.
     Status status(result.status);
     if (!status.ok()) {
-        LOG(WARNING) << "prepare transaction failed, errmsg=" << status.get_error_msg() << ctx->brief();
+        LOG(WARNING) << "prepare transaction failed, errmsg=" << status.message() << ctx->brief();
         return status;
     }
     // commit success, set need_rollback to false
@@ -361,8 +378,11 @@ Status StreamLoadExecutor::rollback_txn(StreamLoadContext* ctx) {
     request.db = ctx->db;
     request.tbl = ctx->table;
     request.txnId = ctx->txn_id;
+    request.commitInfos = std::move(ctx->commit_infos);
+    request.__isset.commitInfos = true;
     request.failInfos = std::move(ctx->fail_infos);
-    request.__set_reason(ctx->status.get_error_msg());
+    request.__isset.failInfos = true;
+    request.__set_reason(std::string(ctx->status.message()));
 
     // set attachment if has
     TTxnCommitAttachment attachment;
@@ -377,7 +397,7 @@ Status StreamLoadExecutor::rollback_txn(StreamLoadContext* ctx) {
             master_addr.hostname, master_addr.port,
             [&request, &result](FrontendServiceConnection& client) { client->loadTxnRollback(result, request); });
     if (!rpc_st.ok()) {
-        LOG(WARNING) << "transaction rollback failed. errmsg=" << rpc_st.get_error_msg() << ctx->brief();
+        LOG(WARNING) << "transaction rollback failed. errmsg=" << rpc_st.message() << ctx->brief();
         return rpc_st;
     }
     if (result.status.status_code != TStatusCode::TXN_NOT_EXISTS) {
@@ -414,6 +434,9 @@ bool StreamLoadExecutor::collect_load_stat(StreamLoadContext* ctx, TTxnCommitAtt
         manual_load_attach.__set_receivedBytes(ctx->receive_bytes);
         manual_load_attach.__set_loadedBytes(ctx->loaded_bytes);
         manual_load_attach.__set_unselectedRows(ctx->number_unselected_rows);
+        manual_load_attach.__set_beginTxnTime(ctx->begin_txn_cost_nanos / 1000 / 1000);
+        manual_load_attach.__set_planTime(ctx->stream_load_put_cost_nanos / 1000 / 1000);
+        manual_load_attach.__set_receiveDataTime(ctx->total_received_data_cost_nanos / 1000 / 1000);
         if (!ctx->error_url.empty()) {
             manual_load_attach.__set_errorLogUrl(ctx->error_url);
         }
@@ -451,6 +474,8 @@ bool StreamLoadExecutor::collect_load_stat(StreamLoadContext* ctx, TTxnCommitAtt
 
         TKafkaRLTaskProgress kafka_progress;
         kafka_progress.partitionCmtOffset = ctx->kafka_info->cmt_offset;
+        kafka_progress.partitionCmtOffsetTimestamp = ctx->kafka_info->cmt_offset_timestamp;
+        kafka_progress.__isset.partitionCmtOffsetTimestamp = true;
 
         rl_attach.kafkaRLTaskProgress = kafka_progress;
         rl_attach.__isset.kafkaRLTaskProgress = true;

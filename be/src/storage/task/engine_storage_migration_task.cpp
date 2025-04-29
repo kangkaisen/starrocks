@@ -37,6 +37,7 @@
 #include <fmt/format.h>
 
 #include "runtime/exec_env.h"
+#include "storage/replication_txn_manager.h"
 #include "storage/snapshot_manager.h"
 #include "storage/tablet_meta_manager.h"
 #include "storage/update_manager.h"
@@ -45,8 +46,11 @@
 namespace starrocks {
 
 EngineStorageMigrationTask::EngineStorageMigrationTask(TTabletId tablet_id, TSchemaHash schema_hash,
-                                                       DataDir* dest_store)
-        : _tablet_id(tablet_id), _schema_hash(schema_hash), _dest_store(dest_store) {}
+                                                       DataDir* dest_store, bool need_rebuild_pk_index)
+        : _tablet_id(tablet_id),
+          _schema_hash(schema_hash),
+          _dest_store(dest_store),
+          _need_rebuild_pk_index(need_rebuild_pk_index) {}
 
 Status EngineStorageMigrationTask::execute() {
     StarRocksMetrics::instance()->storage_migrate_requests_total.increment(1);
@@ -54,6 +58,12 @@ Status EngineStorageMigrationTask::execute() {
     if (tablet == nullptr) {
         LOG(WARNING) << "Not found tablet: " << _tablet_id;
         return Status::NotFound(fmt::format("Not found tablet: {}", _tablet_id));
+    }
+
+    if (tablet->tablet_state() == TABLET_NOTREADY) {
+        LOG(WARNING) << "storage migrate failed, tablet is in schemachange process. tablet_id=" << _tablet_id;
+        return Status::InternalError(
+                fmt::format("storage migrate failed, tablet is in schemachange process. tablet_id: {}", _tablet_id));
     }
 
     // check tablet data dir
@@ -108,6 +118,9 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
         std::set<int64_t> transaction_ids;
         StorageEngine::instance()->txn_manager()->get_tablet_related_txns(
                 _tablet_id, _schema_hash, tablet->tablet_uid(), &partition_id, &transaction_ids);
+        if (transaction_ids.empty()) {
+            StorageEngine::instance()->replication_txn_manager()->get_tablet_related_txns(_tablet_id, &transaction_ids);
+        }
         if (!transaction_ids.empty()) {
             LOG(WARNING) << "could not migration because has unfinished txns.";
             return Status::InternalError("could not migration because has unfinished txns.");
@@ -137,7 +150,10 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
                 end_version = tablet->updates()->max_version();
             }
             res = tablet->capture_consistent_rowsets(Version(0, end_version), &consistent_rowsets);
-            if (!res.ok() || consistent_rowsets.empty()) {
+            if (!res.ok() || (consistent_rowsets.empty() &&
+                              // for primary key empty tablet, it is possible that consistent_rowsets.empty() is true
+                              // in this case, we can continue the migration.
+                              (tablet->updates() == nullptr || (tablet->updates() != nullptr && end_version != 1)))) {
                 LOG(WARNING) << "Fail to capture consistent rowsets. version=" << end_version;
                 return Status::InternalError(
                         fmt::format("Fail to capture consistent rowsets. version: {}", end_version));
@@ -224,6 +240,9 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
         std::set<int64_t> transaction_ids;
         StorageEngine::instance()->txn_manager()->get_tablet_related_txns(
                 _tablet_id, _schema_hash, tablet->tablet_uid(), &partition_id, &transaction_ids);
+        if (transaction_ids.empty()) {
+            StorageEngine::instance()->replication_txn_manager()->get_tablet_related_txns(_tablet_id, &transaction_ids);
+        }
         if (!transaction_ids.empty()) {
             LOG(WARNING) << "could not migration because has unfinished txns.";
             need_remove_new_path = true;
@@ -271,7 +290,7 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
         Status st = fs::remove(new_meta_file);
         if (!st.ok()) {
             LOG(WARNING) << "failed to remove meta file. tablet_id=" << _tablet_id << ", schema_hash=" << _schema_hash
-                         << ", path=" << schema_hash_path << ", error=" << st.get_error_msg();
+                         << ", path=" << schema_hash_path << ", error=" << st.message();
         }
     }
     if (!dcgs_snapshot_path.empty()) {
@@ -279,7 +298,7 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
         Status st = fs::remove(dcgs_snapshot_path);
         if (!st.ok()) {
             LOG(WARNING) << "failed to remove dcg file. tablet_id=" << _tablet_id << ", schema_hash=" << _schema_hash
-                         << ", path=" << schema_hash_path << ", error=" << st.get_error_msg();
+                         << ", path=" << schema_hash_path << ", error=" << st.message();
         }
     }
     if (!res.ok() && need_remove_new_path) {
@@ -287,7 +306,7 @@ Status EngineStorageMigrationTask::_storage_migrate(TabletSharedPtr tablet) {
         Status st = fs::remove_all(schema_hash_path);
         if (!st.ok()) {
             LOG(WARNING) << "failed to remove storage migration path, tablet_id: " << _tablet_id
-                         << ". schema_hash_path=" << schema_hash_path << ", error=" << st.get_error_msg();
+                         << ". schema_hash_path=" << schema_hash_path << ", error=" << st.message();
         }
     }
 
@@ -355,7 +374,7 @@ Status EngineStorageMigrationTask::_finish_migration(const TabletSharedPtr& tabl
         }
 
         if (!res.ok()) {
-            LOG(WARNING) << "snapshot dcgs failed, " << res.get_error_msg() << " tablet id: " << _tablet_id;
+            LOG(WARNING) << "snapshot dcgs failed, " << res.message() << " tablet id: " << _tablet_id;
             need_remove_new_path = true;
             break;
         }
@@ -363,7 +382,7 @@ Status EngineStorageMigrationTask::_finish_migration(const TabletSharedPtr& tabl
         dcgs_snapshot_path = schema_hash_path + "/" + std::to_string(_tablet_id) + ".dcgs_snapshot";
         res = DeltaColumnGroupListHelper::save_snapshot(dcgs_snapshot_path, dcg_snapshot_pb);
         if (!res.ok()) {
-            LOG(WARNING) << "save dcg snapshot failed, " << res.get_error_msg() << " tablet id: " << _tablet_id;
+            LOG(WARNING) << "save dcg snapshot failed, " << res.message() << " tablet id: " << _tablet_id;
             need_remove_new_path = true;
             break;
         }
@@ -416,6 +435,7 @@ Status EngineStorageMigrationTask::_finish_migration(const TabletSharedPtr& tabl
                 }
 
                 if (dcgs.size() == 0) {
+                    ++idx;
                     continue;
                 }
 
@@ -520,8 +540,10 @@ Status EngineStorageMigrationTask::_finish_primary_key_migration(const TabletSha
         }
 
         auto tablet_manager = StorageEngine::instance()->tablet_manager();
+        // don't wait rebuild pk index to finish because migration task does not support increment migration
+        // and needs to be completed as soon as possible
         res = tablet_manager->create_tablet_from_meta_snapshot(_dest_store, _tablet_id, tablet->schema_hash(),
-                                                               schema_hash_path, false);
+                                                               schema_hash_path, false, _need_rebuild_pk_index, 0);
         if (!res.ok()) {
             LOG(WARNING) << "Fail to create tablet from meta snapshot. tablet_id: " << _tablet_id;
             WriteBatch wb;

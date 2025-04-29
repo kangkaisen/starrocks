@@ -21,7 +21,6 @@
 #include "column/datum_tuple.h"
 #include "column/fixed_length_column.h"
 #include "fs/fs_util.h"
-#include "runtime/exec_env.h"
 #include "storage/chunk_helper.h"
 #include "storage/lake/delta_writer.h"
 #include "storage/lake/fixed_location_provider.h"
@@ -30,7 +29,9 @@
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake/tablet_reader.h"
+#include "storage/lake/test_util.h"
 #include "storage/lake/update_manager.h"
+#include "storage/lake/versioned_tablet.h"
 #include "testutil/assert.h"
 #include "testutil/id_generator.h"
 
@@ -61,16 +62,17 @@ std::string to_string_param_name(const testing::TestParamInfo<SchemaChangeParam>
 class SchemaChangeTest : public testing::Test, public testing::WithParamInterface<SchemaChangeParam> {
 public:
     SchemaChangeTest(const std::string& test_dir) {
-        _mem_tracker = std::make_unique<MemTracker>(-1);
+        _mem_tracker = std::make_unique<MemTracker>(1024 * 1024);
         _location_provider = std::make_unique<FixedLocationProvider>(test_dir);
-        _update_manager = std::make_unique<UpdateManager>(_location_provider.get());
-        _tablet_manager = std::make_unique<TabletManager>(_location_provider.get(), _update_manager.get(), 1024 * 1024);
+        _update_manager = std::make_unique<UpdateManager>(_location_provider, _mem_tracker.get());
+        _tablet_manager = std::make_unique<TabletManager>(_location_provider, _update_manager.get(), 1024 * 1024);
     }
 
 protected:
-    static std::shared_ptr<Chunk> read(Tablet tablet, int64_t version, bool sorted = false) {
-        ASSIGN_OR_ABORT(auto schema, tablet.get_schema());
-        ASSIGN_OR_ABORT(auto reader, tablet.new_reader(version, *(schema->schema())));
+    static std::shared_ptr<Chunk> read(const VersionedTablet& tablet, bool sorted = false) {
+        auto metadata = tablet.metadata();
+        auto schema = tablet.get_schema();
+        auto reader = std::make_shared<TabletReader>(tablet.tablet_manager(), metadata, *(schema->schema()));
         CHECK_OK(reader->prepare());
         TabletReaderParams params;
         params.sorted_by_keys_per_tablet = sorted;
@@ -92,8 +94,18 @@ protected:
         return chunk;
     }
 
+    Status publish_version_for_schema_change(int64_t tablet_id, int64_t new_version, int64_t txn_id) {
+        TxnInfoPB txn_info;
+        txn_info.set_txn_id(txn_id);
+        txn_info.set_combined_txn_log(false);
+        txn_info.set_commit_time(time(NULL));
+        return publish_version(_tablet_manager.get(), tablet_id, 1, new_version,
+                               std::span<const TxnInfoPB>(&txn_info, 1))
+                .status();
+    }
+
     std::unique_ptr<MemTracker> _mem_tracker;
-    std::unique_ptr<FixedLocationProvider> _location_provider;
+    std::shared_ptr<FixedLocationProvider> _location_provider;
     std::unique_ptr<UpdateManager> _update_manager;
     std::unique_ptr<TabletManager> _tablet_manager;
 
@@ -104,6 +116,12 @@ protected:
     std::shared_ptr<TabletMetadata> _new_tablet_metadata;
     std::shared_ptr<TabletSchema> _new_tablet_schema;
     std::shared_ptr<VSchema> _new_schema;
+
+    std::shared_ptr<TabletMetadata> _new_tablet_metadata_with_generated_column;
+    std::shared_ptr<TabletSchema> _new_tablet_schema_with_generated_column;
+    std::shared_ptr<VSchema> _new_schema_with_generated_column;
+
+    RuntimeProfile _dummy_runtime_profile{"dummy"};
 
     int64_t _partition_id = 100;
 };
@@ -206,6 +224,61 @@ public:
 
         _new_tablet_schema = TabletSchema::create(*new_schema);
         _new_schema = std::make_shared<VSchema>(ChunkHelper::convert_schema(_new_tablet_schema));
+
+        // new tablet with generated column
+        _new_tablet_metadata_with_generated_column = std::make_shared<TabletMetadata>();
+        _new_tablet_metadata_with_generated_column->set_id(next_id());
+        _new_tablet_metadata_with_generated_column->set_version(1);
+        //
+        //  | column | type | KEY | NULL | DEFAULT |   EXPR  |
+        //  +--------+------+-----+------+---------+---------+
+        //  |   c0   |  INT | YES |  NO  |         |         |
+        //  |   c1   |  INT | NO  |  NO  |         |         |
+        //  |   c2   |  INT | NO  |  NO  |         |    c0   |
+        auto new_schema_with_generated_column = _new_tablet_metadata_with_generated_column->mutable_schema();
+        new_schema_with_generated_column->set_id(next_id());
+        new_schema_with_generated_column->set_num_short_key_columns(1);
+        new_schema_with_generated_column->set_keys_type(GetParam().keys_type);
+        new_schema_with_generated_column->set_num_rows_per_row_block(65535);
+        // c0 c1 id should be same as base tablet schema
+        {
+            auto c0 = new_schema_with_generated_column->add_column();
+            c0->set_unique_id(c0_id);
+            c0->set_name("c0");
+            c0->set_type("INT");
+            c0->set_is_key(true);
+            c0->set_is_nullable(false);
+        }
+        {
+            auto c1 = new_schema_with_generated_column->add_column();
+            c1->set_unique_id(c1_id);
+            c1->set_name("c1");
+            c1->set_type("INT");
+            c1->set_is_key(false);
+            c1->set_is_nullable(false);
+            if (GetParam().keys_type == DUP_KEYS) {
+                c1->set_aggregation("NONE");
+            } else {
+                c1->set_aggregation("REPLACE");
+            }
+        }
+        {
+            auto c2 = new_schema_with_generated_column->add_column();
+            c2->set_unique_id(next_id());
+            c2->set_name("c2");
+            c2->set_type("INT");
+            c2->set_is_key(false);
+            c2->set_is_nullable(true);
+            if (GetParam().keys_type == DUP_KEYS) {
+                c2->set_aggregation("NONE");
+            } else {
+                c2->set_aggregation("REPLACE");
+            }
+        }
+
+        _new_tablet_schema_with_generated_column = TabletSchema::create(*new_schema_with_generated_column);
+        _new_schema_with_generated_column =
+                std::make_shared<VSchema>(ChunkHelper::convert_schema(_new_tablet_schema_with_generated_column));
     }
 
 protected:
@@ -218,6 +291,7 @@ protected:
         CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kTxnLogDirectoryName)));
         CHECK_OK(_tablet_manager->put_tablet_metadata(*_base_tablet_metadata));
         CHECK_OK(_tablet_manager->put_tablet_metadata(*_new_tablet_metadata));
+        CHECK_OK(_tablet_manager->put_tablet_metadata(*_new_tablet_metadata_with_generated_column));
     }
 
     void TearDown() override { ASSERT_OK(fs::remove_all(kTestGroupPath)); }
@@ -233,7 +307,7 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
         c0->append_datum(Datum(i * 1));
         c1->append_datum(Datum(i * 2));
 
-        VChunk chunk0({c0, c1}, _base_schema);
+        VChunk chunk0({std::move(c0), std::move(c1)}, _base_schema);
         uint32_t indexes[1] = {0};
 
         ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
@@ -242,13 +316,13 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes, sizeof(indexes) / sizeof(indexes[0])));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -278,7 +352,7 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
         c1->append_datum(Datum(i * 4));
         c2->append_datum(Datum(i * 8));
 
-        VChunk chunk1({c0, c1, c2}, _new_schema);
+        VChunk chunk1({std::move(c0), std::move(c1), std::move(c2)}, _new_schema);
         uint32_t indexes[1] = {0};
 
         ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
@@ -287,13 +361,13 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes, sizeof(indexes) / sizeof(indexes[0])));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
@@ -301,12 +375,12 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
     // publish schema change
     int concurrency = GetParam().concurrency;
     if (concurrency == 1) {
-        ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+        ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     } else {
         std::vector<std::thread> threads;
         for (int i = 0; i < concurrency; i++) {
             threads.emplace_back(
-                    [&]() { (void)_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1); });
+                    [&]() { (void)publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id); });
         }
         for (auto& t : threads) {
             t.join();
@@ -316,9 +390,9 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
     txn_id++;
 
     // check new tablet data
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
+    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id, version));
 
-    auto chunk = read(new_tablet, version, /*sorted=*/GetParam().keys_type != DUP_KEYS);
+    auto chunk = read(new_tablet, /*sorted=*/GetParam().keys_type != DUP_KEYS);
 
     if (GetParam().keys_type == DUP_KEYS) {
         int expect_num_rows = GetParam().writes_before + GetParam().writes_after;
@@ -347,6 +421,162 @@ TEST_P(SchemaChangeAddColumnTest, test_add_column) {
                 EXPECT_EQ(i * 1, chunk->get(i)[0].get_int32());
                 EXPECT_EQ(i * 4, chunk->get(i)[1].get_int32());
                 EXPECT_EQ(i * 8, chunk->get(i)[2].get_int32());
+            }
+        }
+        chunk->reset();
+    }
+}
+
+TEST_P(SchemaChangeAddColumnTest, test_add_generated_column) {
+    int64_t version = 1;
+    int64_t txn_id = 1000;
+    auto base_tablet_id = _base_tablet_metadata->id();
+    for (int i = 0; i < GetParam().writes_before; i++) {
+        auto c0 = Int32Column::create();
+        auto c1 = Int32Column::create();
+        c0->append_datum(Datum(i * 1));
+        c1->append_datum(Datum(i * 2));
+
+        VChunk chunk0({std::move(c0), std::move(c1)}, _base_schema);
+        uint32_t indexes[1] = {0};
+
+        ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
+                                                   .set_tablet_manager(_tablet_manager.get())
+                                                   .set_tablet_id(base_tablet_id)
+                                                   .set_txn_id(txn_id)
+                                                   .set_partition_id(_partition_id)
+                                                   .set_mem_tracker(_mem_tracker.get())
+                                                   .set_schema_id(_base_tablet_schema->id())
+                                                   .build());
+        ASSERT_OK(delta_writer->open());
+        ASSERT_OK(delta_writer->write(chunk0, indexes, sizeof(indexes) / sizeof(indexes[0])));
+        ASSERT_OK(delta_writer->finish_with_txnlog());
+        delta_writer->close();
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
+        version++;
+        txn_id++;
+    }
+
+    // do schema change
+    auto new_tablet_id = _new_tablet_metadata_with_generated_column->id();
+    auto alter_version = version;
+    auto alter_txn_id = txn_id;
+    {
+        TAlterTabletReqV2 request;
+        request.base_tablet_id = base_tablet_id;
+        request.new_tablet_id = new_tablet_id;
+        request.alter_version = alter_version;
+        request.txn_id = alter_txn_id;
+
+        TAlterTabletMaterializedColumnReq mc_request;
+
+        std::vector<TExprNode> nodes;
+        TExprNode node;
+        node.node_type = TExprNodeType::SLOT_REF;
+        node.type = gen_type_desc(TPrimitiveType::INT);
+        node.num_children = 0;
+        TSlotRef t_slot_ref = TSlotRef();
+        t_slot_ref.slot_id = 0;
+        t_slot_ref.tuple_id = 0;
+        node.__set_slot_ref(t_slot_ref);
+        node.is_nullable = true;
+        nodes.emplace_back(node);
+
+        TExpr t_expr;
+        t_expr.nodes = nodes;
+
+        std::map<int32_t, starrocks::TExpr> m_expr;
+        m_expr.insert({2, t_expr});
+
+        mc_request.__set_query_globals(TQueryGlobals());
+        mc_request.__set_query_options(TQueryOptions());
+        mc_request.__set_mc_exprs(m_expr);
+
+        request.__set_materialized_column_req(mc_request);
+
+        SchemaChangeHandler handler(_tablet_manager.get());
+        ASSERT_OK(handler.process_alter_tablet(request));
+        txn_id++;
+    }
+
+    // Simulate concurrent writes with schema change
+    for (int i = 0; i < GetParam().writes_after; i++) {
+        auto c0 = Int32Column::create();
+        auto c1 = Int32Column::create();
+        auto c2 = Int32Column::create();
+        c0->append_datum(Datum(i * 1));
+        c1->append_datum(Datum(i * 4));
+        c2->append_datum(Datum(i * 5 /* c0 + c1 */));
+
+        VChunk chunk1({std::move(c0), std::move(c1), std::move(c2)}, _new_schema_with_generated_column);
+        uint32_t indexes[1] = {0};
+
+        ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
+                                                   .set_tablet_manager(_tablet_manager.get())
+                                                   .set_tablet_id(new_tablet_id)
+                                                   .set_txn_id(txn_id)
+                                                   .set_partition_id(_partition_id)
+                                                   .set_mem_tracker(_mem_tracker.get())
+                                                   .set_schema_id(_new_tablet_schema_with_generated_column->id())
+                                                   .build());
+        ASSERT_OK(delta_writer->open());
+        ASSERT_OK(delta_writer->write(chunk1, indexes, sizeof(indexes) / sizeof(indexes[0])));
+        ASSERT_OK(delta_writer->finish_with_txnlog());
+        delta_writer->close();
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
+        version++;
+        txn_id++;
+    }
+
+    // publish schema change
+    int concurrency = GetParam().concurrency;
+    if (concurrency == 1) {
+        ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
+    } else {
+        std::vector<std::thread> threads;
+        for (int i = 0; i < concurrency; i++) {
+            threads.emplace_back(
+                    [&]() { (void)publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id); });
+        }
+        for (auto& t : threads) {
+            t.join();
+        }
+    }
+    version++;
+    txn_id++;
+
+    // check new tablet data
+    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id, version));
+
+    auto chunk = read(new_tablet, /*sorted=*/GetParam().keys_type != DUP_KEYS);
+
+    if (GetParam().keys_type == DUP_KEYS) {
+        int expect_num_rows = GetParam().writes_before + GetParam().writes_after;
+        ASSERT_EQ(expect_num_rows, chunk->num_rows());
+        for (int i = 0, sz = chunk->num_rows(); i < sz; i++) {
+            if (i < GetParam().writes_before) {
+                EXPECT_EQ(i * 1, chunk->get(i)[0].get_int32());
+                EXPECT_EQ(i * 2, chunk->get(i)[1].get_int32());
+                EXPECT_EQ(i * 1, chunk->get(i)[2].get_int32());
+            } else {
+                int k = i - GetParam().writes_before;
+                EXPECT_EQ(k * 1, chunk->get(i)[0].get_int32());
+                EXPECT_EQ(k * 4, chunk->get(i)[1].get_int32());
+                EXPECT_EQ(k * 5, chunk->get(i)[2].get_int32());
+            }
+        }
+    } else {
+        int expect_num_rows = std::max(GetParam().writes_before, GetParam().writes_after);
+        ASSERT_EQ(expect_num_rows, chunk->num_rows());
+        for (int i = 0, sz = chunk->num_rows(); i < sz; i++) {
+            if (i >= GetParam().writes_after) {
+                EXPECT_EQ(i * 1, chunk->get(i)[0].get_int32());
+                EXPECT_EQ(i * 2, chunk->get(i)[1].get_int32());
+                EXPECT_EQ(i * 1, chunk->get(i)[2].get_int32());
+            } else {
+                EXPECT_EQ(i * 1, chunk->get(i)[0].get_int32());
+                EXPECT_EQ(i * 4, chunk->get(i)[1].get_int32());
+                EXPECT_EQ(i * 5, chunk->get(i)[2].get_int32());
             }
         }
         chunk->reset();
@@ -488,7 +718,7 @@ TEST_P(SchemaChangeModifyColumnTypeTest, test_alter_column_type) {
         c0->append_datum(Datum(i * 1));
         c1->append_datum(Datum(i * 2));
 
-        VChunk chunk0({c0, c1}, _base_schema);
+        VChunk chunk0({std::move(c0), std::move(c1)}, _base_schema);
         uint32_t indexes[1] = {0};
 
         ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
@@ -497,13 +727,13 @@ TEST_P(SchemaChangeModifyColumnTypeTest, test_alter_column_type) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes, sizeof(indexes) / sizeof(indexes[0])));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -532,7 +762,7 @@ TEST_P(SchemaChangeModifyColumnTypeTest, test_alter_column_type) {
         c0->append_datum(Datum((int32_t)(i * 1)));
         c1->append_datum(Datum((int64_t)(i * 4)));
 
-        VChunk chunk1({c0, c1}, _new_schema);
+        VChunk chunk1({std::move(c0), std::move(c1)}, _new_schema);
         uint32_t indexes[1] = {0};
 
         ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
@@ -541,25 +771,25 @@ TEST_P(SchemaChangeModifyColumnTypeTest, test_alter_column_type) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes, sizeof(indexes) / sizeof(indexes[0])));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
 
     int concurrency = GetParam().concurrency;
     if (concurrency == 1) {
-        ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+        ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     } else {
         std::vector<std::thread> threads;
         for (int i = 0; i < concurrency; i++) {
             threads.emplace_back(
-                    [&]() { (void)_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1); });
+                    [&]() { (void)publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id); });
         }
         for (auto& t : threads) {
             t.join();
@@ -570,8 +800,8 @@ TEST_P(SchemaChangeModifyColumnTypeTest, test_alter_column_type) {
     txn_id++;
 
     // check new tablet data
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
-    auto chunk = read(new_tablet, version, /*sorted=*/GetParam().keys_type != DUP_KEYS);
+    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id, version));
+    auto chunk = read(new_tablet, /*sorted=*/GetParam().keys_type != DUP_KEYS);
 
     if (GetParam().keys_type == DUP_KEYS) {
         int expect_num_rows = GetParam().writes_before + GetParam().writes_after;
@@ -751,9 +981,9 @@ TEST_P(SchemaChangeModifyColumnOrderTest, test_alter_key_order) {
     std::vector<int> k1{1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3};
     std::vector<int> v0{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
 
-    auto ck0 = Int32Column::create();
-    auto ck1 = Int32Column::create();
-    auto cv0 = Int32Column::create();
+    Int32Column::Ptr ck0 = Int32Column::create();
+    Int32Column::Ptr ck1 = Int32Column::create();
+    Int32Column::Ptr cv0 = Int32Column::create();
     ck0->append_numbers(k0.data(), k0.size() * sizeof(int));
     ck1->append_numbers(k1.data(), k1.size() * sizeof(int));
     cv0->append_numbers(v0.data(), v0.size() * sizeof(int));
@@ -776,13 +1006,13 @@ TEST_P(SchemaChangeModifyColumnOrderTest, test_alter_key_order) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -810,18 +1040,18 @@ TEST_P(SchemaChangeModifyColumnOrderTest, test_alter_key_order) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
 
-    ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+    ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     version++;
     txn_id++;
 
@@ -830,8 +1060,8 @@ TEST_P(SchemaChangeModifyColumnOrderTest, test_alter_key_order) {
     std::vector<int> rc0_0{1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4};
     std::vector<int> rc2_0{2, 8, 14, 20, 4, 10, 16, 22, 6, 12, 18, 24};
 
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
-    ASSIGN_OR_ABORT(auto reader, new_tablet.new_reader(version, *_new_schema));
+    ASSIGN_OR_ABORT(auto new_metadata, _tablet_manager->get_tablet_metadata(new_tablet_id, version));
+    auto reader = std::make_shared<TabletReader>(_tablet_manager.get(), new_metadata, *_new_schema);
     CHECK_OK(reader->prepare());
     CHECK_OK(reader->open(TabletReaderParams()));
 
@@ -882,6 +1112,233 @@ INSTANTIATE_TEST_SUITE_P(SchemaChangeModifyColumnOrderTest, SchemaChangeModifyCo
                                            SchemaChangeParam{PRIMARY_KEYS, 2, 1},
                                            SchemaChangeParam{PRIMARY_KEYS, 2, 2},
                                            SchemaChangeParam{PRIMARY_KEYS, 2, 4}),
+                         to_string_param_name);
+// clang-format on
+
+class SchemaChangeModifyColumnMultiSegmentOrderTest : public SchemaChangeTest {
+public:
+    SchemaChangeModifyColumnMultiSegmentOrderTest() : SchemaChangeTest(kTestGroupPath) {
+        // base tablet
+        _base_tablet_metadata = std::make_shared<TabletMetadata>();
+        _base_tablet_metadata->set_id(next_id());
+        _base_tablet_metadata->set_version(1);
+        //
+        //  | column | type | KEY | NULL |
+        //  +--------+------+-----+------+
+        //  |   c0   |  INT | YES |  NO  |
+        //  |   c1   |  INT | YES |  NO  |
+        //  |   c2   |  INT | NO  |  NO  |
+        auto base_schema = _base_tablet_metadata->mutable_schema();
+        base_schema->set_id(next_id());
+        base_schema->set_num_short_key_columns(1);
+        base_schema->set_keys_type(GetParam().keys_type);
+        base_schema->set_num_rows_per_row_block(65535);
+        auto c0_id = next_id();
+        auto c1_id = next_id();
+        auto c2_id = next_id();
+        {
+            auto c0 = base_schema->add_column();
+            c0->set_unique_id(c0_id);
+            c0->set_name("c0");
+            c0->set_type("INT");
+            c0->set_is_key(true);
+            c0->set_is_nullable(false);
+        }
+        {
+            auto c1 = base_schema->add_column();
+            c1->set_unique_id(c1_id);
+            c1->set_name("c1");
+            c1->set_type("INT");
+            c1->set_is_key(true);
+            c1->set_is_nullable(false);
+        }
+        {
+            auto c2 = base_schema->add_column();
+            c2->set_unique_id(c2_id);
+            c2->set_name("c2");
+            c2->set_type("INT");
+            c2->set_is_key(false);
+            c2->set_is_nullable(false);
+            if (GetParam().keys_type == DUP_KEYS) {
+                c2->set_aggregation("NONE");
+            } else {
+                c2->set_aggregation("REPLACE");
+            }
+        }
+
+        _base_tablet_schema = TabletSchema::create(*base_schema);
+        _base_schema = std::make_shared<VSchema>(ChunkHelper::convert_schema(_base_tablet_schema));
+
+        // new tablet
+        _new_tablet_metadata = std::make_shared<TabletMetadata>();
+        _new_tablet_metadata->set_id(next_id());
+        _new_tablet_metadata->set_version(1);
+        //
+        //  | column | type | KEY | NULL |
+        //  +--------+------+-----+------+
+        //  |   c0   |  INT | YES |  NO  |
+        //  |   c1   |  INT | YES |  NO  |
+        //  |   c2   |  BIGINT | NO  |  NO  |
+        auto new_schema = _new_tablet_metadata->mutable_schema();
+        new_schema->set_id(next_id());
+        new_schema->set_num_short_key_columns(1);
+        new_schema->set_keys_type(GetParam().keys_type);
+        new_schema->set_num_rows_per_row_block(65535);
+        // c0 c1 c2 id should be same as base tablet schema
+        {
+            auto c0 = new_schema->add_column();
+            c0->set_unique_id(c0_id);
+            c0->set_name("c0");
+            c0->set_type("INT");
+            c0->set_is_key(true);
+            c0->set_is_nullable(false);
+        }
+        {
+            auto c1 = new_schema->add_column();
+            c1->set_unique_id(c1_id);
+            c1->set_name("c1");
+            c1->set_type("INT");
+            c1->set_is_key(true);
+            c1->set_is_nullable(false);
+        }
+        {
+            auto c2 = new_schema->add_column();
+            c2->set_unique_id(c2_id);
+            c2->set_name("c2");
+            c2->set_type("BIGINT");
+            c2->set_is_key(false);
+            c2->set_is_nullable(false);
+            c2->set_default_value("10");
+            if (GetParam().keys_type == DUP_KEYS) {
+                c2->set_aggregation("NONE");
+            } else {
+                c2->set_aggregation("REPLACE");
+            }
+        }
+
+        _new_tablet_schema = TabletSchema::create(*new_schema);
+        _new_schema = std::make_shared<VSchema>(ChunkHelper::convert_schema(_new_tablet_schema));
+    }
+
+protected:
+    constexpr static const char* const kTestGroupPath = "test_lake_multi_segment_sorted_schema_change";
+
+    void SetUp() override {
+        (void)fs::remove_all(kTestGroupPath);
+        CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kSegmentDirectoryName)));
+        CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kMetadataDirectoryName)));
+        CHECK_OK(fs::create_directories(lake::join_path(kTestGroupPath, lake::kTxnLogDirectoryName)));
+        CHECK_OK(_tablet_manager->put_tablet_metadata(*_base_tablet_metadata));
+        CHECK_OK(_tablet_manager->put_tablet_metadata(*_new_tablet_metadata));
+    }
+
+    void TearDown() override { (void)fs::remove_all(kTestGroupPath); }
+};
+
+TEST_P(SchemaChangeModifyColumnMultiSegmentOrderTest, test_alter_table) {
+    std::vector<int> k0{1, 3, 5};
+    std::vector<int> k1{1, 3, 5};
+    std::vector<int> v0{1, 3, 5};
+
+    auto ck0 = Int32Column::create();
+    auto ck1 = Int32Column::create();
+    auto cv0 = Int32Column::create();
+    ck0->append_numbers(k0.data(), k0.size() * sizeof(int));
+    ck1->append_numbers(k1.data(), k1.size() * sizeof(int));
+    cv0->append_numbers(v0.data(), v0.size() * sizeof(int));
+
+    auto indexes = std::vector<uint32_t>(k0.size());
+    for (int i = 0; i < k0.size(); i++) {
+        indexes[i] = i;
+    }
+
+    int64_t version = 1;
+    int64_t txn_id = 1000;
+    auto base_tablet_id = _base_tablet_metadata->id();
+
+    std::vector<int> k0_2{2, 4, 6};
+    std::vector<int> k1_2{2, 4, 6};
+    std::vector<int> v0_2{2, 4, 6};
+
+    auto ck0_2 = Int32Column::create();
+    auto ck1_2 = Int32Column::create();
+    auto cv0_2 = Int32Column::create();
+    ck0_2->append_numbers(k0_2.data(), k0_2.size() * sizeof(int));
+    ck1_2->append_numbers(k1_2.data(), k1_2.size() * sizeof(int));
+    cv0_2->append_numbers(v0_2.data(), v0_2.size() * sizeof(int));
+
+    {
+        // mutli segments in on rowset
+        const int64_t old_size = config::write_buffer_size;
+        config::write_buffer_size = 1;
+        VChunk chunk0({std::move(ck0), std::move(ck1), std::move(cv0)}, _base_schema);
+        VChunk chunk1({std::move(ck0_2), std::move(ck1_2), std::move(cv0_2)}, _base_schema);
+
+        ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
+                                                   .set_tablet_manager(_tablet_manager.get())
+                                                   .set_tablet_id(base_tablet_id)
+                                                   .set_txn_id(txn_id)
+                                                   .set_partition_id(_partition_id)
+                                                   .set_mem_tracker(_mem_tracker.get())
+                                                   .set_schema_id(_base_tablet_schema->id())
+                                                   .set_profile(&_dummy_runtime_profile)
+                                                   .build());
+        ASSERT_OK(delta_writer->open());
+        ASSERT_OK(delta_writer->write(chunk0, indexes.data(), indexes.size()));
+        ASSERT_OK(delta_writer->write(chunk1, indexes.data(), indexes.size()));
+        ASSERT_OK(delta_writer->finish_with_txnlog());
+        delta_writer->close();
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
+        version++;
+        txn_id++;
+        config::write_buffer_size = old_size;
+    }
+
+    // do schema change
+    auto new_tablet_id = _new_tablet_metadata->id();
+    auto alter_txn_id = txn_id;
+    {
+        TAlterTabletReqV2 request;
+        request.base_tablet_id = base_tablet_id;
+        request.new_tablet_id = new_tablet_id;
+        request.alter_version = version;
+        request.txn_id = alter_txn_id;
+
+        SchemaChangeHandler handler(_tablet_manager.get());
+        ASSERT_OK(handler.process_alter_tablet(request));
+    }
+
+    ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
+    version++;
+    txn_id++;
+
+    // check new tablet data
+    std::vector<int> rc0{1, 2, 3, 4, 5, 6};
+    std::vector<int> rc1{1, 2, 3, 4, 5, 6};
+    std::vector<int> rc2{1, 2, 3, 4, 5, 6};
+
+    ASSIGN_OR_ABORT(auto new_metadata, _tablet_manager->get_tablet_metadata(new_tablet_id, version));
+    auto reader = std::make_shared<TabletReader>(_tablet_manager.get(), new_metadata, *_new_schema);
+    CHECK_OK(reader->prepare());
+    CHECK_OK(reader->open(TabletReaderParams()));
+
+    auto chunk = ChunkHelper::new_chunk(*_new_schema, 1024);
+
+    CHECK_OK(reader->get_next(chunk.get()));
+    for (int i = 0; i < rc0.size(); i++) {
+        EXPECT_EQ(rc0[i], chunk->get(i)[0].get_int32());
+        EXPECT_EQ(rc1[i], chunk->get(i)[1].get_int32());
+        EXPECT_EQ(rc2[i], chunk->get(i)[2].get_int64());
+    }
+    chunk->reset();
+
+    auto st = reader->get_next(chunk.get());
+    ASSERT_TRUE(st.is_end_of_file());
+}
+
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(SchemaChangeModifyColumnMultiSegmentOrderTest, SchemaChangeModifyColumnMultiSegmentOrderTest,
+                         ::testing::Values(SchemaChangeParam{PRIMARY_KEYS, 0, 0}, SchemaChangeParam{DUP_KEYS, 0, 0}),
                          to_string_param_name);
 // clang-format on
 
@@ -994,7 +1451,7 @@ public:
     }
 
 protected:
-    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder";
+    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder_1";
 
     void SetUp() override {
         (void)fs::remove_all(kTestGroupPath);
@@ -1013,9 +1470,9 @@ TEST_P(SchemaChangeSortKeyReorderTest1, test_alter_sortkey_reorder_1) {
     std::vector<int> k1{1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3};
     std::vector<int> v0{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
 
-    auto ck0 = Int32Column::create();
-    auto ck1 = Int32Column::create();
-    auto cv0 = Int32Column::create();
+    Int32Column::Ptr ck0 = Int32Column::create();
+    Int32Column::Ptr ck1 = Int32Column::create();
+    Int32Column::Ptr cv0 = Int32Column::create();
     ck0->append_numbers(k0.data(), k0.size() * sizeof(int));
     ck1->append_numbers(k1.data(), k1.size() * sizeof(int));
     cv0->append_numbers(v0.data(), v0.size() * sizeof(int));
@@ -1037,13 +1494,13 @@ TEST_P(SchemaChangeSortKeyReorderTest1, test_alter_sortkey_reorder_1) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -1071,18 +1528,18 @@ TEST_P(SchemaChangeSortKeyReorderTest1, test_alter_sortkey_reorder_1) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
 
-    ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+    ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     version++;
     txn_id++;
 
@@ -1091,8 +1548,8 @@ TEST_P(SchemaChangeSortKeyReorderTest1, test_alter_sortkey_reorder_1) {
     std::vector<int> rc1_0{1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3};
     std::vector<int> rc2_0{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
 
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
-    ASSIGN_OR_ABORT(auto reader, new_tablet.new_reader(version, *_new_schema));
+    ASSIGN_OR_ABORT(auto new_metadata, _tablet_manager->get_tablet_metadata(new_tablet_id, version));
+    auto reader = std::make_shared<TabletReader>(_tablet_manager.get(), new_metadata, *_new_schema);
     CHECK_OK(reader->prepare());
     CHECK_OK(reader->open(TabletReaderParams()));
 
@@ -1232,7 +1689,7 @@ public:
     }
 
 protected:
-    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder";
+    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder_2";
 
     void SetUp() override {
         (void)fs::remove_all(kTestGroupPath);
@@ -1251,9 +1708,9 @@ TEST_P(SchemaChangeSortKeyReorderTest2, test_alter_sortkey_reorder2) {
     std::vector<int> k1{1, 2, 3, 3, 2, 1, 1, 2, 3, 1, 2, 3};
     std::vector<int> v0{2, 4, 6, 12, 10, 8, 14, 16, 18, 20, 22, 24};
 
-    auto ck0 = Int32Column::create();
-    auto ck1 = Int32Column::create();
-    auto cv0 = Int32Column::create();
+    Int32Column::Ptr ck0 = Int32Column::create();
+    Int32Column::Ptr ck1 = Int32Column::create();
+    Int32Column::Ptr cv0 = Int32Column::create();
     ck0->append_numbers(k0.data(), k0.size() * sizeof(int));
     ck1->append_numbers(k1.data(), k1.size() * sizeof(int));
     cv0->append_numbers(v0.data(), v0.size() * sizeof(int));
@@ -1275,13 +1732,13 @@ TEST_P(SchemaChangeSortKeyReorderTest2, test_alter_sortkey_reorder2) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -1309,18 +1766,18 @@ TEST_P(SchemaChangeSortKeyReorderTest2, test_alter_sortkey_reorder2) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
 
-    ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+    ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     version++;
     txn_id++;
 
@@ -1329,8 +1786,8 @@ TEST_P(SchemaChangeSortKeyReorderTest2, test_alter_sortkey_reorder2) {
     std::vector<int> rc1_0{1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3};
     std::vector<int> rc2_0{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
 
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
-    ASSIGN_OR_ABORT(auto reader, new_tablet.new_reader(version, *_new_schema));
+    ASSIGN_OR_ABORT(auto new_metadata, _tablet_manager->get_tablet_metadata(new_tablet_id, version));
+    auto reader = std::make_shared<TabletReader>(_tablet_manager.get(), new_metadata, *_new_schema);
     CHECK_OK(reader->prepare());
     CHECK_OK(reader->open(TabletReaderParams()));
 
@@ -1468,7 +1925,7 @@ public:
     }
 
 protected:
-    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder";
+    constexpr static const char* const kTestGroupPath = "test_lake_sortkey_reorder_3";
 
     void SetUp() override {
         (void)fs::remove_all(kTestGroupPath);
@@ -1487,9 +1944,9 @@ TEST_P(SchemaChangeSortKeyReorderTest3, test_alter_sortkey_reorder3) {
     std::vector<int> k1{1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3};
     std::vector<int> v0{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24};
 
-    auto ck0 = Int32Column::create();
-    auto ck1 = Int32Column::create();
-    auto cv0 = Int32Column::create();
+    Int32Column::Ptr ck0 = Int32Column::create();
+    Int32Column::Ptr ck1 = Int32Column::create();
+    Int32Column::Ptr cv0 = Int32Column::create();
     ck0->append_numbers(k0.data(), k0.size() * sizeof(int));
     ck1->append_numbers(k1.data(), k1.size() * sizeof(int));
     cv0->append_numbers(v0.data(), v0.size() * sizeof(int));
@@ -1511,13 +1968,13 @@ TEST_P(SchemaChangeSortKeyReorderTest3, test_alter_sortkey_reorder3) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_base_tablet_schema->id())
+                                                   .set_schema_id(_base_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk0, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_version(base_tablet_id, version, version + 1, &txn_id, 1).status());
+        ASSERT_OK(TEST_publish_single_version(_tablet_manager.get(), base_tablet_id, version + 1, txn_id).status());
         version++;
         txn_id++;
     }
@@ -1545,18 +2002,18 @@ TEST_P(SchemaChangeSortKeyReorderTest3, test_alter_sortkey_reorder3) {
                                                    .set_txn_id(txn_id)
                                                    .set_partition_id(_partition_id)
                                                    .set_mem_tracker(_mem_tracker.get())
-                                                   .set_index_id(_new_tablet_schema->id())
+                                                   .set_schema_id(_new_tablet_schema->id())
                                                    .build());
         ASSERT_OK(delta_writer->open());
         ASSERT_OK(delta_writer->write(chunk1, indexes.data(), indexes.size()));
-        ASSERT_OK(delta_writer->finish());
+        ASSERT_OK(delta_writer->finish_with_txnlog());
         delta_writer->close();
-        ASSERT_OK(_tablet_manager->publish_log_version(new_tablet_id, txn_id, version + 1));
+        ASSERT_OK(TEST_publish_single_log_version(_tablet_manager.get(), new_tablet_id, txn_id, version + 1));
         version++;
         txn_id++;
     }
 
-    ASSERT_OK(_tablet_manager->publish_version(new_tablet_id, 1, version + 1, &alter_txn_id, 1).status());
+    ASSERT_OK(publish_version_for_schema_change(new_tablet_id, version + 1, alter_txn_id));
     version++;
     txn_id++;
 
@@ -1565,8 +2022,8 @@ TEST_P(SchemaChangeSortKeyReorderTest3, test_alter_sortkey_reorder3) {
     std::vector<int> rc1_0{1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3};
     std::vector<int> rc2_0{2, 8, 14, 20, 4, 10, 16, 22, 6, 12, 18, 24};
 
-    ASSIGN_OR_ABORT(auto new_tablet, _tablet_manager->get_tablet(new_tablet_id));
-    ASSIGN_OR_ABORT(auto reader, new_tablet.new_reader(version, *_new_schema));
+    ASSIGN_OR_ABORT(auto new_metadata, _tablet_manager->get_tablet_metadata(new_tablet_id, version));
+    auto reader = std::make_shared<TabletReader>(_tablet_manager.get(), new_metadata, *_new_schema);
     CHECK_OK(reader->prepare());
     CHECK_OK(reader->open(TabletReaderParams()));
 

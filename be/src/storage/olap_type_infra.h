@@ -121,6 +121,16 @@ namespace starrocks {
     M(TYPE_JSON)                             \
     M(TYPE_DOUBLE)
 
+#define APPLY_FOR_COLUMN_PREDICATE_TYPE(M) \
+    M(TYPE_BOOLEAN)                        \
+    APPLY_FOR_TYPE_INTEGER(M)              \
+    APPLY_FOR_TYPE_DECIMAL(M)              \
+    APPLY_FOR_TYPE_TIME(M)                 \
+    M(TYPE_FLOAT)                          \
+    M(TYPE_DOUBLE)                         \
+    M(TYPE_CHAR)                           \
+    M(TYPE_VARCHAR)
+
 #define _TYPE_DISPATCH_CASE(type) \
     case type:                    \
         return fun.template operator()<type>(std::forward<Args>(args)...);
@@ -144,6 +154,7 @@ auto field_type_dispatch_column(LogicalType ftype, Functor fun, Args&&... args) 
         _TYPE_DISPATCH_CASE(TYPE_ARRAY)
         _TYPE_DISPATCH_CASE(TYPE_MAP)
         _TYPE_DISPATCH_CASE(TYPE_STRUCT)
+        _TYPE_DISPATCH_CASE(TYPE_UNSIGNED_SMALLINT)
     default:
         CHECK(false) << "unknown type " << ftype;
         __builtin_unreachable();
@@ -207,6 +218,15 @@ auto field_type_dispatch_supported(LogicalType ftype, Functor fun, Args&&... arg
     default:
         CHECK(false) << "Unsupported type: " << ftype;
         __builtin_unreachable();
+    }
+}
+
+template <class Functor, class Ret, class... Args>
+auto field_type_dispatch_column_predicate(LogicalType ftype, Ret default_value, Functor fun, Args&&... args) {
+    switch (ftype) {
+        APPLY_FOR_COLUMN_PREDICATE_TYPE(_TYPE_DISPATCH_CASE)
+    default:
+        return default_value;
     }
 }
 

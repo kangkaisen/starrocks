@@ -55,20 +55,18 @@ Status Compaction::do_compaction() {
     return st;
 }
 
-RowsetSharedPtr& tablet_meta_with_max_rowset_version(std::vector<RowsetSharedPtr> rowsets) {
-    return *std::max_element(rowsets.begin(), rowsets.end(), [](const RowsetSharedPtr& a, const RowsetSharedPtr& b) {
-        return a->version() < b->version();
-    });
-}
-
 Status Compaction::do_compaction_impl() {
     OlapStopWatch watch;
 
     int64_t segments_num = 0;
+    int64_t max_gtid = 0;
     for (auto& rowset : _input_rowsets) {
         _input_rowsets_size += rowset->data_disk_size();
         _input_row_num += rowset->num_rows();
         segments_num += rowset->num_segments();
+        if (rowset->rowset_meta()->gtid() > max_gtid) {
+            max_gtid = rowset->rowset_meta()->gtid();
+        }
     }
 
     TRACE_COUNTER_INCREMENT("input_rowsets_data_size", _input_rowsets_size);
@@ -85,13 +83,12 @@ Status Compaction::do_compaction_impl() {
         return iterator_num_res.status();
     }
 
-    const TabletSchemaCSPtr& cur_tablet_schema = tablet_meta_with_max_rowset_version(_input_rowsets)->schema();
-
+    auto cur_tablet_schema = CompactionUtils::rowset_with_max_schema_version(_input_rowsets)->schema();
     size_t segment_iterator_num = iterator_num_res.value();
     CompactionAlgorithm algorithm = CompactionUtils::choose_compaction_algorithm(
-            _tablet->num_columns(), config::vertical_compaction_max_columns_per_group, segment_iterator_num);
+            cur_tablet_schema->num_columns(), config::vertical_compaction_max_columns_per_group, segment_iterator_num);
     if (algorithm == VERTICAL_COMPACTION) {
-        CompactionUtils::split_column_into_groups(_tablet->num_columns(), cur_tablet_schema->sort_key_idxes(),
+        CompactionUtils::split_column_into_groups(cur_tablet_schema->num_columns(), cur_tablet_schema->sort_key_idxes(),
                                                   config::vertical_compaction_max_columns_per_group, &_column_groups);
     }
 
@@ -105,8 +102,9 @@ Status Compaction::do_compaction_impl() {
               << ", column group size=" << _column_groups.size()
               << ", columns per group=" << config::vertical_compaction_max_columns_per_group;
 
-    RETURN_IF_ERROR(CompactionUtils::construct_output_rowset_writer(
-            _tablet.get(), max_rows_per_segment, algorithm, _output_version, &_output_rs_writer, &cur_tablet_schema));
+    RETURN_IF_ERROR(CompactionUtils::construct_output_rowset_writer(_tablet.get(), max_rows_per_segment, algorithm,
+                                                                    _output_version, max_gtid, &_output_rs_writer,
+                                                                    cur_tablet_schema));
     TRACE("prepare finished");
 
     Statistics stats;
@@ -165,11 +163,11 @@ Status Compaction::_merge_rowsets_horizontally(size_t segment_iterator_num, Stat
                                                const TabletSchemaCSPtr& tablet_schema) {
     TRACE_COUNTER_SCOPE_LATENCY_US("merge_rowsets_latency_us");
     Schema schema = ChunkHelper::convert_schema(tablet_schema);
-    auto merge_tablet_schema = std::shared_ptr<TabletSchema>(TabletSchema::copy(tablet_schema));
-    TabletReader reader(_tablet, _output_rs_writer->version(), merge_tablet_schema, schema);
+    TabletReader reader(_tablet, _output_rs_writer->version(), tablet_schema, schema);
     TabletReaderParams reader_params;
     reader_params.reader_type = compaction_type();
     reader_params.profile = _runtime_profile.create_child("merge_rowsets");
+    reader_params.column_access_paths = &_column_access_paths;
 
     int64_t total_num_rows = 0;
     int64_t total_mem_footprint = 0;
@@ -180,7 +178,7 @@ Status Compaction::_merge_rowsets_horizontally(size_t segment_iterator_num, Stat
     int32_t chunk_size =
             CompactionUtils::get_read_chunk_size(config::compaction_memory_limit_per_worker, config::vector_chunk_size,
                                                  total_num_rows, total_mem_footprint, segment_iterator_num);
-    VLOG(1) << "tablet=" << _tablet->tablet_id() << ", reader chunk size=" << chunk_size;
+    VLOG(2) << "tablet=" << _tablet->tablet_id() << ", reader chunk size=" << chunk_size;
     reader_params.chunk_size = chunk_size;
     RETURN_IF_ERROR(reader.prepare());
     RETURN_IF_ERROR(reader.open(reader_params));
@@ -256,6 +254,7 @@ Status Compaction::_merge_rowsets_vertically(size_t segment_iterator_num, Statis
         TabletReaderParams reader_params;
         reader_params.reader_type = compaction_type();
         reader_params.profile = _runtime_profile.create_child("merge_rowsets");
+        reader_params.column_access_paths = &_column_access_paths;
 
         int64_t total_num_rows = 0;
         int64_t total_mem_footprint = 0;
@@ -263,10 +262,8 @@ Status Compaction::_merge_rowsets_vertically(size_t segment_iterator_num, Statis
             total_num_rows += rowset->num_rows();
             for (auto& segment : rowset->segments()) {
                 for (uint32_t column_index : _column_groups[i]) {
-                    if (!segment->is_valid_column(tablet_schema->column(column_index).unique_id())) {
-                        continue;
-                    }
-                    const auto* column_reader = segment->column(column_index);
+                    auto uid = tablet_schema->column(column_index).unique_id();
+                    const auto* column_reader = segment->column_with_uid(uid);
                     if (column_reader == nullptr) {
                         continue;
                     }
@@ -277,7 +274,7 @@ Status Compaction::_merge_rowsets_vertically(size_t segment_iterator_num, Statis
         int32_t chunk_size = CompactionUtils::get_read_chunk_size(config::compaction_memory_limit_per_worker,
                                                                   config::vector_chunk_size, total_num_rows,
                                                                   total_mem_footprint, segment_iterator_num);
-        VLOG(1) << "tablet=" << _tablet->tablet_id() << ", column group=" << i << ", reader chunk size=" << chunk_size;
+        VLOG(2) << "tablet=" << _tablet->tablet_id() << ", column group=" << i << ", reader chunk size=" << chunk_size;
         reader_params.chunk_size = chunk_size;
         RETURN_IF_ERROR(reader.open(reader_params));
 
@@ -362,7 +359,7 @@ Status Compaction::modify_rowsets() {
 
     std::vector<RowsetSharedPtr> to_replace;
     std::unique_lock wrlock(_tablet->get_header_lock());
-    _tablet->modify_rowsets({_output_rowset}, _input_rowsets, &to_replace);
+    _tablet->modify_rowsets_without_lock({_output_rowset}, _input_rowsets, &to_replace);
     _tablet->save_meta();
     Rowset::close_rowsets(_input_rowsets);
     for (auto& rs : to_replace) {

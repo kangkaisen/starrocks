@@ -36,7 +36,9 @@ import com.starrocks.analysis.InformationFunction;
 import com.starrocks.analysis.IsNullPredicate;
 import com.starrocks.analysis.LikePredicate;
 import com.starrocks.analysis.LiteralExpr;
+import com.starrocks.analysis.MatchExpr;
 import com.starrocks.analysis.OrderByElement;
+import com.starrocks.analysis.Parameter;
 import com.starrocks.analysis.ParseNode;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.analysis.Subquery;
@@ -47,6 +49,8 @@ import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SqlModeHelper;
 import com.starrocks.sql.ast.ArrayExpr;
 import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.DictionaryGetExpr;
+import com.starrocks.sql.ast.FieldReference;
 import com.starrocks.sql.ast.LambdaFunctionExpr;
 import com.starrocks.sql.ast.QueryStatement;
 
@@ -107,18 +111,28 @@ public class AggregationAnalyzer {
     /**
      * visitor returns true if all expressions are constant with respect to the group.
      */
-    private class VerifyExpressionVisitor extends AstVisitor<Boolean, Void> {
+    private class VerifyExpressionVisitor implements AstVisitor<Boolean, Void> {
         @Override
         public Boolean visit(ParseNode expr) {
             if (groupingExpressions.stream().anyMatch(expr::equals)) {
                 return true;
             }
-            return super.visit(expr);
+            return expr.accept(this, null);
+        }
+
+        @Override
+        public Boolean visitFieldReference(FieldReference node, Void context) {
+            String colInfo = node.getTblName() == null ? "column" : "column of " + node.getTblName().toString();
+            throw new SemanticException(colInfo + " must appear in the GROUP BY clause or be used in an aggregate function",
+                    node.getPos());
         }
 
         @Override
         public Boolean visitExpression(Expr node, Void context) {
-            throw new SemanticException(PARSER_ERROR_MSG.unsupportedExprWithInfo(node.toSql(), "GROUP BY"),
+            if (node instanceof Parameter) {
+                return true;
+            }
+            throw new SemanticException(node.toSql() + " must appear in the GROUP BY clause or be used in an aggregate function",
                     node.getPos());
         }
 
@@ -254,8 +268,7 @@ public class AggregationAnalyzer {
                         node.getPos());
             }
 
-            if (node.getChildren().stream().anyMatch(argument ->
-                    !analyzeState.getColumnReferences().containsKey(argument) || !isGroupingKey(argument))) {
+            if (node.getChildren().stream().anyMatch(argument -> !analyzeState.getGroupBy().contains(argument))) {
                 throw new SemanticException(PARSER_ERROR_MSG.argsCanOnlyFromGroupBy(), node.getPos());
             }
 
@@ -283,6 +296,11 @@ public class AggregationAnalyzer {
         }
 
         @Override
+        public Boolean visitMatchExpr(MatchExpr node, Void context) {
+            return visit(node.getChild(0));
+        }
+
+        @Override
         public Boolean visitLiteral(LiteralExpr node, Void context) {
             return true;
         }
@@ -296,7 +314,7 @@ public class AggregationAnalyzer {
         }
 
         @Override
-        public Boolean visitSubquery(Subquery node, Void context) {
+        public Boolean visitSubqueryExpr(Subquery node, Void context) {
             QueryStatement queryStatement = node.getQueryStatement();
             for (Map.Entry<Expr, FieldId> entry : queryStatement.getQueryRelation().getColumnReferences().entrySet()) {
                 Expr expr = entry.getKey();
@@ -339,6 +357,11 @@ public class AggregationAnalyzer {
 
         @Override
         public Boolean visitDictQueryExpr(DictQueryExpr node, Void context) {
+            return node.getChildren().stream().allMatch(this::visit);
+        }
+
+        @Override
+        public Boolean visitDictionaryGetExpr(DictionaryGetExpr node, Void context) {
             return node.getChildren().stream().allMatch(this::visit);
         }
     }

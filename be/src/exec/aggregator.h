@@ -32,15 +32,18 @@
 #include "exec/aggregate/agg_hash_variant.h"
 #include "exec/aggregate/agg_profile.h"
 #include "exec/chunk_buffer_memory_manager.h"
+#include "exec/limited_pipeline_chunk_buffer.h"
 #include "exec/pipeline/context_with_dependency.h"
+#include "exec/pipeline/schedule/observer.h"
 #include "exec/pipeline/spill_process_channel.h"
 #include "exprs/agg/aggregate_factory.h"
 #include "exprs/expr.h"
-#include "gen_cpp/QueryPlanExtra_constants.h"
+#include "gen_cpp/QueryPlanExtra_types.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/current_thread.h"
 #include "runtime/descriptors.h"
 #include "runtime/mem_pool.h"
+#include "runtime/memory/counting_allocator.h"
 #include "runtime/runtime_state.h"
 #include "runtime/types.h"
 #include "util/defer_op.h"
@@ -136,6 +139,11 @@ struct AggFunctionTypes {
     std::vector<bool> nulls_first;
 
     bool is_distinct = false;
+    bool is_always_nullable_result = false;
+
+    template <bool UseIntermediateAsOutput>
+    bool is_result_nullable() const;
+    bool use_nullable_fn(bool use_intermediate_as_output) const;
 };
 
 struct ColumnType {
@@ -208,6 +216,7 @@ struct AggregatorParams {
     bool needs_finalize;
     bool has_outer_join_child;
     int64_t limit;
+    bool enable_pipeline_share_limit;
     TStreamingPreaggregationMode::type streaming_preaggregation_mode;
     TupleId intermediate_tuple_id;
     TupleId output_tuple_id;
@@ -238,8 +247,6 @@ struct AggregatorParams {
     bool has_nullable_key;
 
     void init();
-
-    ChunkUniquePtr create_result_chunk(bool is_serialize_fmt, const TupleDescriptor& desc);
 };
 using AggregatorParamsPtr = std::shared_ptr<AggregatorParams>;
 AggregatorParamsPtr convert_to_aggregator_params(const TPlanNode& tnode);
@@ -288,12 +295,14 @@ public:
     bool is_hash_set() const { return _is_only_group_by_columns; }
     const int64_t hash_map_memory_usage() const { return _hash_map_variant.reserved_memory_usage(mem_pool()); }
     const int64_t hash_set_memory_usage() const { return _hash_set_variant.reserved_memory_usage(mem_pool()); }
+    const int64_t agg_state_memory_usage() const { return _agg_state_mem_usage; }
+    const int64_t allocator_memory_usage() const { return _allocator->memory_usage(); }
 
     const int64_t memory_usage() const {
         if (is_hash_set()) {
-            return hash_set_memory_usage();
+            return hash_set_memory_usage() + agg_state_memory_usage() + allocator_memory_usage();
         } else if (!_group_by_expr_ctxs.empty()) {
-            return hash_map_memory_usage();
+            return hash_map_memory_usage() + agg_state_memory_usage() + allocator_memory_usage();
         } else {
             return 0;
         }
@@ -304,7 +313,7 @@ public:
     const AggHashMapVariant& hash_map_variant() { return _hash_map_variant; }
     const AggHashSetVariant& hash_set_variant() { return _hash_set_variant; }
     std::any& it_hash() { return _it_hash; }
-    const std::vector<uint8_t>& streaming_selection() { return _streaming_selection; }
+    const Filter& streaming_selection() { return _streaming_selection; }
     RuntimeProfile::Counter* agg_compute_timer() { return _agg_stat->agg_compute_timer; }
     RuntimeProfile::Counter* agg_expr_timer() { return _agg_stat->agg_function_compute_timer; }
     RuntimeProfile::Counter* streaming_timer() { return _agg_stat->streaming_timer; }
@@ -324,10 +333,10 @@ public:
                                           int64_t ht_rows) const;
 
     // For aggregate without group by
-    [[nodiscard]] Status compute_single_agg_state(Chunk* chunk, size_t chunk_size);
+    Status compute_single_agg_state(Chunk* chunk, size_t chunk_size);
     // For aggregate with group by
-    [[nodiscard]] Status compute_batch_agg_states(Chunk* chunk, size_t chunk_size);
-    [[nodiscard]] Status compute_batch_agg_states_with_selection(Chunk* chunk, size_t chunk_size);
+    Status compute_batch_agg_states(Chunk* chunk, size_t chunk_size);
+    Status compute_batch_agg_states_with_selection(Chunk* chunk, size_t chunk_size);
 
     // Convert one row agg states to chunk
     Status convert_to_chunk_no_groupby(ChunkPtr* chunk);
@@ -339,17 +348,21 @@ public:
     Status evaluate_agg_fn_exprs(Chunk* chunk, bool use_intermediate);
     Status evaluate_agg_input_column(Chunk* chunk, std::vector<ExprContext*>& agg_expr_ctxs, int i);
 
-    [[nodiscard]] Status output_chunk_by_streaming(Chunk* input_chunk, ChunkPtr* chunk);
+    Status output_chunk_by_streaming(Chunk* input_chunk, ChunkPtr* chunk,
+                                     bool force_use_intermediate_as_output = false);
+    Status output_chunk_by_streaming(Chunk* input_chunk, ChunkPtr* chunk, size_t num_input_rows, bool use_selection,
+                                     bool force_use_intermediate_as_output = false);
 
     // convert input chunk to spill format
-    [[nodiscard]] Status convert_to_spill_format(Chunk* input_chunk, ChunkPtr* chunk);
+    Status convert_to_spill_format(Chunk* input_chunk, ChunkPtr* chunk);
 
     // Elements queried in HashTable will be added to HashTable,
     // elements that cannot be queried are not processed,
     // and are mainly used in the first stage of two-stage aggregation when aggr reduction is low
     // selection[i] = 0: found in hash table
     // selection[1] = 1: not found in hash table
-    [[nodiscard]] Status output_chunk_by_streaming_with_selection(Chunk* input_chunk, ChunkPtr* chunk);
+    Status output_chunk_by_streaming_with_selection(Chunk* input_chunk, ChunkPtr* chunk,
+                                                    bool force_use_intermediate_as_output = false);
 
     // At first, we use single hash map, if hash map is too big,
     // we convert the single hash map to two level hash map.
@@ -380,8 +393,6 @@ public:
     const SpillProcessChannelPtr spill_channel() const { return _spill_channel; }
     void set_spill_channel(SpillProcessChannelPtr channel) { _spill_channel = std::move(channel); }
 
-    auto& io_executor() { return *spill_channel()->io_executor(); }
-
     Status spill_aggregate_data(RuntimeState* state, std::function<StatusOr<ChunkPtr>()> chunk_provider);
 
     bool has_pending_data() const { return _spiller != nullptr && _spiller->has_pending_data(); }
@@ -396,6 +407,15 @@ public:
 
     HashTableKeyAllocator _state_allocator;
 
+    void attach_sink_observer(RuntimeState* state, pipeline::PipelineObserver* observer) {
+        _pip_observable.attach_sink_observer(state, observer);
+    }
+    void attach_source_observer(RuntimeState* state, pipeline::PipelineObserver* observer) {
+        _pip_observable.attach_source_observer(state, observer);
+    }
+    auto defer_notify_source() { return _pip_observable.defer_notify_source(); }
+    auto defer_notify_sink() { return _pip_observable.defer_notify_sink(); }
+
 protected:
     AggregatorParamsPtr _params;
 
@@ -404,6 +424,8 @@ protected:
 
     ObjectPool* _pool;
     std::unique_ptr<MemPool> _mem_pool;
+    // used to count heap memory usage of agg states
+    std::unique_ptr<CountingAllocatorWithHook> _allocator;
     // The open phase still relies on the TFunction object for some initialization operations
     std::vector<TFunction> _fns;
 
@@ -416,9 +438,7 @@ protected:
     // only used in pipeline engine
     std::atomic<bool> _is_sink_complete = false;
     // only used in pipeline engine
-    std::queue<ChunkPtr> _buffer;
-    std::unique_ptr<pipeline::ChunkBufferMemoryManager> _buffer_mem_manager;
-    std::mutex _buffer_mutex;
+    std::unique_ptr<LimitedPipelineChunkBuffer<AggStatistics>> _limited_buffer;
 
     // Certain aggregates require a finalize step, which is the final step of the
     // aggregate after consuming all input rows. The finalize step converts the aggregate
@@ -455,7 +475,7 @@ protected:
     // The expr used to evaluate agg input columns
     // one agg function could have multi input exprs
     std::vector<std::vector<ExprContext*>> _agg_expr_ctxs;
-    std::vector<std::vector<ColumnPtr>> _agg_input_columns;
+    std::vector<Columns> _agg_input_columns;
     //raw pointers in order to get multi-column values
     std::vector<std::vector<const Column*>> _agg_input_raw_columns;
     // The expr used to evaluate agg intermediate columns.
@@ -489,7 +509,7 @@ protected:
     AggrMode _aggr_mode = AM_DEFAULT;
     bool _is_passthrough = false;
     bool _is_pending_reset_state = false;
-    std::vector<uint8_t> _streaming_selection;
+    Filter _streaming_selection;
 
     bool _has_udaf = false;
 
@@ -497,19 +517,33 @@ protected:
 
     std::shared_ptr<spill::Spiller> _spiller;
     SpillProcessChannelPtr _spill_channel;
+    bool _is_opened = false;
+    bool _is_prepared = false;
+    int64_t _agg_state_mem_usage = 0;
+
+    // aggregate combinator functions since they are not persisted in agg hash map
+    std::vector<AggregateFunctionPtr> _combinator_function;
+
+    pipeline::PipeObservable _pip_observable;
 
 public:
     void build_hash_map(size_t chunk_size, bool agg_group_by_with_limit = false);
+    void build_hash_map(size_t chunk_size, std::atomic<int64_t>& shared_limit_countdown, bool agg_group_by_with_limit);
     void build_hash_map_with_selection(size_t chunk_size);
     void build_hash_map_with_selection_and_allocation(size_t chunk_size, bool agg_group_by_with_limit = false);
-    Status convert_hash_map_to_chunk(int32_t chunk_size, ChunkPtr* chunk, bool* use_intermediate_as_output = nullptr);
+    Status convert_hash_map_to_chunk(int32_t chunk_size, ChunkPtr* chunk,
+                                     bool force_use_intermediate_as_output = false);
 
     void build_hash_set(size_t chunk_size);
     void build_hash_set_with_selection(size_t chunk_size);
     void convert_hash_set_to_chunk(int32_t chunk_size, ChunkPtr* chunk);
 
+    bool is_pre_cache() { return _aggr_mode == AM_BLOCKING_PRE_CACHE || _aggr_mode == AM_STREAMING_PRE_CACHE; }
+
 protected:
     bool _reached_limit() { return _limit != -1 && _num_rows_returned >= _limit; }
+
+    void _build_hash_map_with_shared_limit(size_t chunk_size, std::atomic<int64_t>& shared_limit_countdown);
 
     bool _use_intermediate_as_input() {
         if (is_pending_reset_state()) {
@@ -534,8 +568,8 @@ protected:
     Columns _create_agg_result_columns(size_t num_rows, bool use_intermediate);
     Columns _create_group_by_columns(size_t num_rows);
 
-    void _serialize_to_chunk(ConstAggDataPtr __restrict state, const Columns& agg_result_columns);
-    void _finalize_to_chunk(ConstAggDataPtr __restrict state, const Columns& agg_result_columns);
+    void _serialize_to_chunk(ConstAggDataPtr __restrict state, Columns& agg_result_columns);
+    void _finalize_to_chunk(ConstAggDataPtr __restrict state, Columns& agg_result_columns);
     void _destroy_state(AggDataPtr __restrict state);
 
     ChunkPtr _build_output_chunk(const Columns& group_by_columns, const Columns& agg_result_columns,
@@ -556,6 +590,18 @@ protected:
     void _init_agg_hash_variant(HashVariantType& hash_variant);
 
     void _release_agg_memory();
+
+    bool _is_agg_result_nullable(const TExpr& desc, const AggFunctionTypes& agg_func_type);
+
+    Status _create_aggregate_function(starrocks::RuntimeState* state, const TFunction& fn, bool is_result_nullable,
+                                      const AggregateFunction** ret);
+
+    int64_t get_two_level_threahold() {
+        if (config::two_level_memory_threshold < 0) {
+            return two_level_memory_threshold;
+        }
+        return config::two_level_memory_threshold;
+    }
 
     template <class HashMapWithKey>
     friend struct AllocateState;
@@ -614,7 +660,9 @@ class AggregatorFactoryBase {
 public:
     using Ptr = std::shared_ptr<T>;
     AggregatorFactoryBase(const TPlanNode& tnode)
-            : _tnode(tnode), _aggregator_param(convert_to_aggregator_params(_tnode)) {}
+            : _tnode(tnode), _aggregator_param(convert_to_aggregator_params(_tnode)) {
+        _shared_limit_countdown.store(_aggregator_param->limit);
+    }
 
     Ptr get_or_create(size_t id) {
         auto it = _aggregators.find(id);
@@ -634,11 +682,14 @@ public:
     const TPlanNode& t_node() { return _tnode; }
     const AggrMode aggr_mode() { return _aggr_mode; }
 
+    std::atomic<int64_t>& get_shared_limit_countdown() { return _shared_limit_countdown; }
+
 private:
     const TPlanNode& _tnode;
     AggregatorParamsPtr _aggregator_param;
     std::unordered_map<size_t, Ptr> _aggregators;
     AggrMode _aggr_mode = AggrMode::AM_DEFAULT;
+    std::atomic<int64_t> _shared_limit_countdown;
 };
 
 using AggregatorFactory = AggregatorFactoryBase<Aggregator>;

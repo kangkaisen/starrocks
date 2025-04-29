@@ -18,6 +18,7 @@
 #include "gutil/strings/join.h"
 #include "runtime/exec_env.h"
 #include "storage/lake/meta_file.h"
+#include "storage/lake/primary_key_compaction_policy.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/update_manager.h"
 #include "storage/tablet_schema.h"
@@ -27,8 +28,9 @@ namespace starrocks::lake {
 class BaseAndCumulativeCompactionPolicy : public CompactionPolicy {
 public:
     explicit BaseAndCumulativeCompactionPolicy(TabletManager* tablet_mgr,
-                                               std::shared_ptr<const TabletMetadataPB> tablet_metadata)
-            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata)) {}
+                                               std::shared_ptr<const TabletMetadataPB> tablet_metadata,
+                                               bool force_base_compaction)
+            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata), force_base_compaction) {}
 
     ~BaseAndCumulativeCompactionPolicy() override = default;
 
@@ -37,7 +39,7 @@ public:
 private:
     StatusOr<std::vector<RowsetPtr>> pick_cumulative_rowsets();
     StatusOr<std::vector<RowsetPtr>> pick_base_rowsets();
-    void debug_rowsets(CompactionType type, const std::vector<uint32_t>& input_rowset_ids);
+    void debug_rowsets(CompactionType type, const std::vector<RowsetPtr>& input_rowset_ids);
 };
 
 struct SizeTieredLevel {
@@ -54,16 +56,16 @@ struct SizeTieredLevel {
 class SizeTieredCompactionPolicy : public CompactionPolicy {
 public:
     explicit SizeTieredCompactionPolicy(TabletManager* tablet_mgr,
-                                        std::shared_ptr<const TabletMetadataPB> tablet_metadata)
-            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata)),
-              _max_level_size(config::size_tiered_min_level_size *
-                              pow(config::size_tiered_level_multiple, config::size_tiered_level_num)) {}
+                                        std::shared_ptr<const TabletMetadataPB> tablet_metadata,
+                                        bool force_base_compaction)
+            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata), force_base_compaction) {}
 
     ~SizeTieredCompactionPolicy() override = default;
 
     StatusOr<std::vector<RowsetPtr>> pick_rowsets() override;
 
-    static StatusOr<std::unique_ptr<SizeTieredLevel>> pick_max_level(const TabletMetadataPB& metadata);
+    static StatusOr<std::unique_ptr<SizeTieredLevel>> pick_max_level(const TabletMetadataPB& metadata,
+                                                                     bool force_base_compaction);
 
 private:
     static double cal_compaction_score(int64_t segment_num, int64_t level_size, int64_t total_size,
@@ -74,117 +76,33 @@ private:
             return left->score > right->score || (left->score == right->score && left->rowsets[0] > right->rowsets[0]);
         }
     };
-
-    int64_t _max_level_size;
 };
 
-struct RowsetStat {
-    size_t num_rows = 0;
-    size_t num_dels = 0;
-    size_t bytes = 0;
-};
-
-class RowsetCandidate {
-public:
-    RowsetCandidate(RowsetMetadataPtr rp, const RowsetStat& rs) : rowset_meta_ptr(std::move(rp)), stat(rs) {}
-    double calc_del_bytes() const { return (double)stat.bytes * (double)stat.num_dels / (double)stat.num_rows; }
-    // The goal of lake primary table compaction:
-    // 1. clean up deleted bytes.
-    // 2. merge rowsets with bigger compaction score
-    // 3. merge small rowsets to bigger rowset.
-    // so we pick rowset to compact by this logic:
-    // First, pick out rowset with more deleted bytes.
-    // Second, pick out rowset with bigger compaction score
-    // Finally, pick out rowset with less bytes.
-    bool operator<(const RowsetCandidate& other) const {
-        if (calc_del_bytes() < other.calc_del_bytes()) {
-            return true;
-        } else if (calc_del_bytes() > other.calc_del_bytes()) {
-            return false;
-        } else if (rowset_compaction_score() < other.rowset_compaction_score()) {
-            return true;
-        } else if (rowset_compaction_score() > other.rowset_compaction_score()) {
-            return false;
-        } else {
-            // may happen when deleted rows is zero
-            return stat.bytes > other.stat.bytes;
-        }
-    }
-    double rowset_compaction_score() const {
-        return rowset_meta_ptr->overlapped() ? rowset_meta_ptr->segments_size() : 1;
-    }
-    RowsetMetadataPtr rowset_meta_ptr;
-    RowsetStat stat;
-};
-
-class PrimaryCompactionPolicy : public CompactionPolicy {
-public:
-    explicit PrimaryCompactionPolicy(TabletManager* tablet_mgr, std::shared_ptr<const TabletMetadataPB> tablet_metadata)
-            : CompactionPolicy(tablet_mgr, std::move(tablet_metadata)) {}
-
-    ~PrimaryCompactionPolicy() override = default;
-
-    StatusOr<std::vector<RowsetPtr>> pick_rowsets() override;
-    StatusOr<std::vector<RowsetPtr>> pick_rowsets(const std::shared_ptr<const TabletMetadataPB>& tablet_metadata);
-};
-
-StatusOr<std::vector<RowsetPtr>> PrimaryCompactionPolicy::pick_rowsets() {
-    return pick_rowsets(_tablet_metadata);
-}
-
-StatusOr<std::vector<RowsetPtr>> PrimaryCompactionPolicy::pick_rowsets(
-        const std::shared_ptr<const TabletMetadataPB>& tablet_metadata) {
-    std::vector<RowsetPtr> input_rowsets;
-    UpdateManager* mgr = _tablet_mgr->update_mgr();
-    std::priority_queue<RowsetCandidate> rowset_queue;
-    const auto tablet_id = tablet_metadata->id();
-    const auto tablet_version = tablet_metadata->version();
-    for (const auto& rowset_pb : tablet_metadata->rowsets()) {
-        RowsetStat stat;
-        stat.num_rows = rowset_pb.num_rows();
-        stat.bytes = rowset_pb.data_size();
-        stat.num_dels = mgr->get_rowset_num_deletes(tablet_id, tablet_version, rowset_pb);
-        rowset_queue.emplace(std::make_shared<const RowsetMetadata>(rowset_pb), stat);
-    }
-    size_t cur_compaction_result_bytes = 0;
-
-    const Tablet tablet(_tablet_mgr, tablet_id);
-    std::stringstream input_infos;
-    while (!rowset_queue.empty()) {
-        const auto& rowset_candidate = rowset_queue.top();
-        cur_compaction_result_bytes += rowset_candidate.stat.bytes;
-        if (input_rowsets.size() > 0 && cur_compaction_result_bytes > config::update_compaction_result_bytes * 2) {
-            break;
-        }
-        input_rowsets.emplace_back(std::make_shared<Rowset>(tablet, std::move(rowset_candidate.rowset_meta_ptr)));
-        input_infos << input_rowsets.back()->id() << "|";
-
-        if (cur_compaction_result_bytes > config::update_compaction_result_bytes ||
-            input_rowsets.size() >= config::max_update_compaction_num_singleton_deltas) {
-            break;
-        }
-        rowset_queue.pop();
-    }
-    VLOG(2) << strings::Substitute("lake PrimaryCompactionPolicy pick_rowsets tabletid:$0 version:$1 inputs:$2",
-                                   tablet_id, tablet_metadata->version(), input_infos.str());
-
-    return input_rowsets;
-}
-
-StatusOr<uint32_t> primary_compaction_score_by_policy(const std::shared_ptr<const TabletMetadataPB>& metadata) {
-    auto tablet_mgr = ExecEnv::GetInstance()->lake_tablet_manager();
-    PrimaryCompactionPolicy policy(tablet_mgr, metadata);
-    ASSIGN_OR_RETURN(auto pick_rowsets, policy.pick_rowsets());
+StatusOr<uint32_t> primary_compaction_score_by_policy(TabletManager* tablet_mgr,
+                                                      const std::shared_ptr<const TabletMetadataPB>& metadata) {
+    PrimaryCompactionPolicy policy(tablet_mgr, metadata, false /* force_base_compaction */);
+    std::vector<bool> has_dels;
+    ASSIGN_OR_RETURN(auto pick_rowset_indexes, policy.pick_rowset_indexes(metadata, true, &has_dels));
     uint32_t segment_num_score = 0;
-    for (const auto& pick_rowset : pick_rowsets) {
-        segment_num_score += pick_rowset->is_overlapped() ? pick_rowset->num_segments() : 1;
+    for (int i = 0; i < pick_rowset_indexes.size(); i++) {
+        const auto& pick_rowset = metadata->rowsets(pick_rowset_indexes[i]);
+        const bool has_del = has_dels[i];
+        auto current_score = pick_rowset.overlapped() ? pick_rowset.segments_size() : 1;
+        if (has_del) {
+            // if delvec file exist, expand score by config.
+            current_score *= config::update_compaction_delvec_file_io_amp_ratio;
+        }
+        segment_num_score += current_score;
     }
-    return segment_num_score;
+    // Calculate the number of SSTables and use it as a score
+    uint32_t sst_num_score = metadata->sstable_meta().sstables_size();
+    // Return the maximum score between the segment number score and the SST number score
+    return std::max(segment_num_score, sst_num_score);
 }
 
-double primary_compaction_score(const std::shared_ptr<const TabletMetadataPB>& metadata) {
+double primary_compaction_score(TabletManager* tablet_mgr, const std::shared_ptr<const TabletMetadataPB>& metadata) {
     // calc compaction score by picked rowsets
-    auto score_st = primary_compaction_score_by_policy(metadata);
+    auto score_st = primary_compaction_score_by_policy(tablet_mgr, metadata);
     if (!score_st.ok()) {
         // should not happen, return score zero if error
         LOG(ERROR) << "primary_compaction_score by policy fail, tablet_id: " << metadata->id()
@@ -197,25 +115,20 @@ double primary_compaction_score(const std::shared_ptr<const TabletMetadataPB>& m
 
 StatusOr<std::vector<RowsetPtr>> BaseAndCumulativeCompactionPolicy::pick_cumulative_rowsets() {
     std::vector<RowsetPtr> input_rowsets;
-    std::vector<uint32_t> input_rowset_ids;
     uint32_t cumulative_point = _tablet_metadata->cumulative_point();
     uint32_t segment_num_score = 0;
-    Tablet tablet(_tablet_mgr, _tablet_metadata->id());
     for (uint32_t i = cumulative_point, size = _tablet_metadata->rowsets_size(); i < size; ++i) {
         const auto& rowset = _tablet_metadata->rowsets(i);
         if (rowset.has_delete_predicate()) {
             if (!input_rowsets.empty()) {
                 break;
             } else {
-                DCHECK(input_rowset_ids.empty());
                 DCHECK(segment_num_score == 0);
                 continue;
             }
         }
-
-        input_rowset_ids.emplace_back(rowset.id());
-        auto metadata_ptr = std::make_shared<RowsetMetadata>(rowset);
-        input_rowsets.emplace_back(std::make_shared<Rowset>(tablet, std::move(metadata_ptr), i));
+        input_rowsets.emplace_back(
+                std::make_shared<Rowset>(_tablet_mgr, _tablet_metadata, i, 0 /* compaction_segment_limit */));
 
         segment_num_score += rowset.overlapped() ? rowset.segments_size() : 1;
         if (segment_num_score >= config::max_cumulative_compaction_num_singleton_deltas) {
@@ -224,36 +137,30 @@ StatusOr<std::vector<RowsetPtr>> BaseAndCumulativeCompactionPolicy::pick_cumulat
     }
     // TODO: need check min_cumulative_compaction_num_singleton_deltas?
 
-    debug_rowsets(CUMULATIVE_COMPACTION, input_rowset_ids);
+    debug_rowsets(CUMULATIVE_COMPACTION, input_rowsets);
 
     return input_rowsets;
 }
 
 StatusOr<std::vector<RowsetPtr>> BaseAndCumulativeCompactionPolicy::pick_base_rowsets() {
     std::vector<RowsetPtr> input_rowsets;
-    std::vector<uint32_t> input_rowset_ids;
     uint32_t cumulative_point = _tablet_metadata->cumulative_point();
     uint32_t segment_num_score = 0;
-    Tablet tablet(_tablet_mgr, _tablet_metadata->id());
     for (uint32_t i = 0; i < cumulative_point; ++i) {
-        const auto& rowset = _tablet_metadata->rowsets(i);
-        DCHECK(!rowset.overlapped());
-        input_rowset_ids.emplace_back(rowset.id());
-        auto metadata_ptr = std::make_shared<RowsetMetadata>(rowset);
-        input_rowsets.emplace_back(std::make_shared<Rowset>(tablet, std::move(metadata_ptr), i));
-
+        input_rowsets.emplace_back(
+                std::make_shared<Rowset>(_tablet_mgr, _tablet_metadata, i, 0 /* compaction_segment_limit */));
         if (++segment_num_score >= config::max_base_compaction_num_singleton_deltas) {
             break;
         }
     }
 
-    debug_rowsets(BASE_COMPACTION, input_rowset_ids);
+    debug_rowsets(BASE_COMPACTION, input_rowsets);
 
     return input_rowsets;
 }
 
 void BaseAndCumulativeCompactionPolicy::debug_rowsets(CompactionType type,
-                                                      const std::vector<uint32_t>& input_rowset_ids) {
+                                                      const std::vector<RowsetPtr>& input_rowsets) {
     static const int verboselevel = 3;
 
     if (!VLOG_IS_ON(verboselevel)) {
@@ -261,11 +168,16 @@ void BaseAndCumulativeCompactionPolicy::debug_rowsets(CompactionType type,
     }
     std::vector<uint32_t> rowset_ids;
     std::vector<uint32_t> delete_rowset_ids;
+    std::vector<uint32_t> input_rowset_ids;
     for (const auto& rowset : _tablet_metadata->rowsets()) {
         rowset_ids.emplace_back(rowset.id());
         if (rowset.has_delete_predicate()) {
             delete_rowset_ids.emplace_back(rowset.id());
         }
+    }
+    input_rowset_ids.reserve(input_rowsets.size());
+    for (const auto& input_rowset : input_rowsets) {
+        input_rowset_ids.emplace_back(input_rowset->id());
     }
     VLOG(verboselevel) << "Pick compaction input rowsets. tablet: " << _tablet_metadata->id()
                        << ", type: " << to_string(type) << ", version: " << _tablet_metadata->version()
@@ -298,7 +210,7 @@ StatusOr<std::vector<RowsetPtr>> BaseAndCumulativeCompactionPolicy::pick_rowsets
     DCHECK(_tablet_metadata != nullptr) << "_tablet_metadata is null";
     double cumulative_score = cumulative_compaction_score(_tablet_metadata);
     double base_score = base_compaction_score(_tablet_metadata);
-    if (base_score > cumulative_score) {
+    if (base_score > cumulative_score || _force_base_compaction) {
         return pick_base_rowsets();
     } else {
         return pick_cumulative_rowsets();
@@ -341,8 +253,8 @@ double SizeTieredCompactionPolicy::cal_compaction_score(int64_t segment_num, int
     return score;
 }
 
-StatusOr<std::unique_ptr<SizeTieredLevel>> SizeTieredCompactionPolicy::pick_max_level(
-        const TabletMetadataPB& metadata) {
+StatusOr<std::unique_ptr<SizeTieredLevel>> SizeTieredCompactionPolicy::pick_max_level(const TabletMetadataPB& metadata,
+                                                                                      bool force_base_compaction) {
     int64_t max_level_size =
             config::size_tiered_min_level_size * pow(config::size_tiered_level_multiple, config::size_tiered_level_num);
     const auto& rowsets = metadata.rowsets();
@@ -358,7 +270,7 @@ StatusOr<std::unique_ptr<SizeTieredLevel>> SizeTieredCompactionPolicy::pick_max_
             ++num_delete_rowsets;
         }
     }
-    bool force_base_compaction = (num_delete_rowsets >= config::tablet_max_versions / 10);
+    force_base_compaction = force_base_compaction || (num_delete_rowsets >= config::tablet_max_versions / 10);
 
     // check reach max version
     bool reached_max_version = (rowsets.size() > config::tablet_max_versions / 10 * 9);
@@ -470,51 +382,75 @@ StatusOr<std::unique_ptr<SizeTieredLevel>> SizeTieredCompactionPolicy::pick_max_
 }
 
 StatusOr<std::vector<RowsetPtr>> SizeTieredCompactionPolicy::pick_rowsets() {
-    ASSIGN_OR_RETURN(auto selected_level, pick_max_level(*_tablet_metadata));
+    ASSIGN_OR_RETURN(auto selected_level, pick_max_level(*_tablet_metadata, _force_base_compaction));
     std::vector<RowsetPtr> input_rowsets;
     if (selected_level == nullptr) {
         return input_rowsets;
     }
-    Tablet tablet(_tablet_mgr, _tablet_metadata->id());
     int64_t level_multiple = config::size_tiered_level_multiple;
     auto min_compaction_segment_num =
             std::max<int64_t>(2, std::min(config::min_cumulative_compaction_num_singleton_deltas, level_multiple));
-    std::vector<uint32_t> input_rowset_ids;
-    const auto& rowsets = _tablet_metadata->rowsets();
+    if (_force_base_compaction) { // make sure there is only one rowset
+        min_compaction_segment_num = 2;
+    }
 
     // We need a minimum number of segments that trigger compaction to
     // avoid triggering compaction too frequently compared to the old version
     // But in the old version of compaction, the user may set a large min_cumulative_compaction_num_singleton_deltas
     // to avoid TOO_MANY_VERSION errors, it is unnecessary in size tiered compaction
     if (selected_level->segment_num >= min_compaction_segment_num) {
+        uint32_t segment_num_score = 0;
+        bool partial_compaction = config::enable_lake_compaction_use_partial_segments;
         int64_t max_segments = config::max_cumulative_compaction_num_singleton_deltas;
         for (auto i : selected_level->rowsets) {
-            const auto& rowset = rowsets[i];
-            auto metadata_ptr = std::make_shared<RowsetMetadata>(rowset);
-            input_rowsets.emplace_back(std::make_shared<Rowset>(tablet, std::move(metadata_ptr), i));
-            input_rowset_ids.emplace_back(rowset.id());
-
-            max_segments -= rowset.overlapped() ? rowset.segments_size() : 1;
-            if (max_segments <= 0) {
+            DCHECK_LT(i, _tablet_metadata->rowsets_size());
+            const auto& rowset = _tablet_metadata->rowsets(i);
+            size_t cur_segment_score = rowset.overlapped() ? rowset.segments_size() : 1;
+            size_t uncompacted_segments = cur_segment_score - rowset.next_compaction_offset();
+            if (partial_compaction && uncompacted_segments > max_segments) {
+                size_t compaction_segment_limit = max_segments;
+                // this optimization can not be applied to multiple rowsets,
+                // otherwise it will have efficiency issue or correctness issue
+                input_rowsets.clear();
+                input_rowsets.emplace_back(
+                        std::make_shared<Rowset>(_tablet_mgr, _tablet_metadata, i, compaction_segment_limit));
+                break;
+            }
+            segment_num_score += cur_segment_score;
+            input_rowsets.emplace_back(
+                    std::make_shared<Rowset>(_tablet_mgr, _tablet_metadata, i, 0 /* copmaction_segment_limit */));
+            if (segment_num_score >= max_segments) {
                 break;
             }
         }
     }
 
+    const int log_level = 3;
     // debug
+    if (!VLOG_IS_ON(log_level)) {
+        return input_rowsets;
+    }
+
+    std::vector<uint32_t> input_rowset_ids;
+    input_rowset_ids.reserve(input_rowsets.size());
+    for (const auto& r : input_rowsets) {
+        input_rowset_ids.emplace_back(r->id());
+    }
     const auto& level_rowsets = selected_level->rowsets;
     auto type = !level_rowsets.empty() && level_rowsets[0] == 0 ? BASE_COMPACTION : CUMULATIVE_COMPACTION;
-    VLOG(3) << "Pick compaction input rowsets. tablet: " << _tablet_metadata->id() << ", type: " << to_string(type)
-            << ", input rowsets: [" << JoinInts(input_rowset_ids, ",") << "]"
-            << ", input rowsets size: " << input_rowset_ids.size() << ", level rowsets size: " << level_rowsets.size()
-            << ", level segment num: " << selected_level->segment_num << ", level size: " << selected_level->level_size
-            << ", level total size: " << selected_level->total_size << ", level score: " << selected_level->score;
-
+    VLOG(log_level) << "Pick compaction input rowsets. tablet: " << _tablet_metadata->id()
+                    << ", type: " << to_string(type) << ", input rowsets: [" << JoinInts(input_rowset_ids, ",") << "]"
+                    << ", input rowsets size: " << input_rowset_ids.size()
+                    << ", level rowsets size: " << level_rowsets.size()
+                    << ", level segment num: " << selected_level->segment_num
+                    << ", level size: " << selected_level->level_size
+                    << ", level total size: " << selected_level->total_size
+                    << ", level score: " << selected_level->score;
     return input_rowsets;
 }
 
 double size_tiered_compaction_score(const std::shared_ptr<const TabletMetadataPB>& metadata) {
-    auto selected_level_or = SizeTieredCompactionPolicy::pick_max_level(*metadata);
+    auto selected_level_or = SizeTieredCompactionPolicy::pick_max_level(*metadata, false /* force_base_compaction */);
     if (!selected_level_or.ok()) {
         return 0;
     }
@@ -528,6 +464,11 @@ double size_tiered_compaction_score(const std::shared_ptr<const TabletMetadataPB
 CompactionPolicy::~CompactionPolicy() = default;
 
 StatusOr<CompactionAlgorithm> CompactionPolicy::choose_compaction_algorithm(const std::vector<RowsetPtr>& rowsets) {
+    // If there are no rowsets, it could be cloud native index compaction, default to CLOUD_NATIVE_INDEX_COMPACTION
+    if (rowsets.empty()) {
+        return CLOUD_NATIVE_INDEX_COMPACTION;
+    }
+
     // TODO: support row source mask buffer based on starlet fs
     // The current row source mask buffer is based on posix tmp file,
     // if there is no storage root path, use horizontal compaction.
@@ -535,30 +476,38 @@ StatusOr<CompactionAlgorithm> CompactionPolicy::choose_compaction_algorithm(cons
         return HORIZONTAL_COMPACTION;
     }
 
+    // Calculate the total number of read iterators across all rowsets
     size_t total_iterator_num = 0;
     for (auto& rowset : rowsets) {
         ASSIGN_OR_RETURN(auto rowset_iterator_num, rowset->get_read_iterator_num());
         total_iterator_num += rowset_iterator_num;
     }
+
+    // Get the number of columns in the tablet schema
     size_t num_columns = _tablet_metadata->schema().column_size();
+
+    // Choose the compaction algorithm based on the number of columns and total iterator number
     return CompactionUtils::choose_compaction_algorithm(num_columns, config::vertical_compaction_max_columns_per_group,
                                                         total_iterator_num);
 }
 
 StatusOr<CompactionPolicyPtr> CompactionPolicy::create(TabletManager* tablet_mgr,
-                                                       std::shared_ptr<const TabletMetadataPB> tablet_metadata) {
+                                                       std::shared_ptr<const TabletMetadataPB> tablet_metadata,
+                                                       bool force_base_compaction) {
     if (tablet_metadata->schema().keys_type() == PRIMARY_KEYS) {
-        return std::make_shared<PrimaryCompactionPolicy>(tablet_mgr, std::move(tablet_metadata));
+        return std::make_shared<PrimaryCompactionPolicy>(tablet_mgr, std::move(tablet_metadata), force_base_compaction);
     } else if (config::enable_size_tiered_compaction_strategy) {
-        return std::make_shared<SizeTieredCompactionPolicy>(tablet_mgr, std::move(tablet_metadata));
+        return std::make_shared<SizeTieredCompactionPolicy>(tablet_mgr, std::move(tablet_metadata),
+                                                            force_base_compaction);
     } else {
-        return std::make_shared<BaseAndCumulativeCompactionPolicy>(tablet_mgr, std::move(tablet_metadata));
+        return std::make_shared<BaseAndCumulativeCompactionPolicy>(tablet_mgr, std::move(tablet_metadata),
+                                                                   force_base_compaction);
     }
 }
 
-double compaction_score(const std::shared_ptr<const TabletMetadataPB>& metadata) {
+double compaction_score(TabletManager* tablet_mgr, const std::shared_ptr<const TabletMetadataPB>& metadata) {
     if (is_primary_key(*metadata)) {
-        return primary_compaction_score(metadata);
+        return primary_compaction_score(tablet_mgr, metadata);
     }
     if (config::enable_size_tiered_compaction_strategy) {
         return size_tiered_compaction_score(metadata);

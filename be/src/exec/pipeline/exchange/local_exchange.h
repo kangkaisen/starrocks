@@ -46,7 +46,7 @@ public:
     Status partition_chunk(const ChunkPtr& chunk, int32_t num_partitions, std::vector<uint32_t>& partition_row_indexes);
 
     // Send chunk to each source by using `partition_row_indexes`.
-    Status send_chunk(const ChunkPtr& chunk, std::shared_ptr<std::vector<uint32_t>> partition_row_indexes);
+    Status send_chunk(const ChunkPtr& chunk, const std::shared_ptr<std::vector<uint32_t>>& partition_row_indexes);
 
     size_t partition_begin_offset(size_t partition_id) { return _partition_row_indexes_start_points[partition_id]; }
 
@@ -82,7 +82,7 @@ public:
         _partitions_columns.resize(partition_expr_ctxs.size());
         _hash_values.reserve(source->runtime_state()->chunk_size());
     }
-    virtual ~ShufflePartitioner() override = default;
+    ~ShufflePartitioner() override = default;
 
     Status shuffle_channel_ids(const ChunkPtr& chunk, int32_t num_partitions) override;
 
@@ -111,11 +111,13 @@ class LocalExchanger {
 public:
     explicit LocalExchanger(std::string name, std::shared_ptr<ChunkBufferMemoryManager> memory_manager,
                             LocalExchangeSourceOperatorFactory* source)
-            : _name(std::move(name)), _memory_manager(std::move(memory_manager)), _source(source) {}
+            : _name(std::move(name)), _memory_manager(std::move(memory_manager)), _source(source) {
+        source->set_exchanger(this);
+    }
 
     virtual ~LocalExchanger() = default;
 
-    enum class PassThroughType { CHUNK = 0, RANDOM = 1, ADPATIVE = 2 };
+    enum class PassThroughType { CHUNK = 0, RANDOM = 1, ADPATIVE = 2, SCALE = 3, DIRECT = 4 };
 
     virtual Status prepare(RuntimeState* state) { return Status::OK(); }
     virtual void close(RuntimeState* state) {}
@@ -131,14 +133,9 @@ public:
     }
 
     // All LocalExchangeSourceOperators have finished.
-    virtual bool is_all_sources_finished() const {
-        for (const auto& source_op : _source->get_sources()) {
-            if (!source_op->is_finished()) {
-                return false;
-            }
-        }
-        return true;
-    }
+    bool is_all_sources_finished() const { return _finished_source_number == _source->get_sources().size(); }
+
+    void finish_source() { _finished_source_number++; }
 
     void epoch_finish(RuntimeState* state) {
         if (incr_epoch_finished_sinker() == _sink_number) {
@@ -163,14 +160,30 @@ public:
 
     size_t get_memory_usage() const { return _memory_manager->get_memory_usage(); }
 
+    void attach_sink_observer(RuntimeState* state, pipeline::PipelineObserver* observer) {
+        _sink_observable.add_observer(state, observer);
+    }
+
+    auto defer_notify_sink() {
+        return DeferOp([this]() {
+            if (_memory_manager->full_events_changed() || is_all_sources_finished()) {
+                _sink_observable.notify_sink_observers();
+            }
+        });
+    }
+
 protected:
     const std::string _name;
     std::shared_ptr<ChunkBufferMemoryManager> _memory_manager;
     std::atomic<int32_t> _sink_number = 0;
+    std::atomic<int32_t> _finished_source_number = 0;
     LocalExchangeSourceOperatorFactory* _source;
 
     // Stream MV
     std::atomic<int32_t> _epoch_finished_sinker = 0;
+
+private:
+    Observable _sink_observable;
 };
 
 // Exchange the local data for shuffle
@@ -178,7 +191,7 @@ class PartitionExchanger final : public LocalExchanger {
 public:
     PartitionExchanger(const std::shared_ptr<ChunkBufferMemoryManager>& memory_manager,
                        LocalExchangeSourceOperatorFactory* source, const TPartitionType::type part_type,
-                       const std::vector<ExprContext*>& _partition_expr_ctxs);
+                       std::vector<ExprContext*> _partition_expr_ctxs);
 
     ~PartitionExchanger() override = default;
 
@@ -198,24 +211,49 @@ private:
     std::vector<std::unique_ptr<ShufflePartitioner>> _partitioners;
 };
 
+// The input stream is already ordered by partition columns.
+// This partitioner is going to split these partitions into different channels, and try to balance the amount of
+// data across channels.
+// And for better performance, there's no row-level split during the entire process.
+class OrderedPartitionExchanger final : public LocalExchanger {
+public:
+    OrderedPartitionExchanger(const std::shared_ptr<ChunkBufferMemoryManager>& memory_manager,
+                              LocalExchangeSourceOperatorFactory* source,
+                              std::vector<ExprContext*> partition_expr_ctxs);
+    ~OrderedPartitionExchanger() override = default;
+
+    Status prepare(RuntimeState* state) override;
+    void close(RuntimeState* state) override;
+
+    Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
+
+private:
+    size_t _find_min_channel_id();
+
+    std::vector<ExprContext*> _partition_exprs;
+    std::vector<size_t> _channel_row_nums;
+    Columns _previous_partition_columns;
+    size_t _previous_channel_id;
+    ChunkPtr _previous_chunk;
+};
+
 // key partition mainly means that the column value of each partition is the same.
 // For external table sinks, the chunk received by operators after exchange need to ensure that
 // the values of the partition columns are the same.
 class KeyPartitionExchanger final : public LocalExchanger {
-    using RowIndexPtr = std::shared_ptr<std::vector<uint32_t>>;
-    using Partition2RowIndexes = std::map<PartitionKeyPtr, RowIndexPtr, PartitionKeyComparator>;
-
 public:
     KeyPartitionExchanger(const std::shared_ptr<ChunkBufferMemoryManager>& memory_manager,
-                          LocalExchangeSourceOperatorFactory* source,
-                          const std::vector<ExprContext*>& _partition_expr_ctxs, size_t num_sinks);
+                          LocalExchangeSourceOperatorFactory* source, std::vector<ExprContext*> _partition_expr_ctxs,
+                          size_t num_sinks);
+
+    Status prepare(RuntimeState* state) override;
+    void close(RuntimeState* state) override;
 
     Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
 
 private:
     LocalExchangeSourceOperatorFactory* _source;
     const std::vector<ExprContext*> _partition_expr_ctxs;
-    std::vector<Columns> _channel_partitions_columns;
 };
 
 // Exchange the local data for broadcast
@@ -225,7 +263,7 @@ public:
                        LocalExchangeSourceOperatorFactory* source)
             : LocalExchanger("Broadcast", memory_manager, source) {}
 
-    virtual ~BroadcastExchanger() = default;
+    ~BroadcastExchanger() override = default;
 
     Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
 };
@@ -237,12 +275,41 @@ public:
                          LocalExchangeSourceOperatorFactory* source)
             : LocalExchanger("Passthrough", memory_manager, source) {}
 
-    virtual ~PassthroughExchanger() = default;
+    ~PassthroughExchanger() override = default;
 
     Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
 
 private:
     std::atomic<size_t> _next_accept_source = 0;
+};
+
+// Exchange the local data accroding to sink_driver_sequence
+class DirectThroughExchanger final : public LocalExchanger {
+public:
+    DirectThroughExchanger(const std::shared_ptr<ChunkBufferMemoryManager>& memory_manager,
+                           LocalExchangeSourceOperatorFactory* source)
+            : LocalExchanger("Passthrough", memory_manager, source) {}
+
+    ~DirectThroughExchanger() override = default;
+
+    Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
+};
+
+// Scale local source for connector sink
+class ConnectorSinkPassthroughExchanger final : public LocalExchanger {
+public:
+    ConnectorSinkPassthroughExchanger(const std::shared_ptr<ChunkBufferMemoryManager>& memory_manager,
+                                      LocalExchangeSourceOperatorFactory* source)
+            : LocalExchanger("ConnectorSinkPassthrough", memory_manager, source) {}
+
+    ~ConnectorSinkPassthroughExchanger() override = default;
+
+    Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
+
+private:
+    std::atomic<size_t> _next_accept_source = 0;
+    std::atomic<size_t> _writer_count = 1;
+    std::atomic<size_t> _data_processed = 0;
 };
 
 // Random shuffle for each chunk of source.
@@ -252,7 +319,7 @@ public:
                                LocalExchangeSourceOperatorFactory* source)
             : LocalExchanger("RandomPassthrough", memory_manager, source) {}
 
-    virtual ~RandomPassthroughExchanger() = default;
+    ~RandomPassthroughExchanger() override = default;
 
     void incr_sinker() override;
     Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;
@@ -269,7 +336,7 @@ public:
                                  LocalExchangeSourceOperatorFactory* source)
             : LocalExchanger("AdaptivePassthrough", memory_manager, source) {}
 
-    virtual ~AdaptivePassthroughExchanger() = default;
+    ~AdaptivePassthroughExchanger() override = default;
 
     void incr_sinker() override;
     Status accept(const ChunkPtr& chunk, int32_t sink_driver_sequence) override;

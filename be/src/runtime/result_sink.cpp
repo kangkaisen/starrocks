@@ -54,7 +54,7 @@ namespace starrocks {
 
 ResultSink::ResultSink(const RowDescriptor& row_desc, const std::vector<TExpr>& t_output_expr, const TResultSink& sink,
                        int buffer_size)
-        : _t_output_expr(t_output_expr), _buf_size(buffer_size) {
+        : _row_desc(row_desc), _t_output_expr(t_output_expr), _buf_size(buffer_size) {
     if (!sink.__isset.type || sink.type == TResultSinkType::MYSQL_PROTOCAL) {
         _sink_type = TResultSinkType::MYSQL_PROTOCAL;
     } else {
@@ -113,6 +113,8 @@ Status ResultSink::prepare(RuntimeState* state) {
     case TResultSinkType::VARIABLE:
         _writer.reset(new (std::nothrow) VariableResultWriter(_sender.get(), _output_expr_ctxs, _profile));
         break;
+    case TResultSinkType::CUSTOMIZED:
+        return Status::InternalError("Non-pipeline not support CUSTOMIZED format");
     default:
         return Status::InternalError("Unknown result sink type");
     }
@@ -156,11 +158,10 @@ Status ResultSink::close(RuntimeState* state, Status exec_status) {
         if (_writer != nullptr) {
             _sender->update_num_written_rows(_writer->get_written_rows());
         }
-        _sender->close(final_status);
+        (void)_sender->close(final_status);
     }
-    auto st = state->exec_env()->result_mgr()->cancel_at_time(
-            time(nullptr) + config::result_buffer_cancelled_interval_time, state->fragment_instance_id());
-    st.permit_unchecked_error();
+    (void)state->exec_env()->result_mgr()->cancel_at_time(time(nullptr) + config::result_buffer_cancelled_interval_time,
+                                                          state->fragment_instance_id());
     Expr::close(_output_expr_ctxs, state);
 
     _closed = true;

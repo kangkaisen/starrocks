@@ -23,6 +23,13 @@
 
 namespace starrocks {
 
+#define APPLY_FOR_ALL_INT_TYPE(M) \
+    M(TYPE_TINYINT)               \
+    M(TYPE_SMALLINT)              \
+    M(TYPE_INT)                   \
+    M(TYPE_BIGINT)                \
+    M(TYPE_LARGEINT)
+
 #define APPLY_FOR_ALL_NUMBER_TYPE(M) \
     M(TYPE_TINYINT)                  \
     M(TYPE_SMALLINT)                 \
@@ -51,6 +58,12 @@ namespace starrocks {
     M(TYPE_STRUCT)                \
     M(TYPE_MAP)                   \
     M(TYPE_ARRAY)
+
+#define APPLY_FOR_ALL_STRING_TYPE(M) \
+    M(TYPE_VARCHAR)                  \
+    M(TYPE_CHAR)                     \
+    M(TYPE_BINARY)                   \
+    M(TYPE_VARBINARY)
 
 #define APPLY_FOR_ALL_SCALAR_TYPE_WITH_NULL(M) \
     APPLY_FOR_ALL_SCALAR_TYPE(M)               \
@@ -87,6 +100,16 @@ namespace starrocks {
     M(BINARY)                           \
     M(VARBINARY)                        \
     M(JSON)
+
+#define APPLY_FOR_BITSET_FILTER_SUPPORTED_TYPE(M) \
+    M(TYPE_BOOLEAN)                               \
+    M(TYPE_TINYINT)                               \
+    M(TYPE_SMALLINT)                              \
+    M(TYPE_INT)                                   \
+    M(TYPE_BIGINT)                                \
+    M(TYPE_DECIMAL32)                             \
+    M(TYPE_DECIMAL64)                             \
+    M(TYPE_DATE)
 
 #define _TYPE_DISPATCH_CASE(type) \
     case type:                    \
@@ -136,6 +159,8 @@ auto type_dispatch_all(LogicalType ltype, Functor fun, Args... args) {
     switch (ltype) {
         APPLY_FOR_ALL_SCALAR_TYPE_WITH_NULL(_TYPE_DISPATCH_CASE)
         _TYPE_DISPATCH_CASE(TYPE_ARRAY)
+        _TYPE_DISPATCH_CASE(TYPE_STRUCT)
+        _TYPE_DISPATCH_CASE(TYPE_MAP)
         _TYPE_DISPATCH_CASE(TYPE_HLL)
         _TYPE_DISPATCH_CASE(TYPE_OBJECT)
         _TYPE_DISPATCH_CASE(TYPE_PERCENTILE)
@@ -188,6 +213,15 @@ template <class Functor, class Ret, class... Args>
 auto type_dispatch_filter(LogicalType ltype, Ret default_value, Functor fun, Args... args) {
     switch (ltype) {
         APPLY_FOR_ALL_SCALAR_TYPE(_TYPE_DISPATCH_CASE)
+    default:
+        return default_value;
+    }
+}
+
+template <class Functor, class Ret, class... Args>
+auto type_dispatch_bitset_filter(LogicalType ltype, Ret default_value, Functor fun, Args... args) {
+    switch (ltype) {
+        APPLY_FOR_BITSET_FILTER_SUPPORTED_TYPE(_TYPE_DISPATCH_CASE)
     default:
         return default_value;
     }

@@ -22,6 +22,7 @@ import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
+import com.starrocks.common.util.TimeUtils;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import org.jetbrains.annotations.NotNull;
 
@@ -55,6 +56,32 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
         } catch (SQLException e) {
             throw new StarRocksConnectorException(e.getMessage());
         }
+    }
+
+    @Override
+    public boolean checkAndSetSupportPartitionInformation(Connection connection) {
+        String catalogSchema = "information_schema";
+        String partitionInfoTable = "partitions";
+        // Different types of MySQL protocol databases have different case names for schema and table names,
+        // which need to be converted to lowercase for comparison
+        try (ResultSet catalogSet = connection.getMetaData().getCatalogs()) {
+            while (catalogSet.next()) {
+                String schemaName = catalogSet.getString("TABLE_CAT");
+                if (schemaName.equalsIgnoreCase(catalogSchema)) {
+                    try (ResultSet tableSet = connection.getMetaData().getTables(catalogSchema, null, null, null)) {
+                        while (tableSet.next()) {
+                            String tableName = tableSet.getString("TABLE_NAME");
+                            if (tableName.equalsIgnoreCase(partitionInfoTable)) {
+                                return this.supportPartitionInformation = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new StarRocksConnectorException(e.getMessage());
+        }
+        return this.supportPartitionInformation = false;
     }
 
     @Override
@@ -113,12 +140,19 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
             case Types.DATE:
                 primitiveType = PrimitiveType.DATE;
                 break;
+            case Types.TIME:
+                primitiveType = PrimitiveType.TIME;
+                break;
             case Types.TIMESTAMP:
                 primitiveType = PrimitiveType.DATETIME;
                 break;
             default:
-                primitiveType = PrimitiveType.UNKNOWN_TYPE;
-                break;
+                // The mysql-connector-j will convert the JSON type in MySQL to Types.LONGVARCHAR(1073741824).
+                // However, the mariadb-java-client does not handle the JSON type,
+                // so it will be converted to Types.Other. Here, in order to handle JSON, for the Types.Other,
+                // it is uniformly converted to Types.LONGVARCHAR(1073741824).
+                // If later mariadb-java-client support json, this code can be reverted.
+                return ScalarType.createVarcharType(1073741824);
         }
 
         if (primitiveType != PrimitiveType.DECIMAL32) {
@@ -133,7 +167,8 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
     public List<String> listPartitionNames(Connection connection, String databaseName, String tableName) {
         String partitionNamesQuery =
                 "SELECT PARTITION_DESCRIPTION as NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? " +
-                "AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL";
+                "AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL " +
+                "AND ( PARTITION_METHOD = 'RANGE' or PARTITION_METHOD = 'RANGE COLUMNS') ORDER BY PARTITION_DESCRIPTION";
         try (PreparedStatement ps = connection.prepareStatement(partitionNamesQuery)) {
             ps.setString(1, databaseName);
             ps.setString(2, tableName);
@@ -152,14 +187,16 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
                 return Lists.newArrayList();
             }
         } catch (SQLException | NullPointerException e) {
-            throw new StarRocksConnectorException(e.getMessage());
+            throw new StarRocksConnectorException(e.getMessage(), e);
         }
     }
 
     @Override
     public List<String> listPartitionColumns(Connection connection, String databaseName, String tableName) {
         String partitionColumnsQuery = "SELECT DISTINCT PARTITION_EXPRESSION FROM INFORMATION_SCHEMA.PARTITIONS " +
-                "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL";
+                "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL " +
+                "AND ( PARTITION_METHOD = 'RANGE' or PARTITION_METHOD = 'RANGE COLUMNS') " +
+                "AND PARTITION_EXPRESSION IS NOT NULL";
         try (PreparedStatement ps = connection.prepareStatement(partitionColumnsQuery)) {
             ps.setString(1, databaseName);
             ps.setString(2, tableName);
@@ -176,7 +213,7 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
                 return Lists.newArrayList();
             }
         } catch (SQLException | NullPointerException e) {
-            throw new StarRocksConnectorException(e.getMessage());
+            throw new StarRocksConnectorException(e.getMessage(), e);
         }
     }
 
@@ -184,34 +221,79 @@ public class MysqlSchemaResolver extends JDBCSchemaResolver {
         JDBCTable jdbcTable = (JDBCTable) table;
         String query = getPartitionQuery(table);
         try (PreparedStatement ps = connection.prepareStatement(query)) {
-            ps.setString(1, jdbcTable.getDbName());
-            ps.setString(2, jdbcTable.getJdbcTable());
+            ps.setString(1, jdbcTable.getCatalogDBName());
+            ps.setString(2, jdbcTable.getCatalogTableName());
             ResultSet rs = ps.executeQuery();
             ImmutableList.Builder<Partition> list = ImmutableList.builder();
+            long createTime = TimeUtils.getEpochSeconds();
             if (null != rs) {
                 while (rs.next()) {
                     String[] partitionNames = rs.getString("NAME").
                             replace("'", "").split(",");
-                    long createTime = rs.getDate("MODIFIED_TIME").getTime();
+                    try {
+                        createTime = rs.getTimestamp("MODIFIED_TIME").getTime();
+                    } catch (Exception e) {
+                        // ignore exception
+                    }
                     for (String partitionName : partitionNames) {
                         list.add(new Partition(partitionName, createTime));
                     }
                 }
-                return list.build();
+                ImmutableList<Partition> partitions = list.build();
+                return partitions.isEmpty()
+                        ? Lists.newArrayList(new Partition(table.getName(), createTime))
+                        : partitions;
             } else {
-                return Lists.newArrayList();
+                return Lists.newArrayList(new Partition(table.getName(), createTime));
             }
         } catch (SQLException | NullPointerException e) {
-            throw new StarRocksConnectorException(e.getMessage());
+            throw new StarRocksConnectorException(e.getMessage(), e);
         }
     }
 
+    /**
+     * Fetch jdbc table's partition info from `INFORMATION_SCHEMA.PARTITIONS`.
+     * eg:
+     * mysql> desc INFORMATION_SCHEMA.PARTITIONS;
+     * +-------------------------------+---------------------+------+-----+---------+-------+
+     * | Field                         | Type                | Null | Key | Default | Extra |
+     * +-------------------------------+---------------------+------+-----+---------+-------+
+     * | TABLE_CATALOG                 | varchar(512)        | NO   |     |         |       |
+     * | TABLE_SCHEMA                  | varchar(64)         | NO   |     |         |       |
+     * | TABLE_NAME                    | varchar(64)         | NO   |     |         |       |
+     * | PARTITION_NAME                | varchar(64)         | YES  |     | NULL    |       |
+     * | SUBPARTITION_NAME             | varchar(64)         | YES  |     | NULL    |       |
+     * | PARTITION_ORDINAL_POSITION    | bigint(21) unsigned | YES  |     | NULL    |       |
+     * | SUBPARTITION_ORDINAL_POSITION | bigint(21) unsigned | YES  |     | NULL    |       |
+     * | PARTITION_METHOD              | varchar(18)         | YES  |     | NULL    |       |
+     * | SUBPARTITION_METHOD           | varchar(12)         | YES  |     | NULL    |       |
+     * | PARTITION_EXPRESSION          | longtext            | YES  |     | NULL    |       |
+     * | SUBPARTITION_EXPRESSION       | longtext            | YES  |     | NULL    |       |
+     * | PARTITION_DESCRIPTION         | longtext            | YES  |     | NULL    |       |
+     * | TABLE_ROWS                    | bigint(21) unsigned | NO   |     | 0       |       |
+     * | AVG_ROW_LENGTH                | bigint(21) unsigned | NO   |     | 0       |       |
+     * | DATA_LENGTH                   | bigint(21) unsigned | NO   |     | 0       |       |
+     * | MAX_DATA_LENGTH               | bigint(21) unsigned | YES  |     | NULL    |       |
+     * | INDEX_LENGTH                  | bigint(21) unsigned | NO   |     | 0       |       |
+     * | DATA_FREE                     | bigint(21) unsigned | NO   |     | 0       |       |
+     * | CREATE_TIME                   | datetime            | YES  |     | NULL    |       |
+     * | UPDATE_TIME                   | datetime            | YES  |     | NULL    |       |
+     * | CHECK_TIME                    | datetime            | YES  |     | NULL    |       |
+     * | CHECKSUM                      | bigint(21) unsigned | YES  |     | NULL    |       |
+     * | PARTITION_COMMENT             | varchar(80)         | NO   |     |         |       |
+     * | NODEGROUP                     | varchar(12)         | NO   |     |         |       |
+     * | TABLESPACE_NAME               | varchar(64)         | YES  |     | NULL    |       |
+     * +-------------------------------+---------------------+------+-----+---------+-------+
+     * @param table
+     * @return
+     */
     @NotNull
     private static String getPartitionQuery(Table table) {
         final String partitionsQuery = "SELECT PARTITION_DESCRIPTION AS NAME, " +
                 "IF(UPDATE_TIME IS NULL, CREATE_TIME, UPDATE_TIME) AS MODIFIED_TIME " +
                 "FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? " +
-                "AND PARTITION_NAME IS NOT NULL";
+                "AND PARTITION_NAME IS NOT NULL " +
+                "AND ( PARTITION_METHOD = 'RANGE' or PARTITION_METHOD = 'RANGE COLUMNS') ORDER BY PARTITION_DESCRIPTION";
         final String nonPartitionQuery = "SELECT TABLE_NAME AS NAME, " +
                 "IF(UPDATE_TIME IS NULL, CREATE_TIME, UPDATE_TIME) AS MODIFIED_TIME " +
                 "FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ";
