@@ -14,7 +14,6 @@
 
 #include "fs/key_cache.h"
 
-#include "agent/master_info.h"
 #include "fs/encrypt_file.h"
 #include "gen_cpp/FrontendService.h"
 #include "gen_cpp/Types_types.h"
@@ -258,14 +257,14 @@ Status KeyCache::refresh_keys_from_fe() {
     if (_last_refresh_key_time + 1800 >= UnixSeconds()) {
         return Status::OK();
     }
-    TNetworkAddress master_addr = get_master_address();
-    TGetKeysRequest req;
-    TGetKeysResponse resp;
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&req, &resp](FrontendServiceConnection& client) { client->getKeys(resp, req); }));
-    _last_refresh_key_time = UnixSeconds();
-    RETURN_IF_ERROR_WITH_WARN(refresh_keys(resp.key_metas), "refresh keys from FE failed");
+    // TNetworkAddress master_addr = get_master_address();
+    // TGetKeysRequest req;
+    // TGetKeysResponse resp;
+    // RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&req, &resp](FrontendServiceConnection& client) { client->getKeys(resp, req); }));
+    // _last_refresh_key_time = UnixSeconds();
+    // RETURN_IF_ERROR_WITH_WARN(refresh_keys(resp.key_metas), "refresh keys from FE failed");
     return Status::OK();
 }
 

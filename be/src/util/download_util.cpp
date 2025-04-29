@@ -18,7 +18,6 @@
 
 #include "fmt/format.h"
 #include "gutil/strings/substitute.h"
-#include "http/http_client.h"
 #include "util/defer_op.h"
 #include "util/md5.h"
 #include "util/uuid_generator.h"
@@ -48,23 +47,23 @@ Status DownloadUtil::download(const std::string& url, const std::string& target_
     }
 
     Md5Digest digest;
-    HttpClient client;
-    RETURN_IF_ERROR(client.init(url));
-    Status status;
+    // HttpClient client;
+    // RETURN_IF_ERROR(client.init(url));
+    // Status status;
 
-    auto download_cb = [&status, &tmp_file, fp, &digest, &url](const void* data, size_t length) {
-        digest.update(data, length);
-        auto res = fwrite(data, length, 1, fp);
-        if (res != 1) {
-            LOG(ERROR) << fmt::format("fail to write data to file {}, error={}", tmp_file, ferror(fp));
-            status =
-                    Status::InternalError(strings::Substitute("file to write data when downloading file from $0", url));
-            return false;
-        }
-        return true;
-    };
-    RETURN_IF_ERROR(client.execute(download_cb));
-    RETURN_IF_ERROR(status);
+    // auto download_cb = [&status, &tmp_file, fp, &digest, &url](const void* data, size_t length) {
+    //     digest.update(data, length);
+    //     auto res = fwrite(data, length, 1, fp);
+    //     if (res != 1) {
+    //         LOG(ERROR) << fmt::format("fail to write data to file {}, error={}", tmp_file, ferror(fp));
+    //         status =
+    //                 Status::InternalError(strings::Substitute("file to write data when downloading file from $0", url));
+    //         return false;
+    //     }
+    //     return true;
+    // };
+    // RETURN_IF_ERROR(client.execute(download_cb));
+    // RETURN_IF_ERROR(status);
 
     digest.digest();
     if (!boost::iequals(digest.hex(), expected_checksum)) {

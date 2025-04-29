@@ -21,7 +21,6 @@
 #include "common/config.h"
 #include "gutil/strings/fastmem.h"
 #include "gutil/strings/split.h"
-#include "service/backend_options.h"
 #include "util/hash_util.hpp"
 #include "util/runtime_profile.h"
 #include "util/stack_util.h"
@@ -543,9 +542,9 @@ void CacheInputStream::set_peer_cache_node(const std::string& peer_node) {
 
     StripWhiteSpace(&parts[0]);
     StripWhiteSpace(&parts[1]);
-    if (parts[0] == BackendOptions::get_localhost() && std::stoi(parts[1]) == config::brpc_port) {
-        return;
-    }
+    // if (parts[0] == BackendOptions::get_localhost() && std::stoi(parts[1]) == config::brpc_port) {
+    //     return;
+    // }
 
     _peer_host = parts[0];
     _peer_port = std::stoi(parts[1]);

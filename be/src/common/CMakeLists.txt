@@ -16,7 +16,6 @@ set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/common")
 
 add_library(Common STATIC
   daemon.cpp
-  greplog.cpp
   status.cpp
   statusor.cpp
   logconfig.cpp

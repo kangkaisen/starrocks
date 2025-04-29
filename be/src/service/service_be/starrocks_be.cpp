@@ -19,7 +19,6 @@
 #include <sanitizer/lsan_interface.h>
 #endif
 
-#include "agent/heartbeat_server.h"
 #include "backend_service.h"
 #include "cache/block_cache/block_cache.h"
 #include "common/config.h"
