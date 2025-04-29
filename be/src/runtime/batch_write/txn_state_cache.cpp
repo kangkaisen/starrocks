@@ -289,33 +289,33 @@ void TxnStatePoller::_schedule_poll_tasks(const std::vector<TxnStatePollTask>& p
 }
 
 void TxnStatePoller::_execute_poll(const TxnStatePollTask& task) {
-    int64_t start_ts = MonotonicMicros();
-    TGetLoadTxnStatusRequest request;
-    request.__set_db(task.db);
-    request.__set_tbl(task.tbl);
-    request.__set_txnId(task.txn_id);
-    set_request_auth(&request, task.auth);
-    TGetLoadTxnStatusResult response;
-    Status status;
-#ifndef BE_TEST
-    TNetworkAddress master_addr = get_master_address();
-    status = ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &response](FrontendServiceConnection& client) { client->getLoadTxnStatus(response, request); });
-#else
-    TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::request", &request);
-    TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::status", &status);
-    TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::response", &response);
-#endif
-    TRACE_BATCH_WRITE << "execute poll task, txn_id: " << task.txn_id << ", db: " << task.db << ", tbl: " << task.tbl
-                      << ", cost: " << (MonotonicMicros() - start_ts) << " us, rpc status: " << status
-                      << ", response: " << response;
-    if (status.ok()) {
-        _txn_state_cache->_notify_poll_result(task, TxnState{response.status, response.reason});
-    } else {
-        _txn_state_cache->_notify_poll_result(
-                task, Status::InternalError("poll txn state failed, error: " + status.to_string()));
-    }
+//     int64_t start_ts = MonotonicMicros();
+//     TGetLoadTxnStatusRequest request;
+//     request.__set_db(task.db);
+//     request.__set_tbl(task.tbl);
+//     request.__set_txnId(task.txn_id);
+//     set_request_auth(&request, task.auth);
+//     TGetLoadTxnStatusResult response;
+//     Status status;
+// #ifndef BE_TEST
+//     TNetworkAddress master_addr = get_master_address();
+//     status = ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &response](FrontendServiceConnection& client) { client->getLoadTxnStatus(response, request); });
+// #else
+//     TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::request", &request);
+//     TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::status", &status);
+//     TEST_SYNC_POINT_CALLBACK("TxnStatePoller::_execute_poll::response", &response);
+// #endif
+//     TRACE_BATCH_WRITE << "execute poll task, txn_id: " << task.txn_id << ", db: " << task.db << ", tbl: " << task.tbl
+//                       << ", cost: " << (MonotonicMicros() - start_ts) << " us, rpc status: " << status
+//                       << ", response: " << response;
+//     if (status.ok()) {
+//         _txn_state_cache->_notify_poll_result(task, TxnState{response.status, response.reason});
+//     } else {
+//         _txn_state_cache->_notify_poll_result(
+//                 task, Status::InternalError("poll txn state failed, error: " + status.to_string()));
+//     }
 }
 
 bool TxnStatePoller::TEST_is_txn_pending(int64_t txn_id) {

@@ -153,53 +153,53 @@ void CompactionTaskCallback::finish_task(std::unique_ptr<CompactionTaskContext>&
 }
 
 Status CompactionTaskCallback::is_txn_still_valid() {
-    RETURN_IF_ERROR(has_error());
-    auto check_interval_seconds = 60L * config::lake_compaction_check_valid_interval_minutes;
-    if (check_interval_seconds <= 0) {
-        return Status::OK();
-    }
-    // try_lock failed means other thread is checking txn
-    if (!_txn_valid_check_mutex.try_lock()) {
-        return Status::OK();
-    }
-    DeferOp defer([&]() { _txn_valid_check_mutex.unlock(); });
-    // check again after acquired lock
-    auto now = time(nullptr);
-    if (now <= _last_check_time || (now - _last_check_time) < check_interval_seconds) {
-        return Status::OK();
-    }
-    // ask FE whether this compaction transaction is still valid
-#ifndef BE_TEST
-    TNetworkAddress master_addr = get_master_address();
-    if (master_addr.hostname.size() > 0 && master_addr.port > 0) {
-        TReportLakeCompactionRequest request;
-        request.__set_txn_id(_request->txn_id());
-        TReportLakeCompactionResponse result;
-        auto status = ThriftRpcHelper::rpc<FrontendServiceClient>(
-                master_addr.hostname, master_addr.port,
-                [&request, &result](FrontendServiceConnection& client) {
-                    client->reportLakeCompaction(result, request);
-                },
-                3000 /* timeout 3 seconds */);
-        if (status.ok()) {
-            if (!result.valid) {
-                // notify all tablets in this compaction request
-                LOG(WARNING) << "abort invalid compaction transaction " << _request->txn_id();
-                Status rs = Status::Aborted("compaction validation failed");
-                update_status(rs);
-                return rs; // should cancel compaction
-            } else {
-                // everything is fine
-            }
-        } else {
-            LOG(WARNING) << "fail to validate compaction transaction " << _request->txn_id() << ", error: " << status;
-        }
-    } else {
-        LOG(WARNING) << "fail to validate compaction transaction " << _request->txn_id()
-                     << ", error: leader FE address not found";
-    }
-#endif
-    _last_check_time = time(nullptr);
+//     RETURN_IF_ERROR(has_error());
+//     auto check_interval_seconds = 60L * config::lake_compaction_check_valid_interval_minutes;
+//     if (check_interval_seconds <= 0) {
+//         return Status::OK();
+//     }
+//     // try_lock failed means other thread is checking txn
+//     if (!_txn_valid_check_mutex.try_lock()) {
+//         return Status::OK();
+//     }
+//     DeferOp defer([&]() { _txn_valid_check_mutex.unlock(); });
+//     // check again after acquired lock
+//     auto now = time(nullptr);
+//     if (now <= _last_check_time || (now - _last_check_time) < check_interval_seconds) {
+//         return Status::OK();
+//     }
+//     // ask FE whether this compaction transaction is still valid
+// #ifndef BE_TEST
+//     TNetworkAddress master_addr = get_master_address();
+//     if (master_addr.hostname.size() > 0 && master_addr.port > 0) {
+//         TReportLakeCompactionRequest request;
+//         request.__set_txn_id(_request->txn_id());
+//         TReportLakeCompactionResponse result;
+//         auto status = ThriftRpcHelper::rpc<FrontendServiceClient>(
+//                 master_addr.hostname, master_addr.port,
+//                 [&request, &result](FrontendServiceConnection& client) {
+//                     client->reportLakeCompaction(result, request);
+//                 },
+//                 3000 /* timeout 3 seconds */);
+//         if (status.ok()) {
+//             if (!result.valid) {
+//                 // notify all tablets in this compaction request
+//                 LOG(WARNING) << "abort invalid compaction transaction " << _request->txn_id();
+//                 Status rs = Status::Aborted("compaction validation failed");
+//                 update_status(rs);
+//                 return rs; // should cancel compaction
+//             } else {
+//                 // everything is fine
+//             }
+//         } else {
+//             LOG(WARNING) << "fail to validate compaction transaction " << _request->txn_id() << ", error: " << status;
+//         }
+//     } else {
+//         LOG(WARNING) << "fail to validate compaction transaction " << _request->txn_id()
+//                      << ", error: leader FE address not found";
+//     }
+// #endif
+//     _last_check_time = time(nullptr);
     return Status::OK();
 }
 

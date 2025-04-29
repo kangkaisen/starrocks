@@ -179,13 +179,13 @@ Status StreamLoadExecutor::begin_txn(StreamLoadContext* ctx) {
     }
     request.__set_request_id(ctx->id.to_thrift());
 
-    TNetworkAddress master_addr = get_master_address();
+    // TNetworkAddress master_addr = get_master_address();
     TLoadTxnBeginResult result;
-#ifndef BE_TEST
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->loadTxnBegin(result, request); }));
-#else
+// #ifndef BE_TEST
+//     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &result](FrontendServiceConnection& client) { client->loadTxnBegin(result, request); }));
+// #else
     result = k_stream_load_begin_result;
 #endif
     Status status(result.status);
@@ -264,38 +264,39 @@ Status StreamLoadExecutor::commit_txn(StreamLoadContext* ctx) {
 }
 
 Status commit_txn_internal(const TLoadTxnCommitRequest& request, int32_t rpc_timeout_ms, TLoadTxnCommitResult* result) {
-    TNetworkAddress master_addr = get_master_address();
-#ifndef BE_TEST
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->loadTxnCommit(*result, request); },
-            rpc_timeout_ms));
-#else
-    *result = k_stream_load_commit_result;
-#endif
+//     TNetworkAddress master_addr = get_master_address();
+// #ifndef BE_TEST
+//     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &result](FrontendServiceConnection& client) { client->loadTxnCommit(*result, request); },
+//             rpc_timeout_ms));
+// #else
+//     *result = k_stream_load_commit_result;
+// #endif
     return Status::OK();
 }
 
 StatusOr<TTransactionStatus::type> get_txn_status(const AuthInfo& auth, std::string_view db, std::string_view table,
                                                   int64_t txn_id) {
-    TNetworkAddress master_addr = get_master_address();
-    TGetLoadTxnStatusRequest request;
-    TGetLoadTxnStatusResult result;
+    // TNetworkAddress master_addr = get_master_address();
+    // TGetLoadTxnStatusRequest request;
+    // TGetLoadTxnStatusResult result;
 
-    set_request_auth(&request, auth);
-    request.db = db;
-    request.tbl = table;
-    request.txnId = txn_id;
+    // set_request_auth(&request, auth);
+    // request.db = db;
+    // request.tbl = table;
+    // request.txnId = txn_id;
 
-    auto st = ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->getLoadTxnStatus(result, request); },
-            config::txn_commit_rpc_timeout_ms);
-    if (!st.ok()) {
-        return st;
-    } else {
-        return result.status;
-    }
+    // auto st = ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&request, &result](FrontendServiceConnection& client) { client->getLoadTxnStatus(result, request); },
+    //         config::txn_commit_rpc_timeout_ms);
+    // if (!st.ok()) {
+    //     return st;
+    // } else {
+    //     return result.status;
+    // }
+    return Status::OK();
 }
 
 bool wait_txn_visible_until(const AuthInfo& auth, std::string_view db, std::string_view table, int64_t txn_id,
@@ -321,91 +322,91 @@ bool wait_txn_visible_until(const AuthInfo& auth, std::string_view db, std::stri
 }
 
 Status StreamLoadExecutor::prepare_txn(StreamLoadContext* ctx) {
-    StarRocksMetrics::instance()->txn_commit_request_total.increment(1);
+//     StarRocksMetrics::instance()->txn_commit_request_total.increment(1);
 
-    TLoadTxnCommitRequest request;
-    set_request_auth(&request, ctx->auth);
-    request.db = ctx->db;
-    request.tbl = ctx->table;
-    request.txnId = ctx->txn_id;
-    request.sync = true;
-    request.commitInfos = std::move(ctx->commit_infos);
-    request.__isset.commitInfos = true;
-    request.failInfos = std::move(ctx->fail_infos);
-    request.__isset.failInfos = true;
-    int32_t rpc_timeout_ms = config::txn_commit_rpc_timeout_ms;
-    if (ctx->timeout_second != -1) {
-        rpc_timeout_ms = std::min(ctx->timeout_second * 1000 / 2, rpc_timeout_ms);
-        rpc_timeout_ms = std::max(ctx->timeout_second * 1000 / 4, rpc_timeout_ms);
-    }
-    request.__set_thrift_rpc_timeout_ms(rpc_timeout_ms);
+//     TLoadTxnCommitRequest request;
+//     set_request_auth(&request, ctx->auth);
+//     request.db = ctx->db;
+//     request.tbl = ctx->table;
+//     request.txnId = ctx->txn_id;
+//     request.sync = true;
+//     request.commitInfos = std::move(ctx->commit_infos);
+//     request.__isset.commitInfos = true;
+//     request.failInfos = std::move(ctx->fail_infos);
+//     request.__isset.failInfos = true;
+//     int32_t rpc_timeout_ms = config::txn_commit_rpc_timeout_ms;
+//     if (ctx->timeout_second != -1) {
+//         rpc_timeout_ms = std::min(ctx->timeout_second * 1000 / 2, rpc_timeout_ms);
+//         rpc_timeout_ms = std::max(ctx->timeout_second * 1000 / 4, rpc_timeout_ms);
+//     }
+//     request.__set_thrift_rpc_timeout_ms(rpc_timeout_ms);
 
-    // set attachment if has
-    TTxnCommitAttachment attachment;
-    if (collect_load_stat(ctx, &attachment)) {
-        request.txnCommitAttachment = attachment;
-        request.__isset.txnCommitAttachment = true;
-    }
+//     // set attachment if has
+//     TTxnCommitAttachment attachment;
+//     if (collect_load_stat(ctx, &attachment)) {
+//         request.txnCommitAttachment = attachment;
+//         request.__isset.txnCommitAttachment = true;
+//     }
 
-    TNetworkAddress master_addr = get_master_address();
-    TLoadTxnCommitResult result;
-#ifndef BE_TEST
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->loadTxnPrepare(result, request); },
-            rpc_timeout_ms));
-#else
-    result = k_stream_load_commit_result;
-#endif
-    // Return if this transaction is prepare successful; otherwise, we need try
-    // to rollback this transaction.
-    Status status(result.status);
-    if (!status.ok()) {
-        LOG(WARNING) << "prepare transaction failed, errmsg=" << status.message() << ctx->brief();
-        return status;
-    }
-    // commit success, set need_rollback to false
-    ctx->need_rollback = false;
+//     TNetworkAddress master_addr = get_master_address();
+//     TLoadTxnCommitResult result;
+// #ifndef BE_TEST
+//     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &result](FrontendServiceConnection& client) { client->loadTxnPrepare(result, request); },
+//             rpc_timeout_ms));
+// #else
+//     result = k_stream_load_commit_result;
+// #endif
+//     // Return if this transaction is prepare successful; otherwise, we need try
+//     // to rollback this transaction.
+//     Status status(result.status);
+//     if (!status.ok()) {
+//         LOG(WARNING) << "prepare transaction failed, errmsg=" << status.message() << ctx->brief();
+//         return status;
+//     }
+//     // commit success, set need_rollback to false
+//     ctx->need_rollback = false;
     return Status::OK();
 }
 
 Status StreamLoadExecutor::rollback_txn(StreamLoadContext* ctx) {
-    StarRocksMetrics::instance()->txn_rollback_request_total.increment(1);
+//     StarRocksMetrics::instance()->txn_rollback_request_total.increment(1);
 
-    TNetworkAddress master_addr = get_master_address();
-    TLoadTxnRollbackRequest request;
-    set_request_auth(&request, ctx->auth);
-    request.db = ctx->db;
-    request.tbl = ctx->table;
-    request.txnId = ctx->txn_id;
-    request.commitInfos = std::move(ctx->commit_infos);
-    request.__isset.commitInfos = true;
-    request.failInfos = std::move(ctx->fail_infos);
-    request.__isset.failInfos = true;
-    request.__set_reason(std::string(ctx->status.message()));
+//     TNetworkAddress master_addr = get_master_address();
+//     TLoadTxnRollbackRequest request;
+//     set_request_auth(&request, ctx->auth);
+//     request.db = ctx->db;
+//     request.tbl = ctx->table;
+//     request.txnId = ctx->txn_id;
+//     request.commitInfos = std::move(ctx->commit_infos);
+//     request.__isset.commitInfos = true;
+//     request.failInfos = std::move(ctx->fail_infos);
+//     request.__isset.failInfos = true;
+//     request.__set_reason(std::string(ctx->status.message()));
 
-    // set attachment if has
-    TTxnCommitAttachment attachment;
-    if (collect_load_stat(ctx, &attachment)) {
-        request.txnCommitAttachment = attachment;
-        request.__isset.txnCommitAttachment = true;
-    }
+//     // set attachment if has
+//     TTxnCommitAttachment attachment;
+//     if (collect_load_stat(ctx, &attachment)) {
+//         request.txnCommitAttachment = attachment;
+//         request.__isset.txnCommitAttachment = true;
+//     }
 
-    TLoadTxnRollbackResult result;
-#ifndef BE_TEST
-    auto rpc_st = ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->loadTxnRollback(result, request); });
-    if (!rpc_st.ok()) {
-        LOG(WARNING) << "transaction rollback failed. errmsg=" << rpc_st.message() << ctx->brief();
-        return rpc_st;
-    }
-    if (result.status.status_code != TStatusCode::TXN_NOT_EXISTS) {
-        return result.status;
-    }
-#else
-    result = k_stream_load_rollback_result;
-#endif
+//     TLoadTxnRollbackResult result;
+// #ifndef BE_TEST
+//     auto rpc_st = ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &result](FrontendServiceConnection& client) { client->loadTxnRollback(result, request); });
+//     if (!rpc_st.ok()) {
+//         LOG(WARNING) << "transaction rollback failed. errmsg=" << rpc_st.message() << ctx->brief();
+//         return rpc_st;
+//     }
+//     if (result.status.status_code != TStatusCode::TXN_NOT_EXISTS) {
+//         return result.status;
+//     }
+// #else
+//     result = k_stream_load_rollback_result;
+// #endif
     return Status::OK();
 }
 

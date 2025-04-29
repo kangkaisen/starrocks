@@ -434,23 +434,23 @@ Status OlapTableSink::_automatic_create_partition() {
 
     LOG(INFO) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
               << " automatic partition rpc begin request " << request;
-    TNetworkAddress master_addr = get_master_address();
-    auto timeout_ms = _runtime_state->query_options().query_timeout * 1000 / 2;
-    int retry_times = 0;
-    int64_t start_ts = butil::gettimeofday_s();
+    // TNetworkAddress master_addr = get_master_address();
+    // auto timeout_ms = _runtime_state->query_options().query_timeout * 1000 / 2;
+    // int retry_times = 0;
+    // int64_t start_ts = butil::gettimeofday_s();
 
-    do {
-        if (retry_times++ > 1) {
-            SleepFor(MonoDelta::FromMilliseconds(std::min(5000, timeout_ms)));
-            VLOG(2) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
-                    << " automatic partition rpc retry " << retry_times;
-        }
-        RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-                master_addr.hostname, master_addr.port,
-                [&request, &result](FrontendServiceConnection& client) { client->createPartition(result, request); },
-                timeout_ms));
-    } while (result.status.status_code == TStatusCode::SERVICE_UNAVAILABLE &&
-             butil::gettimeofday_s() - start_ts < timeout_ms / 1000);
+    // do {
+    //     if (retry_times++ > 1) {
+    //         SleepFor(MonoDelta::FromMilliseconds(std::min(5000, timeout_ms)));
+    //         VLOG(2) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
+    //                 << " automatic partition rpc retry " << retry_times;
+    //     }
+    //     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //             master_addr.hostname, master_addr.port,
+    //             [&request, &result](FrontendServiceConnection& client) { client->createPartition(result, request); },
+    //             timeout_ms));
+    // } while (result.status.status_code == TStatusCode::SERVICE_UNAVAILABLE &&
+    //          butil::gettimeofday_s() - start_ts < timeout_ms / 1000);
 
     LOG(INFO) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
               << " automatic partition rpc end response " << result;
@@ -501,14 +501,14 @@ Status OlapTableSink::_update_immutable_partition(const std::set<int64_t>& parti
     RETURN_IF_ERROR(_vectorized_partition->remove_partitions(request.partition_ids));
 
     LOG(INFO) << "immutable partition rpc begin request " << request;
-    TNetworkAddress master_addr = get_master_address();
-    auto timeout_ms = _runtime_state->query_options().query_timeout * 1000 / 2;
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) {
-                client->updateImmutablePartition(result, request);
-            },
-            timeout_ms));
+    // TNetworkAddress master_addr = get_master_address();
+    // auto timeout_ms = _runtime_state->query_options().query_timeout * 1000 / 2;
+    // RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&request, &result](FrontendServiceConnection& client) {
+    //             client->updateImmutablePartition(result, request);
+    //         },
+    //         timeout_ms));
     LOG(INFO) << "immutable partition rpc end response " << result;
     if (result.status.status_code == TStatusCode::OK) {
         // add new created partitions

@@ -1216,10 +1216,11 @@ Status StorageEngine::_do_sweep(const std::string& scan_root, const time_t& loca
 
 Status StorageEngine::_get_remote_next_increment_id_interval(const TAllocateAutoIncrementIdParam& request,
                                                              TAllocateAutoIncrementIdResult* result) {
-    TNetworkAddress master_addr = get_master_address();
-    return ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &result](FrontendServiceConnection& client) { client->allocAutoIncrementId(*result, request); });
+    // TNetworkAddress master_addr = get_master_address();
+    // return ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&request, &result](FrontendServiceConnection& client) { client->allocAutoIncrementId(*result, request); });
+    return Status::OK();
 }
 
 double StorageEngine::delete_unused_rowset() {

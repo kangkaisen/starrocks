@@ -2047,18 +2047,12 @@ public:
         auto dst = RunTimeColumnType<TYPE_VARCHAR>::create();
         auto& dst_offsets = dst->get_offset();
         auto& dst_bytes = dst->get_bytes();
-        if (validate_ascii_fast(reinterpret_cast<const char*>(src_bytes.data()), src_bytes.size())) {
-            dst_offsets.assign(src_offsets.begin(), src_offsets.end());
-            // if all characters are ascii, we process them with the fast path
-            if constexpr (to_upper) {
-                vectorized_toggle_case<'a', 'z'>(&src_bytes, &dst_bytes);
-            } else {
-                vectorized_toggle_case<'A', 'Z'>(&src_bytes, &dst_bytes);
-            }
+        dst_offsets.assign(src_offsets.begin(), src_offsets.end());
+        // if all characters are ascii, we process them with the fast path
+        if constexpr (to_upper) {
+            vectorized_toggle_case<'a', 'z'>(&src_bytes, &dst_bytes);
         } else {
-            dst_bytes.resize(src_offsets.back());
-            dst_offsets.resize(src_offsets.size());
-            utf8_case_toggle<to_upper>(src_bytes, src_offsets, &dst_bytes, &dst_offsets);
+            vectorized_toggle_case<'A', 'Z'>(&src_bytes, &dst_bytes);
         }
 
         return dst;

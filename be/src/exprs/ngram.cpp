@@ -186,8 +186,12 @@ private:
             haystackPtr = haystack_column;
         }
         if constexpr (case_insensitive) {
-            // @TODO if ngram supports utf8 in the future, we should use antoher implementation.
-            haystackPtr = StringCaseToggleFunction<false>::evaluate<TYPE_VARCHAR, TYPE_VARCHAR>(haystackPtr);
+            Columns temp;
+            temp.emplace_back(haystackPtr);
+            lower = StringFunctions::lower(nullptr, temp);
+            haystackPtr = lower.value();
+            // // @TODO if ngram supports utf8 in the future, we should use antoher implementation.
+            // haystackPtr = StringCaseToggleFunction<false>::evaluate<TYPE_VARCHAR, TYPE_VARCHAR>(haystackPtr);
         }
 
         BinaryColumn* haystack = ColumnHelper::as_raw_column<BinaryColumn>(haystackPtr);

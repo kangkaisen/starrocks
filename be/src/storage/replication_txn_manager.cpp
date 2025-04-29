@@ -35,7 +35,6 @@
 #include "runtime/client_cache.h"
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
-#include "service/backend_options.h"
 #include "storage/protobuf_file.h"
 #include "storage/replication_utils.h"
 #include "storage/rowset/rowset.h"

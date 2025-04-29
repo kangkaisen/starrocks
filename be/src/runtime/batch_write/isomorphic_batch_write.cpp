@@ -379,40 +379,40 @@ Status IsomorphicBatchWrite::_write_data_to_pipe(AsyncAppendDataContext* async_c
 }
 
 Status IsomorphicBatchWrite::_send_rpc_request(StreamLoadContext* data_ctx) {
-    TNetworkAddress master_addr = get_master_address();
-    TMergeCommitRequest request;
-    request.__set_db(_batch_write_id.db);
-    request.__set_tbl(_batch_write_id.table);
-    request.__set_user(data_ctx->auth.user);
-    request.__set_passwd(data_ctx->auth.passwd);
-    request.__set_user_ip(data_ctx->auth.user_ip);
-    auto backend_id = get_backend_id();
-    if (backend_id.has_value()) {
-        request.__set_backend_id(backend_id.value());
-    }
-    request.__set_backend_host(BackendOptions::get_localhost());
-    request.__set_params(_batch_write_id.load_params);
+//     TNetworkAddress master_addr = get_master_address();
+//     TMergeCommitRequest request;
+//     request.__set_db(_batch_write_id.db);
+//     request.__set_tbl(_batch_write_id.table);
+//     request.__set_user(data_ctx->auth.user);
+//     request.__set_passwd(data_ctx->auth.passwd);
+//     request.__set_user_ip(data_ctx->auth.user_ip);
+//     auto backend_id = get_backend_id();
+//     if (backend_id.has_value()) {
+//         request.__set_backend_id(backend_id.value());
+//     }
+//     request.__set_backend_host(BackendOptions::get_localhost());
+//     request.__set_params(_batch_write_id.load_params);
 
-    TMergeCommitResult response;
+//     TMergeCommitResult response;
+//     Status st;
+
+// #ifndef BE_TEST
+//     int64_t start_ts = MonotonicNanos();
+//     st = ThriftRpcHelper::rpc<FrontendServiceClient>(
+//             master_addr.hostname, master_addr.port,
+//             [&request, &response](FrontendServiceConnection& client) { client->requestMergeCommit(response, request); },
+//             config::merge_commit_rpc_reqeust_timeout_ms);
+//     TRACE_BATCH_WRITE << "receive requestBatchWrite response, " << _batch_write_id
+//                       << ", user label: " << data_ctx->label << ", master: " << master_addr
+//                       << ", cost: " << ((MonotonicNanos() - start_ts) / 1000) << "us, status: " << st
+//                       << ", response: " << response;
+// #else
+//     TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::request", &request);
+//     TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::status", &st);
+//     TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::response", &response);
+// #endif
     Status st;
-
-#ifndef BE_TEST
-    int64_t start_ts = MonotonicNanos();
-    st = ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &response](FrontendServiceConnection& client) { client->requestMergeCommit(response, request); },
-            config::merge_commit_rpc_reqeust_timeout_ms);
-    TRACE_BATCH_WRITE << "receive requestBatchWrite response, " << _batch_write_id
-                      << ", user label: " << data_ctx->label << ", master: " << master_addr
-                      << ", cost: " << ((MonotonicNanos() - start_ts) / 1000) << "us, status: " << st
-                      << ", response: " << response;
-#else
-    TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::request", &request);
-    TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::status", &st);
-    TEST_SYNC_POINT_CALLBACK("IsomorphicBatchWrite::send_rpc_request::response", &response);
-#endif
-
-    return st.ok() ? Status(response.status) : st;
+    return st;
 }
 
 Status IsomorphicBatchWrite::_wait_for_load_finish(StreamLoadContext* data_ctx) {

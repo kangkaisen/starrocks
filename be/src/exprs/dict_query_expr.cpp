@@ -117,11 +117,11 @@ Status DictQueryExpr::open(RuntimeState* state, ExprContext* context, FunctionCo
     request.__set_table_name(_dict_query_expr.tbl_name);
     TGetDictQueryParamResponse response;
 
-    TNetworkAddress master_addr = get_master_address();
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &response](FrontendServiceConnection& client) { client->getDictQueryParam(response, request); },
-            30000));
+    // TNetworkAddress master_addr = get_master_address();
+    // RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&request, &response](FrontendServiceConnection& client) { client->getDictQueryParam(response, request); },
+    //         30000));
 
     TableReaderParams params;
     params.schema = response.schema;

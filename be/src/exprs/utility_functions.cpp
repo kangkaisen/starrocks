@@ -40,7 +40,7 @@
 #include "exprs/function_context.h"
 #include "gutil/casts.h"
 #include "runtime/runtime_state.h"
-#include "service/backend_options.h"
+// #include "service/backend_options.h"
 #include "types/logical_type.h"
 #include "util/cidr.h"
 #include "util/monotime.h"
@@ -213,8 +213,8 @@ StatusOr<ColumnPtr> UtilityFunctions::uuid_numeric(FunctionContext*, const Colum
 
     auto& data = result->get_data();
 
-    uint32_t intip;
-    CIDR::ip_to_int(BackendOptions::get_localhost(), &intip);
+    uint32_t intip = 1;
+    // CIDR::ip_to_int(BackendOptions::get_localhost(), &intip);
     intip ^= config::brpc_port;
     // current thread id
     int tid = get_uniq_tid();

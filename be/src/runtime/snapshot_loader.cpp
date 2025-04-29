@@ -548,10 +548,10 @@ Status SnapshotLoader::primary_key_move(const std::string& snapshot_path, const 
 
     /*
      * just reset the tablet_schema using the schema in snapshot_meta
-     * 
+     *
      * we do not use tablet_meta copy to avoid the TabletUpdates
      * inconsistent problem.
-     * 
+     *
      * we also do not use the snapshot_meta to construct a new
      * tablet to replace the old one here, because it may easy
      * to forget reset some variable in the snapshot_meta.
@@ -1046,34 +1046,34 @@ Status SnapshotLoader::_report_every(int report_threshold, int* counter, int32_t
     LOG(INFO) << "report to frontend. job id: " << _job_id << ", task id: " << _task_id
               << ", finished num: " << finished_num << ", total num:" << total_num;
 
-    TNetworkAddress master_addr = get_master_address();
+    // TNetworkAddress master_addr = get_master_address();
 
-    TSnapshotLoaderReportRequest request;
-    request.job_id = _job_id;
-    request.task_id = _task_id;
-    request.task_type = type;
-    request.__set_finished_num(finished_num);
-    request.__set_total_num(total_num);
-    TStatus report_st;
+    // TSnapshotLoaderReportRequest request;
+    // request.job_id = _job_id;
+    // request.task_id = _task_id;
+    // request.task_type = type;
+    // request.__set_finished_num(finished_num);
+    // request.__set_total_num(total_num);
+    // TStatus report_st;
 
-    Status rpcStatus = ThriftRpcHelper::rpc<FrontendServiceClient>(
-            master_addr.hostname, master_addr.port,
-            [&request, &report_st](FrontendServiceConnection& client) {
-                client->snapshotLoaderReport(report_st, request);
-            },
-            10000);
+    // Status rpcStatus = ThriftRpcHelper::rpc<FrontendServiceClient>(
+    //         master_addr.hostname, master_addr.port,
+    //         [&request, &report_st](FrontendServiceConnection& client) {
+    //             client->snapshotLoaderReport(report_st, request);
+    //         },
+    //         10000);
 
-    if (!rpcStatus.ok()) {
-        // rpc failed, ignore
-        return Status::OK();
-    }
+    // if (!rpcStatus.ok()) {
+    //     // rpc failed, ignore
+    //     return Status::OK();
+    // }
 
     // reset
-    *counter = 0;
-    if (report_st.status_code == TStatusCode::CANCELLED) {
-        LOG(INFO) << "job is cancelled. job id: " << _job_id << ", task id: " << _task_id;
-        return Status::Cancelled("Cancelled");
-    }
+    // *counter = 0;
+    // if (report_st.status_code == TStatusCode::CANCELLED) {
+    //     LOG(INFO) << "job is cancelled. job id: " << _job_id << ", task id: " << _task_id;
+    //     return Status::Cancelled("Cancelled");
+    // }
     return Status::OK();
 }
 
