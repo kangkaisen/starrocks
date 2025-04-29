@@ -732,7 +732,6 @@ set(WL_LINK_DYNAMIC "-Wl,-Bdynamic")
 # Set starrocks libraries
 set(STARROCKS_LINK_LIBS
     ${WL_START_GROUP}
-    Agent
     Common
     Column
     Connector
@@ -756,7 +755,6 @@ set(STARROCKS_LINK_LIBS
     Webserver
     TestUtil
     Tools
-    Geo
     Cache
     ${WL_END_GROUP}
 )
@@ -968,7 +966,6 @@ else()
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/lib)
 endif ()
 
-add_subdirectory(${SRC_DIR}/agent)
 add_subdirectory(${SRC_DIR}/common)
 add_subdirectory(${SRC_DIR}/connector)
 add_subdirectory(${SRC_DIR}/column)
@@ -977,7 +974,6 @@ add_subdirectory(${SRC_DIR}/fs)
 add_subdirectory(${SRC_DIR}/exec)
 add_subdirectory(${SRC_DIR}/exprs)
 add_subdirectory(${SRC_DIR}/gen_cpp)
-add_subdirectory(${SRC_DIR}/geo)
 add_subdirectory(${SRC_DIR}/gutil)
 add_subdirectory(${SRC_DIR}/http)
 add_subdirectory(${SRC_DIR}/io)
