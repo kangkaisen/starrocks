@@ -22,7 +22,6 @@
 #include "agent/master_info.h"
 #include "runtime/client_cache.h"
 #include "runtime/exec_env.h"
-#include "service/backend_options.h"
 #include "util/network_util.h"
 #include "util/thrift_rpc_helper.h"
 
@@ -32,15 +31,15 @@ std::string to_load_error_http_path(const std::string& file_name) {
         return "";
     }
     std::stringstream url;
-    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
-        << "file=" << file_name;
+    // url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
+    //     << "file=" << file_name;
     return url.str();
 }
 
 std::string to_http_path(const std::string& token, const std::string& file_name) {
     std::stringstream url;
-    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
-        << "token=" << token << "&file=" << file_name;
+    // url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
+    //     << "token=" << token << "&file=" << file_name;
     return url.str();
 }
 

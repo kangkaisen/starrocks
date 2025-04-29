@@ -23,7 +23,6 @@ set(EXEC_FILES
     encrypt_file.cpp
     key_cache.cpp
     fs_posix.cpp
-    fs_broker.cpp
     fs_memory.cpp
     fs_s3.cpp
     hdfs/fs_hdfs.cpp

@@ -51,7 +51,7 @@
 #include <utility>
 
 #include "common/config.h"
-#include "service/backend_options.h"
+// #include "service/backend_options.h"
 #include "util/thread.h"
 
 namespace starrocks {
@@ -338,35 +338,35 @@ Status ThriftServer::start() {
         break;
     }
 
-    case THREAD_POOL:
-        fe_server_transport.reset(new apache::thrift::transport::TServerSocket(
-                BackendOptions::get_service_bind_address_without_bracket(), _port));
+    // case THREAD_POOL:
+    //     fe_server_transport.reset(new apache::thrift::transport::TServerSocket(
+    //             BackendOptions::get_service_bind_address_without_bracket(), _port));
 
-        if (transport_factory == nullptr) {
-            transport_factory.reset(new apache::thrift::transport::TBufferedTransportFactory());
-        }
+    //     if (transport_factory == nullptr) {
+    //         transport_factory.reset(new apache::thrift::transport::TBufferedTransportFactory());
+    //     }
 
-        _server = std::make_unique<apache::thrift::server::TThreadPoolServer>(
-                _processor, fe_server_transport, transport_factory, protocol_factory, thread_mgr);
-        break;
+    //     _server = std::make_unique<apache::thrift::server::TThreadPoolServer>(
+    //             _processor, fe_server_transport, transport_factory, protocol_factory, thread_mgr);
+    //     break;
 
-    case THREADED:
-        server_socket = new apache::thrift::transport::TServerSocket(
-                BackendOptions::get_service_bind_address_without_bracket(), _port);
-        //      server_socket->setAcceptTimeout(500);
-        fe_server_transport.reset(server_socket);
-        server_socket->setKeepAlive(true);
+    // case THREADED:
+    //     server_socket = new apache::thrift::transport::TServerSocket(
+    //             BackendOptions::get_service_bind_address_without_bracket(), _port);
+    //     //      server_socket->setAcceptTimeout(500);
+    //     fe_server_transport.reset(server_socket);
+    //     server_socket->setKeepAlive(true);
 
-        if (transport_factory == nullptr) {
-            transport_factory.reset(new apache::thrift::transport::TBufferedTransportFactory());
-        }
+    //     if (transport_factory == nullptr) {
+    //         transport_factory.reset(new apache::thrift::transport::TBufferedTransportFactory());
+    //     }
 
-        // Use non-detached thread mode, so the ThreadedServer can correctly wait for all client threads done and exits cleanly.
-        // Refer to https://issues.apache.org/jira/browse/THRIFT-3768
-        thread_factory->setDetached(false);
-        _server = std::make_unique<apache::thrift::server::TThreadedServer>(
-                _processor, fe_server_transport, transport_factory, protocol_factory, thread_factory);
-        break;
+    //     // Use non-detached thread mode, so the ThreadedServer can correctly wait for all client threads done and exits cleanly.
+    //     // Refer to https://issues.apache.org/jira/browse/THRIFT-3768
+    //     thread_factory->setDetached(false);
+    //     _server = std::make_unique<apache::thrift::server::TThreadedServer>(
+    //             _processor, fe_server_transport, transport_factory, protocol_factory, thread_factory);
+    //     break;
 
     default:
         std::stringstream error_msg;

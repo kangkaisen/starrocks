@@ -49,7 +49,6 @@
 #include "jemalloc/jemalloc.h"
 #include "runtime/time_types.h"
 #include "runtime/user_function_cache.h"
-#include "service/backend_options.h"
 #include "service/mem_hook.h"
 #include "storage/options.h"
 #include "storage/storage_engine.h"
@@ -223,11 +222,11 @@ static void init_starrocks_metrics(const std::vector<StorePath>& store_paths) {
             LOG(WARNING) << "get disk devices failed, status=" << st.message();
             return;
         }
-        st = get_inet_interfaces(&network_interfaces, BackendOptions::is_bind_ipv6());
-        if (!st.ok()) {
-            LOG(WARNING) << "get inet interfaces failed, status=" << st.message();
-            return;
-        }
+        // st = get_inet_interfaces(&network_interfaces, BackendOptions::is_bind_ipv6());
+        // if (!st.ok()) {
+        //     LOG(WARNING) << "get inet interfaces failed, status=" << st.message();
+        //     return;
+        // }
     }
     StarRocksMetrics::instance()->initialize(paths, init_system_metrics, disk_devices, network_interfaces);
 }

@@ -83,7 +83,6 @@ ${license}
 #include "exprs/json_functions.h"
 #include "exprs/hash_functions.h"
 #include "exprs/encryption_functions.h"
-#include "exprs/geo_functions.h"
 #include "exprs/percentile_functions.h"
 #include "exprs/grouping_sets_functions.h"
 #include "exprs/es_functions.h"
