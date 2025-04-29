@@ -218,16 +218,6 @@ set_target_properties(hdfs PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/li
 add_library(fiu STATIC IMPORTED)
 set_target_properties(fiu PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libfiu.a)
 
-add_library(icuuc STATIC IMPORTED)
-set_target_properties(icuuc PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libicuuc.a)
-
-add_library(icui18n STATIC IMPORTED)
-set_target_properties(icui18n PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libicui18n.a)
-
-add_library(icudata STATIC IMPORTED)
-set_target_properties(icudata PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libicudata.a)
-
-
 # Allow FindOpenSSL() to find correct static libraries
 set(OPENSSL_ROOT_DIR ${THIRDPARTY_DIR} CACHE STRING "root directory of an OpenSSL installation")
 message(STATUS "Using OpenSSL Root Dir: ${OPENSSL_ROOT_DIR}")
@@ -858,9 +848,6 @@ set(STARROCKS_DEPENDENCIES
     avrocpp
     serdes
     fiu
-    icuuc
-    icui18n
-    icudata
     ${WL_END_GROUP}
 )
 
@@ -981,45 +968,6 @@ else()
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/lib)
 endif ()
 
-# Utility CMake function to make specifying tests and benchmarks less verbose
-FUNCTION(ADD_BE_TEST TEST_NAME)
-    set(BUILD_OUTPUT_ROOT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/")
-    # This gets the directory where the test is from (e.g. 'exprs' or 'runtime')
-    get_filename_component(DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
-    get_filename_component(TEST_DIR_NAME ${TEST_NAME} PATH)
-    get_filename_component(TEST_FILE_NAME ${TEST_NAME} NAME)
-
-    ADD_EXECUTABLE(${TEST_FILE_NAME} ${TEST_NAME}.cpp)
-    TARGET_LINK_LIBRARIES(${TEST_FILE_NAME} ${TEST_LINK_LIBS} gtest_main)
-    SET_TARGET_PROPERTIES(${TEST_FILE_NAME} PROPERTIES COMPILE_FLAGS "-fno-access-control")
-    if (NOT "${TEST_DIR_NAME}" STREQUAL "")
-        SET_TARGET_PROPERTIES(${TEST_FILE_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${BUILD_OUTPUT_ROOT_DIRECTORY}/${TEST_DIR_NAME}")
-    endif()
-    ADD_TEST(${TEST_FILE_NAME} "${BUILD_OUTPUT_ROOT_DIRECTORY}/${TEST_NAME}")
-ENDFUNCTION()
-
-# Add a benchmark to BE
-FUNCTION(ADD_BE_BENCH BENCH_NAME)
-    message(STATUS "Add Be Bench")
-    set(BUILD_OUTPUT_ROOT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/")
-    # This gets the directory where the test is from (e.g. 'exprs' or 'runtime')
-    get_filename_component(DIR_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
-    get_filename_component(BENCH_DIR_NAME ${BENCH_NAME} PATH)
-    set(BENCH_OUTPUT_DIR_NAME "output")
-    get_filename_component(BENCH_FILE_NAME ${BENCH_NAME} NAME)
-
-    find_package(benchmark REQUIRED)
-    ADD_EXECUTABLE(${BENCH_FILE_NAME} ${BENCH_NAME}.cpp)
-    TARGET_LINK_LIBRARIES(${BENCH_FILE_NAME} benchmark benchmark_main ${TEST_LINK_LIBS})
-
-    SET_TARGET_PROPERTIES(${BENCH_FILE_NAME} PROPERTIES COMPILE_FLAGS "-fno-access-control")
-    SET_TARGET_PROPERTIES(${BENCH_FILE_NAME} PROPERTIES COMPILE_FLAGS ${CXX_FLAGS_RELEASE})
-    if (NOT "${BENCH_OUTPUT_DIR_NAME}" STREQUAL "")
-        SET_TARGET_PROPERTIES(${BENCH_FILE_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${BUILD_OUTPUT_ROOT_DIRECTORY}/${BENCH_OUTPUT_DIR_NAME}")
-    endif()
-    ADD_TEST(${BENCH_FILE_NAME} "${BUILD_OUTPUT_ROOT_DIRECTORY}/${BENCH_NAME}")
-ENDFUNCTION()
-
 add_subdirectory(${SRC_DIR}/agent)
 add_subdirectory(${SRC_DIR}/common)
 add_subdirectory(${SRC_DIR}/connector)
@@ -1046,21 +994,6 @@ add_subdirectory(${SRC_DIR}/tools)
 add_subdirectory(${SRC_DIR}/util)
 add_subdirectory(${SRC_DIR}/script)
 
-if (BUILD_FORMAT_LIB)
-    message(STATUS "Build starrocks format lib")
-    add_subdirectory(${SRC_DIR}/starrocks_format)
-endif()
-
-if (WITH_BENCH STREQUAL "ON")
-    message(STATUS "Build binary with bench")
-    add_subdirectory(${SRC_DIR}/bench)
-endif()
-
-if (${MAKE_TEST} STREQUAL "ON")
-    add_subdirectory(test)
-endif ()
-
-# Install be
 install(DIRECTORY DESTINATION ${OUTPUT_DIR})
 install(DIRECTORY DESTINATION ${OUTPUT_DIR}/bin)
 install(DIRECTORY DESTINATION ${OUTPUT_DIR}/conf)

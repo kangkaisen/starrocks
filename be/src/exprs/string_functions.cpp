@@ -14,17 +14,10 @@
 
 #include "exprs/string_functions.h"
 
-#include "util/defer_op.h"
-
 #ifdef __x86_64__
 #include <immintrin.h>
 #include <mmintrin.h>
 #endif
-
-#include <unicode/ucasemap.h>
-#include <unicode/unistr.h>
-#include <unicode/urename.h>
-#include <unicode/utypes.h>
 
 #include <algorithm>
 #include <cctype>
@@ -1966,58 +1959,58 @@ static inline void vectorized_toggle_case(const Bytes* src, Bytes* dst) {
     dst->swap(reinterpret_cast<Bytes&>(buffer));
 }
 
-template <bool to_upper>
-void utf8_case_toggle(const Bytes& src_bytes, const Offsets& src_offsets, Bytes* dst_bytes, Offsets* dst_offsets) {
-    UErrorCode err_code = U_ZERO_ERROR;
-    UCaseMap* case_map = ucasemap_open("", U_FOLD_CASE_DEFAULT, &err_code);
-    if (U_FAILURE(err_code)) {
-        throw std::runtime_error(fmt::format("Failed to open case map: {}", u_errorName(err_code)));
-    }
-    DeferOp defer([&]() { ucasemap_close(case_map); });
-    size_t num_rows = src_offsets.size() - 1;
-    size_t current_dst_size = dst_bytes->size();
+// template <bool to_upper>
+// void utf8_case_toggle(const Bytes& src_bytes, const Offsets& src_offsets, Bytes* dst_bytes, Offsets* dst_offsets) {
+//     UErrorCode err_code = U_ZERO_ERROR;
+//     UCaseMap* case_map = ucasemap_open("", U_FOLD_CASE_DEFAULT, &err_code);
+//     if (U_FAILURE(err_code)) {
+//         throw std::runtime_error(fmt::format("Failed to open case map: {}", u_errorName(err_code)));
+//     }
+//     DeferOp defer([&]() { ucasemap_close(case_map); });
+//     size_t num_rows = src_offsets.size() - 1;
+//     size_t current_dst_size = dst_bytes->size();
 
-    size_t current_offset = 0;
-    (*dst_offsets)[0] = 0;
-    for (size_t i = 0; i < num_rows; i++) {
-        const auto* src_data = reinterpret_cast<const char*>(src_bytes.data() + src_offsets[i]);
-        size_t src_len = src_offsets[i + 1] - src_offsets[i];
+//     size_t current_offset = 0;
+//     (*dst_offsets)[0] = 0;
+//     for (size_t i = 0; i < num_rows; i++) {
+//         const auto* src_data = reinterpret_cast<const char*>(src_bytes.data() + src_offsets[i]);
+//         size_t src_len = src_offsets[i + 1] - src_offsets[i];
 
-        auto* dst_data = dst_bytes->data() + current_offset;
-        int32_t dst_size;
-        if constexpr (to_upper) {
-            dst_size = ucasemap_utf8ToUpper(case_map, reinterpret_cast<char*>(dst_data),
-                                            dst_bytes->size() - current_offset, src_data, src_len, &err_code);
-        } else {
-            dst_size = ucasemap_utf8ToLower(case_map, reinterpret_cast<char*>(dst_data),
-                                            dst_bytes->size() - current_offset, src_data, src_len, &err_code);
-        }
-        if (err_code == U_BUFFER_OVERFLOW_ERROR || err_code == U_STRING_NOT_TERMINATED_WARNING) {
-            // Some unicode characters occupy different numbers of bytes after case conversion.
-            // When this happens, we need to expand the capacity.
-            // Considering that there are not many such characters, we will not reserve additional memory during resize.
-            // If necessary, we can make some strategies for reserving memory in the future.
-            current_dst_size = current_offset + dst_size + 1;
-            dst_bytes->resize(current_dst_size);
-            dst_data = dst_bytes->data() + current_offset;
+//         auto* dst_data = dst_bytes->data() + current_offset;
+//         int32_t dst_size;
+//         if constexpr (to_upper) {
+//             dst_size = ucasemap_utf8ToUpper(case_map, reinterpret_cast<char*>(dst_data),
+//                                             dst_bytes->size() - current_offset, src_data, src_len, &err_code);
+//         } else {
+//             dst_size = ucasemap_utf8ToLower(case_map, reinterpret_cast<char*>(dst_data),
+//                                             dst_bytes->size() - current_offset, src_data, src_len, &err_code);
+//         }
+//         if (err_code == U_BUFFER_OVERFLOW_ERROR || err_code == U_STRING_NOT_TERMINATED_WARNING) {
+//             // Some unicode characters occupy different numbers of bytes after case conversion.
+//             // When this happens, we need to expand the capacity.
+//             // Considering that there are not many such characters, we will not reserve additional memory during resize.
+//             // If necessary, we can make some strategies for reserving memory in the future.
+//             current_dst_size = current_offset + dst_size + 1;
+//             dst_bytes->resize(current_dst_size);
+//             dst_data = dst_bytes->data() + current_offset;
 
-            err_code = U_ZERO_ERROR;
-            if constexpr (to_upper) {
-                dst_size = ucasemap_utf8ToUpper(case_map, reinterpret_cast<char*>(dst_data),
-                                                dst_bytes->size() - current_offset, src_data, src_len, &err_code);
-            } else {
-                dst_size = ucasemap_utf8ToLower(case_map, reinterpret_cast<char*>(dst_data),
-                                                dst_bytes->size() - current_offset, src_data, src_len, &err_code);
-            }
-        }
-        if (err_code != U_ZERO_ERROR) {
-            throw std::runtime_error(fmt::format("Failed to convert case: {}", u_errorName(err_code)));
-        }
-        current_offset += dst_size;
-        (*dst_offsets)[i + 1] = current_offset;
-    };
-    dst_bytes->resize(current_offset);
-}
+//             err_code = U_ZERO_ERROR;
+//             if constexpr (to_upper) {
+//                 dst_size = ucasemap_utf8ToUpper(case_map, reinterpret_cast<char*>(dst_data),
+//                                                 dst_bytes->size() - current_offset, src_data, src_len, &err_code);
+//             } else {
+//                 dst_size = ucasemap_utf8ToLower(case_map, reinterpret_cast<char*>(dst_data),
+//                                                 dst_bytes->size() - current_offset, src_data, src_len, &err_code);
+//             }
+//         }
+//         if (err_code != U_ZERO_ERROR) {
+//             throw std::runtime_error(fmt::format("Failed to convert case: {}", u_errorName(err_code)));
+//         }
+//         current_offset += dst_size;
+//         (*dst_offsets)[i + 1] = current_offset;
+//     };
+//     dst_bytes->resize(current_offset);
+// }
 
 template <bool to_upper>
 template <LogicalType Type, LogicalType ResultType>
@@ -2102,8 +2095,7 @@ Status StringFunctions::lower_close(FunctionContext* context, FunctionContext::F
 }
 
 StatusOr<ColumnPtr> StringFunctions::lower(FunctionContext* context, const Columns& columns) {
-    auto* state = reinterpret_cast<LowerUpperState*>(context->get_function_state(FunctionContext::FRAGMENT_LOCAL));
-    return state->impl_func(columns[0]);
+    return VectorizedUnaryFunction<StringCaseToggleFunction<false>>::evaluate<TYPE_VARCHAR>(columns[0]);
 }
 
 // upper
@@ -2136,8 +2128,7 @@ Status StringFunctions::upper_close(FunctionContext* context, FunctionContext::F
 }
 
 StatusOr<ColumnPtr> StringFunctions::upper(FunctionContext* context, const Columns& columns) {
-    auto* state = reinterpret_cast<LowerUpperState*>(context->get_function_state(FunctionContext::FRAGMENT_LOCAL));
-    return state->impl_func(columns[0]);
+    return VectorizedUnaryFunction<StringCaseToggleFunction<true>>::evaluate<TYPE_VARCHAR>(columns[0]);
 }
 
 static inline void ascii_reverse_per_slice(const char* src_begin, const char* src_end, char* dst_curr) {

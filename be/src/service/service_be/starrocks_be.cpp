@@ -35,10 +35,6 @@
 #include "runtime/jdbc_driver_manager.h"
 #include "service/brpc.h"
 #include "service/service.h"
-#include "service/service_be/arrow_flight_sql_service.h"
-#include "service/service_be/http_service.h"
-#include "service/service_be/internal_service.h"
-#include "service/service_be/lake_service.h"
 #include "service/staros_worker.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/storage_engine.h"
@@ -87,10 +83,10 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     EXIT_IF_ERROR(JDBCDriverManager::getInstance()->init(std::string(getenv("STARROCKS_HOME")) + "/lib/jdbc_drivers"));
     LOG(INFO) << process_name << " start step " << start_step++ << ": jdbc driver manager init successfully";
 
-    // init network option
-    if (!BackendOptions::init(as_cn)) {
-        exit(-1);
-    }
+    // // init network option
+    // if (!BackendOptions::init(as_cn)) {
+    //     exit(-1);
+    // }
     LOG(INFO) << process_name << " start step " << start_step++ << ": backend network options init successfully";
 
     // init global env
@@ -103,8 +99,8 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     CHECK(global_vars->is_init()) << "global variables not initialized";
     LOG(INFO) << process_name << " start step " << start_step++ << ": global variables init successfully";
 
-    auto* storage_engine = init_storage_engine(global_env, paths, as_cn);
-    LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine init successfully";
+    // auto* storage_engine = init_storage_engine(global_env, paths, as_cn);
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine init successfully";
 
     auto* cache_env = CacheEnv::GetInstance();
     EXIT_IF_ERROR(cache_env->init(paths));
@@ -129,107 +125,107 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     LOG(INFO) << process_name << " start step " << start_step++ << ": staros worker init successfully";
 #endif
 
-    // set up thrift client before providing any service to the external
-    // because these services may use thrift client, for example, stream
-    // load will send thrift rpc to FE after http server is started
-    ThriftRpcHelper::setup(exec_env);
+    // // set up thrift client before providing any service to the external
+    // // because these services may use thrift client, for example, stream
+    // // load will send thrift rpc to FE after http server is started
+    // ThriftRpcHelper::setup(exec_env);
 
-    // Start thrift server
-    int thrift_port = config::be_port;
-    if (as_cn && config::thrift_port != 0) {
-        thrift_port = config::thrift_port;
-        LOG(WARNING) << "'thrift_port' is deprecated, please update be.conf to use 'be_port' instead!";
-    }
-    auto thrift_server = BackendService::create<BackendService>(exec_env, thrift_port);
+    // // Start thrift server
+    // int thrift_port = config::be_port;
+    // if (as_cn && config::thrift_port != 0) {
+    //     thrift_port = config::thrift_port;
+    //     LOG(WARNING) << "'thrift_port' is deprecated, please update be.conf to use 'be_port' instead!";
+    // }
+    // auto thrift_server = BackendService::create<BackendService>(exec_env, thrift_port);
 
-    if (auto status = thrift_server->start(); !status.ok()) {
-        LOG(ERROR) << "Fail to start BackendService thrift server on port " << thrift_port << ": " << status;
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": start thrift server successfully";
+    // if (auto status = thrift_server->start(); !status.ok()) {
+    //     LOG(ERROR) << "Fail to start BackendService thrift server on port " << thrift_port << ": " << status;
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": start thrift server successfully";
 
-    // Start brpc server
-    brpc::FLAGS_max_body_size = config::brpc_max_body_size;
+    // // Start brpc server
+    // brpc::FLAGS_max_body_size = config::brpc_max_body_size;
 
-    // Configure keepalive.
-    brpc::FLAGS_socket_keepalive = config::brpc_socket_keepalive;
+    // // Configure keepalive.
+    // brpc::FLAGS_socket_keepalive = config::brpc_socket_keepalive;
 
-    brpc::FLAGS_socket_max_unwritten_bytes = config::brpc_socket_max_unwritten_bytes;
-    auto brpc_server = std::make_unique<brpc::Server>();
+    // brpc::FLAGS_socket_max_unwritten_bytes = config::brpc_socket_max_unwritten_bytes;
+    // auto brpc_server = std::make_unique<brpc::Server>();
 
-    BackendInternalServiceImpl<PInternalService> internal_service(exec_env);
-    LakeServiceImpl lake_service(exec_env, exec_env->lake_tablet_manager());
+    // BackendInternalServiceImpl<PInternalService> internal_service(exec_env);
+    // LakeServiceImpl lake_service(exec_env, exec_env->lake_tablet_manager());
 
-    brpc_server->AddService(&internal_service, brpc::SERVER_DOESNT_OWN_SERVICE);
-    brpc_server->AddService(&lake_service, brpc::SERVER_DOESNT_OWN_SERVICE);
+    // brpc_server->AddService(&internal_service, brpc::SERVER_DOESNT_OWN_SERVICE);
+    // brpc_server->AddService(&lake_service, brpc::SERVER_DOESNT_OWN_SERVICE);
 
-    brpc::ServerOptions options;
-    if (config::brpc_num_threads != -1) {
-        options.num_threads = config::brpc_num_threads;
-    }
-    const auto lake_service_max_concurrency = config::lake_service_max_concurrency;
-    const auto service_name = "starrocks.LakeService";
-    const auto methods = {
-            "abort_txn",     "abort_compaction", "compact",         "drop_table",          "delete_data",
-            "delete_tablet", "get_tablet_stats", "publish_version", "publish_log_version", "publish_log_version_batch",
-            "vacuum",        "vacuum_full"};
-    for (auto method : methods) {
-        brpc_server->MaxConcurrencyOf(service_name, method) = lake_service_max_concurrency;
-    }
-    int brpc_port = config::brpc_port;
-    butil::EndPoint point;
-    if (butil::str2endpoint(BackendOptions::get_service_bind_address(), brpc_port, &point) < 0) {
-        LOG(ERROR) << "Fail to convert address. Please check your backend config.";
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << "BRPC server bind to host: " << BackendOptions::get_service_bind_address() << ", port: " << brpc_port;
-    if (auto ret = brpc_server->Start(point, &options); ret != 0) {
-        LOG(ERROR) << "BRPC service did not start correctly, exiting errcoe: " << ret;
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": start brpc server successfully";
+    // brpc::ServerOptions options;
+    // if (config::brpc_num_threads != -1) {
+    //     options.num_threads = config::brpc_num_threads;
+    // }
+    // const auto lake_service_max_concurrency = config::lake_service_max_concurrency;
+    // const auto service_name = "starrocks.LakeService";
+    // const auto methods = {
+    //         "abort_txn",     "abort_compaction", "compact",         "drop_table",          "delete_data",
+    //         "delete_tablet", "get_tablet_stats", "publish_version", "publish_log_version", "publish_log_version_batch",
+    //         "vacuum",        "vacuum_full"};
+    // for (auto method : methods) {
+    //     brpc_server->MaxConcurrencyOf(service_name, method) = lake_service_max_concurrency;
+    // }
+    // int brpc_port = config::brpc_port;
+    // butil::EndPoint point;
+    // if (butil::str2endpoint(BackendOptions::get_service_bind_address(), brpc_port, &point) < 0) {
+    //     LOG(ERROR) << "Fail to convert address. Please check your backend config.";
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << "BRPC server bind to host: " << BackendOptions::get_service_bind_address() << ", port: " << brpc_port;
+    // if (auto ret = brpc_server->Start(point, &options); ret != 0) {
+    //     LOG(ERROR) << "BRPC service did not start correctly, exiting errcoe: " << ret;
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": start brpc server successfully";
 
-    // Start HTTP server
-    auto http_server =
-            std::make_unique<HttpServiceBE>(cache_env, exec_env, config::be_http_port, config::be_http_num_workers);
-    if (auto status = http_server->start(); !status.ok()) {
-        LOG(ERROR) << process_name << " http server did not start correctly, exiting: " << status.message();
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": start http server successfully";
+    // // Start HTTP server
+    // auto http_server =
+    //         std::make_unique<HttpServiceBE>(cache_env, exec_env, config::be_http_port, config::be_http_num_workers);
+    // if (auto status = http_server->start(); !status.ok()) {
+    //     LOG(ERROR) << process_name << " http server did not start correctly, exiting: " << status.message();
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": start http server successfully";
 
-    // Start Arrow Flight SQL server
-    auto arrow_flight_sql_server = std::make_unique<ArrowFlightSqlServer>();
-    if (auto status = arrow_flight_sql_server->start(config::arrow_flight_port); !status.ok()) {
-        LOG(ERROR) << process_name << " Arrow Flight Sql Server did not start correctly, exiting: " << status.message()
-                   << ". Its port might be occupied. You can modify `arrow_flight_port` in `be.conf` to an unused port "
-                      "or set it to -1 to disable it.";
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": start arrow flight sql server successfully";
+    // // Start Arrow Flight SQL server
+    // auto arrow_flight_sql_server = std::make_unique<ArrowFlightSqlServer>();
+    // if (auto status = arrow_flight_sql_server->start(config::arrow_flight_port); !status.ok()) {
+    //     LOG(ERROR) << process_name << " Arrow Flight Sql Server did not start correctly, exiting: " << status.message()
+    //                << ". Its port might be occupied. You can modify `arrow_flight_port` in `be.conf` to an unused port "
+    //                   "or set it to -1 to disable it.";
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": start arrow flight sql server successfully";
 
-    // Start heartbeat server
-    std::unique_ptr<ThriftServer> heartbeat_server;
-    if (auto ret = create_heartbeat_server(exec_env, config::heartbeat_service_port,
-                                           config::heartbeat_service_thread_count);
-        !ret.ok()) {
-        LOG(ERROR) << process_name << " heartbeat server did not start correctly, exiting: " << ret.status().message();
-        shutdown_logging();
-        exit(1);
-    } else {
-        heartbeat_server = std::move(ret.value());
-    }
-    if (auto status = heartbeat_server->start(); !status.ok()) {
-        LOG(ERROR) << process_name << " heartbeat server dint not start correctlr, exiting: " << status.message();
-        shutdown_logging();
-        exit(1);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": start heartbeat server successfully";
+    // // Start heartbeat server
+    // std::unique_ptr<ThriftServer> heartbeat_server;
+    // if (auto ret = create_heartbeat_server(exec_env, config::heartbeat_service_port,
+    //                                        config::heartbeat_service_thread_count);
+    //     !ret.ok()) {
+    //     LOG(ERROR) << process_name << " heartbeat server did not start correctly, exiting: " << ret.status().message();
+    //     shutdown_logging();
+    //     exit(1);
+    // } else {
+    //     heartbeat_server = std::move(ret.value());
+    // }
+    // if (auto status = heartbeat_server->start(); !status.ok()) {
+    //     LOG(ERROR) << process_name << " heartbeat server dint not start correctlr, exiting: " << status.message();
+    //     shutdown_logging();
+    //     exit(1);
+    // }
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": start heartbeat server successfully";
 
     LOG(INFO) << process_name << " started successfully";
 
@@ -237,23 +233,23 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
         sleep(1);
     }
 
-    int exit_step = 1;
+    // int exit_step = 1;
 
-    exec_env->wait_for_finish();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": wait exec engine tasks finish successfully";
+    // exec_env->wait_for_finish();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": wait exec engine tasks finish successfully";
 
-    heartbeat_server->stop();
-    heartbeat_server->join();
-    heartbeat_server.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": heartbeat server exit successfully";
+    // heartbeat_server->stop();
+    // heartbeat_server->join();
+    // heartbeat_server.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": heartbeat server exit successfully";
 
-    arrow_flight_sql_server->stop();
-    arrow_flight_sql_server.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": Arrow Flight SQL server exit successfully";
+    // arrow_flight_sql_server->stop();
+    // arrow_flight_sql_server.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": Arrow Flight SQL server exit successfully";
 
-    http_server->stop();
-    brpc_server->Stop(0);
-    thrift_server->stop();
+    // http_server->stop();
+    // brpc_server->Stop(0);
+    // thrift_server->stop();
 
     daemon->stop();
     daemon.reset();
@@ -265,30 +261,30 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     storage_engine->stop();
     LOG(INFO) << process_name << " exit step " << exit_step++ << ": storage engine exit successfully";
 
-#ifdef USE_STAROS
-    if (exec_env->lake_tablet_manager() != nullptr) {
-        exec_env->lake_tablet_manager()->stop();
-    }
-    shutdown_staros_worker();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": staros worker exit successfully";
-#endif
+// #ifdef USE_STAROS
+//     if (exec_env->lake_tablet_manager() != nullptr) {
+//         exec_env->lake_tablet_manager()->stop();
+//     }
+//     shutdown_staros_worker();
+//     LOG(INFO) << process_name << " exit step " << exit_step++ << ": staros worker exit successfully";
+// #endif
 
     if (config::enable_poco_client_for_aws_sdk) {
         starrocks::poco::HTTPSessionPools::instance().shutdown();
         LOG(INFO) << process_name << " exit step " << exit_step++ << ": poco connection pool shutdown successfully";
     }
 
-    http_server->join();
-    http_server.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": http server exit successfully";
+    // http_server->join();
+    // http_server.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": http server exit successfully";
 
-    brpc_server->Join();
-    brpc_server.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": brpc server exit successfully";
+    // brpc_server->Join();
+    // brpc_server.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": brpc server exit successfully";
 
-    thrift_server->join();
-    thrift_server.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": thrift server exit successfully";
+    // thrift_server->join();
+    // thrift_server.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": thrift server exit successfully";
 
     exec_env->destroy();
     LOG(INFO) << process_name << " exit step " << exit_step++ << ": exec env destroy successfully";
