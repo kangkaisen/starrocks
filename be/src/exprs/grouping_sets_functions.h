@@ -18,7 +18,6 @@
 #include "common/status.h"
 #include "exprs/function_context.h"
 #include "exprs/function_helper.h"
-#include "geo/geo_common.h"
 
 namespace starrocks {
 

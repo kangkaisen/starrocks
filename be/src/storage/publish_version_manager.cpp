@@ -53,7 +53,7 @@ bool PublishVersionManager::_all_task_applied(const TFinishTaskRequest& finish_t
     //     return true;
     // }
     // auto& tablet_versions = finish_task_request.tablet_publish_versions;
-    // bool all_task_applied = true;
+    bool all_task_applied = true;
     // std::set<std::pair<int64_t, int64_t>> unapplied_tablet;
     // for (auto& tablet_version : tablet_versions) {
     //     int64_t tablet_id = tablet_version.tablet_id;
@@ -83,7 +83,7 @@ bool PublishVersionManager::_all_task_applied(const TFinishTaskRequest& finish_t
 }
 
 bool PublishVersionManager::_left_task_applied(const TFinishTaskRequest& finish_task_request) {
-    // bool applied = true;
+    bool applied = true;
     // int64_t signature = finish_task_request.signature;
     // std::set<std::pair<int64_t, int64_t>> unapplied_tablet;
     // auto iter = _unapplied_tablet_by_txn.find(signature);

@@ -38,8 +38,6 @@
 #include <memory>
 #include <thread>
 
-#include "agent/agent_server.h"
-#include "agent/master_info.h"
 #include "cache/block_cache/block_cache.h"
 #include "cache/object_cache/lrucache_module.h"
 #include "common/config.h"
@@ -102,14 +100,6 @@
 #include "util/pretty_printer.h"
 #include "util/priority_thread_pool.hpp"
 #include "util/starrocks_metrics.h"
-
-#ifdef STARROCKS_JIT_ENABLE
-#include "exprs/jit/jit_engine.h"
-#endif
-
-#ifdef WITH_STARCACHE
-#include "cache/object_cache/starcache_module.h"
-#endif
 
 namespace starrocks {
 

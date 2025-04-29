@@ -39,8 +39,6 @@
 #include <sstream>
 #include <utility>
 
-#include "agent/master_info.h"
-#include "agent/utils.h"
 #include "column/binary_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"

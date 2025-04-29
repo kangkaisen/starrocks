@@ -15,7 +15,6 @@
 #include "connector/connector.h"
 
 #include "connector/binlog_connector.h"
-#include "connector/es_connector.h"
 #include "connector/file_connector.h"
 #include "connector/hive_connector.h"
 #include "connector/iceberg_connector.h"
@@ -55,7 +54,6 @@ public:
     ConnectorManagerInit() {
         ConnectorManager* cm = ConnectorManager::default_instance();
         cm->put(Connector::HIVE, std::make_unique<HiveConnector>());
-        cm->put(Connector::ES, std::make_unique<ESConnector>());
         cm->put(Connector::JDBC, std::make_unique<JDBCConnector>());
         cm->put(Connector::MYSQL, std::make_unique<MySQLConnector>());
         cm->put(Connector::FILE, std::make_unique<FileConnector>());
