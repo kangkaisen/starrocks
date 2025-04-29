@@ -44,7 +44,6 @@
 #include "fs/fs_util.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/exec_env.h"
-#include "service/backend_options.h"
 #include "storage/olap_define.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/rowset/rowset_meta.h"
@@ -128,19 +127,20 @@ Status DataDir::_init_tmp_dir() {
 }
 
 Status DataDir::_init_meta(bool read_only) {
-    // init path hash
-    _path_hash = hash_of_path(BackendOptions::get_localhost(), _path);
-    LOG(INFO) << "path: " << _path << ", hash: " << _path_hash;
+    // // init path hash
+    // _path_hash = hash_of_path(BackendOptions::get_localhost(), _path);
+    // LOG(INFO) << "path: " << _path << ", hash: " << _path_hash;
 
-    // init meta
-    _kv_store = new (std::nothrow) KVStore(_path);
-    if (_kv_store == nullptr) {
-        RETURN_IF_ERROR_WITH_WARN(Status::MemoryAllocFailed("allocate memory for KVStore failed"),
-                                  "new KVStore failed");
-    }
-    Status res = _kv_store->init(read_only);
-    LOG_IF(WARNING, !res.ok()) << "Fail to init meta store: " << res;
-    return res;
+    // // init meta
+    // _kv_store = new (std::nothrow) KVStore(_path);
+    // if (_kv_store == nullptr) {
+    //     RETURN_IF_ERROR_WITH_WARN(Status::MemoryAllocFailed("allocate memory for KVStore failed"),
+    //                               "new KVStore failed");
+    // }
+    // Status res = _kv_store->init(read_only);
+    // LOG_IF(WARNING, !res.ok()) << "Fail to init meta store: " << res;
+    // return res;
+    return Status::OK();
 }
 
 Status DataDir::set_cluster_id(int32_t cluster_id) {

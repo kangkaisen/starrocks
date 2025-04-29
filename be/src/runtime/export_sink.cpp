@@ -40,7 +40,6 @@
 #include "column/column.h"
 #include "exec/plain_text_builder.h"
 #include "exprs/expr.h"
-#include "fs/fs_broker.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
@@ -127,22 +126,22 @@ Status ExportSink::open_file_writer(int timeout_ms) {
         ASSIGN_OR_RETURN(output_file, FileSystem::Default()->new_writable_file(options, file_path));
         break;
     }
-    case TFileType::FILE_BROKER: {
-        if (_t_export_sink.__isset.use_broker && !_t_export_sink.use_broker) {
-            ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(file_path, FSOptions(&_t_export_sink)));
-            ASSIGN_OR_RETURN(output_file, fs->new_writable_file(options, file_path));
-            break;
-        } else {
-            if (_t_export_sink.broker_addresses.empty()) {
-                LOG(WARNING) << "ExportSink broker_addresses empty";
-                return Status::InternalError("ExportSink broker_addresses empty");
-            }
-            const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
-            BrokerFileSystem fs_broker(broker_addr, _t_export_sink.properties, timeout_ms);
-            ASSIGN_OR_RETURN(output_file, fs_broker.new_writable_file(options, file_path));
-            break;
-        }
-    }
+    // case TFileType::FILE_BROKER: {
+    //     if (_t_export_sink.__isset.use_broker && !_t_export_sink.use_broker) {
+    //         ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(file_path, FSOptions(&_t_export_sink)));
+    //         ASSIGN_OR_RETURN(output_file, fs->new_writable_file(options, file_path));
+    //         break;
+    //     } else {
+    //         if (_t_export_sink.broker_addresses.empty()) {
+    //             LOG(WARNING) << "ExportSink broker_addresses empty";
+    //             return Status::InternalError("ExportSink broker_addresses empty");
+    //         }
+    //         const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
+    //         BrokerFileSystem fs_broker(broker_addr, _t_export_sink.properties, timeout_ms);
+    //         ASSIGN_OR_RETURN(output_file, fs_broker.new_writable_file(options, file_path));
+    //         break;
+    //     }
+    // }
     case TFileType::FILE_STREAM:
         return Status::NotSupported(strings::Substitute("Unsupported file type $0", file_type));
     }

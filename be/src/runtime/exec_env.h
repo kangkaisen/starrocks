@@ -104,7 +104,7 @@ namespace lake {
 class LocationProvider;
 class TabletManager;
 class UpdateManager;
-class ReplicationTxnManager;
+// class ReplicationTxnManager;
 } // namespace lake
 namespace spill {
 class DirManager;
@@ -372,7 +372,7 @@ public:
 
     lake::UpdateManager* lake_update_manager() const { return _lake_update_manager; }
 
-    lake::ReplicationTxnManager* lake_replication_txn_manager() const { return _lake_replication_txn_manager; }
+    // lake::ReplicationTxnManager* lake_replication_txn_manager() const { return _lake_replication_txn_manager; }
 
     AgentServer* agent_server() const { return _agent_server; }
 
@@ -450,7 +450,7 @@ private:
     lake::TabletManager* _lake_tablet_manager = nullptr;
     std::shared_ptr<lake::LocationProvider> _lake_location_provider;
     lake::UpdateManager* _lake_update_manager = nullptr;
-    lake::ReplicationTxnManager* _lake_replication_txn_manager = nullptr;
+    // lake::ReplicationTxnManager* _lake_replication_txn_manager = nullptr;
 
     AgentServer* _agent_server = nullptr;
     query_cache::CacheManagerRawPtr _cache_mgr;

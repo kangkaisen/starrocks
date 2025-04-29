@@ -490,7 +490,7 @@ private:
     std::unique_ptr<TabletManager> _tablet_manager;
     std::unique_ptr<TxnManager> _txn_manager;
 
-    std::unique_ptr<ReplicationTxnManager> _replication_txn_manager;
+    // std::unique_ptr<ReplicationTxnManager> _replication_txn_manager;
 
     std::unique_ptr<RowsetIdGenerator> _rowset_id_generator;
 

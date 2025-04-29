@@ -38,10 +38,8 @@
 #include <filesystem>
 #include <set>
 
-#include "agent/master_info.h"
 #include "common/logging.h"
 #include "fs/fs.h"
-#include "fs/fs_broker.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/FileBrokerService_types.h"
 #include "gen_cpp/FrontendService.h"

@@ -103,11 +103,11 @@ private:
             if (status.ok() || _response == nullptr) {
                 return;
             }
-            std::string msg = fmt::format("{}: {}", BackendOptions::get_localhost(), status.message());
+            // std::string msg = fmt::format("{}: {}", BackendOptions::get_localhost(), status.message());
             std::lock_guard l(_response_lock);
             if (_response->status().status_code() == TStatusCode::OK) {
                 _response->mutable_status()->set_status_code(status.code());
-                _response->mutable_status()->add_error_msgs(msg);
+                _response->mutable_status()->add_error_msgs("");
             }
         }
 

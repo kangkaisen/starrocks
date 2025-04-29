@@ -57,7 +57,6 @@
 #include "runtime/profile_report_worker.h"
 #include "runtime/runtime_filter_cache.h"
 #include "runtime/runtime_filter_worker.h"
-#include "service/backend_options.h"
 #include "util/misc.h"
 #include "util/network_util.h"
 #include "util/starrocks_metrics.h"
@@ -76,8 +75,8 @@ std::string to_load_error_http_path(const std::string& file_name) {
         return "";
     }
     std::stringstream url;
-    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
-        << "file=" << file_name;
+    // url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
+    //     << "file=" << file_name;
     return url.str();
 }
 
@@ -222,8 +221,8 @@ void FragmentExecState::callback(const Status& status, RuntimeProfile* profile, 
 
 std::string FragmentExecState::to_http_path(const std::string& file_name) {
     std::stringstream url;
-    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
-        << "token=" << _exec_env->token() << "&file=" << file_name;
+    // url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
+    //     << "token=" << _exec_env->token() << "&file=" << file_name;
     return url.str();
 }
 
@@ -480,7 +479,7 @@ void FragmentMgr::receive_runtime_filter(const PTransmitRuntimeFilterParams& par
                                          const std::shared_ptr<const RuntimeFilter>& shared_rf) {
     std::shared_ptr<FragmentExecState> exec_state;
     const PUniqueId& query_id = params.query_id();
-    _exec_env->add_rf_event({query_id, params.filter_id(), BackendOptions::get_localhost(), "RECV_TOTAL_RF_RPC"});
+    // _exec_env->add_rf_event({query_id, params.filter_id(), BackendOptions::get_localhost(), "RECV_TOTAL_RF_RPC"});
     size_t size = params.probe_finst_ids_size();
     for (size_t i = 0; i < size; i++) {
         TUniqueId frag_inst_id;
@@ -859,7 +858,7 @@ Status FragmentMgr::exec_external_plan_fragment(const TScanOpenParams& params, c
     std::vector<TScanRangeParams> scan_ranges;
     std::vector<int64_t> tablet_ids = params.tablet_ids;
     TNetworkAddress address;
-    address.hostname = BackendOptions::get_localhost();
+    // address.hostname = BackendOptions::get_localhost();
     address.port = config::be_port;
     std::map<int64_t, TTabletVersionInfo> tablet_info = t_query_plan_info.tablet_info;
     for (auto tablet_id : params.tablet_ids) {

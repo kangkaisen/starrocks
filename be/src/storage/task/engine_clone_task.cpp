@@ -389,7 +389,7 @@ Status EngineCloneTask::_clone_copy(DataDir& data_dir, const string& local_data_
                                     const std::vector<Version>* missed_versions,
                                     const std::vector<int64_t>* missing_version_ranges) {
     std::string local_path = local_data_path + "/";
-    std::string token = get_master_token();
+    std::string token = "";
 
     int timeout_s = 0;
     if (_clone_req.__isset.timeout_s) {

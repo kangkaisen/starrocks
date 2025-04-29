@@ -109,8 +109,8 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 
     // Start all background threads of storage engine.
     // SHOULD be called after exec env is initialized.
-    EXIT_IF_ERROR(storage_engine->start_bg_threads());
-    LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine start bg threads successfully";
+    // EXIT_IF_ERROR(storage_engine->start_bg_threads());
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine start bg threads successfully";
 
     // // set up thrift client before providing any service to the external
     // // because these services may use thrift client, for example, stream
@@ -238,15 +238,15 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     // brpc_server->Stop(0);
     // thrift_server->stop();
 
-    daemon->stop();
-    daemon.reset();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": daemon threads exit successfully";
+    // daemon->stop();
+    // daemon.reset();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": daemon threads exit successfully";
 
-    exec_env->stop();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": exec engine destroy successfully";
+    // exec_env->stop();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": exec engine destroy successfully";
 
-    storage_engine->stop();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": storage engine exit successfully";
+    // storage_engine->stop();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": storage engine exit successfully";
 
 // #ifdef USE_STAROS
 //     if (exec_env->lake_tablet_manager() != nullptr) {
@@ -256,10 +256,10 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 //     LOG(INFO) << process_name << " exit step " << exit_step++ << ": staros worker exit successfully";
 // #endif
 
-    if (config::enable_poco_client_for_aws_sdk) {
-        starrocks::poco::HTTPSessionPools::instance().shutdown();
-        LOG(INFO) << process_name << " exit step " << exit_step++ << ": poco connection pool shutdown successfully";
-    }
+    // if (config::enable_poco_client_for_aws_sdk) {
+    //     starrocks::poco::HTTPSessionPools::instance().shutdown();
+    //     LOG(INFO) << process_name << " exit step " << exit_step++ << ": poco connection pool shutdown successfully";
+    // }
 
     // http_server->join();
     // http_server.reset();
@@ -273,21 +273,21 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     // thrift_server.reset();
     // LOG(INFO) << process_name << " exit step " << exit_step++ << ": thrift server exit successfully";
 
-    exec_env->destroy();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": exec env destroy successfully";
+    // exec_env->destroy();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": exec env destroy successfully";
 
-    delete storage_engine;
+    // delete storage_engine;
 
-    cache_env->destroy();
-    LOG(ERROR) << process_name << " exit step " << exit_step++ << ": cache env destroy successfully";
+    // cache_env->destroy();
+    // LOG(ERROR) << process_name << " exit step " << exit_step++ << ": cache env destroy successfully";
 
-    // Unbind with MemTracker
-    tls_mem_tracker = nullptr;
+    // // Unbind with MemTracker
+    // tls_mem_tracker = nullptr;
 
-    global_env->stop();
-    LOG(INFO) << process_name << " exit step " << exit_step++ << ": global env stop successfully";
+    // global_env->stop();
+    // LOG(INFO) << process_name << " exit step " << exit_step++ << ": global env stop successfully";
 
-    shutdown_tracer();
+    // shutdown_tracer();
 
     LOG(INFO) << process_name << " exited successfully";
 }

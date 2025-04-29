@@ -27,7 +27,7 @@
 #include "gutil/strings/split.h"
 #include "gutil/strings/stringpiece.h"
 #include "gutil/strings/substitute.h"
-#include "http/http_client.h"
+// #include "http/http_client.h"
 #include "runtime/client_cache.h"
 // #include "service/backend_options.h"
 #include "util/network_util.h"
@@ -57,7 +57,7 @@ static Status list_remote_files(const std::string& remote_url_prefix, std::vecto
         RETURN_IF_ERROR(client->execute(&file_list_str));
         return Status::OK();
     };
-    RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, list_files_cb));
+    // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, list_files_cb));
 
     // Parse file name and size
     const char* const FILE_DELIMETER_IN_DIR_RESPONSE = "\n";
@@ -100,7 +100,7 @@ static StatusOr<uint64_t> get_remote_file_size(const std::string& remote_file_ur
         file_size = client->get_content_length();
         return Status::OK();
     };
-    RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, get_file_size_cb));
+    // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, get_file_size_cb));
     return file_size;
 }
 
@@ -126,7 +126,7 @@ static Status download_remote_file(
         RETURN_IF_ERROR(converter->close());
         return Status::OK();
     };
-    return HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb);
+    // return HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb);
 }
 #endif
 
@@ -334,7 +334,7 @@ StatusOr<std::string> ReplicationUtils::download_remote_snapshot_file(
         file_content.clear();
         return client->execute(&file_content);
     };
-    RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb));
+    // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb));
     return file_content;
 #endif
 }

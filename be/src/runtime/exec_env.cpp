@@ -356,11 +356,6 @@ void CacheEnv::destroy() {
 }
 
 Status CacheEnv::_init_starcache_based_object_cache() {
-#ifdef WITH_STARCACHE
-    if (_block_cache != nullptr && _block_cache->is_initialized()) {
-        _starcache_based_object_cache = std::make_shared<StarCacheModule>(_block_cache->starcache_instance());
-    }
-#endif
     return Status::OK();
 }
 
@@ -748,7 +743,6 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
             new lake::UpdateManager(_lake_location_provider, GlobalEnv::GetInstance()->update_mem_tracker());
     _lake_tablet_manager =
             new lake::TabletManager(_lake_location_provider, _lake_update_manager, config::lake_metadata_cache_limit);
-    _lake_replication_txn_manager = new lake::ReplicationTxnManager(_lake_tablet_manager);
     if (config::starlet_cache_dir.empty()) {
         std::vector<std::string> starlet_cache_paths;
         std::for_each(store_paths.begin(), store_paths.end(), [&](const StorePath& root_path) {
@@ -758,17 +752,8 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
         config::starlet_cache_dir = JoinStrings(starlet_cache_paths, ":");
     }
 
-#elif defined(BE_TEST)
-    _lake_location_provider = std::make_shared<lake::FixedLocationProvider>(_store_paths.front().path);
-    _lake_update_manager =
-            new lake::UpdateManager(_lake_location_provider, GlobalEnv::GetInstance()->update_mem_tracker());
-    _lake_tablet_manager =
-            new lake::TabletManager(_lake_location_provider, _lake_update_manager, config::lake_metadata_cache_limit);
-    _lake_replication_txn_manager = new lake::ReplicationTxnManager(_lake_tablet_manager);
-#endif
-
-    _agent_server = new AgentServer(this, false);
-    _agent_server->init_or_die();
+    // _agent_server = new AgentServer(this, false);
+    // _agent_server->init_or_die();
 
     // _broker_mgr->init();
     RETURN_IF_ERROR(_small_file_mgr->init());
@@ -803,9 +788,9 @@ std::string ExecEnv::token() const {
 }
 
 void ExecEnv::add_rf_event(const RfTracePoint& pt) {
-    std::string msg =
-            strings::Substitute("$0($1)", pt.msg, pt.network.empty() ? BackendOptions::get_localhost() : pt.network);
-    _runtime_filter_cache->add_rf_event(pt.query_id, pt.filter_id, std::move(msg));
+    // std::string msg =
+    //         strings::Substitute("$0($1)", pt.msg, pt.network.empty() ? BackendOptions::get_localhost() : pt.network);
+    // _runtime_filter_cache->add_rf_event(pt.query_id, pt.filter_id, std::move(msg));
 }
 
 void ExecEnv::stop() {
@@ -832,9 +817,9 @@ void ExecEnv::stop() {
         _pipeline_sink_io_pool->shutdown();
     }
 
-    if (_agent_server) {
-        _agent_server->stop();
-    }
+    // if (_agent_server) {
+    //     _agent_server->stop();
+    // }
 
     if (_runtime_filter_worker) {
         _runtime_filter_worker->close();
@@ -904,7 +889,7 @@ void ExecEnv::stop() {
 }
 
 void ExecEnv::destroy() {
-    SAFE_DELETE(_agent_server);
+    // SAFE_DELETE(_agent_server);
     SAFE_DELETE(_runtime_filter_worker);
     SAFE_DELETE(_profile_report_worker);
     SAFE_DELETE(_heartbeat_flags);
@@ -1013,7 +998,7 @@ uint32_t ExecEnv::calc_pipeline_sink_dop(int32_t pipeline_sink_dop) const {
 }
 
 ThreadPool* ExecEnv::delete_file_thread_pool() {
-    return _agent_server ? _agent_server->get_thread_pool(TTaskType::DROP) : nullptr;
+    return nullptr;
 }
 
 void ExecEnv::try_release_resource_before_core_dump() {
@@ -1052,9 +1037,9 @@ void ExecEnv::try_release_resource_before_core_dump() {
         _datacache_rpc_pool->shutdown();
         LOG(INFO) << "shutdown datacache rpc thread pool";
     }
-    if (_agent_server != nullptr && need_release("publish_version_worker_pool")) {
-        _agent_server->stop_task_worker_pool(TaskWorkerType::PUBLISH_VERSION);
-    }
+    // if (_agent_server != nullptr && need_release("publish_version_worker_pool")) {
+    //     _agent_server->stop_task_worker_pool(TaskWorkerType::PUBLISH_VERSION);
+    // }
     if (_workgroup_manager != nullptr && need_release("wg_driver_executor")) {
         _workgroup_manager->for_each_executors([](auto& executors) { executors.driver_executor()->close(); });
     }
