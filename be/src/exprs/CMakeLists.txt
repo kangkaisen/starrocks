@@ -106,12 +106,4 @@ set(EXPR_FILES
   match_expr.cpp
 )
 
-if(STARROCKS_JIT_ENABLE)
-  set(EXPR_FILES ${EXPR_FILES}
-      jit/ir_helper.cpp
-      jit/jit_engine.cpp
-      jit/jit_expr.cpp)
-
-endif()
-
 add_library(Exprs ${EXPR_FILES})
