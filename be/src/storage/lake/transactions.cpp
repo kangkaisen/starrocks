@@ -69,9 +69,9 @@ static void clear_remote_snapshot_async(TabletManager* tablet_mgr, int64_t table
         return;
     }
 
-    run_clear_task_async([txn_slog = std::move(txn_slog_or.value())]() {
-        (void)ExecEnv::GetInstance()->lake_replication_txn_manager()->clear_snapshots(txn_slog);
-    });
+    // run_clear_task_async([txn_slog = std::move(txn_slog_or.value())]() {
+    //     (void)ExecEnv::GetInstance()->lake_replication_txn_manager()->clear_snapshots(txn_slog);
+    // });
 
     tablet_mgr->metacache()->erase(slog_path);
     files_to_delete->emplace_back(std::move(slog_path));

@@ -225,7 +225,7 @@ public:
 
     TxnManager* txn_manager() { return _txn_manager.get(); }
 
-    ReplicationTxnManager* replication_txn_manager() { return _replication_txn_manager.get(); }
+    // ReplicationTxnManager* replication_txn_manager() { return _replication_txn_manager.get(); }
 
     CompactionManager* compaction_manager() { return _compaction_manager.get(); }
 

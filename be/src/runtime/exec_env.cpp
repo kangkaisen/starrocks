@@ -737,20 +737,20 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
         exit(-1);
     }
 
-#if defined(USE_STAROS) && !defined(BE_TEST) && !defined(BUILD_FORMAT_LIB)
-    _lake_location_provider = std::make_shared<lake::StarletLocationProvider>();
-    _lake_update_manager =
-            new lake::UpdateManager(_lake_location_provider, GlobalEnv::GetInstance()->update_mem_tracker());
-    _lake_tablet_manager =
-            new lake::TabletManager(_lake_location_provider, _lake_update_manager, config::lake_metadata_cache_limit);
-    if (config::starlet_cache_dir.empty()) {
-        std::vector<std::string> starlet_cache_paths;
-        std::for_each(store_paths.begin(), store_paths.end(), [&](const StorePath& root_path) {
-            std::string starlet_cache_path = root_path.path + "/starlet_cache";
-            starlet_cache_paths.emplace_back(starlet_cache_path);
-        });
-        config::starlet_cache_dir = JoinStrings(starlet_cache_paths, ":");
-    }
+// #if defined(USE_STAROS) && !defined(BE_TEST) && !defined(BUILD_FORMAT_LIB)
+//     _lake_location_provider = std::make_shared<lake::StarletLocationProvider>();
+//     _lake_update_manager =
+//             new lake::UpdateManager(_lake_location_provider, GlobalEnv::GetInstance()->update_mem_tracker());
+//     _lake_tablet_manager =
+//             new lake::TabletManager(_lake_location_provider, _lake_update_manager, config::lake_metadata_cache_limit);
+//     if (config::starlet_cache_dir.empty()) {
+//         std::vector<std::string> starlet_cache_paths;
+//         std::for_each(store_paths.begin(), store_paths.end(), [&](const StorePath& root_path) {
+//             std::string starlet_cache_path = root_path.path + "/starlet_cache";
+//             starlet_cache_paths.emplace_back(starlet_cache_path);
+//         });
+//         config::starlet_cache_dir = JoinStrings(starlet_cache_paths, ":");
+//     }
 
     // _agent_server = new AgentServer(this, false);
     // _agent_server->init_or_die();
@@ -937,7 +937,6 @@ void ExecEnv::destroy() {
     SAFE_DELETE(_external_scan_context_mgr);
     SAFE_DELETE(_lake_tablet_manager);
     SAFE_DELETE(_lake_update_manager);
-    SAFE_DELETE(_lake_replication_txn_manager);
     SAFE_DELETE(_cache_mgr);
     SAFE_DELETE(_put_combined_txn_log_thread_pool);
     SAFE_DELETE(_diagnose_daemon);
