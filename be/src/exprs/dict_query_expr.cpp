@@ -14,7 +14,7 @@
 
 #include "exprs/dict_query_expr.h"
 
-#include "agent/master_info.h"
+// #include "agent/master_info.h"
 #include "column/chunk.h"
 #include "column/column.h"
 #include "column/column_helper.h"

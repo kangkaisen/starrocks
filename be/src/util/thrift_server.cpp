@@ -304,39 +304,39 @@ ThriftServer::ThriftServer(const std::string& name, std::shared_ptr<apache::thri
 }
 
 Status ThriftServer::start() {
-    DCHECK(!_started);
-    auto protocol_factory = std::make_shared<apache::thrift::protocol::TBinaryProtocolFactory>();
-    protocol_factory->setStrict(config::thrift_rpc_strict_mode, true);
-    protocol_factory->setStringSizeLimit(config::thrift_rpc_max_body_size);
+    // DCHECK(!_started);
+    // auto protocol_factory = std::make_shared<apache::thrift::protocol::TBinaryProtocolFactory>();
+    // protocol_factory->setStrict(config::thrift_rpc_strict_mode, true);
+    // protocol_factory->setStringSizeLimit(config::thrift_rpc_max_body_size);
 
-    auto thread_factory = std::make_shared<apache::thrift::concurrency::ThreadFactory>();
+    // auto thread_factory = std::make_shared<apache::thrift::concurrency::ThreadFactory>();
 
-    std::shared_ptr<apache::thrift::concurrency::ThreadManager> thread_mgr;
-    std::shared_ptr<apache::thrift::transport::TServerTransport> fe_server_transport;
-    std::shared_ptr<apache::thrift::transport::TTransportFactory> transport_factory;
+    // std::shared_ptr<apache::thrift::concurrency::ThreadManager> thread_mgr;
+    // std::shared_ptr<apache::thrift::transport::TServerTransport> fe_server_transport;
+    // std::shared_ptr<apache::thrift::transport::TTransportFactory> transport_factory;
 
-    if (_server_type != THREADED) {
-        thread_mgr = apache::thrift::concurrency::ThreadManager::newSimpleThreadManager(_num_worker_threads);
-        thread_mgr->threadFactory(thread_factory);
-        thread_mgr->start();
-    }
+    // if (_server_type != THREADED) {
+    //     thread_mgr = apache::thrift::concurrency::ThreadManager::newSimpleThreadManager(_num_worker_threads);
+    //     thread_mgr->threadFactory(thread_factory);
+    //     thread_mgr->start();
+    // }
 
-    // Note - if you change the transport types here, you must check that the
-    // logic in createContext is still accurate.
-    apache::thrift::transport::TServerSocket* server_socket = nullptr;
+    // // Note - if you change the transport types here, you must check that the
+    // // logic in createContext is still accurate.
+    // apache::thrift::transport::TServerSocket* server_socket = nullptr;
 
-    switch (_server_type) {
-    case NON_BLOCKING: {
-        if (transport_factory == nullptr) {
-            transport_factory.reset(new apache::thrift::transport::TTransportFactory());
-        }
+    // switch (_server_type) {
+    // case NON_BLOCKING: {
+    //     if (transport_factory == nullptr) {
+    //         transport_factory.reset(new apache::thrift::transport::TTransportFactory());
+    //     }
 
-        std::shared_ptr<apache::thrift::transport::TNonblockingServerSocket> port(
-                new apache::thrift::transport::TNonblockingServerSocket(_port));
-        _server = std::make_unique<apache::thrift::server::TNonblockingServer>(
-                _processor, transport_factory, transport_factory, protocol_factory, protocol_factory, port, thread_mgr);
-        break;
-    }
+    //     std::shared_ptr<apache::thrift::transport::TNonblockingServerSocket> port(
+    //             new apache::thrift::transport::TNonblockingServerSocket(_port));
+    //     _server = std::make_unique<apache::thrift::server::TNonblockingServer>(
+    //             _processor, transport_factory, transport_factory, protocol_factory, protocol_factory, port, thread_mgr);
+    //     break;
+    // }
 
     // case THREAD_POOL:
     //     fe_server_transport.reset(new apache::thrift::transport::TServerSocket(
@@ -368,22 +368,22 @@ Status ThriftServer::start() {
     //             _processor, fe_server_transport, transport_factory, protocol_factory, thread_factory);
     //     break;
 
-    default:
-        std::stringstream error_msg;
-        error_msg << "Unsupported server type: " << _server_type;
-        LOG(ERROR) << error_msg.str();
-        return Status::InternalError(error_msg.str());
-    }
+    // default:
+    //     std::stringstream error_msg;
+    //     error_msg << "Unsupported server type: " << _server_type;
+    //     LOG(ERROR) << error_msg.str();
+    //     return Status::InternalError(error_msg.str());
+    // }
 
-    std::shared_ptr<ThriftServer::ThriftServerEventProcessor> event_processor(
-            new ThriftServer::ThriftServerEventProcessor(this));
-    _server->setServerEventHandler(event_processor);
+    // std::shared_ptr<ThriftServer::ThriftServerEventProcessor> event_processor(
+    //         new ThriftServer::ThriftServerEventProcessor(this));
+    // _server->setServerEventHandler(event_processor);
 
-    RETURN_IF_ERROR(event_processor->start_and_wait_for_server());
+    // RETURN_IF_ERROR(event_processor->start_and_wait_for_server());
 
-    LOG(INFO) << _name << " has started listening port on " << _port;
+    // LOG(INFO) << _name << " has started listening port on " << _port;
 
-    DCHECK(_started);
+    // DCHECK(_started);
     return Status::OK();
 }
 

@@ -45,8 +45,8 @@ SchemaBeDataCacheMetricsScanner::SchemaBeDataCacheMetricsScanner()
 
 Status SchemaBeDataCacheMetricsScanner::start(RuntimeState* state) {
     RETURN_IF_ERROR(SchemaScanner::start(state));
-    const auto& o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // const auto& o_id = get_backend_id();
+    _be_id = -1;
     return Status::OK();
 }
 

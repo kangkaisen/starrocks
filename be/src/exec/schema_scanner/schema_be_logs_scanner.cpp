@@ -37,8 +37,8 @@ SchemaBeLogsScanner::SchemaBeLogsScanner()
 SchemaBeLogsScanner::~SchemaBeLogsScanner() = default;
 
 Status SchemaBeLogsScanner::start(RuntimeState* state) {
-    auto o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // auto o_id = get_backend_id();
+    _be_id =  -1;
     _infos.clear();
     int64_t start_ts = 0;
     if (_param->log_start_ts > 0) {

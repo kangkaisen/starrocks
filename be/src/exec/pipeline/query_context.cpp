@@ -567,10 +567,10 @@ void QueryContextManager::report_fragments_with_same_host(
                     params.__set_load_type(runtime_state->query_options().load_job_type);
                 }
 
-                auto backend_id = get_backend_id();
-                if (backend_id.has_value()) {
-                    params.__set_backend_id(backend_id.value());
-                }
+                // auto backend_id = get_backend_id();
+                // if (backend_id.has_value()) {
+                //     params.__set_backend_id(backend_id.value());
+                // }
 
                 report_exec_status_params_vector.emplace_back(std::move(params));
                 cur_batch_report_indexes.push_back(i);
@@ -668,10 +668,10 @@ void QueryContextManager::report_fragments(
                 params.__set_load_type(runtime_state->query_options().load_job_type);
             }
 
-            auto backend_id = get_backend_id();
-            if (backend_id.has_value()) {
-                params.__set_backend_id(backend_id.value());
-            }
+            // auto backend_id = get_backend_id();
+            // if (backend_id.has_value()) {
+            //     params.__set_backend_id(backend_id.value());
+            // }
 
             report_exec_status_params_vector.push_back(params);
 

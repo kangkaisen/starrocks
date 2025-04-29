@@ -60,7 +60,7 @@
 #include "gutil/strings/strip.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/batch_write/batch_write_mgr.h"
-#include "runtime/broker_mgr.h"
+// #include "runtime/broker_mgr.h"
 #include "runtime/client_cache.h"
 #include "runtime/data_stream_mgr.h"
 #include "runtime/diagnose_daemon.h"
@@ -685,7 +685,7 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
                     .build(&load_segment_pool));
     _load_segment_thread_pool = load_segment_pool.release();
 
-    _broker_mgr = new BrokerMgr(this);
+    // _broker_mgr = new BrokerMgr(this);
 
     RETURN_IF_ERROR(ThreadPoolBuilder("put_combined_txn_log_thread_pool")
                             .set_min_threads(0)
@@ -770,7 +770,7 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
     _agent_server = new AgentServer(this, false);
     _agent_server->init_or_die();
 
-    _broker_mgr->init();
+    // _broker_mgr->init();
     RETURN_IF_ERROR(_small_file_mgr->init());
 
     RETURN_IF_ERROR(_load_channel_mgr->init(GlobalEnv::GetInstance()->load_mem_tracker()));
@@ -916,7 +916,7 @@ void ExecEnv::destroy() {
     SAFE_DELETE(_fragment_mgr);
     SAFE_DELETE(_load_stream_mgr);
     SAFE_DELETE(_load_channel_mgr);
-    SAFE_DELETE(_broker_mgr);
+    // SAFE_DELETE(_broker_mgr);
     SAFE_DELETE(_bfd_parser);
     SAFE_DELETE(_load_path_mgr);
     SAFE_DELETE(_brpc_stub_cache);

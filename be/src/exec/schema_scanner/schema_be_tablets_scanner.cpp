@@ -94,8 +94,8 @@ Status SchemaBeTabletsScanner::start(RuntimeState* state) {
     // first get the table ids on which the current user has privilege
     auto authorized_table_ids = get_authorized_table_ids(_tables_config_response);
 
-    auto o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // auto o_id = get_backend_id();
+    _be_id =  -1;
     _infos.clear();
     auto manager = StorageEngine::instance()->tablet_manager();
     manager->get_tablets_basic_infos(_param->table_id, _param->partition_id, _param->tablet_id, _infos,

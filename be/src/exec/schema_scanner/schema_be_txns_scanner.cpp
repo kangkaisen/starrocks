@@ -48,8 +48,8 @@ SchemaBeTxnsScanner::SchemaBeTxnsScanner()
 SchemaBeTxnsScanner::~SchemaBeTxnsScanner() = default;
 
 Status SchemaBeTxnsScanner::start(RuntimeState* state) {
-    auto o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // auto o_id = get_backend_id();
+    _be_id = -1;
     _infos.clear();
     StorageEngine::instance()->txn_manager()->get_txn_infos(_param->txn_id, _param->tablet_id, _infos);
     _cur_idx = 0;

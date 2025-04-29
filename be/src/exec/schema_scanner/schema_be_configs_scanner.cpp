@@ -39,8 +39,8 @@ SchemaBeConfigsScanner::SchemaBeConfigsScanner()
 SchemaBeConfigsScanner::~SchemaBeConfigsScanner() = default;
 
 Status SchemaBeConfigsScanner::start(RuntimeState* state) {
-    auto o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // auto o_id = get_backend_id();
+    _be_id =  -1;
     _cur_idx = 0;
     _infos = config::list_configs();
     return Status::OK();

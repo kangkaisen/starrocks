@@ -29,7 +29,7 @@
 #include "gutil/strings/substitute.h"
 #include "http/http_client.h"
 #include "runtime/client_cache.h"
-#include "service/backend_options.h"
+// #include "service/backend_options.h"
 #include "util/network_util.h"
 #include "util/string_parser.hpp"
 #include "util/thrift_rpc_helper.h"
@@ -135,69 +135,69 @@ Status ReplicationUtils::make_remote_snapshot(const std::string& host, int32_t b
                                               const std::vector<Version>* missed_versions,
                                               const std::vector<int64_t>* missing_version_ranges,
                                               std::string* remote_snapshot_path) {
-    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
-        return Status::InternalError("Process is going to quit. The make remote snapshot will stop");
-    }
+//     if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+//         return Status::InternalError("Process is going to quit. The make remote snapshot will stop");
+//     }
 
-    TSnapshotRequest request;
-    request.__set_tablet_id(tablet_id);
-    request.__set_schema_hash(schema_hash);
-    request.__set_preferred_snapshot_format(g_Types_constants.TPREFER_SNAPSHOT_REQ_VERSION);
-    if (missed_versions != nullptr) {
-        DCHECK(!missed_versions->empty());
-        request.__isset.missing_version = true;
-        for (auto& version : *missed_versions) {
-            // NOTE: assume missing version composed of singleton delta.
-            DCHECK_EQ(version.first, version.second);
-            request.missing_version.push_back(version.first);
-        }
-    }
-    if (missing_version_ranges != nullptr) {
-        DCHECK(!missing_version_ranges->empty());
-        request.__isset.missing_version_ranges = true;
-        for (auto v : *missing_version_ranges) {
-            request.missing_version_ranges.push_back(v);
-        }
-    }
-    if (version > 0) {
-        request.__set_version(version);
-    }
-    if (timeout_s > 0) {
-        request.__set_timeout(timeout_s);
-    }
+//     TSnapshotRequest request;
+//     request.__set_tablet_id(tablet_id);
+//     request.__set_schema_hash(schema_hash);
+//     request.__set_preferred_snapshot_format(g_Types_constants.TPREFER_SNAPSHOT_REQ_VERSION);
+//     if (missed_versions != nullptr) {
+//         DCHECK(!missed_versions->empty());
+//         request.__isset.missing_version = true;
+//         for (auto& version : *missed_versions) {
+//             // NOTE: assume missing version composed of singleton delta.
+//             DCHECK_EQ(version.first, version.second);
+//             request.missing_version.push_back(version.first);
+//         }
+//     }
+//     if (missing_version_ranges != nullptr) {
+//         DCHECK(!missing_version_ranges->empty());
+//         request.__isset.missing_version_ranges = true;
+//         for (auto v : *missing_version_ranges) {
+//             request.missing_version_ranges.push_back(v);
+//         }
+//     }
+//     if (version > 0) {
+//         request.__set_version(version);
+//     }
+//     if (timeout_s > 0) {
+//         request.__set_timeout(timeout_s);
+//     }
 
-    TAgentResult result;
+//     TAgentResult result;
 
-#ifdef BE_TEST
-    ExecEnv::GetInstance()->agent_server()->make_snapshot(result, request);
-#else
-    // snapshot will hard link all required rowsets' segment files, the number of files may be very large(>1000),
-    // so it may take some time to process this rpc, so we increase rpc timeout from 5s to 20s to reduce the chance
-    // of timeout for now, we may need a smart way to estimate the time of make_snapshot in future
-    RETURN_IF_ERROR(ThriftRpcHelper::rpc<BackendServiceClient>(
-            host, be_port,
-            [&request, &result](BackendServiceConnection& client) { client->make_snapshot(result, request); },
-            config::make_snapshot_rpc_timeout_ms));
-#endif
+// #ifdef BE_TEST
+//     ExecEnv::GetInstance()->agent_server()->make_snapshot(result, request);
+// #else
+//     // snapshot will hard link all required rowsets' segment files, the number of files may be very large(>1000),
+//     // so it may take some time to process this rpc, so we increase rpc timeout from 5s to 20s to reduce the chance
+//     // of timeout for now, we may need a smart way to estimate the time of make_snapshot in future
+//     RETURN_IF_ERROR(ThriftRpcHelper::rpc<BackendServiceClient>(
+//             host, be_port,
+//             [&request, &result](BackendServiceConnection& client) { client->make_snapshot(result, request); },
+//             config::make_snapshot_rpc_timeout_ms));
+// #endif
 
-    if (result.status.status_code != TStatusCode::OK) {
-        return {result.status};
-    }
+//     if (result.status.status_code != TStatusCode::OK) {
+//         return {result.status};
+//     }
 
-    if (result.__isset.snapshot_path) {
-        *remote_snapshot_path = result.snapshot_path;
-        if (remote_snapshot_path->at(remote_snapshot_path->length() - 1) != '/') {
-            remote_snapshot_path->append("/");
-        }
-    } else {
-        return Status::InternalError("success snapshot without snapshot path");
-    }
+//     if (result.__isset.snapshot_path) {
+//         *remote_snapshot_path = result.snapshot_path;
+//         if (remote_snapshot_path->at(remote_snapshot_path->length() - 1) != '/') {
+//             remote_snapshot_path->append("/");
+//         }
+//     } else {
+//         return Status::InternalError("success snapshot without snapshot path");
+//     }
 
-    if (result.snapshot_format != g_Types_constants.TSNAPSHOT_REQ_VERSION2) {
-        LOG(WARNING) << "Unsupported snapshot format version: " << result.snapshot_format << ", from: " << host
-                     << ", tablet: " << tablet_id;
-        return Status::NotSupported("Unsupported snapshot format version");
-    }
+//     if (result.snapshot_format != g_Types_constants.TSNAPSHOT_REQ_VERSION2) {
+//         LOG(WARNING) << "Unsupported snapshot format version: " << result.snapshot_format << ", from: " << host
+//                      << ", tablet: " << tablet_id;
+//         return Status::NotSupported("Unsupported snapshot format version");
+//     }
 
     return Status::OK();
 }

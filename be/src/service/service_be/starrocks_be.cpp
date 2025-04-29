@@ -33,7 +33,6 @@
 #include "runtime/jdbc_driver_manager.h"
 #include "service/brpc.h"
 #include "service/service.h"
-#include "service/staros_worker.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/storage_engine.h"
 #include "util/logging.h"
@@ -112,16 +111,6 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     // SHOULD be called after exec env is initialized.
     EXIT_IF_ERROR(storage_engine->start_bg_threads());
     LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine start bg threads successfully";
-
-#ifdef USE_STAROS
-    auto* block_cache = cache_env->block_cache();
-    if (config::datacache_unified_instance_enable && block_cache->is_initialized()) {
-        init_staros_worker(block_cache->starcache_instance());
-    } else {
-        init_staros_worker(nullptr);
-    }
-    LOG(INFO) << process_name << " start step " << start_step++ << ": staros worker init successfully";
-#endif
 
     // // set up thrift client before providing any service to the external
     // // because these services may use thrift client, for example, stream

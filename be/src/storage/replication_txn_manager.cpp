@@ -20,9 +20,6 @@
 #include <filesystem>
 #include <set>
 
-#include "agent/agent_server.h"
-#include "agent/master_info.h"
-#include "agent/task_signatures_manager.h"
 #include "fs/fs.h"
 #include "fs/fs_memory.h"
 #include "gen_cpp/BackendService.h"

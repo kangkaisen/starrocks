@@ -139,10 +139,10 @@ std::unique_ptr<TReportExecStatusParams> ExecStateReporter::create_report_exec_s
         }
     }
 
-    auto backend_id = get_backend_id();
-    if (backend_id.has_value()) {
-        params.__set_backend_id(backend_id.value());
-    }
+    // auto backend_id = get_backend_id();
+    // if (backend_id.has_value()) {
+    //     params.__set_backend_id(backend_id.value());
+    // }
     return res;
 }
 

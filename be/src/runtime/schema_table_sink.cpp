@@ -44,8 +44,8 @@ Status SchemaTableSink::init(const TDataSink& t_sink, RuntimeState* state) {
     const auto& schema_table_sink = t_sink.schema_table_sink;
     _table_name = schema_table_sink.table;
 
-    auto o_id = get_backend_id();
-    _be_id = o_id.has_value() ? o_id.value() : -1;
+    // auto o_id = get_backend_id();
+    _be_id = -1;
     _nodes_info = std::make_unique<StarRocksNodesInfo>(schema_table_sink.nodes_info);
 
     RETURN_IF_ERROR(Expr::create_expr_trees(_pool, _t_output_expr, &_output_expr_ctxs, state));

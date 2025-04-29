@@ -41,7 +41,6 @@
 #include <memory>
 #include <sstream>
 
-#include "agent/master_info.h"
 #include "common/object_pool.h"
 #include "exec/pipeline/fragment_executor.h"
 #include "gen_cpp/DataSinks_types.h"
@@ -303,10 +302,10 @@ void FragmentExecState::coordinator_callback(const Status& status, RuntimeProfil
         }
     }
 
-    auto backend_id = get_backend_id();
-    if (backend_id.has_value()) {
-        params.__set_backend_id(backend_id.value());
-    }
+    // auto backend_id = get_backend_id();
+    // if (backend_id.has_value()) {
+    //     params.__set_backend_id(backend_id.value());
+    // }
 
     TReportExecStatusResult res;
     Status rpc_status;
@@ -628,10 +627,10 @@ void FragmentMgr::report_fragments_with_same_host(
                     params.__set_load_type(runtime_state->query_options().load_job_type);
                 }
 
-                auto backend_id = get_backend_id();
-                if (backend_id.has_value()) {
-                    params.__set_backend_id(backend_id.value());
-                }
+                // auto backend_id = get_backend_id();
+                // if (backend_id.has_value()) {
+                //     params.__set_backend_id(backend_id.value());
+                // }
 
                 report_exec_status_params_vector.push_back(params);
                 cur_batch_report_indexes.push_back(i);
@@ -693,10 +692,10 @@ void FragmentMgr::report_fragments(const std::vector<TUniqueId>& non_pipeline_ne
                 params.__set_load_type(runtime_state->query_options().load_job_type);
             }
 
-            auto backend_id = get_backend_id();
-            if (backend_id.has_value()) {
-                params.__set_backend_id(backend_id.value());
-            }
+            // auto backend_id = get_backend_id();
+            // if (backend_id.has_value()) {
+            //     params.__set_backend_id(backend_id.value());
+            // }
 
             report_exec_status_params_vector.push_back(params);
 
