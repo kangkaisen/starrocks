@@ -750,7 +750,6 @@ set(STARROCKS_LINK_LIBS
     Types
     Udf
     Util
-    Script
     StarRocksGen
     Webserver
     TestUtil
@@ -987,7 +986,6 @@ add_subdirectory(${SRC_DIR}/cache)
 
 add_subdirectory(${SRC_DIR}/tools)
 add_subdirectory(${SRC_DIR}/util)
-add_subdirectory(${SRC_DIR}/script)
 
 install(DIRECTORY DESTINATION ${OUTPUT_DIR})
 install(DIRECTORY DESTINATION ${OUTPUT_DIR}/bin)
