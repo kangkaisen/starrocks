@@ -18,10 +18,5 @@ set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/service_be")
 set(EXECUTABLE_OUTPUT_PATH "${BUILD_DIR}/src/service_be")
 
 add_library(ServiceBE
-    backend_service.cpp
-    http_service.cpp
-    internal_service.cpp
-    lake_service.cpp
     starrocks_be.cpp
-    arrow_flight_sql_service.cpp
 )
