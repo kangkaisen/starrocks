@@ -23,12 +23,12 @@
 #include "exec/pipeline/schedule/timeout_tasks.h"
 #include "exec/pipeline/stream_pipeline_driver.h"
 #include "exec/workgroup/work_group.h"
-#include "runtime/batch_write/batch_write_mgr.h"
+// #include "runtime/batch_write/batch_write_mgr.h"
 #include "runtime/client_cache.h"
 #include "runtime/data_stream_mgr.h"
 #include "runtime/exec_env.h"
-#include "runtime/stream_load/stream_load_context.h"
-#include "runtime/stream_load/transaction_mgr.h"
+// #include "runtime/stream_load/stream_load_context.h"
+// #include "runtime/stream_load/transaction_mgr.h"
 #include "util/threadpool.h"
 #include "util/thrift_rpc_helper.h"
 #include "util/time.h"
@@ -336,12 +336,12 @@ void FragmentContextManager::cancel(const Status& status) {
     }
 }
 void FragmentContext::prepare_pass_through_chunk_buffer() {
-    _runtime_state->exec_env()->stream_mgr()->prepare_pass_through_chunk_buffer(_query_id);
+    // _runtime_state->exec_env()->stream_mgr()->prepare_pass_through_chunk_buffer(_query_id);
 }
 void FragmentContext::destroy_pass_through_chunk_buffer() {
-    if (_runtime_state) {
-        _runtime_state->exec_env()->stream_mgr()->destroy_pass_through_chunk_buffer(_query_id);
-    }
+    // if (_runtime_state) {
+    //     _runtime_state->exec_env()->stream_mgr()->destroy_pass_through_chunk_buffer(_query_id);
+    // }
 }
 
 Status FragmentContext::set_pipeline_timer(PipelineTimer* timer) {
@@ -387,7 +387,7 @@ void FragmentContext::count_down_epoch_pipeline(RuntimeState* state, size_t val)
         return;
     }
 
-    state->query_ctx()->stream_epoch_manager()->count_down_fragment_ctx(state, this);
+    // state->query_ctx()->stream_epoch_manager()->count_down_fragment_ctx(state, this);
 }
 
 void FragmentContext::init_jit_profile() {
