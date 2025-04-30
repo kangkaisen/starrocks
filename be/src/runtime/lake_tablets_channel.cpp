@@ -33,7 +33,6 @@
 #include "runtime/mem_tracker.h"
 #include "runtime/tablets_channel.h"
 #include "serde/protobuf_serde.h"
-#include "service/backend_options.h"
 #include "storage/lake/async_delta_writer.h"
 #include "storage/lake/delta_writer.h"
 #include "storage/lake/delta_writer_finish_mode.h"

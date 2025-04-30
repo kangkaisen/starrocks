@@ -14,41 +14,38 @@
 
 #include "command_executor.h"
 
-#include <rapidjson/document.h>
-
 #include "common/configbase.h"
 #include "gutil/strings/substitute.h"
-#include "http/action/update_config_action.h"
-#include "script/script.h"
 
 namespace starrocks {
 
 Status handle_set_config(const string& params_str) {
-    rapidjson::Document params;
-    params.Parse(params_str.c_str());
-    auto update_config = UpdateConfigAction::instance();
-    if (update_config == nullptr) {
-        LOG(WARNING) << "write_be_configs_table ignored: UpdateConfigAction is not inited";
-        return Status::OK();
-    }
-    auto name_itr = params.FindMember("name");
-    if (name_itr == params.MemberEnd() || !name_itr->value.IsString()) {
-        return Status::InvalidArgument("invalid param name");
-    }
-    auto value_itr = params.FindMember("value");
-    if (value_itr == params.MemberEnd() || !value_itr->value.IsString()) {
-        return Status::InvalidArgument("invalid param value");
-    }
-    return update_config->update_config(name_itr->value.GetString(), value_itr->value.GetString());
+    // rapidjson::Document params;
+    // params.Parse(params_str.c_str());
+    // auto update_config = UpdateConfigAction::instance();
+    // if (update_config == nullptr) {
+    //     LOG(WARNING) << "write_be_configs_table ignored: UpdateConfigAction is not inited";
+    //     return Status::OK();
+    // }
+    // auto name_itr = params.FindMember("name");
+    // if (name_itr == params.MemberEnd() || !name_itr->value.IsString()) {
+    //     return Status::InvalidArgument("invalid param name");
+    // }
+    // auto value_itr = params.FindMember("value");
+    // if (value_itr == params.MemberEnd() || !value_itr->value.IsString()) {
+    //     return Status::InvalidArgument("invalid param value");
+    // }
+    // return update_config->update_config(name_itr->value.GetString(), value_itr->value.GetString());
+    return Status::OK();
 }
 
 Status execute_command(const std::string& command, const std::string& params, std::string* result) {
-    LOG(INFO) << "execute command: " << command << " params: " << params.substr(0, 2000);
-    if (command == "set_config") {
-        return handle_set_config(params);
-    } else if (command == "execute_script") {
-        return execute_script(params, *result);
-    }
+    // LOG(INFO) << "execute command: " << command << " params: " << params.substr(0, 2000);
+    // if (command == "set_config") {
+    //     return handle_set_config(params);
+    // } else if (command == "execute_script") {
+    //     return execute_script(params, *result);
+    // }
     return Status::NotSupported(strings::Substitute("command $0 not supported", command));
 }
 

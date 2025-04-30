@@ -14,7 +14,6 @@
 
 #include <runtime/lake_snapshot_loader.h>
 
-#include "fs/fs_broker.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/TFileBrokerService.h"
 #include "gen_cpp/lake_service.pb.h"
@@ -148,100 +147,100 @@ Status LakeSnapshotLoader::_check_snapshot_paths(const ::starrocks::UploadSnapsh
 }
 
 Status LakeSnapshotLoader::upload(const ::starrocks::UploadSnapshotsRequest* request) {
-    std::string ip = request->broker().substr(0, request->broker().find(':'));
-    int port = std::stoi(request->broker().substr(request->broker().find(':') + 1).c_str());
-    TNetworkAddress address = make_network_address(ip, port);
-    std::map<string, string> broker_prop(request->broker_properties().begin(), request->broker_properties().end());
+    // std::string ip = request->broker().substr(0, request->broker().find(':'));
+    // int port = std::stoi(request->broker().substr(request->broker().find(':') + 1).c_str());
+    // TNetworkAddress address = make_network_address(ip, port);
+    // std::map<string, string> broker_prop(request->broker_properties().begin(), request->broker_properties().end());
 
-    // 1. validate tablet snapshot paths
-    RETURN_IF_ERROR(_check_snapshot_paths(request));
+    // // 1. validate tablet snapshot paths
+    // RETURN_IF_ERROR(_check_snapshot_paths(request));
 
-    // 2. get broker client
-    std::unique_ptr<BrokerServiceConnection> client;
-    Status status = Status::OK();
-    client = std::make_unique<BrokerServiceConnection>(_env->broker_client_cache(), address, 10000, &status);
-    if (!status.ok()) {
-        std::stringstream ss;
-        ss << "failed to get broker client. "
-           << "broker addr: " << request->broker() << ". msg: " << status.message();
-        LOG(WARNING) << ss.str();
-        return Status::InternalError(ss.str());
-    }
-    LOG(INFO) << "begin to upload snapshot files. num: " << request->snapshots().size()
-              << ", broker addr: " << request->broker();
+    // // 2. get broker client
+    // std::unique_ptr<BrokerServiceConnection> client;
+    // Status status = Status::OK();
+    // client = std::make_unique<BrokerServiceConnection>(_env->broker_client_cache(), address, 10000, &status);
+    // if (!status.ok()) {
+    //     std::stringstream ss;
+    //     ss << "failed to get broker client. "
+    //        << "broker addr: " << request->broker() << ". msg: " << status.message();
+    //     LOG(WARNING) << ss.str();
+    //     return Status::InternalError(ss.str());
+    // }
+    // LOG(INFO) << "begin to upload snapshot files. num: " << request->snapshots().size()
+    //           << ", broker addr: " << request->broker();
 
-    for (auto& [tablet_id, snapshot] : request->snapshots()) {
+    // for (auto& [tablet_id, snapshot] : request->snapshots()) {
         // TODO: support report logic
 
-        // 2.1 get existing files from remote path
-        std::map<std::string, FileStat> remote_files;
-        status = _get_existing_files_from_remote(*client, snapshot.dest_path(), broker_prop, &remote_files);
-        if (!status.ok()) {
-            LOG(ERROR) << "failed to get existing files from remote " << snapshot.dest_path();
-            return status;
-        }
+    //     // 2.1 get existing files from remote path
+    //     std::map<std::string, FileStat> remote_files;
+    //     status = _get_existing_files_from_remote(*client, snapshot.dest_path(), broker_prop, &remote_files);
+    //     if (!status.ok()) {
+    //         LOG(ERROR) << "failed to get existing files from remote " << snapshot.dest_path();
+    //         return status;
+    //     }
 
-        for (auto& tmp : remote_files) {
-            VLOG(2) << "get remote file: " << tmp.first << ", checksum: " << tmp.second.md5;
-        }
+    //     for (auto& tmp : remote_files) {
+    //         VLOG(2) << "get remote file: " << tmp.first << ", checksum: " << tmp.second.md5;
+    //     }
 
-        std::map<std::string, std::string> file_locations;
-        auto tablet = _env->lake_tablet_manager()->get_tablet(tablet_id);
-        auto tablet_metadata = tablet->get_metadata(snapshot.version());
-        for (const auto& rowset : (*tablet_metadata)->rowsets()) {
-            for (const std::string& segment : rowset.segments()) {
-                file_locations[segment] = tablet->segment_location(segment);
-            }
-        }
-        file_locations[starrocks::lake::tablet_metadata_filename(tablet_id, snapshot.version())] =
-                tablet->metadata_location(snapshot.version());
+    //     std::map<std::string, std::string> file_locations;
+    //     auto tablet = _env->lake_tablet_manager()->get_tablet(tablet_id);
+    //     auto tablet_metadata = tablet->get_metadata(snapshot.version());
+    //     for (const auto& rowset : (*tablet_metadata)->rowsets()) {
+    //         for (const std::string& segment : rowset.segments()) {
+    //             file_locations[segment] = tablet->segment_location(segment);
+    //         }
+    //     }
+    //     file_locations[starrocks::lake::tablet_metadata_filename(tablet_id, snapshot.version())] =
+    //             tablet->metadata_location(snapshot.version());
 
-        for (auto& [file_name, file] : file_locations) {
-            // calc md5sum of file
-            ASSIGN_OR_RETURN(auto md5sum, fs::md5sum(file));
-            VLOG(2) << "get file checksum: " << file << ": " << md5sum;
+    //     for (auto& [file_name, file] : file_locations) {
+    //         // calc md5sum of file
+    //         ASSIGN_OR_RETURN(auto md5sum, fs::md5sum(file));
+    //         VLOG(2) << "get file checksum: " << file << ": " << md5sum;
 
-            // check if this local file need upload
-            bool need_upload = false;
-            auto find = remote_files.find(file_name);
-            if (find != remote_files.end()) {
-                if (md5sum != find->second.md5) {
-                    // remote storage file exist, but with different checksum
-                    LOG(WARNING) << "remote file checksum is invalid. remote: " << find->first << ", local: " << md5sum;
-                    // TODO(cmy): save these files and delete them later
-                    need_upload = true;
-                }
-            } else {
-                need_upload = true;
-            }
+    //         // check if this local file need upload
+    //         bool need_upload = false;
+    //         auto find = remote_files.find(file_name);
+    //         if (find != remote_files.end()) {
+    //             if (md5sum != find->second.md5) {
+    //                 // remote storage file exist, but with different checksum
+    //                 LOG(WARNING) << "remote file checksum is invalid. remote: " << find->first << ", local: " << md5sum;
+    //                 // TODO(cmy): save these files and delete them later
+    //                 need_upload = true;
+    //             }
+    //         } else {
+    //             need_upload = true;
+    //         }
 
-            if (!need_upload) {
-                VLOG(2) << "file exist in remote path, no need to upload: " << file;
-                continue;
-            }
+    //         if (!need_upload) {
+    //             VLOG(2) << "file exist in remote path, no need to upload: " << file;
+    //             continue;
+    //         }
 
-            // upload
-            // open broker writer. file name end with ".part"
-            // it will be renamed to ".md5sum" after upload finished
-            auto full_remote_file = snapshot.dest_path() + "/" + file_name;
-            auto tmp_broker_file_name = full_remote_file + ".part";
-            std::unique_ptr<WritableFile> remote_writable_file;
-            WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
-            BrokerFileSystem fs_broker(address, broker_prop);
-            ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_broker_file_name));
-            ASSIGN_OR_RETURN(auto input_file, fs::new_sequential_file(file));
-            auto res = fs::copy(input_file.get(), remote_writable_file.get(), 1024 * 1024);
-            if (!res.ok()) {
-                return res.status();
-            }
-            LOG(INFO) << "finished to write file via broker. file: " << file << ", length: " << *res;
-            RETURN_IF_ERROR(remote_writable_file->close());
-            // rename file to end with ".md5sum"
-            RETURN_IF_ERROR(_rename_remote_file(*client, full_remote_file + ".part", full_remote_file + "." + md5sum,
-                                                broker_prop));
-        }
-    }
-    return status;
+    //         // upload
+    //         // open broker writer. file name end with ".part"
+    //         // it will be renamed to ".md5sum" after upload finished
+    //         auto full_remote_file = snapshot.dest_path() + "/" + file_name;
+    //         auto tmp_broker_file_name = full_remote_file + ".part";
+    //         std::unique_ptr<WritableFile> remote_writable_file;
+    //         WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
+    //         BrokerFileSystem fs_broker(address, broker_prop);
+    //         ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_broker_file_name));
+    //         ASSIGN_OR_RETURN(auto input_file, fs::new_sequential_file(file));
+    //         auto res = fs::copy(input_file.get(), remote_writable_file.get(), 1024 * 1024);
+    //         if (!res.ok()) {
+    //             return res.status();
+    //         }
+    //         LOG(INFO) << "finished to write file via broker. file: " << file << ", length: " << *res;
+    //         RETURN_IF_ERROR(remote_writable_file->close());
+    //         // rename file to end with ".md5sum"
+    //         RETURN_IF_ERROR(_rename_remote_file(*client, full_remote_file + ".part", full_remote_file + "." + md5sum,
+    //                                             broker_prop));
+    //     }
+    // }
+    return Status::OK();
 }
 
 Status LakeSnapshotLoader::restore(const ::starrocks::RestoreSnapshotsRequest* request) {

@@ -23,7 +23,7 @@
 #include "exec/tablet_info.h"
 #include "exprs/expr.h"
 #include "gutil/strings/substitute.h"
-#include "http/action/update_config_action.h"
+// #include "http/action/update_config_action.h"
 #include "runtime/runtime_state.h"
 #include "util/brpc_stub_cache.h"
 #include "util/defer_op.h"
@@ -102,39 +102,40 @@ static Status set_config_remote(const StarRocksNodesInfo& nodes_info, int64_t be
 }
 
 static Status write_be_configs_table(const StarRocksNodesInfo& nodes_info, int64_t self_be_id, Columns& columns) {
-    if (columns.size() < 3) {
-        return Status::InternalError("write be_configs table should have at least 3 columns");
-    }
-    auto update_config = UpdateConfigAction::instance();
-    if (update_config == nullptr) {
-        LOG(WARNING) << "write_be_configs_table ignored: UpdateConfigAction is not inited";
-        return Status::OK();
-    }
-    Status ret;
-    for (size_t i = 0; i < columns[0]->size(); ++i) {
-        int64_t be_id = columns[0]->get(i).get_int64();
-        const auto& name = columns[1]->get(i).get_slice().to_string();
-        const auto& value = columns[2]->get(i).get_slice().to_string();
-        string mode;
-        Status s;
-        if (be_id == -1) {
-            LOG(INFO) << strings::Substitute("set_config ignored: be_id=-1 name:$0 value:$1", name, value);
-            continue;
-        } else if (self_be_id == be_id) {
-            s = update_config->update_config(name, value);
-            mode = "local";
-        } else {
-            s = set_config_remote(nodes_info, be_id, name, value);
-            mode = strings::Substitute("remote be:$0", be_id);
-        }
-        if (s.ok()) {
-            LOG(INFO) << "set_config " << mode << " " << name << "=" << value << " success";
-        } else {
-            LOG(WARNING) << "set_config " << mode << " " << name << "=" << value << " failed " << s.to_string();
-        }
-        ret.update(s);
-    }
-    return ret;
+    // if (columns.size() < 3) {
+    //     return Status::InternalError("write be_configs table should have at least 3 columns");
+    // }
+    // auto update_config = UpdateConfigAction::instance();
+    // if (update_config == nullptr) {
+    //     LOG(WARNING) << "write_be_configs_table ignored: UpdateConfigAction is not inited";
+    //     return Status::OK();
+    // }
+    // Status ret;
+    // for (size_t i = 0; i < columns[0]->size(); ++i) {
+    //     int64_t be_id = columns[0]->get(i).get_int64();
+    //     const auto& name = columns[1]->get(i).get_slice().to_string();
+    //     const auto& value = columns[2]->get(i).get_slice().to_string();
+    //     string mode;
+    //     Status s;
+    //     if (be_id == -1) {
+    //         LOG(INFO) << strings::Substitute("set_config ignored: be_id=-1 name:$0 value:$1", name, value);
+    //         continue;
+    //     } else if (self_be_id == be_id) {
+    //         s = update_config->update_config(name, value);
+    //         mode = "local";
+    //     } else {
+    //         s = set_config_remote(nodes_info, be_id, name, value);
+    //         mode = strings::Substitute("remote be:$0", be_id);
+    //     }
+    //     if (s.ok()) {
+    //         LOG(INFO) << "set_config " << mode << " " << name << "=" << value << " success";
+    //     } else {
+    //         LOG(WARNING) << "set_config " << mode << " " << name << "=" << value << " failed " << s.to_string();
+    //     }
+    //     ret.update(s);
+    // }
+    // return ret;
+    return Status::OK();
 }
 
 Status SchemaTableSink::send_chunk(RuntimeState* state, Chunk* chunk) {
