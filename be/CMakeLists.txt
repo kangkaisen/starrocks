@@ -751,7 +751,6 @@ set(STARROCKS_LINK_LIBS
     Udf
     Util
     StarRocksGen
-    Webserver
     TestUtil
     Tools
     Cache
