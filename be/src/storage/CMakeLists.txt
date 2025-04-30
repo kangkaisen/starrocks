@@ -177,38 +177,6 @@ set(STORAGE_FILES
     push_utils.cpp
     primary_key_recover.cpp
     local_primary_key_recover.cpp
-    lake/async_delta_writer.cpp
-    lake/compaction_policy.cpp
-    lake/compaction_scheduler.cpp
-    lake/compaction_task.cpp
-    lake/compaction_task_context.cpp
-    lake/horizontal_compaction_task.cpp
-    lake/delta_writer.cpp
-    lake/vacuum.cpp
-    lake/general_tablet_writer.cpp
-    lake/pk_tablet_writer.cpp
-    lake/primary_key_compaction_policy.cpp
-    lake/replication_txn_manager.cpp
-    lake/rowset.cpp
-    lake/schema_change.cpp
-    lake/starlet_location_provider.cpp
-    lake/tablet.cpp
-    lake/tablet_manager.cpp
-    lake/tablet_reader.cpp
-    lake/transactions.cpp
-    lake/metadata_iterator.cpp
-    lake/spark_load.cpp
-    lake/update_manager.cpp
-    lake/rowset_update_state.cpp
-    lake/meta_file.cpp
-    lake/lake_primary_index.cpp
-    lake/versioned_tablet.cpp
-    lake/vertical_compaction_task.cpp
-    lake/cloud_native_index_compaction_task.cpp
-    lake/metacache.cpp
-    lake/lake_primary_key_recover.cpp
-    lake/load_spill_block_manager.cpp
-    lake/spill_mem_table_sink.cpp
     sstable/block_builder.cpp
     sstable/block.cpp
     sstable/coding.cpp
@@ -222,48 +190,20 @@ set(STORAGE_FILES
     sstable/iterator.cpp
     sstable/options.cpp
     sstable/merger.cpp
-    lake/lake_delvec_loader.cpp
     binlog_util.cpp
     binlog_file_writer.cpp
     binlog_file_reader.cpp
     binlog_builder.cpp
     binlog_manager.cpp
     binlog_reader.cpp
-    lake/update_compaction_state.cpp
-    lake/txn_log_applier.cpp
-    lake/lake_local_persistent_index.cpp
     persistent_index_compaction_manager.cpp
     persistent_index_load_executor.cpp
-    lake/local_pk_index_manager.cpp
     persistent_index_tablet_loader.cpp
-    lake/lake_local_persistent_index_tablet_loader.cpp
-    lake/lake_persistent_index.cpp
-    lake/persistent_index_memtable.cpp
-    lake/local_pk_index_manager.cpp
-    lake/persistent_index_sstable.cpp
-    lake/lake_primary_key_compaction_conflict_resolver.cpp
-    lake/column_mode_partial_update_handler.cpp
     primary_key_dump.cpp
     dictionary_cache_manager.cpp
     rows_mapper.cpp
     primary_key_compaction_conflict_resolver.cpp
-    local_primary_key_compaction_conflict_resolver.cpp
-    index/inverted/inverted_index_iterator.cpp
-    index/inverted/inverted_index_option.cpp
-    index/inverted/inverted_plugin_factory.cpp
-    index/inverted/clucene/clucene_plugin.cpp
-    index/inverted/clucene/clucene_inverted_writer.cpp
-    index/inverted/clucene/clucene_inverted_reader.cpp
-    index/inverted/clucene/match_operator.cpp
-    index/vector/empty_index_reader.cpp
-    index/vector/vector_index_builder_factory.cpp
-    index/vector/vector_index_writer.cpp
-    index/vector/vector_index_builder.cpp
-    index/vector/vector_index_reader_factory.cpp
-    index/vector/tenann_index_reader.cpp
-    index/vector/tenann/del_id_filter.cpp
-    index/vector/tenann/tenann_index_builder.cpp
-    index/vector/tenann/tenann_index_utils.cpp)
+    local_primary_key_compaction_conflict_resolver.cpp)
 
 if (NOT BUILD_FORMAT_LIB)
     list(APPEND STORAGE_FILES  lake/starlet_location_provider.cpp)
