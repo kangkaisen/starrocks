@@ -23,7 +23,6 @@
 #include "exec/json_scanner.h"
 #include "exprs/json_functions.h"
 #include "fs/fs.h"
-#include "runtime/stream_load/load_stream_mgr.h"
 #include "util/raw_container.h"
 #include "util/slice.h"
 #ifdef __cplusplus
