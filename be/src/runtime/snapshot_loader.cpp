@@ -94,133 +94,133 @@ Status SnapshotLoader::upload(const std::map<std::string, std::string>& src_to_d
     }
 
     Status status = Status::OK();
-    // 1. validate local tablet snapshot paths
-    RETURN_IF_ERROR(_check_local_snapshot_paths(src_to_dest_path, true));
+    // // 1. validate local tablet snapshot paths
+    // RETURN_IF_ERROR(_check_local_snapshot_paths(src_to_dest_path, true));
 
-    // 2. get broker client
-    std::unique_ptr<BrokerServiceConnection> client;
-    std::unique_ptr<FileSystem> fs;
-    if (!upload.__isset.use_broker || upload.use_broker) {
-        client = std::make_unique<BrokerServiceConnection>(client_cache(_env), upload.broker_addr,
-                                                           config::broker_write_timeout_seconds * 1000, &status);
-        if (!status.ok()) {
-            std::stringstream ss;
-            ss << "failed to get broker client. "
-               << "broker addr: " << upload.broker_addr << ". msg: " << status.message();
-            LOG(WARNING) << ss.str();
-            return Status::InternalError(ss.str());
-        }
-    } else {
-        std::string random_dest_path = src_to_dest_path.begin()->second;
-        auto maybe_fs = FileSystem::CreateUniqueFromString(random_dest_path, FSOptions(&upload));
-        if (!maybe_fs.ok()) {
-            return Status::InternalError("fail to create file system");
-        }
-        fs = std::move(maybe_fs.value());
-    }
+    // // 2. get broker client
+    // std::unique_ptr<BrokerServiceConnection> client;
+    // std::unique_ptr<FileSystem> fs;
+    // if (!upload.__isset.use_broker || upload.use_broker) {
+    //     client = std::make_unique<BrokerServiceConnection>(client_cache(_env), upload.broker_addr,
+    //                                                        config::broker_write_timeout_seconds * 1000, &status);
+    //     if (!status.ok()) {
+    //         std::stringstream ss;
+    //         ss << "failed to get broker client. "
+    //            << "broker addr: " << upload.broker_addr << ". msg: " << status.message();
+    //         LOG(WARNING) << ss.str();
+    //         return Status::InternalError(ss.str());
+    //     }
+    // } else {
+    //     std::string random_dest_path = src_to_dest_path.begin()->second;
+    //     auto maybe_fs = FileSystem::CreateUniqueFromString(random_dest_path, FSOptions(&upload));
+    //     if (!maybe_fs.ok()) {
+    //         return Status::InternalError("fail to create file system");
+    //     }
+    //     fs = std::move(maybe_fs.value());
+    // }
 
-    // 3. for each src path, upload it to remote storage
-    // we report to frontend for every 10 files, and we will cancel the job if
-    // the job has already been cancelled in frontend.
-    int report_counter = 0;
-    int total_num = src_to_dest_path.size();
-    int finished_num = 0;
-    for (const auto& iter : src_to_dest_path) {
-        const std::string& src_path = iter.first;
-        const std::string& dest_path = iter.second;
+    // // 3. for each src path, upload it to remote storage
+    // // we report to frontend for every 10 files, and we will cancel the job if
+    // // the job has already been cancelled in frontend.
+    // int report_counter = 0;
+    // int total_num = src_to_dest_path.size();
+    // int finished_num = 0;
+    // for (const auto& iter : src_to_dest_path) {
+    //     const std::string& src_path = iter.first;
+    //     const std::string& dest_path = iter.second;
 
-        int64_t tablet_id = 0;
-        int32_t schema_hash = 0;
-        RETURN_IF_ERROR(_get_tablet_id_and_schema_hash_from_file_path(src_path, &tablet_id, &schema_hash));
+    //     int64_t tablet_id = 0;
+    //     int32_t schema_hash = 0;
+    //     RETURN_IF_ERROR(_get_tablet_id_and_schema_hash_from_file_path(src_path, &tablet_id, &schema_hash));
 
-        // 2.1 get existing files from remote path
-        std::map<std::string, FileStat> remote_files;
-        if (!upload.__isset.use_broker || upload.use_broker) {
-            RETURN_IF_ERROR(_get_existing_files_from_remote(*client, dest_path, upload.broker_prop, &remote_files));
-        } else {
-            RETURN_IF_ERROR(_get_existing_files_from_remote_without_broker(fs, dest_path, &remote_files));
-        }
-        for (auto& tmp : remote_files) {
-            VLOG(2) << "get remote file: " << tmp.first << ", checksum: " << tmp.second.md5;
-        }
+    //     // 2.1 get existing files from remote path
+    //     std::map<std::string, FileStat> remote_files;
+    //     if (!upload.__isset.use_broker || upload.use_broker) {
+    //         RETURN_IF_ERROR(_get_existing_files_from_remote(*client, dest_path, upload.broker_prop, &remote_files));
+    //     } else {
+    //         RETURN_IF_ERROR(_get_existing_files_from_remote_without_broker(fs, dest_path, &remote_files));
+    //     }
+    //     for (auto& tmp : remote_files) {
+    //         VLOG(2) << "get remote file: " << tmp.first << ", checksum: " << tmp.second.md5;
+    //     }
 
-        // 2.2 list local files
-        std::vector<std::string> local_files;
-        std::vector<std::string> local_files_with_checksum;
-        RETURN_IF_ERROR(_get_existing_files_from_local(src_path, &local_files));
+    //     // 2.2 list local files
+    //     std::vector<std::string> local_files;
+    //     std::vector<std::string> local_files_with_checksum;
+    //     RETURN_IF_ERROR(_get_existing_files_from_local(src_path, &local_files));
 
-        // 2.3 iterate local files
-        for (auto& local_file : local_files) {
-            RETURN_IF_ERROR(_report_every(10, &report_counter, finished_num, total_num, TTaskType::type::UPLOAD));
+    //     // 2.3 iterate local files
+    //     for (auto& local_file : local_files) {
+    //         RETURN_IF_ERROR(_report_every(10, &report_counter, finished_num, total_num, TTaskType::type::UPLOAD));
 
-            // calc md5sum of localfile
-            ASSIGN_OR_RETURN(auto md5sum, fs::md5sum(src_path + "/" + local_file));
-            VLOG(2) << "get file checksum: " << local_file << ": " << md5sum;
-            local_files_with_checksum.push_back(local_file + "." + md5sum);
+    //         // calc md5sum of localfile
+    //         ASSIGN_OR_RETURN(auto md5sum, fs::md5sum(src_path + "/" + local_file));
+    //         VLOG(2) << "get file checksum: " << local_file << ": " << md5sum;
+    //         local_files_with_checksum.push_back(local_file + "." + md5sum);
 
-            // check if this local file need upload
-            bool need_upload = false;
-            auto find = remote_files.find(local_file);
-            if (find != remote_files.end()) {
-                if (md5sum != find->second.md5) {
-                    // remote storage file exist, but with different checksum
-                    LOG(WARNING) << "remote file checksum is invalid. remote: " << find->first << ", local: " << md5sum;
-                    // TODO(cmy): save these files and delete them later
-                    need_upload = true;
-                }
-            } else {
-                need_upload = true;
-            }
+    //         // check if this local file need upload
+    //         bool need_upload = false;
+    //         auto find = remote_files.find(local_file);
+    //         if (find != remote_files.end()) {
+    //             if (md5sum != find->second.md5) {
+    //                 // remote storage file exist, but with different checksum
+    //                 LOG(WARNING) << "remote file checksum is invalid. remote: " << find->first << ", local: " << md5sum;
+    //                 // TODO(cmy): save these files and delete them later
+    //                 need_upload = true;
+    //             }
+    //         } else {
+    //             need_upload = true;
+    //         }
 
-            if (!need_upload) {
-                VLOG(2) << "file exist in remote path, no need to upload: " << local_file;
-                continue;
-            }
+    //         if (!need_upload) {
+    //             VLOG(2) << "file exist in remote path, no need to upload: " << local_file;
+    //             continue;
+    //         }
 
-            // upload
-            // open broker writer. file name end with ".part"
-            // it will be renamed to ".md5sum" after upload finished
-            auto full_remote_file = dest_path + "/" + local_file;
-            auto tmp_remote_file_name = full_remote_file + ".part";
-            auto final_remote_file_name = full_remote_file + "." + md5sum;
-            auto local_file_path = src_path + "/" + local_file;
-            std::unique_ptr<WritableFile> remote_writable_file;
-            WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
-            // if (!upload.__isset.use_broker || upload.use_broker) {
-            //     BrokerFileSystem fs_broker(upload.broker_addr, upload.broker_prop);
-            //     ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_remote_file_name));
-            // } else {
-            //     if (fs->type() != FileSystem::S3) {
-            //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, tmp_remote_file_name));
-            //     } else {
-            //         // Not need rename for S3
-            //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, final_remote_file_name));
-            //     }
-            // }
-            ASSIGN_OR_RETURN(auto input_file, FileSystem::Default()->new_sequential_file(local_file_path));
-            ASSIGN_OR_RETURN(auto file_size,
-                             fs::copy(input_file.get(), remote_writable_file.get(), config::upload_buffer_size));
-            RETURN_IF_ERROR(remote_writable_file->close());
-            LOG(INFO) << "finished to upload file: " << local_file_path << ", length: " << file_size;
+    //         // upload
+    //         // open broker writer. file name end with ".part"
+    //         // it will be renamed to ".md5sum" after upload finished
+    //         auto full_remote_file = dest_path + "/" + local_file;
+    //         auto tmp_remote_file_name = full_remote_file + ".part";
+    //         auto final_remote_file_name = full_remote_file + "." + md5sum;
+    //         auto local_file_path = src_path + "/" + local_file;
+    //         std::unique_ptr<WritableFile> remote_writable_file;
+    //         WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
+    //         // if (!upload.__isset.use_broker || upload.use_broker) {
+    //         //     BrokerFileSystem fs_broker(upload.broker_addr, upload.broker_prop);
+    //         //     ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_remote_file_name));
+    //         // } else {
+    //         //     if (fs->type() != FileSystem::S3) {
+    //         //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, tmp_remote_file_name));
+    //         //     } else {
+    //         //         // Not need rename for S3
+    //         //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, final_remote_file_name));
+    //         //     }
+    //         // }
+    //         ASSIGN_OR_RETURN(auto input_file, FileSystem::Default()->new_sequential_file(local_file_path));
+    //         ASSIGN_OR_RETURN(auto file_size,
+    //                          fs::copy(input_file.get(), remote_writable_file.get(), config::upload_buffer_size));
+    //         RETURN_IF_ERROR(remote_writable_file->close());
+    //         LOG(INFO) << "finished to upload file: " << local_file_path << ", length: " << file_size;
 
-            // rename file to end with ".md5sum"
-            if (!upload.__isset.use_broker || upload.use_broker) {
-                RETURN_IF_ERROR(
-                        _rename_remote_file(*client, tmp_remote_file_name, final_remote_file_name, upload.broker_prop));
-            } else {
-                if (fs->type() != FileSystem::S3) {
-                    RETURN_IF_ERROR(
-                            _rename_remote_file_without_broker(fs, tmp_remote_file_name, final_remote_file_name));
-                }
-            }
-        } // end for each tablet's local files
+    //         // rename file to end with ".md5sum"
+    //         if (!upload.__isset.use_broker || upload.use_broker) {
+    //             RETURN_IF_ERROR(
+    //                     _rename_remote_file(*client, tmp_remote_file_name, final_remote_file_name, upload.broker_prop));
+    //         } else {
+    //             if (fs->type() != FileSystem::S3) {
+    //                 RETURN_IF_ERROR(
+    //                         _rename_remote_file_without_broker(fs, tmp_remote_file_name, final_remote_file_name));
+    //             }
+    //         }
+    //     } // end for each tablet's local files
 
-        tablet_files->emplace(tablet_id, local_files_with_checksum);
-        finished_num++;
-        LOG(INFO) << "finished to write tablet to remote. local path: " << src_path << ", remote path: " << dest_path;
-    } // end for each tablet path
+    //     tablet_files->emplace(tablet_id, local_files_with_checksum);
+    //     finished_num++;
+    //     LOG(INFO) << "finished to write tablet to remote. local path: " << src_path << ", remote path: " << dest_path;
+    // } // end for each tablet path
 
-    LOG(INFO) << "finished to upload snapshots. job id: " << _job_id << ", task id: " << _task_id;
+    // LOG(INFO) << "finished to upload snapshots. job id: " << _job_id << ", task id: " << _task_id;
     return status;
 }
 

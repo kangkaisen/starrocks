@@ -25,7 +25,6 @@
 #include "gen_cpp/tablet_schema.pb.h"
 #include "gutil/stl_util.h"
 #include "primary_key_encoder.h"
-#include "service/backend_options.h"
 #include "storage/aggregate_iterator.h"
 #include "storage/chunk_helper.h"
 #include "storage/column_predicate.h"

@@ -40,7 +40,7 @@
 #include <sstream>
 #include <utility>
 
-#include "agent/master_info.h"
+// #include "agent/master_info.h"
 #include "common/status.h"
 #include "fs/fs.h"
 #include "fs/fs_util.h"

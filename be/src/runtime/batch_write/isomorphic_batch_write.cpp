@@ -21,7 +21,6 @@
 #include <atomic>
 #include <utility>
 
-#include "agent/master_info.h"
 #include "common/utils.h"
 #include "gen_cpp/FrontendService.h"
 #include "gen_cpp/internal_service.pb.h"

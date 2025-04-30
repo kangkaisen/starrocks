@@ -20,7 +20,6 @@
 #include <atomic>
 #include <utility>
 
-#include "agent/master_info.h"
 #include "common/compiler_util.h"
 #include "common/config.h"
 #include "fmt/format.h"

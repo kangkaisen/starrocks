@@ -17,7 +17,6 @@
 #include <memory>
 #include <sstream>
 
-#include "agent/master_info.h"
 #include "column/chunk.h"
 #include "column/datum.h"
 #include "common/configbase.h"

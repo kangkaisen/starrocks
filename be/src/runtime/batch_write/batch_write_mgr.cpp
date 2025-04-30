@@ -159,84 +159,84 @@ static std::string s_empty;
 
 void BatchWriteMgr::receive_stream_load_rpc(ExecEnv* exec_env, brpc::Controller* cntl,
                                             const PStreamLoadRequest* request, PStreamLoadResponse* response) {
-    auto* ctx = new StreamLoadContext(exec_env);
-    ctx->ref();
-    DeferOp defer([&]() {
-        response->set_json_result(ctx->to_json());
-        StreamLoadContext::release(ctx);
-    });
-    ctx->db = request->db();
-    ctx->table = request->table();
-    std::map<std::string, std::string> parameters;
-    for (const PStringPair& pair : request->parameters()) {
-        parameters.emplace(pair.key(), pair.val());
-    }
+    // auto* ctx = new StreamLoadContext(exec_env);
+    // ctx->ref();
+    // DeferOp defer([&]() {
+    //     response->set_json_result(ctx->to_json());
+    //     StreamLoadContext::release(ctx);
+    // });
+    // ctx->db = request->db();
+    // ctx->table = request->table();
+    // std::map<std::string, std::string> parameters;
+    // for (const PStringPair& pair : request->parameters()) {
+    //     parameters.emplace(pair.key(), pair.val());
+    // }
 
-    {
-        auto value = GET_PARAMETER_OR_EMPTY(parameters, HTTP_ENABLE_MERGE_COMMIT);
-        StringParser::ParseResult parse_result = StringParser::PARSE_SUCCESS;
-        ctx->enable_batch_write = StringParser::string_to_bool(value.c_str(), value.length(), &parse_result);
-        if (UNLIKELY(parse_result != StringParser::PARSE_SUCCESS)) {
-            ASSIGN_AND_RETURN(ctx->status, Status::InvalidArgument(fmt::format(
-                                                   "Invalid parameter {}. The value must be bool type, but is {}",
-                                                   HTTP_ENABLE_MERGE_COMMIT, value)));
-        }
-        if (!ctx->enable_batch_write) {
-            ASSIGN_AND_RETURN(ctx->status,
-                              Status::InvalidArgument(fmt::format(
-                                      "RPC interface only support batch write currently. Must set {} to true",
-                                      HTTP_ENABLE_MERGE_COMMIT, value)));
-        }
-    }
-    ctx->label = GET_PARAMETER_OR_EMPTY(parameters, HTTP_LABEL_KEY);
-    if (ctx->label.empty()) {
-        ctx->label = generate_uuid_string();
-    }
-    std::string timeout = GET_PARAMETER_OR_EMPTY(parameters, HTTP_TIMEOUT);
-    if (!timeout.empty()) {
-        StringParser::ParseResult parse_result = StringParser::PARSE_SUCCESS;
-        auto timeout_second =
-                StringParser::string_to_unsigned_int<int32_t>(timeout.c_str(), timeout.length(), &parse_result);
-        if (UNLIKELY(parse_result != StringParser::PARSE_SUCCESS)) {
-            ASSIGN_AND_RETURN(ctx->status, Status::InvalidArgument(fmt::format("Invalid timeout format: {}", timeout)));
-        }
-        ctx->timeout_second = timeout_second;
-    }
-    auto user_ip = butil::ip2str(cntl->remote_side().ip);
-    ctx->auth.user = request->user();
-    ctx->auth.passwd = request->passwd();
-    ctx->auth.user_ip.assign(user_ip.c_str());
-    ctx->load_parameters = get_load_parameters_from_brpc(parameters);
+    // {
+    //     auto value = GET_PARAMETER_OR_EMPTY(parameters, HTTP_ENABLE_MERGE_COMMIT);
+    //     StringParser::ParseResult parse_result = StringParser::PARSE_SUCCESS;
+    //     ctx->enable_batch_write = StringParser::string_to_bool(value.c_str(), value.length(), &parse_result);
+    //     if (UNLIKELY(parse_result != StringParser::PARSE_SUCCESS)) {
+    //         ASSIGN_AND_RETURN(ctx->status, Status::InvalidArgument(fmt::format(
+    //                                                "Invalid parameter {}. The value must be bool type, but is {}",
+    //                                                HTTP_ENABLE_MERGE_COMMIT, value)));
+    //     }
+    //     if (!ctx->enable_batch_write) {
+    //         ASSIGN_AND_RETURN(ctx->status,
+    //                           Status::InvalidArgument(fmt::format(
+    //                                   "RPC interface only support batch write currently. Must set {} to true",
+    //                                   HTTP_ENABLE_MERGE_COMMIT, value)));
+    //     }
+    // }
+    // ctx->label = GET_PARAMETER_OR_EMPTY(parameters, HTTP_LABEL_KEY);
+    // if (ctx->label.empty()) {
+    //     ctx->label = generate_uuid_string();
+    // }
+    // std::string timeout = GET_PARAMETER_OR_EMPTY(parameters, HTTP_TIMEOUT);
+    // if (!timeout.empty()) {
+    //     StringParser::ParseResult parse_result = StringParser::PARSE_SUCCESS;
+    //     auto timeout_second =
+    //             StringParser::string_to_unsigned_int<int32_t>(timeout.c_str(), timeout.length(), &parse_result);
+    //     if (UNLIKELY(parse_result != StringParser::PARSE_SUCCESS)) {
+    //         ASSIGN_AND_RETURN(ctx->status, Status::InvalidArgument(fmt::format("Invalid timeout format: {}", timeout)));
+    //     }
+    //     ctx->timeout_second = timeout_second;
+    // }
+    // auto user_ip = butil::ip2str(cntl->remote_side().ip);
+    // ctx->auth.user = request->user();
+    // ctx->auth.passwd = request->passwd();
+    // ctx->auth.user_ip.assign(user_ip.c_str());
+    // ctx->load_parameters = get_load_parameters_from_brpc(parameters);
 
-    butil::IOBuf& io_buf = cntl->request_attachment();
-    size_t max_bytes = config::streaming_load_max_batch_size_mb * 1024 * 1024;
-    if (io_buf.empty()) {
-        ASSIGN_AND_RETURN(ctx->status, Status::InternalError(fmt::format("The data can not be empty")));
-    } else if (io_buf.size() > max_bytes) {
-        ASSIGN_AND_RETURN(ctx->status, Status::InternalError(fmt::format(
-                                               "The data size {} exceed the max size {}. You can change the max size"
-                                               " by modify config::streaming_load_max_batch_size_mb on BE",
-                                               io_buf.size(), max_bytes)));
-    }
-    auto st_or = ByteBuffer::allocate_with_tracker(io_buf.size());
-    if (st_or.ok()) {
-        ctx->buffer = std::move(st_or.value());
-    } else {
-        ASSIGN_AND_RETURN(ctx->status,
-                          Status::InternalError(fmt::format("Can't allocate buffer, data size: {}, error: {}",
-                                                            io_buf.size(), st_or.status().to_string())));
-    }
-    auto copy_size = io_buf.copy_to(ctx->buffer->ptr, io_buf.size());
-    if (copy_size != io_buf.size()) {
-        ASSIGN_AND_RETURN(ctx->status,
-                          Status::InternalError(fmt::format("Failed to copy buffer, data size: {}, copied size: {}",
-                                                            io_buf.size(), copy_size)));
-    }
-    ctx->buffer->pos += io_buf.size();
-    ctx->buffer->flip();
-    ctx->receive_bytes = io_buf.size();
-    ctx->mc_read_data_cost_nanos = MonotonicNanos() - ctx->start_nanos;
-    ctx->status = append_data(ctx);
+    // butil::IOBuf& io_buf = cntl->request_attachment();
+    // size_t max_bytes = config::streaming_load_max_batch_size_mb * 1024 * 1024;
+    // if (io_buf.empty()) {
+    //     ASSIGN_AND_RETURN(ctx->status, Status::InternalError(fmt::format("The data can not be empty")));
+    // } else if (io_buf.size() > max_bytes) {
+    //     ASSIGN_AND_RETURN(ctx->status, Status::InternalError(fmt::format(
+    //                                            "The data size {} exceed the max size {}. You can change the max size"
+    //                                            " by modify config::streaming_load_max_batch_size_mb on BE",
+    //                                            io_buf.size(), max_bytes)));
+    // }
+    // auto st_or = ByteBuffer::allocate_with_tracker(io_buf.size());
+    // if (st_or.ok()) {
+    //     ctx->buffer = std::move(st_or.value());
+    // } else {
+    //     ASSIGN_AND_RETURN(ctx->status,
+    //                       Status::InternalError(fmt::format("Can't allocate buffer, data size: {}, error: {}",
+    //                                                         io_buf.size(), st_or.status().to_string())));
+    // }
+    // auto copy_size = io_buf.copy_to(ctx->buffer->ptr, io_buf.size());
+    // if (copy_size != io_buf.size()) {
+    //     ASSIGN_AND_RETURN(ctx->status,
+    //                       Status::InternalError(fmt::format("Failed to copy buffer, data size: {}, copied size: {}",
+    //                                                         io_buf.size(), copy_size)));
+    // }
+    // ctx->buffer->pos += io_buf.size();
+    // ctx->buffer->flip();
+    // ctx->receive_bytes = io_buf.size();
+    // ctx->mc_read_data_cost_nanos = MonotonicNanos() - ctx->start_nanos;
+    // ctx->status = append_data(ctx);
 }
 
 static TTransactionStatus::type to_thrift_txn_status(TransactionStatusPB status) {

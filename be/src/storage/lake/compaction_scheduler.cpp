@@ -22,7 +22,6 @@
 #include <chrono>
 #include <thread>
 
-#include "agent/master_info.h"
 #include "common/status.h"
 #include "fs/fs.h"
 #include "fs/key_cache.h"
