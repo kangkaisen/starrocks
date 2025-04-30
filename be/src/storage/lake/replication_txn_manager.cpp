@@ -339,14 +339,14 @@ Status ReplicationTxnManager::replicate_remote_snapshot(const TReplicateSnapshot
 
     auto file_converters = [&](const std::string& file_name,
                                uint64_t file_size) -> StatusOr<std::unique_ptr<FileStreamConverter>> {
-        if (request.transaction_id < get_master_info().min_active_txn_id) {
-            LOG(WARNING) << "Transaction is aborted, txn_id: " << request.transaction_id
-                         << ", tablet_id: " << request.tablet_id << ", src_tablet_id: " << request.src_tablet_id
-                         << ", visible_version: " << request.visible_version
-                         << ", data_version: " << request.data_version
-                         << ", snapshot_version: " << request.src_visible_version;
-            return Status::InternalError("Transaction is aborted");
-        }
+        // if (request.transaction_id < get_master_info().min_active_txn_id) {
+        //     LOG(WARNING) << "Transaction is aborted, txn_id: " << request.transaction_id
+        //                  << ", tablet_id: " << request.tablet_id << ", src_tablet_id: " << request.src_tablet_id
+        //                  << ", visible_version: " << request.visible_version
+        //                  << ", data_version: " << request.data_version
+        //                  << ", snapshot_version: " << request.src_visible_version;
+        //     return Status::InternalError("Transaction is aborted");
+        // }
 
         auto iter = filename_map.find(file_name);
         if (iter == filename_map.end()) {
