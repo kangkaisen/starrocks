@@ -50,17 +50,6 @@ add_library(Formats STATIC
         avro/cpp/nullable_column_reader.cpp
         avro/cpp/numeric_column_reader.cpp
         avro/cpp/utils.cpp
-        orc/orc_chunk_reader.cpp
-        orc/orc_file_writer.cpp
-        orc/orc_input_stream.cpp
-        orc/orc_mapping.cpp
-        orc/orc_memory_pool.cpp
-        orc/orc_min_max_decoder.cpp
-        orc/orc_schema_builder.cpp
-        orc/utils.cpp
-        orc/column_reader.cpp
-        orc/memory_stream/MemoryInputStream.cc
-        orc/memory_stream/MemoryOutputStream.cc
         parquet/arrow_memory_pool.cpp
         parquet/column_chunk_reader.cpp
         parquet/column_converter.cpp
@@ -89,5 +78,3 @@ add_library(Formats STATIC
         parquet/parquet_block_split_bloom_filter.cpp
         disk_range.hpp
         )
-
-add_subdirectory(orc/apache-orc)

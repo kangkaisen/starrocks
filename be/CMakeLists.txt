@@ -82,7 +82,6 @@ option(WITH_GCOV "Build binary with gcov to get code coverage" OFF)
 
 option(WITH_COMPRESS "Build binary with compresss debug section" ON)
 
-option(WITH_STARCACHE "Build binary with starcache library" ON)
 option(WITH_BRCP_KEEPALIVE "Build binary with brpc_socket_keepalive (requires brpc 1.8)" OFF)
 
 option(WITH_BENCH "Build binary with bench" OFF)
@@ -393,90 +392,6 @@ if ("${CMAKE_BUILD_TARGET_ARCH}" STREQUAL "x86" OR "${CMAKE_BUILD_TARGET_ARCH}" 
     set_target_properties(libdeflate PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib64/libdeflate.a)
 endif()
 
-if (${WITH_STARCACHE} STREQUAL "ON")
-    add_library(starcache STATIC IMPORTED GLOBAL)
-    set(STARCACHE_DIR "${THIRDPARTY_DIR}/starcache")
-    set_target_properties(starcache PROPERTIES IMPORTED_LOCATION ${STARCACHE_DIR}/lib/libstarcache.a)
-    include_directories(SYSTEM ${STARCACHE_DIR}/include)
-    message(STATUS "link the starcache in directory: ${STARCACHE_DIR}")
-endif()
-if ("${WITH_BRPC_KEEPALIVE}" STREQUAL "ON")
-  set(CXX_COMMON_FLAGS "${CXX_COMMON_FLAGS} -DWITH_BRPC_KEEPALIVE")
-endif()
-
-if ("${USE_STAROS}" STREQUAL "ON")
-    if (DEFINED ENV{STARLET_INSTALL_DIR})
-        set(STARLET_INSTALL_DIR "$ENV{STARLET_INSTALL_DIR}")
-    else()
-        set(STARLET_INSTALL_DIR "${THIRDPARTY_DIR}/starlet")
-    endif()
-    if (NOT EXISTS ${STARLET_INSTALL_DIR})
-        message(FATAL_ERROR "Starlet thirdparty directory ${STARLET_INSTALL_DIR} not exist!")
-    else()
-        message(STATUS "Searching starlet related libraries from ${STARLET_INSTALL_DIR} ...")
-    endif()
-
-    # Tell cmake that PROTOBUF library is already found
-    set(PROTOBUF_FOUND TRUE)
-    # starrocks project has its imported libprotobuf.a and libre2.a
-    # add following ALIAS so grpc can find the correct dependent libraries
-    add_library(re2::re2 ALIAS re2)
-    add_library(glog::glog ALIAS glog)
-    add_library(gflags::gflags_static ALIAS gflags)
-    add_library(hdfs::hdfs ALIAS hdfs)
-    add_library(brpc::brpc ALIAS brpc)
-    add_library(leveldb::leveldb ALIAS leveldb)
-    add_library(CURL::libcurl ALIAS curl)
-    add_library(rocksdb::rocksdb ALIAS rocksdb)
-    add_library(starcache::starcache ALIAS starcache)
-    add_library(Snappy::snappy ALIAS snappy)
-
-    # required by azure-*
-    set(LIBXML2_INCLUDE_DIR "${STARLET_INSTALL_DIR}/third_party/include/libxml2" CACHE PATH "libxml2 include path")
-    set(LIBXML2_LIBRARY "${STARLET_INSTALL_DIR}/third_party/lib/libxml2.a" CACHE FILEPATH "libxml2 static library")
-    add_library(libxml2 STATIC IMPORTED GLOBAL)
-    set_target_properties(libxml2 PROPERTIES IMPORTED_LOCATION ${LIBXML2_LIBRARY})
-
-    set(prometheus-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/lib/cmake/prometheus-cpp" CACHE PATH "prometheus cpp client search path")
-    find_package (prometheus-cpp CONFIG REQUIRED)
-    get_target_property(prometheus-cpp_INCLUDE_DIR prometheus-cpp::core INTERFACE_INCLUDE_DIRECTORIES)
-    message(STATUS "Using prometheus-cpp")
-    message(STATUS "  include: ${prometheus-cpp_INCLUDE_DIR}")
-    include_directories(SYSTEM ${prometheus-cpp_INCLUDE_DIR})
-
-    set(azure-core-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/share/azure-core-cpp" CACHE PATH "azure core cpp search path")
-    find_package(azure-core-cpp CONFIG REQUIRED)
-    set(azure-identity-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/share/azure-identity-cpp" CACHE PATH "azure identity cpp search path")
-    find_package(azure-identity-cpp CONFIG REQUIRED)
-    set(azure-storage-common-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/share/azure-storage-common-cpp" CACHE PATH "azure storage common search path")
-    find_package(azure-storage-common-cpp CONFIG REQUIRED)
-    set(azure-storage-blobs-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/share/azure-storage-blobs-cpp" CACHE PATH "azure storage blobs search path")
-    find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
-    set(azure-storage-files-datalake-cpp_DIR "${STARLET_INSTALL_DIR}/third_party/share/azure-storage-files-datalake-cpp" CACHE PATH "azure storage file datalake search path")
-    find_package(azure-storage-files-datalake-cpp CONFIG REQUIRED)
-    set(AZURE_SDK_LIB Azure::azure-identity Azure::azure-storage-blobs Azure::azure-storage-files-datalake Azure::azure-core Azure::azure-storage-common)
-
-    set(starlet_DIR "${STARLET_INSTALL_DIR}/starlet_install/lib/cmake" CACHE PATH "starlet search path")
-    find_package(starlet CONFIG REQUIRED)
-    message(STATUS "Using starlet ${starlet_VERSION}")
-    message(STATUS "starlet inc dir: ${STARLET_INCLUDE_DIRS}")
-    message(STATUS "starlet lib dir: ${STARLET_LIBS}")
-    include_directories(SYSTEM ${STARLET_INCLUDE_DIRS})
-
-    set_target_properties(starlet::starlet_fslib_all PROPERTIES IMPORTED_GLOBAL TRUE)
-    add_library(starlet_fslib_all ALIAS starlet::starlet_fslib_all)
-    set_target_properties(starlet::starlet PROPERTIES IMPORTED_GLOBAL TRUE)
-    add_library(starlet ALIAS starlet::starlet)
-
-    set(STARROCKS_DEPENDENCIES
-       ${STARROCKS_DEPENDENCIES}
-       starlet
-       starlet_fslib_all
-       starcache
-       ${AZURE_SDK_LIB}
-       )
-endif()
-
 
 # Check Clang-Tidy
 include(cmake_modules/FindClangTidy.cmake)
@@ -742,8 +657,6 @@ set(STARROCKS_LINK_LIBS
     Udf
     Util
     StarRocksGen
-    Tools
-    Cache
     ${WL_END_GROUP}
 )
 
@@ -836,16 +749,6 @@ if (NOT BUILD_FORMAT_LIB)
     set(STARROCKS_DEPENDENCIES
             ${STARROCKS_DEPENDENCIES}
             jemalloc # required by arrow
-    )
-endif()
-
-if (${WITH_STARCACHE} STREQUAL "ON")
-    set(STARROCKS_DEPENDENCIES
-        ${STARROCKS_DEPENDENCIES}
-        ${WL_START_GROUP}
-        brpc
-        starcache
-        ${WL_END_GROUP}
     )
 endif()
 
@@ -963,12 +866,8 @@ add_subdirectory(${SRC_DIR}/storage)
 add_subdirectory(${SRC_DIR}/runtime)
 add_subdirectory(${SRC_DIR}/serde)
 add_subdirectory(${SRC_DIR}/service)
-add_subdirectory(${SRC_DIR}/testutil)
 add_subdirectory(${SRC_DIR}/types)
 add_subdirectory(${SRC_DIR}/udf)
-add_subdirectory(${SRC_DIR}/cache)
-
-add_subdirectory(${SRC_DIR}/tools)
 add_subdirectory(${SRC_DIR}/util)
 
 install(DIRECTORY DESTINATION ${OUTPUT_DIR})
