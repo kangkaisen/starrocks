@@ -205,10 +205,6 @@ set(STORAGE_FILES
     primary_key_compaction_conflict_resolver.cpp
     local_primary_key_compaction_conflict_resolver.cpp)
 
-if (NOT BUILD_FORMAT_LIB)
-    list(APPEND STORAGE_FILES  lake/starlet_location_provider.cpp)
-endif()
-
 add_library(Storage STATIC
     ${STORAGE_FILES}
 )
