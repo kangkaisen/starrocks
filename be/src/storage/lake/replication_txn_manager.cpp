@@ -20,7 +20,6 @@
 #include <filesystem>
 #include <set>
 
-#include "agent/agent_server.h"
 #include "agent/master_info.h"
 #include "agent/task_signatures_manager.h"
 #include "fs/fs.h"
@@ -35,7 +34,6 @@
 #include "runtime/client_cache.h"
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
-#include "service/backend_options.h"
 #include "storage/delete_handler.h"
 #include "storage/lake/location_provider.h"
 #include "storage/lake/meta_file.h"

@@ -122,18 +122,18 @@ IsomorphicBatchWrite::IsomorphicBatchWrite(BatchWriteId batch_write_id, bthreads
         : _batch_write_id(std::move(batch_write_id)), _executor(executor), _txn_state_cache(txn_state_cache) {}
 
 Status IsomorphicBatchWrite::init() {
-    TEST_ERROR_POINT("IsomorphicBatchWrite::init::error");
-    auto it = _batch_write_id.load_params.find(HTTP_MERGE_COMMIT_ASYNC);
-    if (it != _batch_write_id.load_params.end()) {
-        _batch_write_async = it->second == "true";
-    }
-    bthread::ExecutionQueueOptions opts;
-    opts.executor = _executor;
-    if (int r = bthread::execution_queue_start(&_queue_id, &opts, _execute_tasks, this); r != 0) {
-        LOG(ERROR) << "Fail to start execution queue for batch write, " << _batch_write_id << ", result: " << r;
-        return Status::InternalError(fmt::format("fail to start bthread execution queue: {}", r));
-    }
-    LOG(INFO) << "Init batch write, " << _batch_write_id;
+    // TEST_ERROR_POINT("IsomorphicBatchWrite::init::error");
+    // auto it = _batch_write_id.load_params.find(HTTP_MERGE_COMMIT_ASYNC);
+    // if (it != _batch_write_id.load_params.end()) {
+    //     _batch_write_async = it->second == "true";
+    // }
+    // bthread::ExecutionQueueOptions opts;
+    // opts.executor = _executor;
+    // if (int r = bthread::execution_queue_start(&_queue_id, &opts, _execute_tasks, this); r != 0) {
+    //     LOG(ERROR) << "Fail to start execution queue for batch write, " << _batch_write_id << ", result: " << r;
+    //     return Status::InternalError(fmt::format("fail to start bthread execution queue: {}", r));
+    // }
+    // LOG(INFO) << "Init batch write, " << _batch_write_id;
     return Status::OK();
 }
 

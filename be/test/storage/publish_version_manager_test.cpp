@@ -16,9 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include "agent/agent_common.h"
-#include "agent/agent_server.h"
-#include "agent/publish_version.h"
 #include "butil/file_util.h"
 #include "column/column_helper.h"
 #include "common/config.h"

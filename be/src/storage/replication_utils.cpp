@@ -16,10 +16,6 @@
 
 #include <sys/stat.h>
 
-#ifdef BE_TEST
-#include "agent/agent_server.h"
-#endif
-
 #include "fs/fs.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/BackendService.h"

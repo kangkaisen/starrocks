@@ -34,7 +34,6 @@
 #include "runtime/fragment_mgr.h"
 #include "runtime/runtime_filter_cache.h"
 #include "runtime/runtime_state.h"
-#include "service/backend_options.h"
 #include "util/brpc_stub_cache.h"
 #include "util/defer_op.h"
 #include "util/internal_service_recoverable_stub.h"

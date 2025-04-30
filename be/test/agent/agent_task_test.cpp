@@ -16,7 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include "agent/agent_server.h"
 #include "agent/publish_version.h"
 #include "agent/task_worker_pool.h"
 #include "fs/fs.h"

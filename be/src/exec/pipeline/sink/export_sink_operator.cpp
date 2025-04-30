@@ -22,7 +22,6 @@
 #include "exec/plain_text_builder.h"
 #include "formats/csv/converter.h"
 #include "formats/csv/output_stream.h"
-#include "fs/fs_broker.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
@@ -86,25 +85,27 @@ Status ExportSinkIOBuffer::_open_file_writer() {
 
     const auto& file_type = _t_export_sink.file_type;
     switch (file_type) {
-    case TFileType::FILE_LOCAL: {
+    case TFileType::FILE_LOCAL:
+    case TFileType::FILE_BROKER:
+    {
         ASSIGN_OR_RETURN(output_file, FileSystem::Default()->new_writable_file(options, file_path));
         break;
     }
-    case TFileType::FILE_BROKER: {
-        if (_t_export_sink.__isset.use_broker && !_t_export_sink.use_broker) {
-            ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(file_path, FSOptions(&_t_export_sink)));
-            ASSIGN_OR_RETURN(output_file, fs->new_writable_file(options, file_path));
-        } else {
-            if (_t_export_sink.broker_addresses.empty()) {
-                LOG(WARNING) << "ExportSink broker_addresses empty";
-                return Status::InternalError("ExportSink broker_addresses empty");
-            }
-            const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
-            BrokerFileSystem fs_broker(broker_addr, _t_export_sink.properties);
-            ASSIGN_OR_RETURN(output_file, fs_broker.new_writable_file(options, file_path));
-        }
-        break;
-    }
+    // case TFileType::FILE_BROKER: {
+    //     if (_t_export_sink.__isset.use_broker && !_t_export_sink.use_broker) {
+    //         ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(file_path, FSOptions(&_t_export_sink)));
+    //         ASSIGN_OR_RETURN(output_file, fs->new_writable_file(options, file_path));
+    //     } else {
+    //         if (_t_export_sink.broker_addresses.empty()) {
+    //             LOG(WARNING) << "ExportSink broker_addresses empty";
+    //             return Status::InternalError("ExportSink broker_addresses empty");
+    //         }
+    //         const TNetworkAddress& broker_addr = _t_export_sink.broker_addresses[0];
+    //         BrokerFileSystem fs_broker(broker_addr, _t_export_sink.properties);
+    //         ASSIGN_OR_RETURN(output_file, fs_broker.new_writable_file(options, file_path));
+    //     }
+    //     break;
+    // }
     case TFileType::FILE_STREAM:
         return Status::NotSupported(strings::Substitute("Unsupported file type $0", file_type));
     }

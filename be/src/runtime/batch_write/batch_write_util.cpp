@@ -90,7 +90,8 @@ BatchWriteLoadParams get_load_parameters_from_brpc(const std::map<std::string, s
     //         return std::nullopt;
     //     }
     // });
-    return std::nullopt;
+    std::map<std::string, std::string> load_params;
+    return load_params;
 }
 
 // BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req) {

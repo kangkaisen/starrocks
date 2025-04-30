@@ -46,9 +46,9 @@
 
 #include <boost/algorithm/string.hpp>
 
-#include "agent/agent_server.h"
-#include "agent/heartbeat_server.h"
-#include "agent/status.h"
+// #include "agent/agent_server.h"
+// #include "agent/heartbeat_server.h"
+// #include "agent/status.h"
 #include "common/config.h"
 #include "common/daemon.h"
 #include "common/logging.h"
@@ -60,9 +60,9 @@
 #include "runtime/heartbeat_flags.h"
 #include "runtime/jdbc_driver_manager.h"
 #include "runtime/memory/roaring_hook.h"
-#include "service/backend_options.h"
+// #include "service/backend_options.h"
 #include "service/service.h"
-#include "service/staros_worker.h"
+// #include "service/staros_worker.h"
 #include "storage/options.h"
 #include "storage/storage_engine.h"
 #include "util/debug_util.h"

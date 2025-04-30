@@ -45,10 +45,10 @@ namespace starrocks::lake {
 namespace {
 static void reject_request(::google::protobuf::RpcController* controller, const CompactRequest* request,
                            CompactResponse* response) {
-    auto st = Status::Aborted("Compaction request rejected due to BE/CN shutdown in progress!");
-    LOG(WARNING) << "Fail to compact num_of_tablets= " << request->tablet_ids().size()
-                 << ". version=" << request->version() << " txn_id=" << request->txn_id() << " : " << st;
-    st.to_protobuf(response->mutable_status());
+    // auto st = Status::Aborted("Compaction request rejected due to BE/CN shutdown in progress!");
+    // LOG(WARNING) << "Fail to compact num_of_tablets= " << request->tablet_ids().size()
+    //              << ". version=" << request->version() << " txn_id=" << request->txn_id() << " : " << st;
+    // st.to_protobuf(response->mutable_status());
 }
 } // namespace
 
@@ -62,22 +62,23 @@ CompactionTaskCallback::CompactionTaskCallback(CompactionScheduler* scheduler, c
           _response(response),
           _done(done),
           _last_check_time(INT64_MAX) {
-    CHECK(_request != nullptr);
-    CHECK(_response != nullptr);
-    _timeout_deadline_ms = butil::gettimeofday_ms() + timeout_ms();
-    _contexts.reserve(request->tablet_ids_size());
+    // CHECK(_request != nullptr);
+    // CHECK(_response != nullptr);
+    // _timeout_deadline_ms = butil::gettimeofday_ms() + timeout_ms();
+    // _contexts.reserve(request->tablet_ids_size());
 }
 
 int64_t CompactionTaskCallback::timeout_ms() const {
-    return _request->has_timeout_ms() ? _request->timeout_ms() : kDefaultTimeoutMs;
+    return kDefaultTimeoutMs;
 }
 
 bool CompactionTaskCallback::allow_partial_success() const {
-    if (_request->has_allow_partial_success() && _request->allow_partial_success()) {
-        return true;
-    } else {
-        return false;
-    }
+    // if (_request->has_allow_partial_success() && _request->allow_partial_success()) {
+    //     return true;
+    // } else {
+    //     return false;
+    // }
+    return false;
 }
 
 Status CompactionTaskCallback::has_error() const {
@@ -104,51 +105,51 @@ Status CompactionTaskCallback::has_error() const {
 }
 
 void CompactionTaskCallback::finish_task(std::unique_ptr<CompactionTaskContext>&& context) {
-    std::unique_lock l(_mtx);
+    // std::unique_lock l(_mtx);
 
-    if (!context->status.ok()) {
-        _response->add_failed_tablets(context->tablet_id);
-    } else {
-        _success_compaction_input_file_size += context->stats->input_file_size;
-    }
+    // if (!context->status.ok()) {
+    //     _response->add_failed_tablets(context->tablet_id);
+    // } else {
+    //     _success_compaction_input_file_size += context->stats->input_file_size;
+    // }
 
-    // process compact stat
-    auto compact_stat = _response->add_compact_stats();
-    compact_stat->set_tablet_id(context->tablet_id);
-    compact_stat->set_read_time_remote(context->stats->io_ns_remote);
-    compact_stat->set_read_bytes_remote(context->stats->io_bytes_read_remote);
-    compact_stat->set_read_time_local(context->stats->io_ns_local_disk);
-    compact_stat->set_read_bytes_local(context->stats->io_bytes_read_local_disk);
-    compact_stat->set_in_queue_time_sec(context->stats->in_queue_time_sec);
-    compact_stat->set_sub_task_count(_request->tablet_ids_size());
-    compact_stat->set_total_compact_input_file_size(context->stats->input_file_size);
+    // // process compact stat
+    // auto compact_stat = _response->add_compact_stats();
+    // compact_stat->set_tablet_id(context->tablet_id);
+    // compact_stat->set_read_time_remote(context->stats->io_ns_remote);
+    // compact_stat->set_read_bytes_remote(context->stats->io_bytes_read_remote);
+    // compact_stat->set_read_time_local(context->stats->io_ns_local_disk);
+    // compact_stat->set_read_bytes_local(context->stats->io_bytes_read_local_disk);
+    // compact_stat->set_in_queue_time_sec(context->stats->in_queue_time_sec);
+    // compact_stat->set_sub_task_count(_request->tablet_ids_size());
+    // compact_stat->set_total_compact_input_file_size(context->stats->input_file_size);
 
-    DCHECK(_request != nullptr);
-    _status.update(context->status);
+    // DCHECK(_request != nullptr);
+    // _status.update(context->status);
 
-    // Keep the context for a while until the RPC request is finished processing so that we can see the detailed
-    // and complete progress of the RPC request by calling `CompactionScheduler::list_tasks()`.
-    _contexts.emplace_back(std::move(context));
-    //                     ^^^^^^^^^^^^^^^^^ Do NOT touch "context" since here, it has been `move`ed.
+    // // Keep the context for a while until the RPC request is finished processing so that we can see the detailed
+    // // and complete progress of the RPC request by calling `CompactionScheduler::list_tasks()`.
+    // _contexts.emplace_back(std::move(context));
+    // //                     ^^^^^^^^^^^^^^^^^ Do NOT touch "context" since here, it has been `move`ed.
 
-    if (_contexts.size() == _request->tablet_ids_size()) { // All tasks finished, send RPC response to FE
-        _status.to_protobuf(_response->mutable_status());
-        _response->set_success_compaction_input_file_size(_success_compaction_input_file_size);
-        if (_done != nullptr) {
-            _done->Run();
-            _done = nullptr;
-        }
-        _request = nullptr;
-        _response = nullptr;
+    // if (_contexts.size() == _request->tablet_ids_size()) { // All tasks finished, send RPC response to FE
+    //     _status.to_protobuf(_response->mutable_status());
+    //     _response->set_success_compaction_input_file_size(_success_compaction_input_file_size);
+    //     if (_done != nullptr) {
+    //         _done->Run();
+    //         _done = nullptr;
+    //     }
+    //     _request = nullptr;
+    //     _response = nullptr;
 
-        std::vector<std::unique_ptr<CompactionTaskContext>> tmp;
-        tmp.swap(_contexts);
+    //     std::vector<std::unique_ptr<CompactionTaskContext>> tmp;
+    //     tmp.swap(_contexts);
 
-        l.unlock();
-        _scheduler->remove_states(tmp);
-        tmp.clear();
-        TEST_SYNC_POINT("lake::CompactionTaskCallback::finish_task:finish_task");
-    }
+    //     l.unlock();
+    //     _scheduler->remove_states(tmp);
+    //     tmp.clear();
+    //     TEST_SYNC_POINT("lake::CompactionTaskCallback::finish_task:finish_task");
+    // }
 }
 
 Status CompactionTaskCallback::is_txn_still_valid() {
@@ -241,73 +242,73 @@ void CompactionScheduler::stop() {
 
 void CompactionScheduler::compact(::google::protobuf::RpcController* controller, const CompactRequest* request,
                                   CompactResponse* response, ::google::protobuf::Closure* done) {
-    brpc::ClosureGuard guard(done);
-    // when FE request a compaction, CN may not have any key cached yet, so pass an encryption_meta to refresh cache
-    if (!request->encryption_meta().empty()) {
-        Status st = KeyCache::instance().refresh_keys(request->encryption_meta());
-        if (!st.ok()) {
-            LOG(WARNING) << fmt::format("refresh keys using encryption_meta in PTabletWriterOpenRequest failed {}",
-                                        st.detailed_message());
-        }
-    }
-    // By default, all the tablet compaction tasks with the same txn id will be executed in the same
-    // thread to avoid blocking other transactions, but if there are idle threads, they will steal
-    // tasks from busy threads to execute.
-    auto cb = std::make_shared<CompactionTaskCallback>(this, request, response, done);
-    std::vector<std::unique_ptr<CompactionTaskContext>> contexts_vec;
-    for (auto tablet_id : request->tablet_ids()) {
-        auto context = std::make_unique<CompactionTaskContext>(request->txn_id(), tablet_id, request->version(),
-                                                               request->force_base_compaction(), cb);
-        contexts_vec.push_back(std::move(context));
-        // DO NOT touch `context` from here!
-    }
-    // initialize last check time, compact request is received right after FE sends it, so consider it valid now
-    cb->set_last_check_time(time(nullptr));
+    // brpc::ClosureGuard guard(done);
+    // // when FE request a compaction, CN may not have any key cached yet, so pass an encryption_meta to refresh cache
+    // if (!request->encryption_meta().empty()) {
+    //     Status st = KeyCache::instance().refresh_keys(request->encryption_meta());
+    //     if (!st.ok()) {
+    //         LOG(WARNING) << fmt::format("refresh keys using encryption_meta in PTabletWriterOpenRequest failed {}",
+    //                                     st.detailed_message());
+    //     }
+    // }
+    // // By default, all the tablet compaction tasks with the same txn id will be executed in the same
+    // // thread to avoid blocking other transactions, but if there are idle threads, they will steal
+    // // tasks from busy threads to execute.
+    // auto cb = std::make_shared<CompactionTaskCallback>(this, request, response, done);
+    // std::vector<std::unique_ptr<CompactionTaskContext>> contexts_vec;
+    // for (auto tablet_id : request->tablet_ids()) {
+    //     auto context = std::make_unique<CompactionTaskContext>(request->txn_id(), tablet_id, request->version(),
+    //                                                            request->force_base_compaction(), cb);
+    //     contexts_vec.push_back(std::move(context));
+    //     // DO NOT touch `context` from here!
+    // }
+    // // initialize last check time, compact request is received right after FE sends it, so consider it valid now
+    // cb->set_last_check_time(time(nullptr));
 
-    std::unique_lock lock(_mutex);
-    // make changes under lock
-    // perform the check again under lock, so the _stopped and _task_queues operation is atomic
-    if (_stopped) {
-        reject_request(controller, request, response);
-        return;
-    }
-    {
-        std::lock_guard l(_contexts_lock);
-        for (auto& ctx : contexts_vec) {
-            _contexts.Append(ctx.get());
-        }
-    }
-    _task_queues.put_by_txn_id(request->txn_id(), contexts_vec);
-    // DO NOT touch `contexts_vec` from here!
-    // release the done guard, let CompactionTaskCallback take charge.
-    guard.release();
+    // std::unique_lock lock(_mutex);
+    // // make changes under lock
+    // // perform the check again under lock, so the _stopped and _task_queues operation is atomic
+    // if (_stopped) {
+    //     reject_request(controller, request, response);
+    //     return;
+    // }
+    // {
+    //     std::lock_guard l(_contexts_lock);
+    //     for (auto& ctx : contexts_vec) {
+    //         _contexts.Append(ctx.get());
+    //     }
+    // }
+    // _task_queues.put_by_txn_id(request->txn_id(), contexts_vec);
+    // // DO NOT touch `contexts_vec` from here!
+    // // release the done guard, let CompactionTaskCallback take charge.
+    // guard.release();
 
-    TEST_SYNC_POINT("CompactionScheduler::compact:return");
+    // TEST_SYNC_POINT("CompactionScheduler::compact:return");
 }
 
 void CompactionScheduler::list_tasks(std::vector<CompactionTaskInfo>* infos) {
-    std::lock_guard l(_contexts_lock);
-    for (butil::LinkNode<CompactionTaskContext>* node = _contexts.head(); node != _contexts.end();
-         node = node->next()) {
-        CompactionTaskContext* context = node->value();
-        auto& info = infos->emplace_back();
-        info.txn_id = context->txn_id;
-        info.tablet_id = context->tablet_id;
-        info.version = context->version;
-        info.skipped = context->skipped.load(std::memory_order_relaxed);
-        info.runs = context->runs.load(std::memory_order_relaxed);
-        info.start_time = context->start_time.load(std::memory_order_relaxed);
-        info.progress = context->progress.value();
-        // Load "finish_time" with memory_order_acquire and check its value before reading the "status" to avoid
-        // the race condition between this thread and the `CompactionScheduler::thread_task` threads.
-        info.finish_time = context->finish_time.load(std::memory_order_acquire);
-        if (info.runs > 0) {
-            info.profile = context->stats->to_json_stats();
-        }
-        if (info.finish_time > 0) {
-            info.status = context->status;
-        }
-    }
+    // std::lock_guard l(_contexts_lock);
+    // for (butil::LinkNode<CompactionTaskContext>* node = _contexts.head(); node != _contexts.end();
+    //      node = node->next()) {
+    //     CompactionTaskContext* context = node->value();
+    //     auto& info = infos->emplace_back();
+    //     info.txn_id = context->txn_id;
+    //     info.tablet_id = context->tablet_id;
+    //     info.version = context->version;
+    //     info.skipped = context->skipped.load(std::memory_order_relaxed);
+    //     info.runs = context->runs.load(std::memory_order_relaxed);
+    //     info.start_time = context->start_time.load(std::memory_order_relaxed);
+    //     info.progress = context->progress.value();
+    //     // Load "finish_time" with memory_order_acquire and check its value before reading the "status" to avoid
+    //     // the race condition between this thread and the `CompactionScheduler::thread_task` threads.
+    //     info.finish_time = context->finish_time.load(std::memory_order_acquire);
+    //     if (info.runs > 0) {
+    //         info.profile = context->stats->to_json_stats();
+    //     }
+    //     if (info.finish_time > 0) {
+    //         info.status = context->status;
+    //     }
+    // }
 }
 
 // Pay special attentions to the following statements order with different new and old val
