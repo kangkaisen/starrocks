@@ -279,22 +279,23 @@ Status FileScanner::create_sequential_file(const TBrokerRangeDesc& range_desc, c
     std::shared_ptr<SequentialFile> src_file;
     switch (range_desc.file_type) {
     case TFileType::FILE_LOCAL:
+    case TFileType::FILE_STREAM:
     case TFileType::FILE_BROKER:
     {
         ASSIGN_OR_RETURN(src_file, FileSystem::Default()->new_sequential_file(range_desc.path));
         break;
     }
-    case TFileType::FILE_STREAM: {
-        auto pipe = _state->exec_env()->load_stream_mgr()->get(range_desc.load_id);
-        if (pipe == nullptr) {
-            std::stringstream ss("Invalid or outdated load id ");
-            range_desc.load_id.printTo(ss);
-            return Status::InternalError(std::string(ss.str()));
-        }
-        auto stream = std::make_shared<StreamLoadPipeInputStream>(std::move(pipe));
-        src_file = std::make_shared<SequentialFile>(std::move(stream), "stream-load-pipe");
-        break;
-    }
+    // case TFileType::FILE_STREAM: {
+    //     auto pipe = _state->exec_env()->load_stream_mgr()->get(range_desc.load_id);
+    //     if (pipe == nullptr) {
+    //         std::stringstream ss("Invalid or outdated load id ");
+    //         range_desc.load_id.printTo(ss);
+    //         return Status::InternalError(std::string(ss.str()));
+    //     }
+    //     auto stream = std::make_shared<StreamLoadPipeInputStream>(std::move(pipe));
+    //     src_file = std::make_shared<SequentialFile>(std::move(stream), "stream-load-pipe");
+    //     break;
+    // }
     // case TFileType::FILE_BROKER: {
     //     if (params.__isset.use_broker && !params.use_broker) {
     //         ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(range_desc.path, FSOptions(&params)));

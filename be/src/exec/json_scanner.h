@@ -26,6 +26,7 @@
 #include "util/compression/stream_compression.h"
 #include "util/raw_container.h"
 #include "util/slice.h"
+#include "util/byte_buffer.h"
 
 namespace starrocks {
 

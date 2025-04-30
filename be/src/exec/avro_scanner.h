@@ -25,6 +25,7 @@
 #include "fs/fs.h"
 #include "util/raw_container.h"
 #include "util/slice.h"
+#include "util/byte_buffer.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
