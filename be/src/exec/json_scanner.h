@@ -21,7 +21,7 @@
 #include "exec/file_scanner.h"
 #include "exprs/json_functions.h"
 #include "fs/fs.h"
-#include "runtime/stream_load/load_stream_mgr.h"
+// #include "runtime/stream_load/load_stream_mgr.h"
 #include "simdjson.h"
 #include "util/compression/stream_compression.h"
 #include "util/raw_container.h"

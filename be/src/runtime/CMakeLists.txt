@@ -53,10 +53,6 @@ set(RUNTIME_FILES
     snapshot_loader.cpp
     query_statistics.cpp
     message_body_sink.cpp
-    batch_write/isomorphic_batch_write.cpp
-    batch_write/batch_write_mgr.cpp
-    batch_write/batch_write_util.cpp
-    batch_write/txn_state_cache.cpp
     small_file_mgr.cpp
     record_batch_queue.cpp
     result_queue_mgr.cpp

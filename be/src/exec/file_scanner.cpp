@@ -31,7 +31,6 @@
 #include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "runtime/stream_load/load_stream_mgr.h"
 #include "util/compression/stream_compression.h"
 #include "util/defer_op.h"
 

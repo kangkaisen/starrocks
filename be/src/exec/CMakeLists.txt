@@ -268,13 +268,7 @@ set(EXEC_FILES
     spill/file_block_manager.cpp
     spill/hybird_block_manager.cpp
     spill/operator_mem_resource_manager.cpp
-    spill/query_spill_manager.cpp
-    stream/state/mem_state_table.cpp
-    stream/aggregate/agg_state_data.cpp
-    stream/aggregate/agg_group_state.cpp
-    stream/aggregate/stream_aggregator.cpp
-    stream/aggregate/stream_aggregate_operator.cpp
-    stream/stream_aggregate_node.cpp)
+    spill/query_spill_manager.cpp)
 
 add_library(Exec STATIC
     ${EXEC_FILES}

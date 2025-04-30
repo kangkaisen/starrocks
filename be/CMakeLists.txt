@@ -742,7 +742,6 @@ set(STARROCKS_LINK_LIBS
     Udf
     Util
     StarRocksGen
-    TestUtil
     Tools
     Cache
     ${WL_END_GROUP}
