@@ -25,7 +25,7 @@
 #include "exec/orc_scanner.h"
 #include "exec/parquet_scanner.h"
 #include "fs/fs.h"
-#include "fs/fs_broker.h"
+// #include "fs/fs_broker.h"
 #include "gutil/strings/substitute.h"
 #include "io/compressed_input_stream.h"
 #include "runtime/descriptors.h"
@@ -294,21 +294,21 @@ Status FileScanner::create_sequential_file(const TBrokerRangeDesc& range_desc, c
         src_file = std::make_shared<SequentialFile>(std::move(stream), "stream-load-pipe");
         break;
     }
-    case TFileType::FILE_BROKER: {
-        if (params.__isset.use_broker && !params.use_broker) {
-            ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(range_desc.path, FSOptions(&params)));
-            ASSIGN_OR_RETURN(auto file, fs->new_sequential_file(range_desc.path));
-            src_file = std::shared_ptr<SequentialFile>(std::move(file));
-            break;
-        } else {
-            int64_t timeout_ms = _state->query_options().query_timeout * 1000 / 4;
-            timeout_ms = std::max(timeout_ms, static_cast<int64_t>(DEFAULT_TIMEOUT_MS));
-            BrokerFileSystem fs_broker(address, params.properties, timeout_ms);
-            ASSIGN_OR_RETURN(auto broker_file, fs_broker.new_sequential_file(range_desc.path));
-            src_file = std::shared_ptr<SequentialFile>(std::move(broker_file));
-            break;
-        }
-    }
+    // case TFileType::FILE_BROKER: {
+    //     if (params.__isset.use_broker && !params.use_broker) {
+    //         ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(range_desc.path, FSOptions(&params)));
+    //         ASSIGN_OR_RETURN(auto file, fs->new_sequential_file(range_desc.path));
+    //         src_file = std::shared_ptr<SequentialFile>(std::move(file));
+    //         break;
+    //     } else {
+    //         int64_t timeout_ms = _state->query_options().query_timeout * 1000 / 4;
+    //         timeout_ms = std::max(timeout_ms, static_cast<int64_t>(DEFAULT_TIMEOUT_MS));
+    //         BrokerFileSystem fs_broker(address, params.properties, timeout_ms);
+    //         ASSIGN_OR_RETURN(auto broker_file, fs_broker.new_sequential_file(range_desc.path));
+    //         src_file = std::shared_ptr<SequentialFile>(std::move(broker_file));
+    //         break;
+    //     }
+    // }
     }
     if (compression == CompressionTypePB::NO_COMPRESSION) {
         *file = src_file;
@@ -332,21 +332,21 @@ Status FileScanner::create_random_access_file(const TBrokerRangeDesc& range_desc
         ASSIGN_OR_RETURN(src_file, FileSystem::Default()->new_random_access_file(range_desc.path));
         break;
     }
-    case TFileType::FILE_BROKER: {
-        if (params.__isset.use_broker && !params.use_broker) {
-            ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(range_desc.path, FSOptions(&params)));
-            ASSIGN_OR_RETURN(auto file, fs->new_random_access_file(RandomAccessFileOptions(), range_desc.path));
-            src_file = std::shared_ptr<RandomAccessFile>(std::move(file));
-            break;
-        } else {
-            int64_t timeout_ms = _state->query_options().query_timeout * 1000 / 4;
-            timeout_ms = std::max(timeout_ms, static_cast<int64_t>(DEFAULT_TIMEOUT_MS));
-            BrokerFileSystem fs_broker(address, params.properties, timeout_ms);
-            ASSIGN_OR_RETURN(auto broker_file, fs_broker.new_random_access_file(range_desc.path));
-            src_file = std::shared_ptr<RandomAccessFile>(std::move(broker_file));
-            break;
-        }
-    }
+    // case TFileType::FILE_BROKER: {
+    //     if (params.__isset.use_broker && !params.use_broker) {
+    //         ASSIGN_OR_RETURN(auto fs, FileSystem::CreateUniqueFromString(range_desc.path, FSOptions(&params)));
+    //         ASSIGN_OR_RETURN(auto file, fs->new_random_access_file(RandomAccessFileOptions(), range_desc.path));
+    //         src_file = std::shared_ptr<RandomAccessFile>(std::move(file));
+    //         break;
+    //     } else {
+    //         int64_t timeout_ms = _state->query_options().query_timeout * 1000 / 4;
+    //         timeout_ms = std::max(timeout_ms, static_cast<int64_t>(DEFAULT_TIMEOUT_MS));
+    //         BrokerFileSystem fs_broker(address, params.properties, timeout_ms);
+    //         ASSIGN_OR_RETURN(auto broker_file, fs_broker.new_random_access_file(range_desc.path));
+    //         src_file = std::shared_ptr<RandomAccessFile>(std::move(broker_file));
+    //         break;
+    //     }
+    // }
     case TFileType::FILE_STREAM:
         return Status::NotSupported("Does not support create random-access file from file stream");
     }

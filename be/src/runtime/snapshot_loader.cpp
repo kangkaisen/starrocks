@@ -46,7 +46,7 @@
 #include "gen_cpp/FrontendService_types.h"
 #include "gen_cpp/HeartbeatService_types.h"
 #include "gen_cpp/TFileBrokerService.h"
-#include "runtime/broker_mgr.h"
+// #include "runtime/broker_mgr.h"
 #include "runtime/exec_env.h"
 #include "storage/index/index_descriptor.h"
 #include "storage/index/inverted/clucene/clucene_plugin.h"
@@ -75,7 +75,7 @@ inline BrokerServiceClientCache* client_cache(ExecEnv* env) {
 }
 
 inline const std::string& client_id(ExecEnv* env, const TNetworkAddress& addr) {
-    return env->broker_mgr()->get_client_id(addr);
+    return "";
 }
 #endif
 

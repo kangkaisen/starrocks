@@ -45,45 +45,45 @@ static const uint32_t GET_LENGTH_TIMEOUT = 10;
 
 static Status list_remote_files(const std::string& remote_url_prefix, std::vector<string>* file_name_list,
                                 std::vector<int64_t>* file_size_list) {
-    if (StorageEngine::instance()->bg_worker_stopped()) {
-        return Status::InternalError("Process is going to quit. The list remote files will stop");
-    }
+    // if (StorageEngine::instance()->bg_worker_stopped()) {
+    //     return Status::InternalError("Process is going to quit. The list remote files will stop");
+    // }
 
-    // Get remote dir file list
-    string file_list_str;
-    auto list_files_cb = [&remote_url_prefix, &file_list_str](HttpClient* client) {
-        RETURN_IF_ERROR(client->init(remote_url_prefix));
-        client->set_timeout_ms(LIST_REMOTE_FILE_TIMEOUT * 1000);
-        RETURN_IF_ERROR(client->execute(&file_list_str));
-        return Status::OK();
-    };
-    // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, list_files_cb));
+    // // Get remote dir file list
+    // string file_list_str;
+    // // auto list_files_cb = [&remote_url_prefix, &file_list_str](HttpClient* client) {
+    // //     RETURN_IF_ERROR(client->init(remote_url_prefix));
+    // //     client->set_timeout_ms(LIST_REMOTE_FILE_TIMEOUT * 1000);
+    // //     RETURN_IF_ERROR(client->execute(&file_list_str));
+    // //     return Status::OK();
+    // // };
+    // // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, list_files_cb));
 
-    // Parse file name and size
-    const char* const FILE_DELIMETER_IN_DIR_RESPONSE = "\n";
-    const char* const FILE_NAME_SIZE_DELIMETER = "|";
+    // // Parse file name and size
+    // const char* const FILE_DELIMETER_IN_DIR_RESPONSE = "\n";
+    // const char* const FILE_NAME_SIZE_DELIMETER = "|";
 
-    bool use_file_name_and_size_format = file_list_str.find(FILE_NAME_SIZE_DELIMETER) != string::npos;
-    if (use_file_name_and_size_format) {
-        for (auto file_str : strings::Split(file_list_str, FILE_DELIMETER_IN_DIR_RESPONSE, strings::SkipWhitespace())) {
-            std::vector<string> list = strings::Split(file_str, FILE_NAME_SIZE_DELIMETER);
-            if (list.size() != 2) {
-                return Status::InternalError(fmt::format("invalid directory entry {}", file_str.as_string()));
-            }
+    // bool use_file_name_and_size_format = file_list_str.find(FILE_NAME_SIZE_DELIMETER) != string::npos;
+    // if (use_file_name_and_size_format) {
+    //     for (auto file_str : strings::Split(file_list_str, FILE_DELIMETER_IN_DIR_RESPONSE, strings::SkipWhitespace())) {
+    //         std::vector<string> list = strings::Split(file_str, FILE_NAME_SIZE_DELIMETER);
+    //         if (list.size() != 2) {
+    //             return Status::InternalError(fmt::format("invalid directory entry {}", file_str.as_string()));
+    //         }
 
-            StringParser::ParseResult result;
-            std::string& file_size_str = list[1];
-            auto file_size = StringParser::string_to_int<int64_t>(file_size_str.data(), file_size_str.size(), &result);
-            if (result != StringParser::PARSE_SUCCESS || file_size < 0) {
-                return Status::InternalError("wrong file size.");
-            }
+    //         StringParser::ParseResult result;
+    //         std::string& file_size_str = list[1];
+    //         auto file_size = StringParser::string_to_int<int64_t>(file_size_str.data(), file_size_str.size(), &result);
+    //         if (result != StringParser::PARSE_SUCCESS || file_size < 0) {
+    //             return Status::InternalError("wrong file size.");
+    //         }
 
-            file_name_list->emplace_back(std::move(list[0]));
-            file_size_list->emplace_back(file_size);
-        }
-    } else {
-        *file_name_list = strings::Split(file_list_str, FILE_DELIMETER_IN_DIR_RESPONSE, strings::SkipWhitespace());
-    }
+    //         file_name_list->emplace_back(std::move(list[0]));
+    //         file_size_list->emplace_back(file_size);
+    //     }
+    // } else {
+    //     *file_name_list = strings::Split(file_list_str, FILE_DELIMETER_IN_DIR_RESPONSE, strings::SkipWhitespace());
+    // }
     return Status::OK();
 }
 
@@ -93,13 +93,13 @@ static StatusOr<uint64_t> get_remote_file_size(const std::string& remote_file_ur
     }
 
     uint64_t file_size = 0;
-    auto get_file_size_cb = [&remote_file_url, &file_size](HttpClient* client) {
-        RETURN_IF_ERROR(client->init(remote_file_url));
-        client->set_timeout_ms(GET_LENGTH_TIMEOUT * 1000);
-        RETURN_IF_ERROR(client->head());
-        file_size = client->get_content_length();
-        return Status::OK();
-    };
+    // auto get_file_size_cb = [&remote_file_url, &file_size](HttpClient* client) {
+    //     RETURN_IF_ERROR(client->init(remote_file_url));
+    //     client->set_timeout_ms(GET_LENGTH_TIMEOUT * 1000);
+    //     RETURN_IF_ERROR(client->head());
+    //     file_size = client->get_content_length();
+    //     return Status::OK();
+    // };
     // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, get_file_size_cb));
     return file_size;
 }
@@ -111,22 +111,23 @@ static Status download_remote_file(
         return Status::InternalError("Process is going to quit. The download remote file will stop");
     }
 
-    auto download_cb = [&](HttpClient* client) {
-        ASSIGN_OR_RETURN(auto converter, converter_creator());
-        if (converter == nullptr) {
-            return Status::OK();
-        }
+    // auto download_cb = [&](HttpClient* client) {
+    //     ASSIGN_OR_RETURN(auto converter, converter_creator());
+    //     if (converter == nullptr) {
+    //         return Status::OK();
+    //     }
 
-        RETURN_IF_ERROR(client->init(remote_file_url));
-        client->set_timeout_ms(timeout_sec * 1000);
-        RETURN_IF_ERROR(client->download([&](const void* data, size_t size) { return converter->append(data, size); },
-                                         config::replication_min_speed_limit_kbps,
-                                         config::replication_min_speed_time_seconds,
-                                         config::replication_max_speed_limit_kbps));
-        RETURN_IF_ERROR(converter->close());
-        return Status::OK();
-    };
+    //     RETURN_IF_ERROR(client->init(remote_file_url));
+    //     client->set_timeout_ms(timeout_sec * 1000);
+    //     RETURN_IF_ERROR(client->download([&](const void* data, size_t size) { return converter->append(data, size); },
+    //                                      config::replication_min_speed_limit_kbps,
+    //                                      config::replication_min_speed_time_seconds,
+    //                                      config::replication_max_speed_limit_kbps));
+    //     RETURN_IF_ERROR(converter->close());
+    //     return Status::OK();
+    // };
     // return HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb);
+    return Status::OK();
 }
 #endif
 
@@ -327,13 +328,13 @@ StatusOr<std::string> ReplicationUtils::download_remote_snapshot_file(
             remote_token, remote_snapshot_path, remote_tablet_id, remote_schema_hash, file_name);
 
     std::string file_content;
-    file_content.reserve(4 * 1024 * 1024);
-    auto download_cb = [&remote_file_url, timeout_sec, &file_content](HttpClient* client) {
-        RETURN_IF_ERROR(client->init(remote_file_url));
-        client->set_timeout_ms(timeout_sec * 1000);
-        file_content.clear();
-        return client->execute(&file_content);
-    };
+    // file_content.reserve(4 * 1024 * 1024);
+    // auto download_cb = [&remote_file_url, timeout_sec, &file_content](HttpClient* client) {
+    //     RETURN_IF_ERROR(client->init(remote_file_url));
+    //     client->set_timeout_ms(timeout_sec * 1000);
+    //     file_content.clear();
+    //     return client->execute(&file_content);
+    // };
     // RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb));
     return file_content;
 #endif

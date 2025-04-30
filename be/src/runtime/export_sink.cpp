@@ -122,7 +122,9 @@ Status ExportSink::open_file_writer(int timeout_ms) {
 
     const auto& file_type = _t_export_sink.file_type;
     switch (file_type) {
-    case TFileType::FILE_LOCAL: {
+    case TFileType::FILE_LOCAL:
+    case TFileType::FILE_BROKER:
+    {
         ASSIGN_OR_RETURN(output_file, FileSystem::Default()->new_writable_file(options, file_path));
         break;
     }
