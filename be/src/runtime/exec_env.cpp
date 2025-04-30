@@ -711,8 +711,8 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
     _batch_write_mgr = new BatchWriteMgr(std::move(batch_write_executor));
     RETURN_IF_ERROR(_batch_write_mgr->init());
 
-    _routine_load_task_executor = new RoutineLoadTaskExecutor(this);
-    RETURN_IF_ERROR(_routine_load_task_executor->init());
+    // _routine_load_task_executor = new RoutineLoadTaskExecutor(this);
+    // RETURN_IF_ERROR(_routine_load_task_executor->init());
 
     _small_file_mgr = new SmallFileMgr(this, config::small_file_dir);
     _runtime_filter_worker = new RuntimeFilterWorker(this);
@@ -869,9 +869,9 @@ void ExecEnv::stop() {
         _batch_write_mgr->stop();
     }
 
-    if (_routine_load_task_executor) {
-        _routine_load_task_executor->stop();
-    }
+    // if (_routine_load_task_executor) {
+    //     _routine_load_task_executor->stop();
+    // }
 
     if (_dictionary_cache_pool) {
         _dictionary_cache_pool->shutdown();
@@ -896,7 +896,7 @@ void ExecEnv::destroy() {
     SAFE_DELETE(_small_file_mgr);
     SAFE_DELETE(_transaction_mgr);
     SAFE_DELETE(_stream_context_mgr);
-    SAFE_DELETE(_routine_load_task_executor);
+    // SAFE_DELETE(_routine_load_task_executor);
     SAFE_DELETE(_stream_load_executor);
     SAFE_DELETE(_fragment_mgr);
     SAFE_DELETE(_load_stream_mgr);

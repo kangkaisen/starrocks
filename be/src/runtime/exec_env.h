@@ -342,7 +342,7 @@ public:
     const std::vector<StorePath>& store_paths() const { return _store_paths; }
 
     StreamLoadExecutor* stream_load_executor() { return _stream_load_executor; }
-    RoutineLoadTaskExecutor* routine_load_task_executor() { return _routine_load_task_executor; }
+    // RoutineLoadTaskExecutor* routine_load_task_executor() { return _routine_load_task_executor; }
     HeartbeatFlags* heartbeat_flags() { return _heartbeat_flags; }
 
     ThreadPool* automatic_partition_pool() { return _automatic_partition_pool.get(); }
@@ -436,7 +436,7 @@ private:
     [[maybe_unused]] StorageEngine* _storage_engine = nullptr;
 
     StreamLoadExecutor* _stream_load_executor = nullptr;
-    RoutineLoadTaskExecutor* _routine_load_task_executor = nullptr;
+    // RoutineLoadTaskExecutor* _routine_load_task_executor = nullptr;
     SmallFileMgr* _small_file_mgr = nullptr;
     HeartbeatFlags* _heartbeat_flags = nullptr;
 
