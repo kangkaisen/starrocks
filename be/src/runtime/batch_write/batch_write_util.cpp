@@ -14,6 +14,7 @@
 
 #include "runtime/batch_write/batch_write_util.h"
 
+#include <functional>
 #include <vector>
 
 // #include "http/http_common.h"
@@ -81,14 +82,15 @@ BatchWriteLoadParams get_load_parameters(
 }
 
 BatchWriteLoadParams get_load_parameters_from_brpc(const std::map<std::string, std::string>& input_params) {
-    return get_load_parameters([&input_params](const std::string& param_name) -> std::optional<std::string> {
-        auto it = input_params.find(param_name);
-        if (it != input_params.end()) {
-            return it->second;
-        } else {
-            return std::nullopt;
-        }
-    });
+    // return get_load_parameters([&input_params](const std::string& param_name) -> std::optional<std::string> {
+    //     auto it = input_params.find(param_name);
+    //     if (it != input_params.end()) {
+    //         return it->second;
+    //     } else {
+    //         return std::nullopt;
+    //     }
+    // });
+    return std::nullopt;
 }
 
 // BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req) {

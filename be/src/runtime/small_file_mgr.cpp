@@ -46,7 +46,6 @@
 #include "fs/fs_util.h"
 #include "gutil/strings/split.h"
 #include "gutil/strings/substitute.h"
-#include "http/http_client.h"
 #include "runtime/exec_env.h"
 #include "util/md5.h"
 #include "util/starrocks_metrics.h"
@@ -113,121 +112,121 @@ Status SmallFileMgr::_load_single_file(const std::string& path, const std::strin
 }
 
 Status SmallFileMgr::get_file(int64_t file_id, const std::string& md5, std::string* file_path) {
-    std::unique_lock<std::mutex> l(_lock);
-    // find in cache
-    auto it = _file_cache.find(file_id);
-    if (it != _file_cache.end()) {
-        // find the cached file, check it
-        CacheEntry& entry = it->second;
-        Status st = _check_file(entry, md5);
-        if (!st.ok()) {
-            // check file failed, we should remove this cache and download it from FE again
-            if (remove(entry.path.c_str()) != 0) {
-                std::stringstream ss;
-                ss << "failed to remove file: " << file_id << ", err: " << std::strerror(errno);
-                return Status::InternalError(ss.str());
-            }
-            _file_cache.erase(it);
-        } else {
-            // check ok, return the path
-            *file_path = entry.path;
-            return Status::OK();
-        }
-    }
+//     std::unique_lock<std::mutex> l(_lock);
+//     // find in cache
+//     auto it = _file_cache.find(file_id);
+//     if (it != _file_cache.end()) {
+//         // find the cached file, check it
+//         CacheEntry& entry = it->second;
+//         Status st = _check_file(entry, md5);
+//         if (!st.ok()) {
+//             // check file failed, we should remove this cache and download it from FE again
+//             if (remove(entry.path.c_str()) != 0) {
+//                 std::stringstream ss;
+//                 ss << "failed to remove file: " << file_id << ", err: " << std::strerror(errno);
+//                 return Status::InternalError(ss.str());
+//             }
+//             _file_cache.erase(it);
+//         } else {
+//             // check ok, return the path
+//             *file_path = entry.path;
+//             return Status::OK();
+//         }
+//     }
 
-    // file not found in cache. download it from FE
-    RETURN_IF_ERROR(_download_file(file_id, md5, file_path));
+//     // file not found in cache. download it from FE
+//     RETURN_IF_ERROR(_download_file(file_id, md5, file_path));
 
-    return Status::OK();
-}
+//     return Status::OK();
+// }
 
-Status SmallFileMgr::_check_file(const CacheEntry& entry, const std::string& md5) {
-    if (!fs::path_exist(entry.path)) {
-        return Status::InternalError("file not exist");
-    }
-    if (!boost::iequals(md5, entry.md5)) {
-        return Status::InternalError("invalid MD5");
-    }
-    return Status::OK();
-}
+// Status SmallFileMgr::_check_file(const CacheEntry& entry, const std::string& md5) {
+//     if (!fs::path_exist(entry.path)) {
+//         return Status::InternalError("file not exist");
+//     }
+//     if (!boost::iequals(md5, entry.md5)) {
+//         return Status::InternalError("invalid MD5");
+//     }
+//     return Status::OK();
+// }
 
-Status SmallFileMgr::_download_file(int64_t file_id, const std::string& md5, std::string* file_path) {
-    std::stringstream ss;
-    ss << _local_path << "/" << file_id << ".tmp";
-    std::string tmp_file = ss.str();
-    bool should_delete = true;
-    auto fp_closer = [&tmp_file, &should_delete](FILE* fp) {
-        fclose(fp);
-        if (should_delete) remove(tmp_file.c_str());
-    };
+// Status SmallFileMgr::_download_file(int64_t file_id, const std::string& md5, std::string* file_path) {
+//     std::stringstream ss;
+//     ss << _local_path << "/" << file_id << ".tmp";
+//     std::string tmp_file = ss.str();
+//     bool should_delete = true;
+//     auto fp_closer = [&tmp_file, &should_delete](FILE* fp) {
+//         fclose(fp);
+//         if (should_delete) remove(tmp_file.c_str());
+//     };
 
-    std::unique_ptr<FILE, decltype(fp_closer)> fp(fopen(tmp_file.c_str(), "w"), fp_closer);
-    if (fp == nullptr) {
-        LOG(WARNING) << "fail to open file, file=" << tmp_file;
-        return Status::InternalError("fail to open file");
-    }
+//     std::unique_ptr<FILE, decltype(fp_closer)> fp(fopen(tmp_file.c_str(), "w"), fp_closer);
+//     if (fp == nullptr) {
+//         LOG(WARNING) << "fail to open file, file=" << tmp_file;
+//         return Status::InternalError("fail to open file");
+//     }
 
-    HttpClient client;
+//     HttpClient client;
 
-    std::stringstream url_ss;
-    TMasterInfo master_info = get_master_info();
-    url_ss << master_info.network_address.hostname << ":" << master_info.http_port << "/api/get_small_file?"
-           << "file_id=" << file_id << "&token=" << master_info.token;
+//     std::stringstream url_ss;
+//     TMasterInfo master_info = get_master_info();
+//     url_ss << master_info.network_address.hostname << ":" << master_info.http_port << "/api/get_small_file?"
+//            << "file_id=" << file_id << "&token=" << master_info.token;
 
-    std::string url = url_ss.str();
+//     std::string url = url_ss.str();
 
-    LOG(INFO) << "download file from: " << url;
+//     LOG(INFO) << "download file from: " << url;
 
-    RETURN_IF_ERROR(client.init(url));
-    Status status;
-    Md5Digest digest;
-    auto download_cb = [&status, &tmp_file, &fp, &digest](const void* data, size_t length) {
-        digest.update(data, length);
-        auto res = fwrite(data, length, 1, fp.get());
-        if (res != 1) {
-            LOG(WARNING) << "fail to write data to file, file=" << tmp_file << ", error=" << ferror(fp.get());
-            status = Status::InternalError("fail to write data when download");
-            return false;
-        }
-        return true;
-    };
-    RETURN_IF_ERROR(client.execute(download_cb));
-    RETURN_IF_ERROR(status);
-    digest.digest();
+//     RETURN_IF_ERROR(client.init(url));
+//     Status status;
+//     Md5Digest digest;
+//     auto download_cb = [&status, &tmp_file, &fp, &digest](const void* data, size_t length) {
+//         digest.update(data, length);
+//         auto res = fwrite(data, length, 1, fp.get());
+//         if (res != 1) {
+//             LOG(WARNING) << "fail to write data to file, file=" << tmp_file << ", error=" << ferror(fp.get());
+//             status = Status::InternalError("fail to write data when download");
+//             return false;
+//         }
+//         return true;
+//     };
+//     RETURN_IF_ERROR(client.execute(download_cb));
+//     RETURN_IF_ERROR(status);
+//     digest.digest();
 
-    if (!boost::iequals(digest.hex(), md5)) {
-        LOG(WARNING) << "file's checksum is not equal, download: " << digest.hex() << ", expected: " << md5
-                     << ", file: " << file_id;
-        return Status::InternalError("download with invalid md5");
-    }
+//     if (!boost::iequals(digest.hex(), md5)) {
+//         LOG(WARNING) << "file's checksum is not equal, download: " << digest.hex() << ", expected: " << md5
+//                      << ", file: " << file_id;
+//         return Status::InternalError("download with invalid md5");
+//     }
 
-    // close this file
-    should_delete = false;
-    fp.reset();
+//     // close this file
+//     should_delete = false;
+//     fp.reset();
 
-    // rename temporary file to library file
-    std::stringstream real_ss;
-    real_ss << _local_path << "/" << file_id << "." << md5;
-    std::string real_file_path = real_ss.str();
-    auto ret = rename(tmp_file.c_str(), real_file_path.c_str());
-    if (ret != 0) {
-        char buf[64];
-        LOG(WARNING) << "fail to rename file from=" << tmp_file << ", to=" << real_file_path << ", errno=" << errno
-                     << ", errmsg=" << strerror_r(errno, buf, 64);
-        remove(tmp_file.c_str());
-        remove(real_file_path.c_str());
-        return Status::InternalError("fail to rename file");
-    }
+//     // rename temporary file to library file
+//     std::stringstream real_ss;
+//     real_ss << _local_path << "/" << file_id << "." << md5;
+//     std::string real_file_path = real_ss.str();
+//     auto ret = rename(tmp_file.c_str(), real_file_path.c_str());
+//     if (ret != 0) {
+//         char buf[64];
+//         LOG(WARNING) << "fail to rename file from=" << tmp_file << ", to=" << real_file_path << ", errno=" << errno
+//                      << ", errmsg=" << strerror_r(errno, buf, 64);
+//         remove(tmp_file.c_str());
+//         remove(real_file_path.c_str());
+//         return Status::InternalError("fail to rename file");
+//     }
 
-    // add to file cache
-    CacheEntry entry;
-    entry.path = real_file_path;
-    entry.md5 = md5;
-    _file_cache.emplace(file_id, entry);
+//     // add to file cache
+//     CacheEntry entry;
+//     entry.path = real_file_path;
+//     entry.md5 = md5;
+//     _file_cache.emplace(file_id, entry);
 
-    *file_path = real_file_path;
+//     *file_path = real_file_path;
 
-    LOG(INFO) << "finished to download file: " << file_path;
+//     LOG(INFO) << "finished to download file: " << file_path;
     return Status::OK();
 }
 
