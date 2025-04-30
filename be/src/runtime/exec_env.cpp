@@ -83,7 +83,7 @@
 #include "runtime/stream_load/stream_load_executor.h"
 #include "runtime/stream_load/transaction_mgr.h"
 #include "storage/lake/fixed_location_provider.h"
-#include "storage/lake/replication_txn_manager.h"
+// #include "storage/lake/replication_txn_manager.h"
 #include "storage/lake/starlet_location_provider.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake/update_manager.h"
@@ -784,7 +784,7 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
 }
 
 std::string ExecEnv::token() const {
-    return get_master_token();
+    return "token";
 }
 
 void ExecEnv::add_rf_event(const RfTracePoint& pt) {

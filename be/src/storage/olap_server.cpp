@@ -878,7 +878,7 @@ void* StorageEngine::_clear_expired_replication_snapshots_callback(void* arg) {
 
     while (!_bg_worker_stopped.load(std::memory_order_consume)) {
         LOG(INFO) << "try to clear expired replication snapshots!";
-        replication_txn_manager()->clear_expired_snapshots();
+        // replication_txn_manager()->clear_expired_snapshots();
 
         int32_t interval = config::clear_expired_replication_snapshots_interval_seconds;
         if (interval <= 0) {

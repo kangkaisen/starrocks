@@ -95,7 +95,7 @@ Status TabletScanner::open([[maybe_unused]] RuntimeState* runtime_state) {
         Status st = _reader->open(_params);
         if (!st.ok()) {
             auto msg = strings::Substitute("Fail to scan tablet. error: $0, backend: $1", st.message(),
-                                           BackendOptions::get_localhost());
+                                           -1);
             st = Status::InternalError(msg);
             LOG(WARNING) << st;
         } else {
