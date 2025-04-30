@@ -42,14 +42,14 @@
 #include "exec/workgroup/work_group.h"
 #include "gutil/casts.h"
 #include "gutil/map_util.h"
-#include "runtime/batch_write/batch_write_mgr.h"
+// #include "runtime/batch_write/batch_write_mgr.h"
 #include "runtime/data_stream_mgr.h"
 #include "runtime/data_stream_sender.h"
 #include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
 #include "runtime/result_sink.h"
-#include "runtime/stream_load/stream_load_context.h"
-#include "runtime/stream_load/transaction_mgr.h"
+// #include "runtime/stream_load/stream_load_context.h"
+// #include "runtime/stream_load/transaction_mgr.h"
 #include "util/debug/query_trace.h"
 #include "util/runtime_profile.h"
 #include "util/time.h"
@@ -608,79 +608,79 @@ Status FragmentExecutor::_prepare_exec_plan(ExecEnv* exec_env, const UnifiedExec
 }
 
 Status FragmentExecutor::_prepare_stream_load_pipe(ExecEnv* exec_env, const UnifiedExecPlanFragmentParams& request) {
-    const TExecPlanFragmentParams& unique_request = request.unique();
-    if (!unique_request.params.__isset.node_to_per_driver_seq_scan_ranges) {
-        return Status::OK();
-    }
-    const auto& scan_range_map = unique_request.params.node_to_per_driver_seq_scan_ranges;
-    if (scan_range_map.size() == 0) {
-        return Status::OK();
-    }
-    auto iter = scan_range_map.begin();
-    if (iter->second.size() == 0) {
-        return Status::OK();
-    }
-    auto iter2 = iter->second.begin();
-    if (iter2->second.size() == 0) {
-        return Status::OK();
-    }
-    if (!iter2->second[0].scan_range.__isset.broker_scan_range) {
-        return Status::OK();
-    }
-    if (!iter2->second[0].scan_range.broker_scan_range.__isset.channel_id) {
-        return Status::OK();
-    }
-    std::vector<StreamLoadContext*> stream_load_contexts;
+    // const TExecPlanFragmentParams& unique_request = request.unique();
+    // if (!unique_request.params.__isset.node_to_per_driver_seq_scan_ranges) {
+    //     return Status::OK();
+    // }
+    // const auto& scan_range_map = unique_request.params.node_to_per_driver_seq_scan_ranges;
+    // if (scan_range_map.size() == 0) {
+    //     return Status::OK();
+    // }
+    // auto iter = scan_range_map.begin();
+    // if (iter->second.size() == 0) {
+    //     return Status::OK();
+    // }
+    // auto iter2 = iter->second.begin();
+    // if (iter2->second.size() == 0) {
+    //     return Status::OK();
+    // }
+    // if (!iter2->second[0].scan_range.__isset.broker_scan_range) {
+    //     return Status::OK();
+    // }
+    // if (!iter2->second[0].scan_range.broker_scan_range.__isset.channel_id) {
+    //     return Status::OK();
+    // }
+    // std::vector<StreamLoadContext*> stream_load_contexts;
 
-    bool success = false;
-    DeferOp defer_op([&] {
-        if (!success) {
-            for (auto& ctx : stream_load_contexts) {
-                ctx->body_sink->cancel(Status::Cancelled("Failed to prepare stream load pipe"));
-                if (ctx->enable_batch_write) {
-                    exec_env->batch_write_mgr()->unregister_stream_load_pipe(ctx);
-                } else {
-                    exec_env->stream_context_mgr()->remove_channel_context(ctx);
-                }
-            }
-        }
-    });
+    // bool success = false;
+    // DeferOp defer_op([&] {
+    //     if (!success) {
+    //         for (auto& ctx : stream_load_contexts) {
+    //             ctx->body_sink->cancel(Status::Cancelled("Failed to prepare stream load pipe"));
+    //             if (ctx->enable_batch_write) {
+    //                 exec_env->batch_write_mgr()->unregister_stream_load_pipe(ctx);
+    //             } else {
+    //                 exec_env->stream_context_mgr()->remove_channel_context(ctx);
+    //             }
+    //         }
+    //     }
+    // });
 
-    for (; iter != scan_range_map.end(); iter++) {
-        for (; iter2 != iter->second.end(); iter2++) {
-            for (const auto& scan_range : iter2->second) {
-                const TBrokerScanRange& broker_scan_range = scan_range.scan_range.broker_scan_range;
-                int channel_id = broker_scan_range.channel_id;
-                const string& label = broker_scan_range.params.label;
-                const string& db_name = broker_scan_range.params.db_name;
-                const string& table_name = broker_scan_range.params.table_name;
-                TFileFormatType::type format = broker_scan_range.ranges[0].format_type;
-                TUniqueId load_id = broker_scan_range.ranges[0].load_id;
-                long txn_id = broker_scan_range.params.txn_id;
-                bool is_batch_write =
-                        broker_scan_range.__isset.enable_batch_write && broker_scan_range.enable_batch_write;
-                StreamLoadContext* ctx = nullptr;
-                if (is_batch_write) {
-                    ASSIGN_OR_RETURN(ctx, BatchWriteMgr::create_and_register_pipe(
-                                                  exec_env, exec_env->batch_write_mgr(), db_name, table_name,
-                                                  broker_scan_range.batch_write_parameters, label, txn_id, load_id,
-                                                  broker_scan_range.batch_write_interval_ms));
-                } else {
-                    RETURN_IF_ERROR(exec_env->stream_context_mgr()->create_channel_context(
-                            exec_env, label, channel_id, db_name, table_name, format, ctx, load_id, txn_id));
-                    DeferOp op([&] {
-                        if (ctx->unref()) {
-                            delete ctx;
-                        }
-                    });
-                    RETURN_IF_ERROR(exec_env->stream_context_mgr()->put_channel_context(label, channel_id, ctx));
-                }
-                stream_load_contexts.push_back(ctx);
-            }
-        }
-    }
+    // for (; iter != scan_range_map.end(); iter++) {
+    //     for (; iter2 != iter->second.end(); iter2++) {
+    //         for (const auto& scan_range : iter2->second) {
+    //             const TBrokerScanRange& broker_scan_range = scan_range.scan_range.broker_scan_range;
+    //             int channel_id = broker_scan_range.channel_id;
+    //             const string& label = broker_scan_range.params.label;
+    //             const string& db_name = broker_scan_range.params.db_name;
+    //             const string& table_name = broker_scan_range.params.table_name;
+    //             TFileFormatType::type format = broker_scan_range.ranges[0].format_type;
+    //             TUniqueId load_id = broker_scan_range.ranges[0].load_id;
+    //             long txn_id = broker_scan_range.params.txn_id;
+    //             bool is_batch_write =
+    //                     broker_scan_range.__isset.enable_batch_write && broker_scan_range.enable_batch_write;
+    //             StreamLoadContext* ctx = nullptr;
+    //             if (is_batch_write) {
+    //                 ASSIGN_OR_RETURN(ctx, BatchWriteMgr::create_and_register_pipe(
+    //                                               exec_env, exec_env->batch_write_mgr(), db_name, table_name,
+    //                                               broker_scan_range.batch_write_parameters, label, txn_id, load_id,
+    //                                               broker_scan_range.batch_write_interval_ms));
+    //             } else {
+    //                 RETURN_IF_ERROR(exec_env->stream_context_mgr()->create_channel_context(
+    //                         exec_env, label, channel_id, db_name, table_name, format, ctx, load_id, txn_id));
+    //                 DeferOp op([&] {
+    //                     if (ctx->unref()) {
+    //                         delete ctx;
+    //                     }
+    //                 });
+    //                 RETURN_IF_ERROR(exec_env->stream_context_mgr()->put_channel_context(label, channel_id, ctx));
+    //             }
+    //             stream_load_contexts.push_back(ctx);
+    //         }
+    //     }
+    // }
 
-    success = true;
+    // success = true;
     // _fragment_ctx->set_stream_load_contexts(stream_load_contexts);
     return Status::OK();
 }

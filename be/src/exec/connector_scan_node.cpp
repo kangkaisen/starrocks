@@ -140,10 +140,10 @@ pipeline::OpFactories ConnectorScanNode::decompose_to_pipeline(pipeline::Pipelin
             runtime_state()->chunk_size());
 
     scan_op = std::make_shared<pipeline::ConnectorScanOperatorFactory>(context->next_operator_id(), this,
-                                                                       runtime_state(), dop, std::move(buffer_limiter))
+                                                                       runtime_state(), dop, std::move(buffer_limiter));
 
-              // order matters. we will use scan mem limit to limit chunk source mem bytes.
-              scan_op->set_mem_share_arb(_mem_share_arb);
+    // order matters. we will use scan mem limit to limit chunk source mem bytes.
+    scan_op->set_mem_share_arb(_mem_share_arb);
     scan_op->set_scan_mem_limit(_scan_mem_limit);
     scan_op->set_data_source_mem_bytes(_estimated_data_source_mem_bytes);
     scan_op->set_chunk_source_mem_bytes(_estimated_data_source_mem_bytes +
