@@ -54,8 +54,8 @@
 #include "runtime/result_queue_mgr.h"
 #include "runtime/runtime_filter_cache.h"
 #include "runtime/runtime_filter_worker.h"
-#include "runtime/stream_load/stream_load_context.h"
-#include "runtime/stream_load/transaction_mgr.h"
+// #include "runtime/stream_load/stream_load_context.h"
+// #include "runtime/stream_load/transaction_mgr.h"
 #include "util/parse_util.h"
 #include "util/uid_util.h"
 
@@ -123,7 +123,7 @@ Status PlanFragmentExecutor::prepare(const TExecPlanFragmentParams& request) {
         _exec_env->runtime_filter_worker()->open_query(_query_id, request.query_options, params.runtime_filter_params,
                                                        false);
     }
-    _exec_env->stream_mgr()->prepare_pass_through_chunk_buffer(_query_id);
+    // _exec_env->stream_mgr()->prepare_pass_through_chunk_buffer(_query_id);
 
     // set #senders of exchange nodes before calling Prepare()
     std::vector<ExecNode*> exch_nodes;
@@ -366,41 +366,41 @@ void PlanFragmentExecutor::update_status(const Status& new_status) {
 }
 
 void PlanFragmentExecutor::cancel() {
-    LOG(INFO) << "cancel(): fragment_instance_id=" << print_id(_runtime_state->fragment_instance_id());
-    DCHECK(_prepared);
-    {
-        std::lock_guard<std::mutex> l(_status_lock);
-        if (_runtime_state->is_cancelled()) {
-            return;
-        }
-        _runtime_state->set_is_cancelled(true);
-    }
+    // LOG(INFO) << "cancel(): fragment_instance_id=" << print_id(_runtime_state->fragment_instance_id());
+    // DCHECK(_prepared);
+    // {
+    //     std::lock_guard<std::mutex> l(_status_lock);
+    //     if (_runtime_state->is_cancelled()) {
+    //         return;
+    //     }
+    //     _runtime_state->set_is_cancelled(true);
+    // }
 
-    const TQueryOptions& query_options = _runtime_state->query_options();
-    if (query_options.query_type == TQueryType::LOAD && (query_options.load_job_type == TLoadJobType::BROKER ||
-                                                         query_options.load_job_type == TLoadJobType::INSERT_QUERY ||
-                                                         query_options.load_job_type == TLoadJobType::INSERT_VALUES)) {
-        starrocks::ExecEnv::GetInstance()->profile_report_worker()->unregister_non_pipeline_load(
-                _runtime_state->fragment_instance_id());
-    }
-    if (_stream_load_contexts.size() > 0) {
-        for (const auto& stream_load_context : _stream_load_contexts) {
-            if (stream_load_context->body_sink) {
-                Status st;
-                stream_load_context->body_sink->cancel(st);
-            }
-            if (_channel_stream_load) {
-                _exec_env->stream_context_mgr()->remove_channel_context(stream_load_context);
-            }
-        }
-        _stream_load_contexts.resize(0);
-    }
-    _runtime_state->exec_env()->stream_mgr()->cancel(_runtime_state->fragment_instance_id());
-    (void)_runtime_state->exec_env()->result_mgr()->cancel(_runtime_state->fragment_instance_id());
+    // const TQueryOptions& query_options = _runtime_state->query_options();
+    // if (query_options.query_type == TQueryType::LOAD && (query_options.load_job_type == TLoadJobType::BROKER ||
+    //                                                      query_options.load_job_type == TLoadJobType::INSERT_QUERY ||
+    //                                                      query_options.load_job_type == TLoadJobType::INSERT_VALUES)) {
+    //     starrocks::ExecEnv::GetInstance()->profile_report_worker()->unregister_non_pipeline_load(
+    //             _runtime_state->fragment_instance_id());
+    // }
+    // if (_stream_load_contexts.size() > 0) {
+    //     for (const auto& stream_load_context : _stream_load_contexts) {
+    //         if (stream_load_context->body_sink) {
+    //             Status st;
+    //             stream_load_context->body_sink->cancel(st);
+    //         }
+    //         if (_channel_stream_load) {
+    //             _exec_env->stream_context_mgr()->remove_channel_context(stream_load_context);
+    //         }
+    //     }
+    //     _stream_load_contexts.resize(0);
+    // }
+    // _runtime_state->exec_env()->stream_mgr()->cancel(_runtime_state->fragment_instance_id());
+    // (void)_runtime_state->exec_env()->result_mgr()->cancel(_runtime_state->fragment_instance_id());
 
-    if (_is_runtime_filter_merge_node) {
-        _runtime_state->exec_env()->runtime_filter_worker()->close_query(_query_id);
-    }
+    // if (_is_runtime_filter_merge_node) {
+    //     _runtime_state->exec_env()->runtime_filter_worker()->close_query(_query_id);
+    // }
 }
 
 const RowDescriptor& PlanFragmentExecutor::row_desc() {
@@ -430,68 +430,68 @@ void PlanFragmentExecutor::close() {
         return;
     }
 
-    _chunk.reset();
+    // _chunk.reset();
 
-    if (_is_runtime_filter_merge_node) {
-        _exec_env->runtime_filter_worker()->close_query(_query_id);
-    }
-    _exec_env->stream_mgr()->destroy_pass_through_chunk_buffer(_query_id);
+    // if (_is_runtime_filter_merge_node) {
+    //     _exec_env->runtime_filter_worker()->close_query(_query_id);
+    // }
+    // _exec_env->stream_mgr()->destroy_pass_through_chunk_buffer(_query_id);
 
-    // Prepare may not have been called, which sets _runtime_state
-    if (_runtime_state != nullptr) {
-        const TQueryOptions& query_options = _runtime_state->query_options();
-        if (query_options.query_type == TQueryType::LOAD &&
-            (query_options.load_job_type == TLoadJobType::BROKER ||
-             query_options.load_job_type == TLoadJobType::INSERT_QUERY ||
-             query_options.load_job_type == TLoadJobType::INSERT_VALUES) &&
-            !_runtime_state->is_cancelled()) {
-            starrocks::ExecEnv::GetInstance()->profile_report_worker()->unregister_non_pipeline_load(
-                    _runtime_state->fragment_instance_id());
-        }
+    // // Prepare may not have been called, which sets _runtime_state
+    // if (_runtime_state != nullptr) {
+    //     const TQueryOptions& query_options = _runtime_state->query_options();
+    //     if (query_options.query_type == TQueryType::LOAD &&
+    //         (query_options.load_job_type == TLoadJobType::BROKER ||
+    //          query_options.load_job_type == TLoadJobType::INSERT_QUERY ||
+    //          query_options.load_job_type == TLoadJobType::INSERT_VALUES) &&
+    //         !_runtime_state->is_cancelled()) {
+    //         starrocks::ExecEnv::GetInstance()->profile_report_worker()->unregister_non_pipeline_load(
+    //                 _runtime_state->fragment_instance_id());
+    //     }
 
-        if (_stream_load_contexts.size() > 0) {
-            for (const auto& stream_load_context : _stream_load_contexts) {
-                if (stream_load_context->body_sink) {
-                    Status st;
-                    stream_load_context->body_sink->cancel(st);
-                }
-                if (_channel_stream_load) {
-                    _exec_env->stream_context_mgr()->remove_channel_context(stream_load_context);
-                }
-            }
-            _stream_load_contexts.resize(0);
-        }
-        // _runtime_state init failed
-        if (_plan != nullptr) {
-            _plan->close(_runtime_state);
-        }
+    //     if (_stream_load_contexts.size() > 0) {
+    //         for (const auto& stream_load_context : _stream_load_contexts) {
+    //             if (stream_load_context->body_sink) {
+    //                 Status st;
+    //                 stream_load_context->body_sink->cancel(st);
+    //             }
+    //             if (_channel_stream_load) {
+    //                 _exec_env->stream_context_mgr()->remove_channel_context(stream_load_context);
+    //             }
+    //         }
+    //         _stream_load_contexts.resize(0);
+    //     }
+    //     // _runtime_state init failed
+    //     if (_plan != nullptr) {
+    //         _plan->close(_runtime_state);
+    //     }
 
-        if (_sink != nullptr) {
-            if (_prepared) {
-                Status status;
-                {
-                    std::lock_guard<std::mutex> l(_status_lock);
-                    status = _status;
-                }
-                (void)_sink->close(runtime_state(), status);
-            } else {
-                (void)_sink->close(runtime_state(), Status::InternalError("prepare failed"));
-            }
-        }
+    //     if (_sink != nullptr) {
+    //         if (_prepared) {
+    //             Status status;
+    //             {
+    //                 std::lock_guard<std::mutex> l(_status_lock);
+    //                 status = _status;
+    //             }
+    //             (void)_sink->close(runtime_state(), status);
+    //         } else {
+    //             (void)_sink->close(runtime_state(), Status::InternalError("prepare failed"));
+    //         }
+    //     }
 
-        if (FLAGS_minloglevel == 0 /*INFO*/) {
-            std::stringstream ss;
-            // Compute the _local_time_percent before pretty_print the runtime_profile
-            // Before add this operation, the print out like that:
-            // UNION_NODE (id=0):(Active: 56.720us, non-child: 00.00%)
-            // After add the operation, the print out like that:
-            // UNION_NODE (id=0):(Active: 56.720us, non-child: 82.53%)
-            // We can easily know the exec node execute time without child time consumed.
-            _runtime_state->runtime_profile()->compute_time_in_profile();
-            _runtime_state->runtime_profile()->pretty_print(&ss);
-            LOG(INFO) << ss.str();
-        }
-    }
+    //     if (FLAGS_minloglevel == 0 /*INFO*/) {
+    //         std::stringstream ss;
+    //         // Compute the _local_time_percent before pretty_print the runtime_profile
+    //         // Before add this operation, the print out like that:
+    //         // UNION_NODE (id=0):(Active: 56.720us, non-child: 00.00%)
+    //         // After add the operation, the print out like that:
+    //         // UNION_NODE (id=0):(Active: 56.720us, non-child: 82.53%)
+    //         // We can easily know the exec node execute time without child time consumed.
+    //         _runtime_state->runtime_profile()->compute_time_in_profile();
+    //         _runtime_state->runtime_profile()->pretty_print(&ss);
+    //         LOG(INFO) << ss.str();
+    //     }
+    // }
 
     _closed = true;
 }

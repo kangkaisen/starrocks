@@ -681,7 +681,7 @@ Status FragmentExecutor::_prepare_stream_load_pipe(ExecEnv* exec_env, const Unif
     }
 
     success = true;
-    _fragment_ctx->set_stream_load_contexts(stream_load_contexts);
+    // _fragment_ctx->set_stream_load_contexts(stream_load_contexts);
     return Status::OK();
 }
 

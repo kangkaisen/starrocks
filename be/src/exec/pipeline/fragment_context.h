@@ -233,7 +233,7 @@ private:
 
     query_cache::CacheParam _cache_param;
     bool _enable_cache = false;
-    std::vector<StreamLoadContext*> _stream_load_contexts;
+    // std::vector<StreamLoadContext*> _stream_load_contexts;
 
     // STREAM MV
     std::atomic<size_t> _num_finished_epoch_pipelines = 0;

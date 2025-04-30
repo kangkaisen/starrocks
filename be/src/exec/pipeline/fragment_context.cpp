@@ -215,11 +215,11 @@ void FragmentContext::set_final_status(const Status& status) {
             }
         });
 
-        for (const auto& stream_load_context : _stream_load_contexts) {
-            if (stream_load_context->body_sink) {
-                stream_load_context->body_sink->cancel(_s_status);
-            }
-        }
+        // for (const auto& stream_load_context : _stream_load_contexts) {
+        //     if (stream_load_context->body_sink) {
+        //         stream_load_context->body_sink->cancel(_s_status);
+        //     }
+        // }
     }
 }
 
@@ -240,7 +240,7 @@ Status FragmentContext::prepare_all_pipelines() {
 }
 
 void FragmentContext::set_stream_load_contexts(const std::vector<StreamLoadContext*>& contexts) {
-    _stream_load_contexts = std::move(contexts);
+    // _stream_load_contexts = std::move(contexts);
 }
 
 // Note: this function should be thread safe
@@ -440,14 +440,14 @@ void FragmentContext::acquire_runtime_filters() {
 }
 
 void FragmentContext::_close_stream_load_contexts() {
-    for (const auto& context : _stream_load_contexts) {
-        context->body_sink->cancel(Status::Cancelled("Close the stream load pipe"));
-        if (context->enable_batch_write) {
-            _runtime_state->exec_env()->batch_write_mgr()->unregister_stream_load_pipe(context);
-        } else {
-            _runtime_state->exec_env()->stream_context_mgr()->remove_channel_context(context);
-        }
-    }
+    // for (const auto& context : _stream_load_contexts) {
+    //     context->body_sink->cancel(Status::Cancelled("Close the stream load pipe"));
+    //     if (context->enable_batch_write) {
+    //         _runtime_state->exec_env()->batch_write_mgr()->unregister_stream_load_pipe(context);
+    //     } else {
+    //         _runtime_state->exec_env()->stream_context_mgr()->remove_channel_context(context);
+    //     }
+    // }
 }
 
 void FragmentContext::init_event_scheduler() {

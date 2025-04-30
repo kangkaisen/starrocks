@@ -212,7 +212,7 @@ private:
     // If this is a runtime filter merge node for some query.
     bool _is_runtime_filter_merge_node;
 
-    std::vector<StreamLoadContext*> _stream_load_contexts;
+    // std::vector<StreamLoadContext*> _stream_load_contexts;
     bool _channel_stream_load = false;
 
     ObjectPool* obj_pool() { return _runtime_state->obj_pool(); }
