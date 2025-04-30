@@ -653,9 +653,6 @@ CONF_mInt32(max_consumer_num_per_group, "3");
 // Max pulsar consumer num in one data consumer group, for routine load.
 CONF_mInt32(max_pulsar_consumer_num_per_group, "10");
 
-// kafka request timeout
-CONF_Int32(routine_load_kafka_timeout_second, "10");
-
 // pulsar request timeout
 CONF_Int32(routine_load_pulsar_timeout_second, "10");
 
@@ -1136,15 +1133,6 @@ CONF_mInt32(cloud_native_pk_index_rebuild_files_threshold, "50");
 // if set to true, CACHE SELECT will only read file, save CPU time
 // if set to false, CACHE SELECT will behave like SELECT
 CONF_mBool(lake_cache_select_in_physical_way, "true");
-
-CONF_mBool(dependency_librdkafka_debug_enable, "false");
-
-// A comma-separated list of debug contexts to enable.
-// Producer debug context: broker, topic, msg
-// Consumer debug context: consumer, cgrp, topic, fetch
-// Other debug context: generic, metadata, feature, queue, protocol, security, interceptor, plugin
-// admin, eos, mock, assigner, conf
-CONF_String(dependency_librdkafka_debug, "all");
 
 // DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, WARN by default
 CONF_mInt16(pulsar_client_log_level, "2");
@@ -1630,7 +1618,7 @@ CONF_mInt64(load_spill_merge_max_thread, "16");
 // Do lazy load when PK column larger than this threshold. Default is 300MB.
 CONF_mInt64(pk_column_lazy_load_threshold_bytes, "314572800");
 
-// ignore union type tag in avro kafka routine load
+// ignore union type tag in avro
 CONF_mBool(avro_ignore_union_type_tag, "true");
 // larger buffer size means fewer reads, but higher memory usage
 CONF_mInt32(avro_reader_buffer_size_bytes, "8388608");

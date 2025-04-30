@@ -300,15 +300,6 @@ set_target_properties(gssapi_krb5 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}
 add_library(sasl STATIC IMPORTED GLOBAL)
 set_target_properties(sasl PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libsasl2.a)
 
-add_library(librdkafka_cpp STATIC IMPORTED)
-set_target_properties(librdkafka_cpp PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/librdkafka++.a)
-
-add_library(librdkafka STATIC IMPORTED)
-set_target_properties(librdkafka PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/librdkafka.a)
-
-add_library(libpulsar STATIC IMPORTED)
-set_target_properties(libpulsar PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libpulsar.a)
-
 add_library(libs2 STATIC IMPORTED)
 set_target_properties(libs2 PROPERTIES IMPORTED_LOCATION ${THIRDPARTY_DIR}/lib/libs2.a)
 
@@ -790,8 +781,6 @@ set(STARROCKS_DEPENDENCIES
     glog
     re2
     pprof
-    # Put lz4 in front of librdkafka to make sure that segment use the native lz4 library to compress/decompress page
-    # Otherwise, he will use the lz4 Library in librdkafka
     lz4
     libevent
     curl
@@ -830,9 +819,6 @@ set(STARROCKS_DEPENDENCIES
     krb5support
     k5crypto
     com_err
-    librdkafka_cpp
-    librdkafka
-    libpulsar
     velocypack
     opentelemetry_trace
     http_client_curl
