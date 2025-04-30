@@ -1928,7 +1928,7 @@ Status TabletUpdates::_wait_for_version(const EditVersion& version, int64_t time
 Status TabletUpdates::_do_update(uint32_t rowset_id, int32_t upsert_idx, int32_t condition_column, int64_t read_version,
                                  const std::vector<MutableColumnPtr>& upserts, PrimaryIndex& index, int64_t tablet_id,
                                  DeletesMap* new_deletes, const TabletSchemaCSPtr& tablet_schema) {
-    TEST_SYNC_POINT_CALLBACK("TabletUpdates::_do_update", &rowset_id);
+    //TEST_SYNC_POINT_CALLBACK("TabletUpdates::_do_update", &rowset_id);
     RETURN_IF_ERROR(breakpoint_check());
     if (condition_column >= 0) {
         auto tablet_column = tablet_schema->column(condition_column);
@@ -2118,7 +2118,7 @@ Status TabletUpdates::_do_compaction(std::unique_ptr<CompactionInfo>* pinfo, con
 // at last, we will commit this compaction in version (3.1). But this compaction will miss the partial update.
 // So we need `_check_conflict_with_partial_update` to detect this conflict and cancel this compaction.
 Status TabletUpdates::_check_conflict_with_partial_update(CompactionInfo* info) {
-    TEST_SYNC_POINT_CALLBACK("TabletUpdates::_check_conflict_with_partial_update", &info->start_version);
+    //TEST_SYNC_POINT_CALLBACK("TabletUpdates::_check_conflict_with_partial_update", &info->start_version);
     // check if compaction's start version is too old to decide whether conflict happens
     if (info->start_version < _edit_version_infos[0]->version) {
         std::string msg = strings::Substitute(
@@ -5494,7 +5494,7 @@ Status TabletUpdates::get_column_values(const std::vector<uint32_t>& column_ids,
 
 Status TabletUpdates::get_rss_rowids_by_pk(Tablet* tablet, const Column& keys, EditVersion* read_version,
                                            std::vector<uint64_t>* rss_rowids, int64_t timeout_ms) {
-    TEST_ERROR_POINT("TabletUpdates::get_rss_rowids_by_pk");
+    // TEST_ERROR_POINT("TabletUpdates::get_rss_rowids_by_pk");
     if (timeout_ms <= 0) {
         _index_lock.lock();
     } else {

@@ -388,7 +388,7 @@ Status ThreadPool::do_submit(std::shared_ptr<Runnable> r, ThreadPoolToken* token
         // dynamic decrease _max_threads
         capacity_remaining = static_cast<int64_t>(_max_queue_size) - _total_queued_tasks;
     }
-    TEST_SYNC_POINT_CALLBACK("ThreadPool::do_submit:1", &capacity_remaining);
+    //TEST_SYNC_POINT_CALLBACK("ThreadPool::do_submit:1", &capacity_remaining);
     if (capacity_remaining < 1) {
         return Status::ServiceUnavailable(strings::Substitute(
                 "Thread pool is at capacity ($0/$1 tasks running, $2/$3 tasks queued)",

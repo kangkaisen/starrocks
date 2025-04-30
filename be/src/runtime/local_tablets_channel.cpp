@@ -1202,7 +1202,7 @@ void LocalTabletsChannel::_diagnose_primary_replica_stack_trace(int64_t tablet_i
     stub->load_diagnose(&closure->cntl, &request, &closure->result, closure);
 #else
     std::pair<PLoadDiagnoseRequest*, ReusableClosure<PLoadDiagnoseResult>*> rpc_pair{&request, closure};
-    TEST_SYNC_POINT_CALLBACK("LocalTabletsChannel::rpc::load_diagnose_send", &rpc_pair);
+    //TEST_SYNC_POINT_CALLBACK("LocalTabletsChannel::rpc::load_diagnose_send", &rpc_pair);
 #endif
     LOG(INFO) << "send request to diagnose primary replica, txn_id: " << _txn_id << ", load_id: " << print_id(load_id)
               << ", tablet_id: " << tablet_id << ", primary_replica: [" << primary_replica.host() << ":"

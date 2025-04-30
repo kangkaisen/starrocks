@@ -29,7 +29,6 @@
 #include "gutil/strings/split.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/current_thread.h"
-#include "testutil/sync_point.h"
 #include "util/defer_op.h"
 #include "util/hash.h"
 #include "util/phmap/phmap.h"
@@ -69,7 +68,7 @@ struct StackTraceTask {
             success = google::glog_internal_namespace_::Symbolize(addrs[i], buf, sizeof(buf));
 #else
             std::tuple<void*, char*, size_t> tuple = {addrs[i], buf, sizeof(buf)};
-            TEST_SYNC_POINT_CALLBACK("StackTraceTask::symbolize", &tuple);
+            //TEST_SYNC_POINT_CALLBACK("StackTraceTask::symbolize", &tuple);
             success = true;
 #endif
             if (success) {

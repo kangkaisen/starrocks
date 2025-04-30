@@ -242,7 +242,7 @@ Status TableBuilder::Finish() {
         WriteBlock(&r->index_block, &index_block_handle);
     }
 
-    TEST_SYNC_POINT_CALLBACK("table_builder_footer_error", &r->status);
+    //TEST_SYNC_POINT_CALLBACK("table_builder_footer_error", &r->status);
 
     // Write footer
     if (ok()) {

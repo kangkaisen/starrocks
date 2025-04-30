@@ -75,7 +75,7 @@ struct ByteBuffer {
 #else
         ByteBufferPtr ptr(new ByteBuffer(size), MemTrackerDeleter(tracker));
         Status ret = Status::OK();
-        TEST_SYNC_POINT_CALLBACK("ByteBuffer::allocate_with_tracker", &ret);
+        //TEST_SYNC_POINT_CALLBACK("ByteBuffer::allocate_with_tracker", &ret);
         if (ret.ok()) {
             return ptr;
         } else {

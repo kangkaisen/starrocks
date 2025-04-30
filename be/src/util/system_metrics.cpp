@@ -35,17 +35,10 @@
 #include "util/system_metrics.h"
 
 #include <runtime/exec_env.h>
-#ifdef WITH_TENANN
-#include <tenann/index/index_cache.h>
-#endif
 
 #include <cstdio>
 #include <memory>
 
-#include "cache/block_cache/block_cache.h"
-#ifdef USE_STAROS
-#include "fslib/star_cache_handler.h"
-#endif
 #include "gutil/strings/split.h" // for string split
 #include "gutil/strtoint.h"      //  for atoi64
 #include "io/io_profiler.h"
@@ -298,22 +291,22 @@ void SystemMetrics::_install_memory_metrics(MetricRegistry* registry) {
 }
 
 void SystemMetrics::_update_datacache_mem_tracker() {
-    // update datacache mem_tracker
-    int64_t datacache_mem_bytes = 0;
-    auto* datacache_mem_tracker = GlobalEnv::GetInstance()->datacache_mem_tracker();
-    if (datacache_mem_tracker) {
-        BlockCache* block_cache = BlockCache::instance();
-        if (block_cache != nullptr && block_cache->is_initialized()) {
-            auto datacache_metrics = block_cache->cache_metrics();
-            datacache_mem_bytes = datacache_metrics.mem_used_bytes + datacache_metrics.meta_used_bytes;
-        }
-#ifdef USE_STAROS
-        if (!config::datacache_unified_instance_enable) {
-            datacache_mem_bytes += staros::starlet::fslib::star_cache_get_memory_usage();
-        }
-#endif
-        datacache_mem_tracker->set(datacache_mem_bytes);
-    }
+//     // update datacache mem_tracker
+//     int64_t datacache_mem_bytes = 0;
+//     auto* datacache_mem_tracker = GlobalEnv::GetInstance()->datacache_mem_tracker();
+//     if (datacache_mem_tracker) {
+//         BlockCache* block_cache = BlockCache::instance();
+//         if (block_cache != nullptr && block_cache->is_initialized()) {
+//             auto datacache_metrics = block_cache->cache_metrics();
+//             datacache_mem_bytes = datacache_metrics.mem_used_bytes + datacache_metrics.meta_used_bytes;
+//         }
+// #ifdef USE_STAROS
+//         if (!config::datacache_unified_instance_enable) {
+//             datacache_mem_bytes += staros::starlet::fslib::star_cache_get_memory_usage();
+//         }
+// #endif
+//         datacache_mem_tracker->set(datacache_mem_bytes);
+//     }
 }
 
 void SystemMetrics::_update_pagecache_mem_tracker() {

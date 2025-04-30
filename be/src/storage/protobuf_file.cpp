@@ -43,7 +43,7 @@ Status ProtobufFileWithHeader::save(const ::google::protobuf::Message& message, 
     FixedFileHeader header;
     std::string serialized_message;
     bool r = message.SerializeToString(&serialized_message);
-    TEST_SYNC_POINT_CALLBACK("ProtobufFileWithHeader::save:serialize", &r);
+    //TEST_SYNC_POINT_CALLBACK("ProtobufFileWithHeader::save:serialize", &r);
     if (UNLIKELY(!r)) {
         return Status::InternalError(
                 fmt::format("failed to serialize protobuf to string, maybe the protobuf is too large. path={}", _path));
@@ -145,7 +145,7 @@ Status ProtobufFileWithHeader::load(::google::protobuf::Message* message, std::s
 Status ProtobufFile::save(const ::google::protobuf::Message& message, bool sync) {
     std::string serialized_message;
     bool r = message.SerializeToString(&serialized_message);
-    TEST_SYNC_POINT_CALLBACK("ProtobufFile::save:serialize", &r);
+    //TEST_SYNC_POINT_CALLBACK("ProtobufFile::save:serialize", &r);
     if (UNLIKELY(!r)) {
         return Status::InternalError(
                 fmt::format("failed to serialize protobuf to string, maybe the protobuf is too large. path={}", _path));

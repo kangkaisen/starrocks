@@ -1435,7 +1435,7 @@ Status StorageEngine::get_next_increment_id_interval(int64_t tableid, size_t num
             _auto_increment_meta_map.insert({tableid, std::make_shared<AutoIncrementMeta>()});
         }
         meta = _auto_increment_meta_map[tableid];
-        TEST_SYNC_POINT_CALLBACK("StorageEngine::get_next_increment_id_interval.1", &meta);
+        //TEST_SYNC_POINT_CALLBACK("StorageEngine::get_next_increment_id_interval.1", &meta);
     }
 
     // lock for different tableid

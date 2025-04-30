@@ -19,7 +19,6 @@
 #include <sanitizer/lsan_interface.h>
 #endif
 
-#include "cache/block_cache/block_cache.h"
 #include "common/config.h"
 #include "common/daemon.h"
 #include "common/process_exit.h"
@@ -33,7 +32,6 @@
 #include "runtime/jdbc_driver_manager.h"
 #include "service/brpc.h"
 #include "service/service.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/storage_engine.h"
 #include "util/logging.h"
 #include "util/mem_info.h"
@@ -72,13 +70,13 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 
     int start_step = 1;
 
-    auto daemon = std::make_unique<Daemon>();
-    daemon->init(as_cn, paths);
-    LOG(INFO) << process_name << " start step " << start_step++ << ": daemon threads start successfully";
+    // auto daemon = std::make_unique<Daemon>();
+    // daemon->init(as_cn, paths);
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": daemon threads start successfully";
 
-    // init jdbc driver manager
-    EXIT_IF_ERROR(JDBCDriverManager::getInstance()->init(std::string(getenv("STARROCKS_HOME")) + "/lib/jdbc_drivers"));
-    LOG(INFO) << process_name << " start step " << start_step++ << ": jdbc driver manager init successfully";
+    // // init jdbc driver manager
+    // EXIT_IF_ERROR(JDBCDriverManager::getInstance()->init(std::string(getenv("STARROCKS_HOME")) + "/lib/jdbc_drivers"));
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": jdbc driver manager init successfully";
 
     // // init network option
     // if (!BackendOptions::init(as_cn)) {
@@ -86,26 +84,26 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     // }
     LOG(INFO) << process_name << " start step " << start_step++ << ": backend network options init successfully";
 
-    // init global env
-    auto* global_env = GlobalEnv::GetInstance();
-    EXIT_IF_ERROR(global_env->init());
-    LOG(INFO) << process_name << " start step " << start_step++ << ": global env init successfully";
+    // // init global env
+    // auto* global_env = GlobalEnv::GetInstance();
+    // EXIT_IF_ERROR(global_env->init());
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": global env init successfully";
 
-    // make sure global variables are initialized
-    auto* global_vars = GlobalVariables::GetInstance();
-    CHECK(global_vars->is_init()) << "global variables not initialized";
-    LOG(INFO) << process_name << " start step " << start_step++ << ": global variables init successfully";
+    // // make sure global variables are initialized
+    // auto* global_vars = GlobalVariables::GetInstance();
+    // CHECK(global_vars->is_init()) << "global variables not initialized";
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": global variables init successfully";
 
     // auto* storage_engine = init_storage_engine(global_env, paths, as_cn);
     // LOG(INFO) << process_name << " start step " << start_step++ << ": storage engine init successfully";
 
-    auto* cache_env = CacheEnv::GetInstance();
-    EXIT_IF_ERROR(cache_env->init(paths));
-    LOG(INFO) << process_name << " start step " << start_step++ << ": cache env init successfully";
+    // auto* cache_env = CacheEnv::GetInstance();
+    // EXIT_IF_ERROR(cache_env->init(paths));
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": cache env init successfully";
 
-    auto* exec_env = ExecEnv::GetInstance();
-    EXIT_IF_ERROR(exec_env->init(paths, as_cn));
-    LOG(INFO) << process_name << " start step " << start_step++ << ": exec engine init successfully";
+    // auto* exec_env = ExecEnv::GetInstance();
+    // EXIT_IF_ERROR(exec_env->init(paths, as_cn));
+    // LOG(INFO) << process_name << " start step " << start_step++ << ": exec engine init successfully";
 
     // Start all background threads of storage engine.
     // SHOULD be called after exec env is initialized.
@@ -216,9 +214,9 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 
     LOG(INFO) << process_name << " started successfully";
 
-    while (!process_exit_in_progress()) {
-        sleep(1);
-    }
+    // while (!process_exit_in_progress()) {
+    //     sleep(1);
+    // }
 
     // int exit_step = 1;
 
@@ -289,6 +287,6 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 
     // shutdown_tracer();
 
-    LOG(INFO) << process_name << " exited successfully";
+    // LOG(INFO) << process_name << " exited successfully";
 }
 } // namespace starrocks

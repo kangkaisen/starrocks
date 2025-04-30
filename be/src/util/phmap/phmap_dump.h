@@ -41,7 +41,7 @@
 #include <type_traits>
 
 #include "phmap.h"
-#include "testutil/sync_point.h"
+// #include "testutil/sync_point.h"
 namespace phmap {
 
 namespace type_traits_internal {
@@ -249,7 +249,7 @@ public:
 
     bool dump(const char* p, size_t sz) {
         bool ret = true;
-        TEST_SYNC_POINT_CALLBACK("BinaryOutputArchive::dump::1", &ret);
+        // TEST_SYNC_POINT_CALLBACK("BinaryOutputArchive::dump::1", &ret);
         if (!ret) return ret;
         ofs_.write(p, sz);
         return !ofs_.fail();
@@ -258,7 +258,7 @@ public:
     template <typename V>
     typename std::enable_if<type_traits_internal::IsTriviallyCopyable<V>::value, bool>::type dump(const V& v) {
         bool ret = true;
-        TEST_SYNC_POINT_CALLBACK("BinaryOutputArchive::dump::2", &ret);
+        // TEST_SYNC_POINT_CALLBACK("BinaryOutputArchive::dump::2", &ret);
         if (!ret) return ret;
         ofs_.write(reinterpret_cast<const char*>(&v), sizeof(V));
         return !ofs_.fail();

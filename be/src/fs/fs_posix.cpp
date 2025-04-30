@@ -212,7 +212,7 @@ public:
     Status append(const Slice& data) override { return appendv(&data, 1); }
 
     Status appendv(const Slice* data, size_t cnt) override {
-        TEST_ERROR_POINT("PosixFileSystem::appendv");
+        // TEST_ERROR_POINT("PosixFileSystem::appendv");
 #ifdef USE_STAROS
         staros::starlet::metrics::TimeObserver<prometheus::Histogram> write_latency(s_sr_posix_write_iolatency);
 #endif
@@ -230,7 +230,7 @@ public:
     }
 
     Status pre_allocate(uint64_t size) override {
-        TEST_ERROR_POINT("PosixFileSystem::pre_allocate");
+        // TEST_ERROR_POINT("PosixFileSystem::pre_allocate");
         uint64_t offset = std::max(_filesize, _pre_allocated_size);
         int ret;
         RETRY_ON_EINTR(ret, fallocate(_fd, 0, offset, size));
@@ -248,7 +248,7 @@ public:
     }
 
     Status close() override {
-        TEST_ERROR_POINT("PosixFileSystem::close");
+        // TEST_ERROR_POINT("PosixFileSystem::close");
         if (_closed) {
             return Status::OK();
         }
@@ -288,7 +288,7 @@ public:
     }
 
     Status flush(FlushMode mode) override {
-        TEST_ERROR_POINT("PosixFileSystem::flush");
+        // TEST_ERROR_POINT("PosixFileSystem::flush");
 #if defined(__linux__)
         int flags = SYNC_FILE_RANGE_WRITE;
         if (mode == FLUSH_SYNC) {
@@ -307,7 +307,7 @@ public:
     }
 
     Status sync() override {
-        TEST_ERROR_POINT("PosixFileSystem::sync");
+        // TEST_ERROR_POINT("PosixFileSystem::sync");
         MonotonicStopWatch watch;
         watch.start();
         if (_pending_sync) {
@@ -496,7 +496,7 @@ public:
     }
 
     Status delete_file(const std::string& fname) override {
-        TEST_ERROR_POINT("PosixFileSystem::delete_file");
+        // TEST_ERROR_POINT("PosixFileSystem::delete_file");
         if (config::file_descriptor_cache_capacity > 0 && enable_fd_cache(fname)) {
             FdCache::Instance()->erase(fname);
         }
@@ -561,7 +561,7 @@ public:
 
     // Delete the specified directory.
     Status delete_dir(const std::string& dirname) override {
-        TEST_ERROR_POINT("PosixFileSystem::delete_dir");
+        // TEST_ERROR_POINT("PosixFileSystem::delete_dir");
         if (rmdir(dirname.c_str()) != 0) {
             return io_error(dirname, errno);
         }

@@ -46,7 +46,7 @@ Status LakeMetaScanner::_real_init() {
                                                : DICT_DECODE_MAX_SIZE;
 
     _reader = std::make_unique<LakeMetaReader>();
-    TEST_SYNC_POINT_CALLBACK("lake_meta_scanner:open_mock_reader", &_reader);
+    // TEST_SYNC_POINT_CALLBACK("lake_meta_scanner:open_mock_reader", &_reader);
     // possible invoke heavy remote IO operations if local cache missed
     RETURN_IF_ERROR(_reader->init(reader_params));
     return Status::OK();

@@ -45,9 +45,9 @@ int SinkIOBuffer::_process_chunk(bthread::TaskIterator<QueueItemPtr>& iter) {
             fast_skip = true;
             break;
         }
-        TEST_SYNC_POINT_CALLBACK("sink_io_buffer_before_process_chunk", (*iter)->chunk_ptr.get());
+        //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_before_process_chunk", (*iter)->chunk_ptr.get());
         _add_chunk((*iter)->chunk_ptr);
-        TEST_SYNC_POINT_CALLBACK("sink_io_buffer_after_process_chunk", (*iter)->chunk_ptr.get());
+        //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_after_process_chunk", (*iter)->chunk_ptr.get());
         --_num_pending_chunks;
         // Do a favor to the query_mem_tracker:
         // decrease the chunk_ptr reference and possibly release the memory at the earliest
@@ -61,12 +61,12 @@ int SinkIOBuffer::_process_chunk(bthread::TaskIterator<QueueItemPtr>& iter) {
         for (; iter; ++iter) {
 #ifdef BE_TEST
             if (*iter == nullptr) {
-                TEST_SYNC_POINT_CALLBACK("sink_io_buffer_process_chunk_end_queue", nullptr);
+                //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_process_chunk_end_queue", nullptr);
             }
 #endif
             if (*iter != nullptr) {
-                TEST_SYNC_POINT_CALLBACK("sink_io_buffer_before_process_chunk", (*iter)->chunk_ptr.get());
-                TEST_SYNC_POINT_CALLBACK("sink_io_buffer_after_process_chunk", (*iter)->chunk_ptr.get());
+                //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_before_process_chunk", (*iter)->chunk_ptr.get());
+                //("sink_io_buffer_after_process_chunk", (*iter)->chunk_ptr.get());
                 (*iter)->chunk_ptr.reset();
             }
             --_num_pending_chunks;
@@ -83,7 +83,7 @@ Status SinkIOBuffer::append_chunk(RuntimeState* state, const ChunkPtr& chunk) {
         return Status::InternalError("submit io task failed");
     }
     ++_num_pending_chunks;
-    TEST_SYNC_POINT_CALLBACK("sink_io_buffer_append_chunk", chunk.get());
+    //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_append_chunk", chunk.get());
     return Status::OK();
 }
 
@@ -97,7 +97,7 @@ Status SinkIOBuffer::set_finishing() {
             return Status::InternalError("submit task failed");
         }
         ++_num_pending_chunks;
-        TEST_SYNC_POINT_CALLBACK("sink_io_buffer_apend_chunk_end_queue", nullptr);
+        //TEST_SYNC_POINT_CALLBACK("sink_io_buffer_apend_chunk_end_queue", nullptr);
     }
     return Status::OK();
 }

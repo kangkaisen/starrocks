@@ -39,7 +39,7 @@
 #include <vector>
 
 #include "fs/fs.h"
-#include "storage/lake/location_provider.h"
+// #include "storage/lake/location_provider.h"
 #include "storage/olap_define.h"
 #include "util/uid_util.h"
 
@@ -85,7 +85,7 @@ struct LakeIOOptions {
     bool use_page_cache = false;
     bool cache_file_only = false; // only used for CACHE SELECT
     std::shared_ptr<FileSystem> fs;
-    std::shared_ptr<starrocks::lake::LocationProvider> location_provider;
+    // std::shared_ptr<starrocks::lake::LocationProvider> location_provider;
 };
 
 } // namespace starrocks

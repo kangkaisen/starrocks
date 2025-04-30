@@ -261,7 +261,7 @@ void NodeChannel::_open(int64_t index_id, RefCountClosure<PTabletWriterOpenResul
 #else
         std::pair<PTabletWriterOpenRequest*, RefCountClosure<PTabletWriterOpenResult>*> rpc_pair{&request,
                                                                                                  open_closure};
-        TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::open_send", &rpc_pair);
+        // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::open_send", &rpc_pair);
 #endif
     }
     request.release_id();
@@ -317,7 +317,7 @@ Status NodeChannel::_open_wait(RefCountClosure<PTabletWriterOpenResult>* open_cl
 #ifndef BE_TEST
     open_closure->join();
 #else
-    TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::open_join", open_closure);
+    // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::open_join", open_closure);
 #endif
     if (open_closure->cntl.Failed()) {
         _cancelled = true;
@@ -760,7 +760,7 @@ Status NodeChannel::_send_request(bool eos, bool finished) {
 #else
             std::pair<PTabletWriterAddChunksRequest*, ReusableClosure<PTabletWriterAddBatchResult>*> rpc_pair{
                     &request, _add_batch_closures[_current_request_index]};
-            TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::add_chunk_send", &rpc_pair);
+            // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::add_chunk_send", &rpc_pair);
 #endif
         }
     }
@@ -780,7 +780,7 @@ Status NodeChannel::_wait_request(ReusableClosure<PTabletWriterAddBatchResult>* 
 #else
     bool result;
     std::pair<ReusableClosure<PTabletWriterAddBatchResult>*, bool*> rpc_pair{closure, &result};
-    TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::add_chunk_join", &rpc_pair);
+    // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::add_chunk_join", &rpc_pair);
     if (!result) {
         return Status::OK();
     }
@@ -1118,7 +1118,7 @@ void NodeChannel::_try_diagnose(const std::string& error_text) {
     _stub->load_diagnose(&_diagnose_closure->cntl, &request, &_diagnose_closure->result, _diagnose_closure);
 #else
     std::pair<PLoadDiagnoseRequest*, RefCountClosure<PLoadDiagnoseResult>*> rpc_pair{&request, _diagnose_closure};
-    TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::load_diagnose_send", &rpc_pair);
+    // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::load_diagnose_send", &rpc_pair);
 #endif
     request.release_id();
     VLOG(2) << "NodeChannel[" << _load_info << "] send diagnose request to [" << _node_info->host << ":"
@@ -1137,7 +1137,7 @@ void NodeChannel::_wait_diagnose(RuntimeState* state) {
 #ifndef BE_TEST
     _diagnose_closure->join();
 #else
-    TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::load_diagnose_join", _diagnose_closure);
+    // TEST_SYNC_POINT_CALLBACK("NodeChannel::rpc::load_diagnose_join", _diagnose_closure);
 #endif
     if (_diagnose_closure->cntl.Failed()) {
         LOG(WARNING) << "NodeChannel[" << _load_info << "] diagnose failed, node: [" << _node_info->host << ":"
