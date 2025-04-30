@@ -79,9 +79,9 @@
 #include "runtime/runtime_filter_cache.h"
 #include "runtime/runtime_filter_worker.h"
 #include "runtime/small_file_mgr.h"
-#include "runtime/stream_load/load_stream_mgr.h"
-#include "runtime/stream_load/stream_load_executor.h"
-#include "runtime/stream_load/transaction_mgr.h"
+// #include "runtime/stream_load/load_stream_mgr.h"
+// #include "runtime/stream_load/stream_load_executor.h"
+// #include "runtime/stream_load/transaction_mgr.h"
 #include "storage/lake/fixed_location_provider.h"
 // #include "storage/lake/replication_txn_manager.h"
 #include "storage/lake/starlet_location_provider.h"
@@ -394,87 +394,87 @@ Status CacheEnv::_init_datacache() {
                      << ", you'd better use the configuration items prefixed `datacache` instead!";
     }
 
-#if !defined(WITH_STARCACHE)
-    if (config::datacache_enable) {
-        LOG(WARNING) << "No valid engines supported, skip initializing datacache module";
-        config::datacache_enable = false;
-    }
-#endif
+// #if !defined(WITH_STARCACHE)
+//     if (config::datacache_enable) {
+//         LOG(WARNING) << "No valid engines supported, skip initializing datacache module";
+//         config::datacache_enable = false;
+//     }
+// #endif
 
-    if (config::datacache_enable) {
-        CacheOptions cache_options;
-        int64_t mem_limit = MemInfo::physical_mem();
-        if (_global_env->process_mem_tracker()->has_limit()) {
-            mem_limit = _global_env->process_mem_tracker()->limit();
-        }
-        RETURN_IF_ERROR(DataCacheUtils::parse_conf_datacache_mem_size(config::datacache_mem_size, mem_limit,
-                                                                      &cache_options.mem_space_size));
+//     if (config::datacache_enable) {
+//         CacheOptions cache_options;
+//         int64_t mem_limit = MemInfo::physical_mem();
+//         if (_global_env->process_mem_tracker()->has_limit()) {
+//             mem_limit = _global_env->process_mem_tracker()->limit();
+//         }
+//         RETURN_IF_ERROR(DataCacheUtils::parse_conf_datacache_mem_size(config::datacache_mem_size, mem_limit,
+//                                                                       &cache_options.mem_space_size));
 
-        for (auto& root_path : _store_paths) {
-            // Because we have unified the datacache between datalake and starlet, we also need to unify the
-            // cache path and quota.
-            // To reuse the old cache data in `starlet_cache` directory, we try to rename it to the new `datacache`
-            // directory if it exists. To avoid the risk of cross disk renaming of a large amount of cached data,
-            // we do not automatically rename it when the source and destination directories are on different disks.
-            // In this case, users should manually remount the directories and restart them.
-            std::string datacache_path = root_path.path + "/datacache";
-            std::string starlet_cache_path = root_path.path + "/starlet_cache/star_cache";
-#ifdef USE_STAROS
-            if (config::datacache_unified_instance_enable) {
-                RETURN_IF_ERROR(DataCacheUtils::change_disk_path(starlet_cache_path, datacache_path));
-            }
-#endif
-            // Create it if not exist
-            Status st = FileSystem::Default()->create_dir_if_missing(datacache_path);
-            if (!st.ok()) {
-                LOG(ERROR) << "Fail to create datacache directory: " << datacache_path << ", reason: " << st.message();
-                return Status::InternalError("Fail to create datacache directory");
-            }
+//         for (auto& root_path : _store_paths) {
+//             // Because we have unified the datacache between datalake and starlet, we also need to unify the
+//             // cache path and quota.
+//             // To reuse the old cache data in `starlet_cache` directory, we try to rename it to the new `datacache`
+//             // directory if it exists. To avoid the risk of cross disk renaming of a large amount of cached data,
+//             // we do not automatically rename it when the source and destination directories are on different disks.
+//             // In this case, users should manually remount the directories and restart them.
+//             std::string datacache_path = root_path.path + "/datacache";
+//             std::string starlet_cache_path = root_path.path + "/starlet_cache/star_cache";
+// #ifdef USE_STAROS
+//             if (config::datacache_unified_instance_enable) {
+//                 RETURN_IF_ERROR(DataCacheUtils::change_disk_path(starlet_cache_path, datacache_path));
+//             }
+// #endif
+//             // Create it if not exist
+//             Status st = FileSystem::Default()->create_dir_if_missing(datacache_path);
+//             if (!st.ok()) {
+//                 LOG(ERROR) << "Fail to create datacache directory: " << datacache_path << ", reason: " << st.message();
+//                 return Status::InternalError("Fail to create datacache directory");
+//             }
 
-            ASSIGN_OR_RETURN(int64_t disk_size, DataCacheUtils::parse_conf_datacache_disk_size(
-                                                        datacache_path, config::datacache_disk_size, -1));
-#ifdef USE_STAROS
-            // If the `datacache_disk_size` is manually set a positive value, we will use the maximum cache quota between
-            // dataleke and starlet cache as the quota of the unified cache. Otherwise, the cache quota will remain zero
-            // and then automatically adjusted based on the current avalible disk space.
-            if (config::datacache_unified_instance_enable && (!config::datacache_auto_adjust_enable || disk_size > 0)) {
-                ASSIGN_OR_RETURN(
-                        int64_t starlet_cache_size,
-                        DataCacheUtils::parse_conf_datacache_disk_size(
-                                datacache_path, fmt::format("{}%", config::starlet_star_cache_disk_size_percent), -1));
-                disk_size = std::max(disk_size, starlet_cache_size);
-            }
-#endif
-            cache_options.disk_spaces.push_back({.path = datacache_path, .size = static_cast<size_t>(disk_size)});
-        }
+//             ASSIGN_OR_RETURN(int64_t disk_size, DataCacheUtils::parse_conf_datacache_disk_size(
+//                                                         datacache_path, config::datacache_disk_size, -1));
+// #ifdef USE_STAROS
+//             // If the `datacache_disk_size` is manually set a positive value, we will use the maximum cache quota between
+//             // dataleke and starlet cache as the quota of the unified cache. Otherwise, the cache quota will remain zero
+//             // and then automatically adjusted based on the current avalible disk space.
+//             if (config::datacache_unified_instance_enable && (!config::datacache_auto_adjust_enable || disk_size > 0)) {
+//                 ASSIGN_OR_RETURN(
+//                         int64_t starlet_cache_size,
+//                         DataCacheUtils::parse_conf_datacache_disk_size(
+//                                 datacache_path, fmt::format("{}%", config::starlet_star_cache_disk_size_percent), -1));
+//                 disk_size = std::max(disk_size, starlet_cache_size);
+//             }
+// #endif
+//             cache_options.disk_spaces.push_back({.path = datacache_path, .size = static_cast<size_t>(disk_size)});
+//         }
 
-        if (cache_options.disk_spaces.empty()) {
-            config::datacache_auto_adjust_enable = false;
-        }
+//         if (cache_options.disk_spaces.empty()) {
+//             config::datacache_auto_adjust_enable = false;
+//         }
 
-        // Adjust the default engine based on build switches.
-        if (config::datacache_engine == "") {
-#if defined(WITH_STARCACHE)
-            config::datacache_engine = "starcache";
-#endif
-        }
-        cache_options.block_size = config::datacache_block_size;
-        cache_options.max_flying_memory_mb = config::datacache_max_flying_memory_mb;
-        cache_options.max_concurrent_inserts = config::datacache_max_concurrent_inserts;
-        cache_options.enable_checksum = config::datacache_checksum_enable;
-        cache_options.enable_direct_io = config::datacache_direct_io_enable;
-        cache_options.enable_tiered_cache = config::datacache_tiered_cache_enable;
-        cache_options.skip_read_factor = config::datacache_skip_read_factor;
-        cache_options.scheduler_threads_per_cpu = config::datacache_scheduler_threads_per_cpu;
-        cache_options.enable_datacache_persistence = config::datacache_persistence_enable;
-        cache_options.inline_item_count_limit = config::datacache_inline_item_count_limit;
-        cache_options.engine = config::datacache_engine;
-        cache_options.eviction_policy = config::datacache_eviction_policy;
-        RETURN_IF_ERROR(_block_cache->init(cache_options));
-        LOG(INFO) << "datacache init successfully";
-    } else {
-        LOG(INFO) << "starts by skipping the datacache initialization";
-    }
+//         // Adjust the default engine based on build switches.
+//         if (config::datacache_engine == "") {
+// #if defined(WITH_STARCACHE)
+//             config::datacache_engine = "starcache";
+// #endif
+//         }
+//         cache_options.block_size = config::datacache_block_size;
+//         cache_options.max_flying_memory_mb = config::datacache_max_flying_memory_mb;
+//         cache_options.max_concurrent_inserts = config::datacache_max_concurrent_inserts;
+//         cache_options.enable_checksum = config::datacache_checksum_enable;
+//         cache_options.enable_direct_io = config::datacache_direct_io_enable;
+//         cache_options.enable_tiered_cache = config::datacache_tiered_cache_enable;
+//         cache_options.skip_read_factor = config::datacache_skip_read_factor;
+//         cache_options.scheduler_threads_per_cpu = config::datacache_scheduler_threads_per_cpu;
+//         cache_options.enable_datacache_persistence = config::datacache_persistence_enable;
+//         cache_options.inline_item_count_limit = config::datacache_inline_item_count_limit;
+//         cache_options.engine = config::datacache_engine;
+//         cache_options.eviction_policy = config::datacache_eviction_policy;
+//         RETURN_IF_ERROR(_block_cache->init(cache_options));
+//         LOG(INFO) << "datacache init successfully";
+//     } else {
+//         LOG(INFO) << "starts by skipping the datacache initialization";
+//     }
     return Status::OK();
 }
 
@@ -671,33 +671,33 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
                     .build(&load_rowset_pool));
     _load_rowset_thread_pool = load_rowset_pool.release();
 
-    RETURN_IF_ERROR(
-            ThreadPoolBuilder("load_segment_pool")
-                    .set_min_threads(0)
-                    .set_max_threads(config::load_segment_thread_pool_num_max)
-                    .set_max_queue_size(config::load_segment_thread_pool_queue_size)
-                    .set_idle_timeout(MonoDelta::FromMilliseconds(config::streaming_load_thread_pool_idle_time_ms))
-                    .build(&load_segment_pool));
-    _load_segment_thread_pool = load_segment_pool.release();
+    // RETURN_IF_ERROR(
+    //         ThreadPoolBuilder("load_segment_pool")
+    //                 .set_min_threads(0)
+    //                 .set_max_threads(config::load_segment_thread_pool_num_max)
+    //                 .set_max_queue_size(config::load_segment_thread_pool_queue_size)
+    //                 .set_idle_timeout(MonoDelta::FromMilliseconds(config::streaming_load_thread_pool_idle_time_ms))
+    //                 .build(&load_segment_pool));
+    // _load_segment_thread_pool = load_segment_pool.release();
 
-    // _broker_mgr = new BrokerMgr(this);
+    // // _broker_mgr = new BrokerMgr(this);
 
-    RETURN_IF_ERROR(ThreadPoolBuilder("put_combined_txn_log_thread_pool")
-                            .set_min_threads(0)
-                            .set_max_threads(config::put_combined_txn_log_thread_pool_num_max)
-                            .set_idle_timeout(MonoDelta::FromMilliseconds(500))
-                            .build(&put_combined_txn_log_thread_pool));
-    _put_combined_txn_log_thread_pool = put_combined_txn_log_thread_pool.release();
+    // RETURN_IF_ERROR(ThreadPoolBuilder("put_combined_txn_log_thread_pool")
+    //                         .set_min_threads(0)
+    //                         .set_max_threads(config::put_combined_txn_log_thread_pool_num_max)
+    //                         .set_idle_timeout(MonoDelta::FromMilliseconds(500))
+    //                         .build(&put_combined_txn_log_thread_pool));
+    // _put_combined_txn_log_thread_pool = put_combined_txn_log_thread_pool.release();
 
-#ifndef BE_TEST
-    _bfd_parser = BfdParser::create();
-#endif
-    _load_channel_mgr = new LoadChannelMgr();
-    _load_stream_mgr = new LoadStreamMgr();
-    _brpc_stub_cache = new BrpcStubCache();
-    _stream_load_executor = new StreamLoadExecutor(this);
-    _stream_context_mgr = new StreamContextMgr();
-    _transaction_mgr = new TransactionMgr(this);
+// #ifndef BE_TEST
+//     _bfd_parser = BfdParser::create();
+// #endif
+//     _load_channel_mgr = new LoadChannelMgr();
+//     _load_stream_mgr = new LoadStreamMgr();
+//     _brpc_stub_cache = new BrpcStubCache();
+//     _stream_load_executor = new StreamLoadExecutor(this);
+//     _stream_context_mgr = new StreamContextMgr();
+//     _transaction_mgr = new TransactionMgr(this);
 
     // std::unique_ptr<ThreadPool> batch_write_thread_pool;
     // RETURN_IF_ERROR(ThreadPoolBuilder("batch_write")
@@ -714,28 +714,28 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
     // _routine_load_task_executor = new RoutineLoadTaskExecutor(this);
     // RETURN_IF_ERROR(_routine_load_task_executor->init());
 
-    _small_file_mgr = new SmallFileMgr(this, config::small_file_dir);
-    _runtime_filter_worker = new RuntimeFilterWorker(this);
-    _runtime_filter_cache = new RuntimeFilterCache(8);
-    RETURN_IF_ERROR(_runtime_filter_cache->init());
-    _profile_report_worker = new ProfileReportWorker(this);
-    auto runtime_filter_event_func = [] {
-        auto pool = ExecEnv::GetInstance()->runtime_filter_worker();
-        return (pool == nullptr) ? 0U : pool->queue_size();
-    };
-    REGISTER_GAUGE_STARROCKS_METRIC(runtime_filter_event_queue_len, runtime_filter_event_func);
+    // _small_file_mgr = new SmallFileMgr(this, config::small_file_dir);
+    // _runtime_filter_worker = new RuntimeFilterWorker(this);
+    // _runtime_filter_cache = new RuntimeFilterCache(8);
+    // RETURN_IF_ERROR(_runtime_filter_cache->init());
+    // _profile_report_worker = new ProfileReportWorker(this);
+    // auto runtime_filter_event_func = [] {
+    //     auto pool = ExecEnv::GetInstance()->runtime_filter_worker();
+    //     return (pool == nullptr) ? 0U : pool->queue_size();
+    // };
+    // REGISTER_GAUGE_STARROCKS_METRIC(runtime_filter_event_queue_len, runtime_filter_event_func);
 
-    _backend_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "backend");
-    _frontend_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "frontend");
-    _broker_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "broker");
-    RETURN_IF_ERROR(_result_mgr->init());
+    // _backend_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "backend");
+    // _frontend_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "frontend");
+    // _broker_client_cache->init_metrics(StarRocksMetrics::instance()->metrics(), "broker");
+    // RETURN_IF_ERROR(_result_mgr->init());
 
-    // it means acting as compute node while store_path is empty. some threads are not needed for that case.
-    Status status = _load_path_mgr->init();
-    if (!status.ok()) {
-        LOG(ERROR) << "load path mgr init failed." << status.message();
-        exit(-1);
-    }
+    // // it means acting as compute node while store_path is empty. some threads are not needed for that case.
+    // Status status = _load_path_mgr->init();
+    // if (!status.ok()) {
+    //     LOG(ERROR) << "load path mgr init failed." << status.message();
+    //     exit(-1);
+    // }
 
 // #if defined(USE_STAROS) && !defined(BE_TEST) && !defined(BUILD_FORMAT_LIB)
 //     _lake_location_provider = std::make_shared<lake::StarletLocationProvider>();
@@ -756,29 +756,19 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
     // _agent_server->init_or_die();
 
     // _broker_mgr->init();
-    RETURN_IF_ERROR(_small_file_mgr->init());
+    // RETURN_IF_ERROR(_small_file_mgr->init());
 
-    RETURN_IF_ERROR(_load_channel_mgr->init(GlobalEnv::GetInstance()->load_mem_tracker()));
+    // RETURN_IF_ERROR(_load_channel_mgr->init(GlobalEnv::GetInstance()->load_mem_tracker()));
 
-    _heartbeat_flags = new HeartbeatFlags();
-    auto capacity = std::max<size_t>(config::query_cache_capacity, 4L * 1024 * 1024);
-    _cache_mgr = new query_cache::CacheManager(capacity);
+    // _heartbeat_flags = new HeartbeatFlags();
+    // auto capacity = std::max<size_t>(config::query_cache_capacity, 4L * 1024 * 1024);
+    // _cache_mgr = new query_cache::CacheManager(capacity);
 
-    _spill_dir_mgr = std::make_shared<spill::DirManager>();
-    RETURN_IF_ERROR(_spill_dir_mgr->init(config::spill_local_storage_dir));
+    // _spill_dir_mgr = std::make_shared<spill::DirManager>();
+    // RETURN_IF_ERROR(_spill_dir_mgr->init(config::spill_local_storage_dir));
 
-    _diagnose_daemon = new DiagnoseDaemon();
-    RETURN_IF_ERROR(_diagnose_daemon->init());
-#ifdef STARROCKS_JIT_ENABLE
-    auto jit_engine = JITEngine::get_instance();
-    status = jit_engine->init();
-    if (!status.ok()) {
-        LOG(WARNING) << "Failed to init JIT engine: " << status.message();
-    }
-#endif
-
-    RETURN_IF_ERROR(PythonEnvManager::getInstance().init(config::python_envs));
-    PythonEnvManager::getInstance().start_background_cleanup_thread();
+    // _diagnose_daemon = new DiagnoseDaemon();
+    // RETURN_IF_ERROR(_diagnose_daemon->init());
 
     return Status::OK();
 }
@@ -794,76 +784,76 @@ void ExecEnv::add_rf_event(const RfTracePoint& pt) {
 }
 
 void ExecEnv::stop() {
-    if (_load_channel_mgr) {
-        // Clear load channel should be executed before stopping the storage engine,
-        // otherwise some writing tasks will still be in the MemTableFlushThreadPool of the storage engine,
-        // so when the ThreadPool is destroyed, it will crash.
-        _load_channel_mgr->close();
-    }
-
-    if (_load_stream_mgr) {
-        _load_stream_mgr->close();
-    }
-
-    if (_fragment_mgr) {
-        _fragment_mgr->close();
-    }
-
-    if (_stream_mgr != nullptr) {
-        _stream_mgr->close();
-    }
-
-    if (_pipeline_sink_io_pool) {
-        _pipeline_sink_io_pool->shutdown();
-    }
-
-    // if (_agent_server) {
-    //     _agent_server->stop();
+    // if (_load_channel_mgr) {
+    //     // Clear load channel should be executed before stopping the storage engine,
+    //     // otherwise some writing tasks will still be in the MemTableFlushThreadPool of the storage engine,
+    //     // so when the ThreadPool is destroyed, it will crash.
+    //     _load_channel_mgr->close();
     // }
 
-    if (_runtime_filter_worker) {
-        _runtime_filter_worker->close();
-    }
+    // if (_load_stream_mgr) {
+    //     _load_stream_mgr->close();
+    // }
 
-    if (_profile_report_worker) {
-        _profile_report_worker->close();
-    }
+    // if (_fragment_mgr) {
+    //     _fragment_mgr->close();
+    // }
 
-    if (_automatic_partition_pool) {
-        _automatic_partition_pool->shutdown();
-    }
+    // if (_stream_mgr != nullptr) {
+    //     _stream_mgr->close();
+    // }
 
-    if (_query_rpc_pool) {
-        _query_rpc_pool->shutdown();
-    }
+    // if (_pipeline_sink_io_pool) {
+    //     _pipeline_sink_io_pool->shutdown();
+    // }
 
-    if (_datacache_rpc_pool) {
-        _datacache_rpc_pool->shutdown();
-    }
+    // // if (_agent_server) {
+    // //     _agent_server->stop();
+    // // }
 
-    if (_load_rpc_pool) {
-        _load_rpc_pool->shutdown();
-    }
+    // if (_runtime_filter_worker) {
+    //     _runtime_filter_worker->close();
+    // }
 
-    if (_workgroup_manager) {
-        _workgroup_manager->close();
-    }
+    // if (_profile_report_worker) {
+    //     _profile_report_worker->close();
+    // }
 
-    if (_thread_pool) {
-        _thread_pool->shutdown();
-    }
+    // if (_automatic_partition_pool) {
+    //     _automatic_partition_pool->shutdown();
+    // }
 
-    if (_query_context_mgr) {
-        _query_context_mgr->clear();
-    }
+    // if (_query_rpc_pool) {
+    //     _query_rpc_pool->shutdown();
+    // }
 
-    if (_result_mgr) {
-        _result_mgr->stop();
-    }
+    // if (_datacache_rpc_pool) {
+    //     _datacache_rpc_pool->shutdown();
+    // }
 
-    if (_stream_mgr) {
-        _stream_mgr->close();
-    }
+    // if (_load_rpc_pool) {
+    //     _load_rpc_pool->shutdown();
+    // }
+
+    // if (_workgroup_manager) {
+    //     _workgroup_manager->close();
+    // }
+
+    // if (_thread_pool) {
+    //     _thread_pool->shutdown();
+    // }
+
+    // if (_query_context_mgr) {
+    //     _query_context_mgr->clear();
+    // }
+
+    // if (_result_mgr) {
+    //     _result_mgr->stop();
+    // }
+
+    // if (_stream_mgr) {
+    //     _stream_mgr->close();
+    // }
 
     // if (_batch_write_mgr) {
     //     _batch_write_mgr->stop();
@@ -873,76 +863,76 @@ void ExecEnv::stop() {
     //     _routine_load_task_executor->stop();
     // }
 
-    if (_dictionary_cache_pool) {
-        _dictionary_cache_pool->shutdown();
-    }
+//     if (_dictionary_cache_pool) {
+//         _dictionary_cache_pool->shutdown();
+//     }
 
-    if (_diagnose_daemon) {
-        _diagnose_daemon->stop();
-    }
+//     if (_diagnose_daemon) {
+//         _diagnose_daemon->stop();
+//     }
 
-#ifndef BE_TEST
-    close_s3_clients();
-#endif
+// #ifndef BE_TEST
+//     close_s3_clients();
+// #endif
 
-    PythonEnvManager::getInstance().close();
+//     PythonEnvManager::getInstance().close();
 }
 
 void ExecEnv::destroy() {
-    // SAFE_DELETE(_agent_server);
-    SAFE_DELETE(_runtime_filter_worker);
-    SAFE_DELETE(_profile_report_worker);
-    SAFE_DELETE(_heartbeat_flags);
-    SAFE_DELETE(_small_file_mgr);
-    SAFE_DELETE(_transaction_mgr);
-    SAFE_DELETE(_stream_context_mgr);
-    // SAFE_DELETE(_routine_load_task_executor);
-    SAFE_DELETE(_stream_load_executor);
-    SAFE_DELETE(_fragment_mgr);
-    SAFE_DELETE(_load_stream_mgr);
-    SAFE_DELETE(_load_channel_mgr);
-    // SAFE_DELETE(_broker_mgr);
-    SAFE_DELETE(_bfd_parser);
-    SAFE_DELETE(_load_path_mgr);
-    SAFE_DELETE(_brpc_stub_cache);
-    SAFE_DELETE(_udf_call_pool);
-    SAFE_DELETE(_pipeline_prepare_pool);
-    SAFE_DELETE(_pipeline_sink_io_pool);
-    SAFE_DELETE(_query_rpc_pool);
-    SAFE_DELETE(_datacache_rpc_pool);
-    _load_rpc_pool.reset();
-    _workgroup_manager->destroy();
-    _workgroup_manager.reset();
-    SAFE_DELETE(_thread_pool);
-    SAFE_DELETE(_streaming_load_thread_pool);
-    SAFE_DELETE(_load_segment_thread_pool);
+    // // SAFE_DELETE(_agent_server);
+    // SAFE_DELETE(_runtime_filter_worker);
+    // SAFE_DELETE(_profile_report_worker);
+    // SAFE_DELETE(_heartbeat_flags);
+    // SAFE_DELETE(_small_file_mgr);
+    // SAFE_DELETE(_transaction_mgr);
+    // SAFE_DELETE(_stream_context_mgr);
+    // // SAFE_DELETE(_routine_load_task_executor);
+    // SAFE_DELETE(_stream_load_executor);
+    // SAFE_DELETE(_fragment_mgr);
+    // SAFE_DELETE(_load_stream_mgr);
+    // SAFE_DELETE(_load_channel_mgr);
+    // // SAFE_DELETE(_broker_mgr);
+    // SAFE_DELETE(_bfd_parser);
+    // SAFE_DELETE(_load_path_mgr);
+    // SAFE_DELETE(_brpc_stub_cache);
+    // SAFE_DELETE(_udf_call_pool);
+    // SAFE_DELETE(_pipeline_prepare_pool);
+    // SAFE_DELETE(_pipeline_sink_io_pool);
+    // SAFE_DELETE(_query_rpc_pool);
+    // SAFE_DELETE(_datacache_rpc_pool);
+    // _load_rpc_pool.reset();
+    // _workgroup_manager->destroy();
+    // _workgroup_manager.reset();
+    // SAFE_DELETE(_thread_pool);
+    // SAFE_DELETE(_streaming_load_thread_pool);
+    // SAFE_DELETE(_load_segment_thread_pool);
 
-    if (_lake_tablet_manager != nullptr) {
-        _lake_tablet_manager->prune_metacache();
-    }
+    // if (_lake_tablet_manager != nullptr) {
+    //     _lake_tablet_manager->prune_metacache();
+    // }
 
-    SAFE_DELETE(_query_context_mgr);
-    // WorkGroupManager should release MemTracker of WorkGroups belongs to itself before deallocate
-    // _query_pool_mem_tracker.
-    SAFE_DELETE(_runtime_filter_cache);
-    SAFE_DELETE(_driver_limiter);
-    SAFE_DELETE(_pipeline_timer);
-    SAFE_DELETE(_broker_client_cache);
-    SAFE_DELETE(_frontend_client_cache);
-    SAFE_DELETE(_backend_client_cache);
-    SAFE_DELETE(_result_queue_mgr);
-    SAFE_DELETE(_result_mgr);
-    SAFE_DELETE(_stream_mgr);
-    // SAFE_DELETE(_batch_write_mgr);
-    SAFE_DELETE(_external_scan_context_mgr);
-    SAFE_DELETE(_lake_tablet_manager);
-    SAFE_DELETE(_lake_update_manager);
-    SAFE_DELETE(_cache_mgr);
-    SAFE_DELETE(_put_combined_txn_log_thread_pool);
-    SAFE_DELETE(_diagnose_daemon);
-    _dictionary_cache_pool.reset();
-    _automatic_partition_pool.reset();
-    _metrics = nullptr;
+    // SAFE_DELETE(_query_context_mgr);
+    // // WorkGroupManager should release MemTracker of WorkGroups belongs to itself before deallocate
+    // // _query_pool_mem_tracker.
+    // SAFE_DELETE(_runtime_filter_cache);
+    // SAFE_DELETE(_driver_limiter);
+    // SAFE_DELETE(_pipeline_timer);
+    // SAFE_DELETE(_broker_client_cache);
+    // SAFE_DELETE(_frontend_client_cache);
+    // SAFE_DELETE(_backend_client_cache);
+    // SAFE_DELETE(_result_queue_mgr);
+    // SAFE_DELETE(_result_mgr);
+    // SAFE_DELETE(_stream_mgr);
+    // // SAFE_DELETE(_batch_write_mgr);
+    // SAFE_DELETE(_external_scan_context_mgr);
+    // SAFE_DELETE(_lake_tablet_manager);
+    // SAFE_DELETE(_lake_update_manager);
+    // SAFE_DELETE(_cache_mgr);
+    // SAFE_DELETE(_put_combined_txn_log_thread_pool);
+    // SAFE_DELETE(_diagnose_daemon);
+    // _dictionary_cache_pool.reset();
+    // _automatic_partition_pool.reset();
+    // _metrics = nullptr;
 }
 
 void ExecEnv::_wait_for_fragments_finish() {
@@ -1001,47 +991,47 @@ ThreadPool* ExecEnv::delete_file_thread_pool() {
 }
 
 void ExecEnv::try_release_resource_before_core_dump() {
-    std::set<std::string> modules;
-    bool release_all = false;
-    if (config::try_release_resource_before_core_dump.value() == "*") {
-        release_all = true;
-    } else {
-        SplitStringAndParseToContainer(StringPiece(config::try_release_resource_before_core_dump), ",",
-                                       &parse_resource_str, &modules);
-    }
-
-    auto need_release = [&release_all, &modules](const std::string& name) {
-        return release_all || modules.contains(name);
-    };
-
-    if (_workgroup_manager != nullptr && need_release("connector_scan_executor")) {
-        _workgroup_manager->for_each_executors([](auto& executors) { executors.connector_scan_executor()->close(); });
-    }
-    if (_workgroup_manager != nullptr && need_release("olap_scan_executor")) {
-        _workgroup_manager->for_each_executors([](auto& executors) { executors.scan_executor()->close(); });
-    }
-    if (_thread_pool != nullptr && need_release("non_pipeline_scan_thread_pool")) {
-        _thread_pool->shutdown();
-    }
-    if (_pipeline_prepare_pool != nullptr && need_release("pipeline_prepare_thread_pool")) {
-        _pipeline_prepare_pool->shutdown();
-    }
-    if (_pipeline_sink_io_pool != nullptr && need_release("pipeline_sink_io_thread_pool")) {
-        _pipeline_sink_io_pool->shutdown();
-    }
-    if (_query_rpc_pool != nullptr && need_release("query_rpc_thread_pool")) {
-        _query_rpc_pool->shutdown();
-    }
-    if (_datacache_rpc_pool != nullptr && need_release("datacache_rpc_thread_pool")) {
-        _datacache_rpc_pool->shutdown();
-        LOG(INFO) << "shutdown datacache rpc thread pool";
-    }
-    // if (_agent_server != nullptr && need_release("publish_version_worker_pool")) {
-    //     _agent_server->stop_task_worker_pool(TaskWorkerType::PUBLISH_VERSION);
+    // std::set<std::string> modules;
+    // bool release_all = false;
+    // if (config::try_release_resource_before_core_dump.value() == "*") {
+    //     release_all = true;
+    // } else {
+    //     SplitStringAndParseToContainer(StringPiece(config::try_release_resource_before_core_dump), ",",
+    //                                    &parse_resource_str, &modules);
     // }
-    if (_workgroup_manager != nullptr && need_release("wg_driver_executor")) {
-        _workgroup_manager->for_each_executors([](auto& executors) { executors.driver_executor()->close(); });
-    }
+
+    // auto need_release = [&release_all, &modules](const std::string& name) {
+    //     return release_all || modules.contains(name);
+    // };
+
+    // if (_workgroup_manager != nullptr && need_release("connector_scan_executor")) {
+    //     _workgroup_manager->for_each_executors([](auto& executors) { executors.connector_scan_executor()->close(); });
+    // }
+    // if (_workgroup_manager != nullptr && need_release("olap_scan_executor")) {
+    //     _workgroup_manager->for_each_executors([](auto& executors) { executors.scan_executor()->close(); });
+    // }
+    // if (_thread_pool != nullptr && need_release("non_pipeline_scan_thread_pool")) {
+    //     _thread_pool->shutdown();
+    // }
+    // if (_pipeline_prepare_pool != nullptr && need_release("pipeline_prepare_thread_pool")) {
+    //     _pipeline_prepare_pool->shutdown();
+    // }
+    // if (_pipeline_sink_io_pool != nullptr && need_release("pipeline_sink_io_thread_pool")) {
+    //     _pipeline_sink_io_pool->shutdown();
+    // }
+    // if (_query_rpc_pool != nullptr && need_release("query_rpc_thread_pool")) {
+    //     _query_rpc_pool->shutdown();
+    // }
+    // if (_datacache_rpc_pool != nullptr && need_release("datacache_rpc_thread_pool")) {
+    //     _datacache_rpc_pool->shutdown();
+    //     LOG(INFO) << "shutdown datacache rpc thread pool";
+    // }
+    // // if (_agent_server != nullptr && need_release("publish_version_worker_pool")) {
+    // //     _agent_server->stop_task_worker_pool(TaskWorkerType::PUBLISH_VERSION);
+    // // }
+    // if (_workgroup_manager != nullptr && need_release("wg_driver_executor")) {
+    //     _workgroup_manager->for_each_executors([](auto& executors) { executors.driver_executor()->close(); });
+    // }
 }
 
 pipeline::DriverExecutor* ExecEnv::wg_driver_executor() {

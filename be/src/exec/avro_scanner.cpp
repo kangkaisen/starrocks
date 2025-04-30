@@ -41,8 +41,8 @@
 #include "gutil/strings/substitute.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "runtime/stream_load/load_stream_mgr.h"
-#include "runtime/stream_load/stream_load_pipe.h"
+// #include "runtime/stream_load/load_stream_mgr.h"
+// #include "runtime/stream_load/stream_load_pipe.h"
 #include "runtime/types.h"
 #include "util/defer_op.h"
 #include "util/runtime_profile.h"
@@ -230,104 +230,104 @@ Status AvroScanner::_construct_row(const avro_value_t& avro_value, Chunk* chunk)
 }
 
 Status AvroScanner::_parse_avro(Chunk* chunk, const std::shared_ptr<SequentialFile>& file) {
-    const int capacity = _state->chunk_size();
-    DCHECK_EQ(0, chunk->num_rows());
-    for (size_t num_rows = chunk->num_rows(); num_rows < capacity; /**/) {
-        avro_value_t avro_value;
-#ifdef BE_TEST
-        // In general, we want to test component injection schemastr.
-        avro_schema_error_t error;
-        avro_schema_t schema = NULL;
-        int result = avro_schema_from_json(_schema_text.c_str(), _schema_text.size(), &schema, &error);
-        if (result != 0) {
-            auto err_msg = "parse schema from json error: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
-        }
-        avro_value_iface_t* iface = avro_generic_class_from_schema(schema);
-        if (avro_generic_value_new(iface, &avro_value)) {
-            auto err_msg = "Cannot allocate new value instance: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
-        }
-        DeferOp avro_deleter([&] {
-            avro_schema_decref(schema);
-            avro_value_iface_decref(iface);
-            avro_value_decref(&avro_value);
-        });
-        result = avro_file_reader_read_value(_dbreader, &avro_value);
-        if (result != 0) {
-            auto err_msg = "read avro value error: " + std::string(avro_strerror());
-            return Status::EndOfFile(err_msg);
-        }
+//     const int capacity = _state->chunk_size();
+//     DCHECK_EQ(0, chunk->num_rows());
+//     for (size_t num_rows = chunk->num_rows(); num_rows < capacity; /**/) {
+//         avro_value_t avro_value;
+// #ifdef BE_TEST
+//         // In general, we want to test component injection schemastr.
+//         avro_schema_error_t error;
+//         avro_schema_t schema = NULL;
+//         int result = avro_schema_from_json(_schema_text.c_str(), _schema_text.size(), &schema, &error);
+//         if (result != 0) {
+//             auto err_msg = "parse schema from json error: " + std::string(avro_strerror());
+//             return Status::InternalError(err_msg);
+//         }
+//         avro_value_iface_t* iface = avro_generic_class_from_schema(schema);
+//         if (avro_generic_value_new(iface, &avro_value)) {
+//             auto err_msg = "Cannot allocate new value instance: " + std::string(avro_strerror());
+//             return Status::InternalError(err_msg);
+//         }
+//         DeferOp avro_deleter([&] {
+//             avro_schema_decref(schema);
+//             avro_value_iface_decref(iface);
+//             avro_value_decref(&avro_value);
+//         });
+//         result = avro_file_reader_read_value(_dbreader, &avro_value);
+//         if (result != 0) {
+//             auto err_msg = "read avro value error: " + std::string(avro_strerror());
+//             return Status::EndOfFile(err_msg);
+//         }
 
-        char* avro_as_json = nullptr;
-        result = avro_value_to_json(&avro_value, 1, &avro_as_json);
-        if (result != 0) {
-            auto err_msg = "Unable to read value: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
-        }
-        free(avro_as_json);
-#else
-        const uint8_t* data{};
-        size_t length = 0;
-        auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
-        {
-            ++_counter->file_read_count;
-            SCOPED_RAW_TIMER(&_counter->file_read_ns);
-            ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
-        }
-        data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
-        length = _parser_buf->remaining();
-        serdes_schema_t* schema;
-        serdes_err_t err =
-                serdes_deserialize_avro(_serdes, &avro_value, &schema, data, length, _err_buf, sizeof(_err_buf));
-        if (err) {
-            auto err_msg = "serdes deserialize avro failed: " + std::string(_err_buf);
-            LOG(ERROR) << err_msg;
-            _counter->num_rows_filtered++;
-            _state->append_error_msg_to_file("", err_msg);
-            return Status::InternalError("serdes deserialize avro failed");
-        }
-        DeferOp op([&] { avro_value_decref(&avro_value); });
-#endif
-        size_t chunk_row_num = chunk->num_rows();
-        Status st = Status::OK();
-        if (!_json_paths.empty()) {
-            st = _construct_row(avro_value, chunk);
-        } else {
-            if (!_init_data_idx_to_slot_once) {
-                size_t element_count;
-                if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
-                    auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
-                    return Status::InternalError(err_msg);
-                }
-                _data_idx_to_slot.assign(element_count, SlotInfo());
-                for (size_t i = 0; i < element_count; i++) {
-                    const char* field_name;
-                    avro_value_t element_value;
-                    if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
-                        auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
-                        return Status::InternalError(err_msg);
-                    }
-                    _data_idx_to_fieldname.emplace_back(field_name);
-                }
+//         char* avro_as_json = nullptr;
+//         result = avro_value_to_json(&avro_value, 1, &avro_as_json);
+//         if (result != 0) {
+//             auto err_msg = "Unable to read value: " + std::string(avro_strerror());
+//             return Status::InternalError(err_msg);
+//         }
+//         free(avro_as_json);
+// #else
+//         const uint8_t* data{};
+//         size_t length = 0;
+//         auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
+//         {
+//             ++_counter->file_read_count;
+//             SCOPED_RAW_TIMER(&_counter->file_read_ns);
+//             ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
+//         }
+//         data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
+//         length = _parser_buf->remaining();
+//         serdes_schema_t* schema;
+//         serdes_err_t err =
+//                 serdes_deserialize_avro(_serdes, &avro_value, &schema, data, length, _err_buf, sizeof(_err_buf));
+//         if (err) {
+//             auto err_msg = "serdes deserialize avro failed: " + std::string(_err_buf);
+//             LOG(ERROR) << err_msg;
+//             _counter->num_rows_filtered++;
+//             _state->append_error_msg_to_file("", err_msg);
+//             return Status::InternalError("serdes deserialize avro failed");
+//         }
+//         DeferOp op([&] { avro_value_decref(&avro_value); });
+// #endif
+//         size_t chunk_row_num = chunk->num_rows();
+//         Status st = Status::OK();
+//         if (!_json_paths.empty()) {
+//             st = _construct_row(avro_value, chunk);
+//         } else {
+//             if (!_init_data_idx_to_slot_once) {
+//                 size_t element_count;
+//                 if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
+//                     auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
+//                     return Status::InternalError(err_msg);
+//                 }
+//                 _data_idx_to_slot.assign(element_count, SlotInfo());
+//                 for (size_t i = 0; i < element_count; i++) {
+//                     const char* field_name;
+//                     avro_value_t element_value;
+//                     if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+//                         auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
+//                         return Status::InternalError(err_msg);
+//                     }
+//                     _data_idx_to_fieldname.emplace_back(field_name);
+//                 }
 
-                _init_data_idx_to_slot_once = true;
-            }
-            st = _construct_row_without_jsonpath(avro_value, chunk);
-        }
-        if (!st.ok()) {
-            if (_counter->num_rows_filtered++ < MAX_ERROR_LINES_IN_FILE) {
-                // We would continue to construct row even if error is returned,
-                // hence the number of error appended to the file should be limited.
-                _state->append_error_msg_to_file("", st.to_string());
-                LOG(WARNING) << "failed to construct row: " << st;
-            }
-            // Before continuing to process other rows, we need to first clean the fail parsed row.
-            chunk->set_num_rows(chunk_row_num);
-            return st;
-        }
-        num_rows++;
-    }
+//                 _init_data_idx_to_slot_once = true;
+//             }
+//             st = _construct_row_without_jsonpath(avro_value, chunk);
+//         }
+//         if (!st.ok()) {
+//             if (_counter->num_rows_filtered++ < MAX_ERROR_LINES_IN_FILE) {
+//                 // We would continue to construct row even if error is returned,
+//                 // hence the number of error appended to the file should be limited.
+//                 _state->append_error_msg_to_file("", st.to_string());
+//                 LOG(WARNING) << "failed to construct row: " << st;
+//             }
+//             // Before continuing to process other rows, we need to first clean the fail parsed row.
+//             chunk->set_num_rows(chunk_row_num);
+//             return st;
+//         }
+//         num_rows++;
+//     }
     return Status::OK();
 }
 

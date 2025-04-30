@@ -45,7 +45,7 @@
 #include "runtime/mem_tracker.h"
 #include "runtime/query_statistics.h"
 #include "runtime/runtime_state.h"
-#include "runtime/stream_load/stream_load_executor.h"
+// #include "runtime/stream_load/stream_load_executor.h"
 
 namespace starrocks {
 
