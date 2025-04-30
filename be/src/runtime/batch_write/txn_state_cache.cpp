@@ -16,7 +16,6 @@
 
 #include <utility>
 
-#include "agent/master_info.h"
 #include "gen_cpp/FrontendService.h"
 #include "runtime/batch_write/batch_write_util.h"
 #include "runtime/client_cache.h"

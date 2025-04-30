@@ -58,7 +58,7 @@ std::ostream& operator<<(std::ostream& out, const BatchWriteId& id);
 
 class HttpRequest;
 
-BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req);
+// BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req);
 BatchWriteLoadParams get_load_parameters_from_brpc(const std::map<std::string, std::string>& input_params);
 
 } // namespace starrocks

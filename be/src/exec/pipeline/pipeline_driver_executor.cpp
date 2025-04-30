@@ -16,7 +16,6 @@
 
 #include <memory>
 
-#include "agent/master_info.h"
 #include "exec/pipeline/pipeline_metrics.h"
 #include "exec/pipeline/stream_pipeline_driver.h"
 #include "exec/workgroup/work_group.h"

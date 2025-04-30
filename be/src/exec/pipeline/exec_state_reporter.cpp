@@ -19,7 +19,6 @@
 
 #include <memory>
 
-#include "agent/master_info.h"
 #include "runtime/client_cache.h"
 #include "runtime/exec_env.h"
 #include "util/network_util.h"

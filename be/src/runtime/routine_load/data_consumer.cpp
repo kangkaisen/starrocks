@@ -66,7 +66,7 @@ Status KafkaDataConsumer::init(StreamLoadContext* ctx) {
 
     auto it = ctx->kafka_info->properties.find("group.id");
     if (it == ctx->kafka_info->properties.end()) {
-        _group_id = BackendOptions::get_localhost() + "_" + UniqueId::gen_uid().to_string();
+        _group_id = -1 + "_" + UniqueId::gen_uid().to_string();
     } else {
         _group_id = it->second;
     }

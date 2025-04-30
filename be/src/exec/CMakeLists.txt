@@ -112,58 +112,6 @@ set(EXEC_FILES
     iceberg/iceberg_delete_builder.cpp
     iceberg/iceberg_delete_file_iterator.cpp
     paimon/paimon_delete_file_builder.cpp
-    schema_scanner/schema_analyze_status.cpp
-    schema_scanner/schema_tables_scanner.cpp
-    schema_scanner/schema_dummy_scanner.cpp
-    schema_scanner/schema_schemata_scanner.cpp
-    schema_scanner/schema_variables_scanner.cpp
-    schema_scanner/schema_columns_scanner.cpp
-    schema_scanner/schema_column_stats_usage_scanner.cpp
-    schema_scanner/schema_charsets_scanner.cpp
-    schema_scanner/schema_collations_scanner.cpp
-    schema_scanner/schema_statistics_scanner.cpp
-    schema_scanner/schema_triggers_scanner.cpp
-    schema_scanner/schema_events_scanner.cpp
-    schema_scanner/schema_views_scanner.cpp
-    schema_scanner/schema_materialized_views_scanner.cpp
-    schema_scanner/schema_tasks_scanner.cpp
-    schema_scanner/schema_task_runs_scanner.cpp
-    schema_scanner/schema_loads_scanner.cpp
-    schema_scanner/schema_load_tracking_logs_scanner.cpp
-    schema_scanner/schema_partitions_meta_scanner.cpp
-    schema_scanner/schema_user_privileges_scanner.cpp
-    schema_scanner/schema_schema_privileges_scanner.cpp
-    schema_scanner/schema_table_privileges_scanner.cpp
-    schema_scanner/schema_tables_config_scanner.cpp
-    schema_scanner/schema_be_metrics_scanner.cpp
-    schema_scanner/schema_be_tablets_scanner.cpp
-    schema_scanner/schema_be_txns_scanner.cpp
-    schema_scanner/schema_be_configs_scanner.cpp
-    schema_scanner/schema_be_threads_scanner.cpp
-    schema_scanner/schema_be_logs_scanner.cpp
-    schema_scanner/schema_fe_metrics_scanner.cpp
-    schema_scanner/schema_fe_tablet_schedules_scanner.cpp
-    schema_scanner/schema_be_compactions_scanner.cpp
-    schema_scanner/schema_be_bvars_scanner.cpp
-    schema_scanner/schema_be_cloud_native_compactions_scanner.cpp
-    schema_scanner/schema_pipe_files.cpp
-    schema_scanner/schema_pipes.cpp
-    schema_scanner/starrocks_role_edges_scanner.cpp
-    schema_scanner/starrocks_grants_to_scanner.cpp
-    schema_scanner/schema_helper.cpp
-    schema_scanner/schema_routine_load_jobs_scanner.cpp
-    schema_scanner/schema_stream_loads_scanner.cpp
-    schema_scanner/schema_be_datacache_metrics_scanner.cpp
-    schema_scanner/sys_object_dependencies.cpp
-    schema_scanner/sys_fe_locks.cpp
-    schema_scanner/sys_fe_memory_usage.cpp
-    schema_scanner/schema_temp_tables_scanner.cpp
-    schema_scanner/schema_warehouse_metrics.cpp
-    schema_scanner/schema_warehouse_queries.cpp
-    schema_scanner/schema_cluster_snapshots_scanner.cpp
-    schema_scanner/schema_cluster_snapshot_jobs_scanner.cpp
-    schema_scanner/schema_applicable_roles_scanner.cpp
-    schema_scanner/schema_keywords_scanner.cpp
     jdbc_scanner.cpp
     sorting/compare_column.cpp
     sorting/merge.cpp

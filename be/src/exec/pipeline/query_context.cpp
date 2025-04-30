@@ -17,7 +17,6 @@
 #include <memory>
 #include <vector>
 
-#include "agent/master_info.h"
 #include "exec/pipeline/fragment_context.h"
 #include "exec/pipeline/pipeline_fwd.h"
 #include "exec/pipeline/scan/connector_scan_operator.h"

@@ -62,10 +62,6 @@ set(RUNTIME_FILES
     batch_write/batch_write_mgr.cpp
     batch_write/batch_write_util.cpp
     batch_write/txn_state_cache.cpp
-    routine_load/data_consumer.cpp
-    routine_load/data_consumer_group.cpp
-    routine_load/data_consumer_pool.cpp
-    routine_load/routine_load_task_executor.cpp
     small_file_mgr.cpp
     record_batch_queue.cpp
     result_queue_mgr.cpp

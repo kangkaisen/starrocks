@@ -137,7 +137,7 @@ Status StreamLoadExecutor::execute_plan_fragment(StreamLoadContext* ctx) {
                 }
 
                 if (!executor->runtime_state()->get_rejected_record_file_path().empty()) {
-                    ctx->rejected_record_path = fmt::format("{}:{}", BackendOptions::get_localBackend().host,
+                    ctx->rejected_record_path = fmt::format("{}:{}", -1,
                                                             executor->runtime_state()->get_rejected_record_file_path());
                 }
 
@@ -160,45 +160,45 @@ Status StreamLoadExecutor::execute_plan_fragment(StreamLoadContext* ctx) {
 }
 
 Status StreamLoadExecutor::begin_txn(StreamLoadContext* ctx) {
-    StarRocksMetrics::instance()->txn_begin_request_total.increment(1);
+//     StarRocksMetrics::instance()->txn_begin_request_total.increment(1);
 
-    TLoadTxnBeginRequest request;
-    set_request_auth(&request, ctx->auth);
-    request.db = ctx->db;
-    request.tbl = ctx->table;
-    request.label = ctx->label;
-    // auto backend_id = get_backend_id();
-    // if (backend_id.has_value()) {
-    //     request.__set_backend_id(backend_id.value());
-    // }
+//     TLoadTxnBeginRequest request;
+//     set_request_auth(&request, ctx->auth);
+//     request.db = ctx->db;
+//     request.tbl = ctx->table;
+//     request.label = ctx->label;
+//     // auto backend_id = get_backend_id();
+//     // if (backend_id.has_value()) {
+//     //     request.__set_backend_id(backend_id.value());
+//     // }
 
-    // set timestamp
-    request.__set_timestamp(GetCurrentTimeMicros());
-    if (ctx->timeout_second != -1) {
-        request.__set_timeout(ctx->timeout_second);
-    }
-    request.__set_request_id(ctx->id.to_thrift());
+//     // set timestamp
+//     request.__set_timestamp(GetCurrentTimeMicros());
+//     if (ctx->timeout_second != -1) {
+//         request.__set_timeout(ctx->timeout_second);
+//     }
+//     request.__set_request_id(ctx->id.to_thrift());
 
-    // TNetworkAddress master_addr = get_master_address();
-    TLoadTxnBeginResult result;
-// #ifndef BE_TEST
-//     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
-//             master_addr.hostname, master_addr.port,
-//             [&request, &result](FrontendServiceConnection& client) { client->loadTxnBegin(result, request); }));
-// #else
-    result = k_stream_load_begin_result;
-#endif
-    Status status(result.status);
-    if (!status.ok()) {
-        LOG(WARNING) << "begin transaction failed, errmsg=" << status.message() << ctx->brief();
-        if (result.__isset.job_status) {
-            ctx->existing_job_status = result.job_status;
-        }
-        return status;
-    }
-    ctx->txn_id = result.txnId;
-    ctx->need_rollback = true;
-    ctx->load_deadline_sec = UnixSeconds() + result.timeout;
+//     // TNetworkAddress master_addr = get_master_address();
+//     TLoadTxnBeginResult result;
+// // #ifndef BE_TEST
+// //     RETURN_IF_ERROR(ThriftRpcHelper::rpc<FrontendServiceClient>(
+// //             master_addr.hostname, master_addr.port,
+// //             [&request, &result](FrontendServiceConnection& client) { client->loadTxnBegin(result, request); }));
+// // #else
+//     result = k_stream_load_begin_result;
+// #endif
+//     Status status(result.status);
+//     if (!status.ok()) {
+//         LOG(WARNING) << "begin transaction failed, errmsg=" << status.message() << ctx->brief();
+//         if (result.__isset.job_status) {
+//             ctx->existing_job_status = result.job_status;
+//         }
+//         return status;
+//     }
+//     ctx->txn_id = result.txnId;
+//     ctx->need_rollback = true;
+//     ctx->load_deadline_sec = UnixSeconds() + result.timeout;
 
     return Status::OK();
 }

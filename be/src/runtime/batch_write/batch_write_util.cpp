@@ -16,8 +16,8 @@
 
 #include <vector>
 
-#include "http/http_common.h"
-#include "http/http_request.h"
+// #include "http/http_common.h"
+// #include "http/http_request.h"
 
 namespace starrocks {
 
@@ -91,15 +91,15 @@ BatchWriteLoadParams get_load_parameters_from_brpc(const std::map<std::string, s
     });
 }
 
-BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req) {
-    return get_load_parameters([http_req](const std::string& param_name) -> std::optional<std::string> {
-        std::string value = http_req->header(param_name);
-        if (!value.empty()) {
-            return value;
-        } else {
-            return std::nullopt;
-        }
-    });
-}
+// BatchWriteLoadParams get_load_parameters_from_http(HttpRequest* http_req) {
+//     // return get_load_parameters([http_req](const std::string& param_name) -> std::optional<std::string> {
+//     //     std::string value = http_req->header(param_name);
+//     //     if (!value.empty()) {
+//     //         return value;
+//     //     } else {
+//     //         return std::nullopt;
+//     //     }
+//     // });
+// }
 
 } // namespace starrocks

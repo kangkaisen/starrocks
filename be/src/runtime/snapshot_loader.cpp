@@ -397,8 +397,8 @@ Status SnapshotLoader::download(const std::map<std::string, std::string>& src_to
             }
 
             // local_files always keep the updated local files
-            local_files.push_back(local_file_name);
-            LOG(INFO) << "finished to download the file: " << full_local_file << ", length: " << file_size;
+            // local_files.push_back(local_file_name);
+            // LOG(INFO) << "finished to download the file: " << full_local_file << ", length: " << file_size;
         } // end for all remote files
 
         // finally, delete local files which are not in remote

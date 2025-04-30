@@ -620,7 +620,7 @@ void RuntimeFilterMerger::_send_total_runtime_filter(int rf_version, int32_t fil
     }
 
     TNetworkAddress local;
-    local.hostname = BackendOptions::get_localhost();
+    local.hostname = -1;
     local.port = config::brpc_port;
     std::vector<std::pair<TNetworkAddress, std::vector<TUniqueId>>> targets;
 
@@ -860,13 +860,13 @@ static inline void receive_total_runtime_filter_pipeline(PTransmitRuntimeFilterP
     query_id.hi = pb_query_id.hi();
     query_id.lo = pb_query_id.lo();
     ExecEnv::GetInstance()->add_rf_event(
-            {params.query_id(), params.filter_id(), BackendOptions::get_localhost(), "RECV_TOTAL_RF_RPC_PIPELINE"});
+            {params.query_id(), params.filter_id(), -1, "RECV_TOTAL_RF_RPC_PIPELINE"});
     auto query_ctx = ExecEnv::GetInstance()->query_context_mgr()->get(query_id);
     // query_ctx is absent means that the query is finished or any fragments have not arrived, so
     // we conservatively consider that global rf arrives in advance, so cache it for later use.
     if (!query_ctx) {
         ExecEnv::GetInstance()->runtime_filter_cache()->put_if_absent(query_id, params.filter_id(), shared_rf);
-        ExecEnv::GetInstance()->add_rf_event({params.query_id(), params.filter_id(), BackendOptions::get_localhost(),
+        ExecEnv::GetInstance()->add_rf_event({params.query_id(), params.filter_id(), -1,
                                               "PUT_TOTAL_RF_IN_CACHE_QUERY_NOT_READY"});
     }
     // race condition exists among rf caching, FragmentContext's registration and OperatorFactory's preparation
@@ -891,7 +891,7 @@ static inline void receive_total_runtime_filter_pipeline(PTransmitRuntimeFilterP
         if (!fragment_ctx) {
             ExecEnv::GetInstance()->runtime_filter_cache()->put_if_absent(query_id, params.filter_id(), shared_rf);
             ExecEnv::GetInstance()->add_rf_event({params.query_id(), params.filter_id(),
-                                                  BackendOptions::get_localhost(),
+                                                  -1,
                                                   "PUT_TOTAL_RF_IN_CACHE_FRAGMENT_INSTANCE_NOT_READY"});
         }
         // race condition exists among rf caching, FragmentContext's registration and OperatorFactory's preparation
@@ -905,7 +905,7 @@ static inline void receive_total_runtime_filter_pipeline(PTransmitRuntimeFilterP
         }
         fragment_ctx->runtime_filter_port()->receive_shared_runtime_filter(params.filter_id(), shared_rf);
         ExecEnv::GetInstance()->add_rf_event(
-                {params.query_id(), params.filter_id(), BackendOptions::get_localhost(),
+                {params.query_id(), params.filter_id(), -1,
                  strings::Substitute("INSTALL_GRF(num_waiters=$0, instance_id=$1)",
                                      fragment_ctx->runtime_filter_port()->listeners(params.filter_id()),
                                      print_id(finst_id))});
@@ -995,7 +995,7 @@ void RuntimeFilterWorker::_process_send_broadcast_runtime_filter_event(
                              strings::Substitute("SEND_BROADCAST_RF_RPC: num_dest=$0", destinations.size())});
     params.set_is_partial(false);
     TNetworkAddress local;
-    local.hostname = BackendOptions::get_localhost();
+    local.hostname = -1;
     local.port = config::brpc_port;
     // put the local destination to the last
     const auto last_dest_idx = destinations.size() - 1;
