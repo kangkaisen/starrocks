@@ -75,7 +75,8 @@ inline BrokerServiceClientCache* client_cache(ExecEnv* env) {
 }
 
 inline const std::string& client_id(ExecEnv* env, const TNetworkAddress& addr) {
-    return "";
+    static std::string s_client_id = "starrocks_unit_test";
+    return s_client_id;
 }
 #endif
 
@@ -185,17 +186,17 @@ Status SnapshotLoader::upload(const std::map<std::string, std::string>& src_to_d
             auto local_file_path = src_path + "/" + local_file;
             std::unique_ptr<WritableFile> remote_writable_file;
             WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
-            if (!upload.__isset.use_broker || upload.use_broker) {
-                BrokerFileSystem fs_broker(upload.broker_addr, upload.broker_prop);
-                ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_remote_file_name));
-            } else {
-                if (fs->type() != FileSystem::S3) {
-                    ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, tmp_remote_file_name));
-                } else {
-                    // Not need rename for S3
-                    ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, final_remote_file_name));
-                }
-            }
+            // if (!upload.__isset.use_broker || upload.use_broker) {
+            //     BrokerFileSystem fs_broker(upload.broker_addr, upload.broker_prop);
+            //     ASSIGN_OR_RETURN(remote_writable_file, fs_broker.new_writable_file(opts, tmp_remote_file_name));
+            // } else {
+            //     if (fs->type() != FileSystem::S3) {
+            //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, tmp_remote_file_name));
+            //     } else {
+            //         // Not need rename for S3
+            //         ASSIGN_OR_RETURN(remote_writable_file, fs->new_writable_file(opts, final_remote_file_name));
+            //     }
+            // }
             ASSIGN_OR_RETURN(auto input_file, FileSystem::Default()->new_sequential_file(local_file_path));
             ASSIGN_OR_RETURN(auto file_size,
                              fs::copy(input_file.get(), remote_writable_file.get(), config::upload_buffer_size));
@@ -362,13 +363,13 @@ Status SnapshotLoader::download(const std::map<std::string, std::string>& src_to
                 return Status::InternalError("capacity limit reached");
             }
 
-            std::unique_ptr<SequentialFile> remote_sequential_file;
-            if (!download.__isset.use_broker || download.use_broker) {
-                BrokerFileSystem fs_broker(download.broker_addr, download.broker_prop);
-                ASSIGN_OR_RETURN(remote_sequential_file, fs_broker.new_sequential_file(full_remote_file));
-            } else {
-                ASSIGN_OR_RETURN(remote_sequential_file, fs->new_sequential_file(full_remote_file));
-            }
+            // std::unique_ptr<SequentialFile> remote_sequential_file;
+            // if (!download.__isset.use_broker || download.use_broker) {
+            //     BrokerFileSystem fs_broker(download.broker_addr, download.broker_prop);
+            //     ASSIGN_OR_RETURN(remote_sequential_file, fs_broker.new_sequential_file(full_remote_file));
+            // } else {
+            //     ASSIGN_OR_RETURN(remote_sequential_file, fs->new_sequential_file(full_remote_file));
+            // }
             // remove file which will be downloaded now.
             // this file will be added to local_files if it be downloaded successfully.
             // The Restore process of Primary key tablet may get a empty local_files at the begining.

@@ -21,7 +21,7 @@
 #include "column/vectorized_fwd.h"
 #include "exprs/cast_expr.h"
 #include "exprs/column_ref.h"
-#include "fs/fs_broker.h"
+// #include "fs/fs_broker.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
 #include "runtime/stream_load/load_stream_mgr.h"

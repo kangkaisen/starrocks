@@ -279,7 +279,9 @@ Status FileScanner::create_sequential_file(const TBrokerRangeDesc& range_desc, c
 
     std::shared_ptr<SequentialFile> src_file;
     switch (range_desc.file_type) {
-    case TFileType::FILE_LOCAL: {
+    case TFileType::FILE_LOCAL:
+    case TFileType::FILE_BROKER:
+    {
         ASSIGN_OR_RETURN(src_file, FileSystem::Default()->new_sequential_file(range_desc.path));
         break;
     }
@@ -328,7 +330,8 @@ Status FileScanner::create_random_access_file(const TBrokerRangeDesc& range_desc
                                               std::shared_ptr<RandomAccessFile>* file) {
     std::shared_ptr<RandomAccessFile> src_file;
     switch (range_desc.file_type) {
-    case TFileType::FILE_LOCAL: {
+    case TFileType::FILE_LOCAL:
+    case TFileType::FILE_BROKER: {
         ASSIGN_OR_RETURN(src_file, FileSystem::Default()->new_random_access_file(range_desc.path));
         break;
     }

@@ -359,20 +359,20 @@ Status ReplicationTxnManager::publish_txn(TTransactionId transaction_id, TPartit
 }
 
 void ReplicationTxnManager::clear_expired_snapshots() {
-    std::vector<TTransactionId> expired_txns;
-    {
-        int64_t min_active_txn_id = get_master_info().min_active_txn_id;
-        std::shared_lock guard(_mutex);
-        for (const auto& [transaction_id, partiton_map] : _transaction_map) {
-            if (transaction_id < min_active_txn_id) {
-                expired_txns.push_back(transaction_id);
-            }
-        }
-    }
+    // std::vector<TTransactionId> expired_txns;
+    // {
+    //     int64_t min_active_txn_id = get_master_info().min_active_txn_id;
+    //     std::shared_lock guard(_mutex);
+    //     for (const auto& [transaction_id, partiton_map] : _transaction_map) {
+    //         if (transaction_id < min_active_txn_id) {
+    //             expired_txns.push_back(transaction_id);
+    //         }
+    //     }
+    // }
 
-    for (auto transaction_id : expired_txns) {
-        clear_txn_snapshots(transaction_id);
-    }
+    // for (auto transaction_id : expired_txns) {
+    //     clear_txn_snapshots(transaction_id);
+    // }
 }
 
 StatusOr<TabletSharedPtr> ReplicationTxnManager::prepare_txn(TTransactionId transaction_id, TPartitionId partition_id,
