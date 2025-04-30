@@ -38,7 +38,7 @@
 
 #include <string_view>
 
-#include "agent/master_info.h"
+// #include "agent/master_info.h"
 #include "common/status.h"
 #include "common/statusor.h"
 #include "common/utils.h"

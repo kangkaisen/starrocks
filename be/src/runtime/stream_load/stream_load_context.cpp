@@ -36,7 +36,7 @@
 
 #include <fmt/format.h>
 
-#include "agent/master_info.h"
+// #include "agent/master_info.h"
 
 namespace starrocks {
 

@@ -381,8 +381,8 @@ Status SnapshotLoader::download(const std::map<std::string, std::string>& src_to
             // 3. open local file for write
             WritableFileOptions opts{.sync_on_close = false, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
             ASSIGN_OR_RETURN(auto local_file, FileSystem::Default()->new_writable_file(opts, full_local_file));
-            ASSIGN_OR_RETURN(auto file_size,
-                             fs::copy(remote_sequential_file.get(), local_file.get(), config::download_buffer_size));
+            // ASSIGN_OR_RETURN(auto file_size,
+            //                  fs::copy(remote_sequential_file.get(), local_file.get(), config::download_buffer_size));
             RETURN_IF_ERROR(local_file->close());
 
             // 5. check md5 of the downloaded file
