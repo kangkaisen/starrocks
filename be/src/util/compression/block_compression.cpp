@@ -1088,14 +1088,14 @@ public:
             if (input_size < block_size) {
                 return Status::InternalError("LzoBlockCompression decompress failed: input data not enough");
             }
-            try {
-                uint64_t read = orc::lzoDecompress(input_data, input_data + block_size, output_data, output_limit);
-                DCHECK(read <= uncompressed_size);
-                uncompressed_size -= read;
-                output_data += read;
-            } catch (const std::runtime_error& e) {
-                return Status::InternalError("LzoBlockCompression decompress failed: data corruption");
-            }
+            // try {
+            //     uint64_t read = orc::lzoDecompress(input_data, input_data + block_size, output_data, output_limit);
+            //     DCHECK(read <= uncompressed_size);
+            //     uncompressed_size -= read;
+            //     output_data += read;
+            // } catch (const std::runtime_error& e) {
+            //     return Status::InternalError("LzoBlockCompression decompress failed: data corruption");
+            // }
 
             input_data += block_size;
             input_size -= block_size;

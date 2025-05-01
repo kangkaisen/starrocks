@@ -739,12 +739,12 @@ Status LzoStreamCompression::decompress(uint8_t* input, size_t input_len, size_t
         if (compressed_size == uncompressed_size) {
             memcpy(ctx->buffer_data, ptr, compressed_size);
         } else {
-            try {
-                (void)orc::lzoDecompress((char*)ptr, (char*)ptr + compressed_size, (char*)ctx->buffer_data,
-                                         (char*)ctx->buffer_data + uncompressed_size);
-            } catch (const std::runtime_error& e) {
-                return Status::InternalError(strings::Substitute("$0 decompress failed", NAME));
-            }
+            // try {
+            //     (void)orc::lzoDecompress((char*)ptr, (char*)ptr + compressed_size, (char*)ctx->buffer_data,
+            //                              (char*)ctx->buffer_data + uncompressed_size);
+            // } catch (const std::runtime_error& e) {
+            //     return Status::InternalError(strings::Substitute("$0 decompress failed", NAME));
+            // }
         }
         RETURN_IF_ERROR(verify_checksum(_header.output_checksum_type, "decompressed", uncompressed_checksum,
                                         ctx->buffer_data, uncompressed_size));
