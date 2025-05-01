@@ -18,8 +18,6 @@
 
 #include "column/vectorized_fwd.h"
 #include "exec/iceberg/iceberg_delete_file_iterator.h"
-#include "formats/orc/orc_chunk_reader.h"
-#include "formats/orc/orc_input_stream.h"
 #include "formats/parquet/file_reader.h"
 #include "gen_cpp/Types_types.h"
 #include "runtime/descriptors.h"
@@ -157,52 +155,52 @@ Status IcebergDeleteBuilder::build_orc(const TIcebergDeleteFile& delete_file) co
     std::vector slot_descriptors{&(IcebergDeleteFileMeta::get_delete_file_path_slot()),
                                  &(IcebergDeleteFileMeta::get_delete_file_pos_slot())};
 
-    HdfsScanStats app_scan_stats;
-    HdfsScanStats fs_scan_stats;
-    std::shared_ptr<io::SharedBufferedInputStream> shared_buffered_input_stream;
-    std::shared_ptr<io::CacheInputStream> cache_input_stream;
+//     HdfsScanStats app_scan_stats;
+//     HdfsScanStats fs_scan_stats;
+//     std::shared_ptr<io::SharedBufferedInputStream> shared_buffered_input_stream;
+//     std::shared_ptr<io::CacheInputStream> cache_input_stream;
 
-    ASSIGN_OR_RETURN(auto file, open_random_access_file(delete_file, fs_scan_stats, app_scan_stats,
-                                                        shared_buffered_input_stream, cache_input_stream));
+//     ASSIGN_OR_RETURN(auto file, open_random_access_file(delete_file, fs_scan_stats, app_scan_stats,
+//                                                         shared_buffered_input_stream, cache_input_stream));
 
-    auto input_stream = std::make_unique<ORCHdfsFileStream>(file.get(), delete_file.length, nullptr);
-    std::unique_ptr<orc::Reader> reader;
-    try {
-        orc::ReaderOptions options;
-        reader = createReader(std::move(input_stream), options);
-    } catch (std::exception& e) {
-        auto s =
-                strings::Substitute("ORCPositionDeleteBuilder::build create orc::Reader failed. reason = $0", e.what());
-        LOG(WARNING) << s;
-        return Status::InternalError(s);
-    }
+//     auto input_stream = std::make_unique<ORCHdfsFileStream>(file.get(), delete_file.length, nullptr);
+//     std::unique_ptr<orc::Reader> reader;
+//     try {
+//         orc::ReaderOptions options;
+//         reader = createReader(std::move(input_stream), options);
+//     } catch (std::exception& e) {
+//         auto s =
+//                 strings::Substitute("ORCPositionDeleteBuilder::build create orc::Reader failed. reason = $0", e.what());
+//         LOG(WARNING) << s;
+//         return Status::InternalError(s);
+//     }
 
-    auto orc_reader = std::make_unique<OrcChunkReader>(_runtime_state->chunk_size(), slot_descriptors);
-    orc_reader->disable_broker_load_mode();
-    orc_reader->set_current_file_name(delete_file.full_path);
-    RETURN_IF_ERROR(orc_reader->set_timezone(_runtime_state->timezone()));
-    RETURN_IF_ERROR(orc_reader->init(std::move(reader)));
+//     auto orc_reader = std::make_unique<OrcChunkReader>(_runtime_state->chunk_size(), slot_descriptors);
+//     orc_reader->disable_broker_load_mode();
+//     orc_reader->set_current_file_name(delete_file.full_path);
+//     RETURN_IF_ERROR(orc_reader->set_timezone(_runtime_state->timezone()));
+//     RETURN_IF_ERROR(orc_reader->init(std::move(reader)));
 
-    orc::RowReader::ReadPosition position;
-    Status s;
+//     orc::RowReader::ReadPosition position;
+//     Status s;
 
-    while (true) {
-        s = orc_reader->read_next(&position);
-        if (s.is_end_of_file()) {
-            break;
-        }
+//     while (true) {
+//         s = orc_reader->read_next(&position);
+//         if (s.is_end_of_file()) {
+//             break;
+//         }
 
-        RETURN_IF_ERROR(s);
+//         RETURN_IF_ERROR(s);
 
-        auto ret = orc_reader->get_chunk();
-        if (!ret.ok()) {
-            return ret.status();
-        }
-        RETURN_IF_ERROR(fill_skip_rowids(ret.value()));
-    }
-    _skip_rows_ctx->deletion_bitmap = _deletion_bitmap;
-    update_delete_file_io_counter(_params.profile->runtime_profile, app_scan_stats, fs_scan_stats, cache_input_stream,
-                                  shared_buffered_input_stream);
+//         auto ret = orc_reader->get_chunk();
+//         if (!ret.ok()) {
+//             return ret.status();
+//         }
+//         RETURN_IF_ERROR(fill_skip_rowids(ret.value()));
+//     }
+//     _skip_rows_ctx->deletion_bitmap = _deletion_bitmap;
+//     update_delete_file_io_counter(_params.profile->runtime_profile, app_scan_stats, fs_scan_stats, cache_input_stream,
+//                                   shared_buffered_input_stream);
     return Status::OK();
 }
 

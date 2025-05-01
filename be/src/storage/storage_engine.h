@@ -235,9 +235,9 @@ public:
 
     bthread::Executor* async_delta_writer_executor() { return _async_delta_writer_executor.get(); }
 
-    lake::LoadSpillBlockMergeExecutor* load_spill_block_merge_executor() {
-        return _load_spill_block_merge_executor.get();
-    }
+    // lake::LoadSpillBlockMergeExecutor* load_spill_block_merge_executor() {
+    //     return _load_spill_block_merge_executor.get();
+    // }
 
     MemTableFlushExecutor* memtable_flush_executor() { return _memtable_flush_executor.get(); }
 
@@ -496,7 +496,7 @@ private:
 
     std::unique_ptr<bthread::Executor> _async_delta_writer_executor;
 
-    std::unique_ptr<lake::LoadSpillBlockMergeExecutor> _load_spill_block_merge_executor;
+    // std::unique_ptr<lake::LoadSpillBlockMergeExecutor> _load_spill_block_merge_executor;
 
     std::unique_ptr<MemTableFlushExecutor> _memtable_flush_executor;
 

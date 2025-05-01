@@ -383,35 +383,35 @@ int64_t HdfsScanner::estimated_mem_usage() const {
 }
 
 void HdfsScanner::update_hdfs_counter(HdfsScanProfile* profile) {
-    if (_file == nullptr) return;
-    static const char* const kHdfsIOProfileSectionPrefix = "HdfsIOMetrics";
+    // if (_file == nullptr) return;
+    // static const char* const kHdfsIOProfileSectionPrefix = "HdfsIOMetrics";
 
-    auto res = _file->get_numeric_statistics();
-    if (!res.ok()) return;
+    // auto res = _file->get_numeric_statistics();
+    // if (!res.ok()) return;
 
-    std::unique_ptr<io::NumericStatistics> statistics = std::move(res).value();
-    if (statistics == nullptr || statistics->size() == 0) return;
+    // std::unique_ptr<io::NumericStatistics> statistics = std::move(res).value();
+    // if (statistics == nullptr || statistics->size() == 0) return;
 
-    RuntimeProfile* runtime_profile = profile->runtime_profile;
-    ADD_COUNTER(profile->runtime_profile, kHdfsIOProfileSectionPrefix, TUnit::NONE);
+    // RuntimeProfile* runtime_profile = profile->runtime_profile;
+    // ADD_COUNTER(profile->runtime_profile, kHdfsIOProfileSectionPrefix, TUnit::NONE);
 
-    for (int64_t i = 0, sz = statistics->size(); i < sz; i++) {
-        auto&& name = statistics->name(i);
-        if (name == HdfsReadMetricsKey::kTotalOpenFSTimeNs || name == HdfsReadMetricsKey::kTotalOpenFileTimeNs) {
-            auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::TIME_NS, kHdfsIOProfileSectionPrefix);
-            COUNTER_UPDATE(counter, statistics->value(i));
-        } else if (name == HdfsReadMetricsKey::kTotalBytesRead || name == HdfsReadMetricsKey::kTotalLocalBytesRead ||
-                   name == HdfsReadMetricsKey::kTotalShortCircuitBytesRead ||
-                   name == HdfsReadMetricsKey::kTotalZeroCopyBytesRead) {
-            auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::BYTES, kHdfsIOProfileSectionPrefix);
-            COUNTER_UPDATE(counter, statistics->value(i));
-        } else if (name == HdfsReadMetricsKey::kTotalHedgedReadOps ||
-                   name == HdfsReadMetricsKey::kTotalHedgedReadOpsInCurThread ||
-                   name == HdfsReadMetricsKey::kTotalHedgedReadOpsWin) {
-            auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::UNIT, kHdfsIOProfileSectionPrefix);
-            COUNTER_UPDATE(counter, statistics->value(i));
-        }
-    }
+    // for (int64_t i = 0, sz = statistics->size(); i < sz; i++) {
+    //     auto&& name = statistics->name(i);
+    //     if (name == HdfsReadMetricsKey::kTotalOpenFSTimeNs || name == HdfsReadMetricsKey::kTotalOpenFileTimeNs) {
+    //         auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::TIME_NS, kHdfsIOProfileSectionPrefix);
+    //         COUNTER_UPDATE(counter, statistics->value(i));
+    //     } else if (name == HdfsReadMetricsKey::kTotalBytesRead || name == HdfsReadMetricsKey::kTotalLocalBytesRead ||
+    //                name == HdfsReadMetricsKey::kTotalShortCircuitBytesRead ||
+    //                name == HdfsReadMetricsKey::kTotalZeroCopyBytesRead) {
+    //         auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::BYTES, kHdfsIOProfileSectionPrefix);
+    //         COUNTER_UPDATE(counter, statistics->value(i));
+    //     } else if (name == HdfsReadMetricsKey::kTotalHedgedReadOps ||
+    //                name == HdfsReadMetricsKey::kTotalHedgedReadOpsInCurThread ||
+    //                name == HdfsReadMetricsKey::kTotalHedgedReadOpsWin) {
+    //         auto&& counter = ADD_CHILD_COUNTER(runtime_profile, name, TUnit::UNIT, kHdfsIOProfileSectionPrefix);
+    //         COUNTER_UPDATE(counter, statistics->value(i));
+    //     }
+    // }
 }
 
 void HdfsScanner::do_update_counter(HdfsScanProfile* profile) {}

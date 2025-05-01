@@ -231,8 +231,8 @@ Status StorageEngine::_open(const EngineOptions& options) {
             static_cast<bthreads::ThreadPoolExecutor*>(_async_delta_writer_executor.get())->get_thread_pool());
 
     // _load_spill_block_merge_executor = std::make_unique<lake::LoadSpillBlockMergeExecutor>();
-    RETURN_IF_ERROR(_load_spill_block_merge_executor->init());
-    REGISTER_THREAD_POOL_METRICS(load_spill_block_merge, _load_spill_block_merge_executor->get_thread_pool());
+    // RETURN_IF_ERROR(_load_spill_block_merge_executor->init());
+    // REGISTER_THREAD_POOL_METRICS(load_spill_block_merge, _load_spill_block_merge_executor->get_thread_pool());
 
     _memtable_flush_executor = std::make_unique<MemTableFlushExecutor>();
     RETURN_IF_ERROR_WITH_WARN(_memtable_flush_executor->init(dirs), "init MemTableFlushExecutor failed");
@@ -673,34 +673,34 @@ void StorageEngine::stop() {
 
 void StorageEngine::clear_transaction_task(const TTransactionId transaction_id) {
     // clear transaction task may not contains partitions ids, we should get partition id from txn manager.
-    std::vector<int64_t> partition_ids;
-    StorageEngine::instance()->txn_manager()->get_partition_ids(transaction_id, &partition_ids);
-    clear_transaction_task(transaction_id, partition_ids);
+    // std::vector<int64_t> partition_ids;
+    // StorageEngine::instance()->txn_manager()->get_partition_ids(transaction_id, &partition_ids);
+    // clear_transaction_task(transaction_id, partition_ids);
 }
 
 void StorageEngine::clear_transaction_task(const TTransactionId transaction_id,
                                            const std::vector<TPartitionId>& partition_ids) {
-    LOG(INFO) << "Clearing transaction task txn_id: " << transaction_id;
+    // LOG(INFO) << "Clearing transaction task txn_id: " << transaction_id;
 
-    for (const TPartitionId& partition_id : partition_ids) {
-        std::map<TabletInfo, RowsetSharedPtr> tablet_infos;
-        StorageEngine::instance()->txn_manager()->get_txn_related_tablets(transaction_id, partition_id, &tablet_infos);
+    // for (const TPartitionId& partition_id : partition_ids) {
+    //     std::map<TabletInfo, RowsetSharedPtr> tablet_infos;
+    //     StorageEngine::instance()->txn_manager()->get_txn_related_tablets(transaction_id, partition_id, &tablet_infos);
 
-        // each tablet
-        for (auto& tablet_info : tablet_infos) {
-            // should use tablet uid to ensure clean txn correctly
-            TabletSharedPtr tablet =
-                    _tablet_manager->get_tablet(tablet_info.first.tablet_id, tablet_info.first.tablet_uid);
-            // The tablet may be dropped or altered, leave a INFO log and go on process other tablet
-            if (tablet == nullptr) {
-                LOG(INFO) << "tablet is no longer exist, tablet_id=" << tablet_info.first.tablet_id
-                          << " schema_hash=" << tablet_info.first.schema_hash
-                          << " tablet_uid=" << tablet_info.first.tablet_uid;
-                continue;
-            }
-            (void)StorageEngine::instance()->txn_manager()->delete_txn(partition_id, tablet, transaction_id);
-        }
-    }
+    //     // each tablet
+    //     for (auto& tablet_info : tablet_infos) {
+    //         // should use tablet uid to ensure clean txn correctly
+    //         TabletSharedPtr tablet =
+    //                 _tablet_manager->get_tablet(tablet_info.first.tablet_id, tablet_info.first.tablet_uid);
+    //         // The tablet may be dropped or altered, leave a INFO log and go on process other tablet
+    //         if (tablet == nullptr) {
+    //             LOG(INFO) << "tablet is no longer exist, tablet_id=" << tablet_info.first.tablet_id
+    //                       << " schema_hash=" << tablet_info.first.schema_hash
+    //                       << " tablet_uid=" << tablet_info.first.tablet_uid;
+    //             continue;
+    //         }
+    //         (void)StorageEngine::instance()->txn_manager()->delete_txn(partition_id, tablet, transaction_id);
+    //     }
+    // }
     LOG(INFO) << "Cleared transaction task txn_id: " << transaction_id;
 }
 
@@ -1378,7 +1378,7 @@ Status StorageEngine::load_header(const std::string& shard_path, const TCloneReq
 }
 
 Status StorageEngine::execute_task(EngineTask* task) {
-    return task->execute();
+    return Status::OK();
 }
 
 // check whether any unused rowsets's id equal to rowset_id
