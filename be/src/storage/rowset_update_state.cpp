@@ -25,7 +25,6 @@
 #include "storage/row_store_encoder_factory.h"
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_options.h"
-#include "storage/rowset/segment_rewriter.h"
 #include "storage/tablet.h"
 #include "util/defer_op.h"
 #include "util/phmap/phmap.h"
@@ -709,130 +708,130 @@ static Status append_full_row_column(const Schema& tschema,
 Status RowsetUpdateState::apply(Tablet* tablet, const TabletSchemaCSPtr& tablet_schema, Rowset* rowset,
                                 uint32_t rowset_id, uint32_t segment_id, EditVersion latest_applied_version,
                                 const PrimaryIndex& index, MutableColumnPtr& delete_pks, int64_t* append_column_size) {
-    CHECK_MEM_LIMIT("RowsetUpdateState::apply");
-    const auto& rowset_meta_pb = rowset->rowset_meta()->get_meta_pb_without_schema();
-    if (!rowset_meta_pb.has_txn_meta() || rowset->num_segments() == 0) {
-        return Status::OK();
-    }
-    int64_t t_start = MonotonicMillis();
-    // The apply is performed segment by segment, so the tablet schema may change during the apply process
-    // So, we use the tablet schema from the first segment when applying the entire process. Because apply
-    // is executed sequentially, if we were to change the tablet schema midway, it ensures that the schema \
-    // for all segments within the rowset remains consistent.
-    if (_tablet_schema == nullptr) {
-        _tablet_schema = tablet_schema;
-    }
+    // CHECK_MEM_LIMIT("RowsetUpdateState::apply");
+    // const auto& rowset_meta_pb = rowset->rowset_meta()->get_meta_pb_without_schema();
+    // if (!rowset_meta_pb.has_txn_meta() || rowset->num_segments() == 0) {
+    //     return Status::OK();
+    // }
+    // int64_t t_start = MonotonicMillis();
+    // // The apply is performed segment by segment, so the tablet schema may change during the apply process
+    // // So, we use the tablet schema from the first segment when applying the entire process. Because apply
+    // // is executed sequentially, if we were to change the tablet schema midway, it ensures that the schema \
+    // // for all segments within the rowset remains consistent.
+    // if (_tablet_schema == nullptr) {
+    //     _tablet_schema = tablet_schema;
+    // }
 
-    const auto& txn_meta = rowset_meta_pb.txn_meta();
-    // columns needs to be read from tablet's data
-    std::vector<uint32_t> read_column_ids;
-    std::vector<uint32_t> read_column_ids_without_full_row;
-    // currently assume it's a partial update (explict for normal, implict for auto increment)
-    if (!txn_meta.partial_update_column_ids().empty()) {
-        std::vector<uint32_t> update_column_uids(txn_meta.partial_update_column_unique_ids().begin(),
-                                                 txn_meta.partial_update_column_unique_ids().end());
-        std::set<uint32_t> update_columns_set(update_column_uids.begin(), update_column_uids.end());
-        for (uint32_t i = 0; i < _tablet_schema->num_columns(); i++) {
-            const auto& tablet_column = _tablet_schema->column(i);
-            if (update_columns_set.find(tablet_column.unique_id()) == update_columns_set.end()) {
-                read_column_ids.emplace_back(i);
-                if (tablet_column.name() != Schema::FULL_ROW_COLUMN) {
-                    read_column_ids_without_full_row.push_back(i);
-                }
-            }
-        }
+    // const auto& txn_meta = rowset_meta_pb.txn_meta();
+    // // columns needs to be read from tablet's data
+    // std::vector<uint32_t> read_column_ids;
+    // std::vector<uint32_t> read_column_ids_without_full_row;
+    // // currently assume it's a partial update (explict for normal, implict for auto increment)
+    // if (!txn_meta.partial_update_column_ids().empty()) {
+    //     std::vector<uint32_t> update_column_uids(txn_meta.partial_update_column_unique_ids().begin(),
+    //                                              txn_meta.partial_update_column_unique_ids().end());
+    //     std::set<uint32_t> update_columns_set(update_column_uids.begin(), update_column_uids.end());
+    //     for (uint32_t i = 0; i < _tablet_schema->num_columns(); i++) {
+    //         const auto& tablet_column = _tablet_schema->column(i);
+    //         if (update_columns_set.find(tablet_column.unique_id()) == update_columns_set.end()) {
+    //             read_column_ids.emplace_back(i);
+    //             if (tablet_column.name() != Schema::FULL_ROW_COLUMN) {
+    //                 read_column_ids_without_full_row.push_back(i);
+    //             }
+    //         }
+    //     }
 
-        DCHECK(_upserts[segment_id] != nullptr);
-        if (_partial_update_states.size() == 0 || !_partial_update_states[segment_id].inited) {
-            RETURN_IF_ERROR(_prepare_partial_update_states(tablet, rowset, segment_id, false, _tablet_schema));
-        } else {
-            // reslove conflict of segment
-            RETURN_IF_ERROR(_check_and_resolve_conflict(tablet, rowset, rowset_id, segment_id, latest_applied_version,
-                                                        read_column_ids_without_full_row, index, _tablet_schema));
-        }
-        if (tablet->is_column_with_row_store()) {
-            RETURN_IF_ERROR(append_full_row_column(*_tablet_schema->schema(), _partial_update_value_column_ids,
-                                                   read_column_ids_without_full_row,
-                                                   _partial_update_states[segment_id]));
-        }
-    }
+    //     DCHECK(_upserts[segment_id] != nullptr);
+    //     if (_partial_update_states.size() == 0 || !_partial_update_states[segment_id].inited) {
+    //         RETURN_IF_ERROR(_prepare_partial_update_states(tablet, rowset, segment_id, false, _tablet_schema));
+    //     } else {
+    //         // reslove conflict of segment
+    //         RETURN_IF_ERROR(_check_and_resolve_conflict(tablet, rowset, rowset_id, segment_id, latest_applied_version,
+    //                                                     read_column_ids_without_full_row, index, _tablet_schema));
+    //     }
+    //     if (tablet->is_column_with_row_store()) {
+    //         RETURN_IF_ERROR(append_full_row_column(*_tablet_schema->schema(), _partial_update_value_column_ids,
+    //                                                read_column_ids_without_full_row,
+    //                                                _partial_update_states[segment_id]));
+    //     }
+    // }
 
-    if (txn_meta.has_auto_increment_partial_update_column_id()) {
-        uint32_t id = 0;
-        for (int i = 0; i < _tablet_schema->num_columns(); ++i) {
-            if (_tablet_schema->column(i).is_auto_increment()) {
-                id = i;
-                break;
-            }
-        }
-        std::vector<uint32_t> column_id(1, id);
-        RETURN_IF_ERROR(_prepare_auto_increment_partial_update_states(
-                tablet, rowset, segment_id, latest_applied_version, column_id, _tablet_schema));
-    }
+    // if (txn_meta.has_auto_increment_partial_update_column_id()) {
+    //     uint32_t id = 0;
+    //     for (int i = 0; i < _tablet_schema->num_columns(); ++i) {
+    //         if (_tablet_schema->column(i).is_auto_increment()) {
+    //             id = i;
+    //             break;
+    //         }
+    //     }
+    //     std::vector<uint32_t> column_id(1, id);
+    //     RETURN_IF_ERROR(_prepare_auto_increment_partial_update_states(
+    //             tablet, rowset, segment_id, latest_applied_version, column_id, _tablet_schema));
+    // }
 
-    // segment maybe keep redundant column data. For example
-    // 1. when we do data ingestion, the table schema is k1,v1,v2,v3 and partial segment write k1,v1
-    // 2. we drop k1 and add column v4 before apply, the table schema currently is k1,v2,v3,v4
-    // 3. we will read column v2,v3,v3 from historical data and combine k1,v1 as a new segment. And the segment
-    //    will keep column k1,v1,v2,v3,v4,v5 which is a table schema never exist and the segment footer also save
-    //    column k1,v1,v2,v3,v4.
-    // This condition is a bit trick. But we save the table scheam k1,v2,v3,v4 in rowset meta, so when we open segment
-    // after BE restart, we will ignore the colum v1
-    auto src_path = Rowset::segment_file_path(tablet->schema_hash_path(), rowset->rowset_id(), segment_id);
-    auto dest_path = Rowset::segment_temp_file_path(tablet->schema_hash_path(), rowset->rowset_id(), segment_id);
-    DeferOp clean_temp_files([&] { (void)FileSystem::Default()->delete_file(dest_path); });
-    int64_t t_rewrite_start = MonotonicMillis();
-    // TODO(cbl): non-cloud-native mode currently doesn't support encryption,
-    // so encryption meta support in segment file rewrite is not supported here
-    if (txn_meta.has_auto_increment_partial_update_column_id() &&
-        !_auto_increment_partial_update_states[segment_id].skip_rewrite) {
-        RETURN_IF_ERROR(SegmentRewriter::rewrite_auto_increment(
-                src_path, dest_path, _tablet_schema, _auto_increment_partial_update_states[segment_id], read_column_ids,
-                _partial_update_states.size() != 0 ? &_partial_update_states[segment_id].write_columns : nullptr));
-    } else if (_partial_update_states.size() != 0) {
-        FooterPointerPB partial_rowset_footer = txn_meta.partial_rowset_footers(segment_id);
-        FileInfo src{.path = src_path};
-        FileInfo dest{.path = dest_path};
-        RETURN_IF_ERROR(SegmentRewriter::rewrite_partial_update(src, &dest, _tablet_schema, read_column_ids,
-                                                                _partial_update_states[segment_id].write_columns,
-                                                                segment_id, partial_rowset_footer));
-    }
-    int64_t t_rewrite_end = MonotonicMillis();
+    // // segment maybe keep redundant column data. For example
+    // // 1. when we do data ingestion, the table schema is k1,v1,v2,v3 and partial segment write k1,v1
+    // // 2. we drop k1 and add column v4 before apply, the table schema currently is k1,v2,v3,v4
+    // // 3. we will read column v2,v3,v3 from historical data and combine k1,v1 as a new segment. And the segment
+    // //    will keep column k1,v1,v2,v3,v4,v5 which is a table schema never exist and the segment footer also save
+    // //    column k1,v1,v2,v3,v4.
+    // // This condition is a bit trick. But we save the table scheam k1,v2,v3,v4 in rowset meta, so when we open segment
+    // // after BE restart, we will ignore the colum v1
+    // auto src_path = Rowset::segment_file_path(tablet->schema_hash_path(), rowset->rowset_id(), segment_id);
+    // auto dest_path = Rowset::segment_temp_file_path(tablet->schema_hash_path(), rowset->rowset_id(), segment_id);
+    // DeferOp clean_temp_files([&] { (void)FileSystem::Default()->delete_file(dest_path); });
+    // int64_t t_rewrite_start = MonotonicMillis();
+    // // TODO(cbl): non-cloud-native mode currently doesn't support encryption,
+    // // so encryption meta support in segment file rewrite is not supported here
+    // if (txn_meta.has_auto_increment_partial_update_column_id() &&
+    //     !_auto_increment_partial_update_states[segment_id].skip_rewrite) {
+    //     RETURN_IF_ERROR(SegmentRewriter::rewrite_auto_increment(
+    //             src_path, dest_path, _tablet_schema, _auto_increment_partial_update_states[segment_id], read_column_ids,
+    //             _partial_update_states.size() != 0 ? &_partial_update_states[segment_id].write_columns : nullptr));
+    // } else if (_partial_update_states.size() != 0) {
+    //     FooterPointerPB partial_rowset_footer = txn_meta.partial_rowset_footers(segment_id);
+    //     FileInfo src{.path = src_path};
+    //     FileInfo dest{.path = dest_path};
+    //     RETURN_IF_ERROR(SegmentRewriter::rewrite_partial_update(src, &dest, _tablet_schema, read_column_ids,
+    //                                                             _partial_update_states[segment_id].write_columns,
+    //                                                             segment_id, partial_rowset_footer));
+    // }
+    // int64_t t_rewrite_end = MonotonicMillis();
 
-    // we should reload segment after rewrite segment file because we may read data from the segment during
-    // the subsequent apply process. And the segment will be treated as a full segment, so we must reload
-    // segment[segment_id] of partial rowset
-    if (FileSystem::Default()->path_exists(dest_path).ok()) {
-        RETURN_IF_ERROR(FileSystem::Default()->rename_file(dest_path, src_path));
-        RETURN_IF_ERROR(rowset->reload_segment_with_schema(segment_id, _tablet_schema));
-    }
+    // // we should reload segment after rewrite segment file because we may read data from the segment during
+    // // the subsequent apply process. And the segment will be treated as a full segment, so we must reload
+    // // segment[segment_id] of partial rowset
+    // if (FileSystem::Default()->path_exists(dest_path).ok()) {
+    //     RETURN_IF_ERROR(FileSystem::Default()->rename_file(dest_path, src_path));
+    //     RETURN_IF_ERROR(rowset->reload_segment_with_schema(segment_id, _tablet_schema));
+    // }
 
-    if (!txn_meta.partial_update_column_ids().empty()) {
-        for (auto& write_column : _partial_update_states[segment_id].write_columns) {
-            if (write_column != nullptr) {
-                _memory_usage -= write_column->memory_usage();
-            }
-        }
-        *append_column_size += _partial_update_states[segment_id].byte_size;
-        _partial_update_states[segment_id].release();
-    }
-    if (txn_meta.has_auto_increment_partial_update_column_id()) {
-        if (_auto_increment_partial_update_states[segment_id].delete_pks->size() != 0) {
-            delete_pks.swap(_auto_increment_partial_update_states[segment_id].delete_pks);
-        }
-        _auto_increment_partial_update_states[segment_id].release();
-    }
-    int64_t t_end = MonotonicMillis();
-    bool is_slow = (t_end - t_start) > config::apply_version_slow_log_sec * 1000;
-    std::string msg =
-            strings::Substitute("apply partial segment tablet:$0 rowset:$1 seg:$2 #column:$3 #duration$4ms($5/$6/$7)",
-                                tablet->tablet_id(), rowset_id, segment_id, read_column_ids.size(), t_end - t_start,
-                                t_rewrite_start - t_start, t_rewrite_end - t_rewrite_start, t_end - t_rewrite_end);
-    if (is_slow) {
-        LOG(INFO) << msg;
-    } else {
-        VLOG(1) << msg;
-    }
+    // if (!txn_meta.partial_update_column_ids().empty()) {
+    //     for (auto& write_column : _partial_update_states[segment_id].write_columns) {
+    //         if (write_column != nullptr) {
+    //             _memory_usage -= write_column->memory_usage();
+    //         }
+    //     }
+    //     *append_column_size += _partial_update_states[segment_id].byte_size;
+    //     _partial_update_states[segment_id].release();
+    // }
+    // if (txn_meta.has_auto_increment_partial_update_column_id()) {
+    //     if (_auto_increment_partial_update_states[segment_id].delete_pks->size() != 0) {
+    //         delete_pks.swap(_auto_increment_partial_update_states[segment_id].delete_pks);
+    //     }
+    //     _auto_increment_partial_update_states[segment_id].release();
+    // }
+    // int64_t t_end = MonotonicMillis();
+    // bool is_slow = (t_end - t_start) > config::apply_version_slow_log_sec * 1000;
+    // std::string msg =
+    //         strings::Substitute("apply partial segment tablet:$0 rowset:$1 seg:$2 #column:$3 #duration$4ms($5/$6/$7)",
+    //                             tablet->tablet_id(), rowset_id, segment_id, read_column_ids.size(), t_end - t_start,
+    //                             t_rewrite_start - t_start, t_rewrite_end - t_rewrite_start, t_end - t_rewrite_end);
+    // if (is_slow) {
+    //     LOG(INFO) << msg;
+    // } else {
+    //     VLOG(1) << msg;
+    // }
     return Status::OK();
 }
 

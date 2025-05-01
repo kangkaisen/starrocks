@@ -310,7 +310,7 @@ private:
     RawColumnIterators _column_iterators;
     std::vector<int> _io_coalesce_column_index;
     ColumnDecoders _column_decoders;
-    std::shared_ptr<VectorIndexReader> _ann_reader;
+    // std::shared_ptr<VectorIndexReader> _ann_reader;
     BitmapIndexEvaluator _bitmap_index_evaluator;
     // delete predicates
     std::map<ColumnId, ColumnOrPredicate> _del_predicates;
@@ -513,20 +513,7 @@ Status SegmentIterator::_init() {
 inline Status SegmentIterator::_init_reader_from_file(const std::string& index_path,
                                                       const std::shared_ptr<TabletIndex>& tablet_index_meta,
                                                       const std::map<std::string, std::string>& query_params) {
-#ifdef WITH_TENANN
-    ASSIGN_OR_RETURN(auto meta, get_vector_meta(tablet_index_meta, query_params))
-    _index_meta = std::make_shared<tenann::IndexMeta>(std::move(meta));
-    RETURN_IF_ERROR(VectorIndexReaderFactory::create_from_file(index_path, _index_meta, &_ann_reader));
-    auto status = _ann_reader->init_searcher(*_index_meta.get(), index_path);
-    // means empty ann reader
-    if (status.is_not_supported()) {
-        _use_vector_index = false;
-        return Status::OK();
-    }
-    return status;
-#else
     return Status::OK();
-#endif
 }
 
 Status SegmentIterator::_init_ann_reader() {
@@ -2241,62 +2228,62 @@ Status SegmentIterator::_init_inverted_index_iterators() {
 }
 
 Status SegmentIterator::_apply_inverted_index() {
-    RETURN_IF(_scan_range.empty(), Status::OK());
-    RETURN_IF(!_opts.enable_gin_filter, Status::OK());
+    // RETURN_IF(_scan_range.empty(), Status::OK());
+    // RETURN_IF(!_opts.enable_gin_filter, Status::OK());
 
-    RETURN_IF_ERROR(_init_inverted_index_iterators());
-    RETURN_IF(!_has_inverted_index, Status::OK());
-    SCOPED_RAW_TIMER(&_opts.stats->gin_index_filter_ns);
+    // RETURN_IF_ERROR(_init_inverted_index_iterators());
+    // RETURN_IF(!_has_inverted_index, Status::OK());
+    // SCOPED_RAW_TIMER(&_opts.stats->gin_index_filter_ns);
 
-    roaring::Roaring row_bitmap = range2roaring(_scan_range);
-    size_t input_rows = row_bitmap.cardinality();
-    std::unordered_set<const ColumnPredicate*> erased_preds;
-    std::unordered_set<ColumnId> erased_pred_col_ids;
+    // roaring::Roaring row_bitmap = range2roaring(_scan_range);
+    // size_t input_rows = row_bitmap.cardinality();
+    // std::unordered_set<const ColumnPredicate*> erased_preds;
+    // std::unordered_set<ColumnId> erased_pred_col_ids;
 
-    std::unordered_map<ColumnId, ColumnId> cid_2_fid;
-    for (int i = 0; i < _schema.num_fields(); i++) {
-        cid_2_fid.emplace(_schema.field(i)->id(), i);
-    }
+    // std::unordered_map<ColumnId, ColumnId> cid_2_fid;
+    // for (int i = 0; i < _schema.num_fields(); i++) {
+    //     cid_2_fid.emplace(_schema.field(i)->id(), i);
+    // }
 
-    for (const auto& [cid, pred_list] : _opts.pred_tree.get_immediate_column_predicate_map()) {
-        InvertedIndexIterator* inverted_iter = _inverted_index_iterators[cid];
-        if (inverted_iter == nullptr) {
-            continue;
-        }
-        const auto& it = cid_2_fid.find(cid);
-        RETURN_IF(it == cid_2_fid.end(),
-                  Status::InternalError(strings::Substitute("No fid can be mapped by cid $0", cid)));
-        std::string column_name(_schema.field(it->second)->name());
-        for (const ColumnPredicate* pred : pred_list) {
-            if (_inverted_index_iterators[cid]->is_untokenized() || pred->type() == PredicateType::kExpr) {
-                Status res = pred->seek_inverted_index(column_name, _inverted_index_iterators[cid], &row_bitmap);
-                if (res.ok()) {
-                    erased_preds.emplace(pred);
-                    erased_pred_col_ids.emplace(cid);
-                }
-            }
-        }
-    }
-    DCHECK_LE(row_bitmap.cardinality(), _scan_range.span_size());
-    _scan_range = roaring2range(row_bitmap);
+    // for (const auto& [cid, pred_list] : _opts.pred_tree.get_immediate_column_predicate_map()) {
+    //     InvertedIndexIterator* inverted_iter = _inverted_index_iterators[cid];
+    //     if (inverted_iter == nullptr) {
+    //         continue;
+    //     }
+    //     const auto& it = cid_2_fid.find(cid);
+    //     RETURN_IF(it == cid_2_fid.end(),
+    //               Status::InternalError(strings::Substitute("No fid can be mapped by cid $0", cid)));
+    //     std::string column_name(_schema.field(it->second)->name());
+    //     for (const ColumnPredicate* pred : pred_list) {
+    //         if (_inverted_index_iterators[cid]->is_untokenized() || pred->type() == PredicateType::kExpr) {
+    //             Status res = pred->seek_inverted_index(column_name, _inverted_index_iterators[cid], &row_bitmap);
+    //             if (res.ok()) {
+    //                 erased_preds.emplace(pred);
+    //                 erased_pred_col_ids.emplace(cid);
+    //             }
+    //         }
+    //     }
+    // }
+    // DCHECK_LE(row_bitmap.cardinality(), _scan_range.span_size());
+    // _scan_range = roaring2range(row_bitmap);
 
-    // ---------------------------------------------------------
-    // Erase predicates that hit inverted index.
-    // ---------------------------------------------------------
-    if (!erased_preds.empty()) {
-        erase_column_pred_from_pred_tree(_opts.pred_tree, erased_preds);
-        const auto& new_cid_to_predicates = _opts.pred_tree.get_immediate_column_predicate_map();
+    // // ---------------------------------------------------------
+    // // Erase predicates that hit inverted index.
+    // // ---------------------------------------------------------
+    // if (!erased_preds.empty()) {
+    //     erase_column_pred_from_pred_tree(_opts.pred_tree, erased_preds);
+    //     const auto& new_cid_to_predicates = _opts.pred_tree.get_immediate_column_predicate_map();
 
-        for (const auto& cid : erased_pred_col_ids) {
-            if (!new_cid_to_predicates.contains(cid)) {
-                // predicate for pred->column_id() has been total erased by
-                // inverted index filtering.These columns may can be pruned.
-                _prune_cols_candidate_by_inverted_index.insert(cid);
-            }
-        }
-    }
+    //     for (const auto& cid : erased_pred_col_ids) {
+    //         if (!new_cid_to_predicates.contains(cid)) {
+    //             // predicate for pred->column_id() has been total erased by
+    //             // inverted index filtering.These columns may can be pruned.
+    //             _prune_cols_candidate_by_inverted_index.insert(cid);
+    //         }
+    //     }
+    // }
 
-    _opts.stats->rows_gin_filtered += input_rows - _scan_range.span_size();
+    // _opts.stats->rows_gin_filtered += input_rows - _scan_range.span_size();
     return Status::OK();
 }
 
@@ -2518,11 +2505,11 @@ void SegmentIterator::close() {
 
     _bitmap_index_evaluator.close();
 
-    for (auto* iter : _inverted_index_iterators) {
-        if (iter != nullptr) {
-            delete iter;
-        }
-    }
+    // for (auto* iter : _inverted_index_iterators) {
+    //     if (iter != nullptr) {
+    //         delete iter;
+    //     }
+    // }
 }
 
 // put the field that has predicated on it ahead of those without one, for handle late

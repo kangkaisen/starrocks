@@ -26,7 +26,6 @@
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_options.h"
 #include "storage/rowset/segment_options.h"
-#include "storage/rowset/segment_rewriter.h"
 #include "storage/tablet.h"
 #include "storage/tablet_meta_manager.h"
 #include "storage/update_manager.h"

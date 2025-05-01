@@ -36,7 +36,7 @@ OlapScanPrepareOperator::~OlapScanPrepareOperator() {
 }
 
 Status OlapScanPrepareOperator::prepare(RuntimeState* state) {
-    TEST_SUCC_POINT("OlapScanPrepareOperator::prepare");
+    // TEST_SUCC_POINT("OlapScanPrepareOperator::prepare");
 
     RETURN_IF_ERROR(SourceOperator::prepare(state));
 

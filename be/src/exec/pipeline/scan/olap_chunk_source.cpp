@@ -36,7 +36,6 @@
 #include "runtime/exec_env.h"
 #include "storage/chunk_helper.h"
 #include "storage/column_predicate_rewriter.h"
-#include "storage/index/vector/vector_search_option.h"
 #include "storage/predicate_parser.h"
 #include "storage/projection_iterator.h"
 #include "storage/runtime_range_pruner.hpp"
@@ -78,14 +77,14 @@ Status OlapChunkSource::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ChunkSource::prepare(state));
     _runtime_state = state;
     const TOlapScanNode& thrift_olap_scan_node = _scan_node->thrift_olap_scan_node();
-    const TVectorSearchOptions& vector_search_options = thrift_olap_scan_node.vector_search_options;
-    _use_vector_index = thrift_olap_scan_node.__isset.vector_search_options && vector_search_options.enable_use_ann;
-    if (_use_vector_index) {
-        _use_ivfpq = vector_search_options.use_ivfpq;
-        _vector_distance_column_name = vector_search_options.vector_distance_column_name;
-        _vector_slot_id = vector_search_options.vector_slot_id;
-        _params.vector_search_option = std::make_shared<VectorSearchOption>();
-    }
+    // const TVectorSearchOptions& vector_search_options = thrift_olap_scan_node.vector_search_options;
+    // _use_vector_index = thrift_olap_scan_node.__isset.vector_search_options && vector_search_options.enable_use_ann;
+    // if (_use_vector_index) {
+    //     _use_ivfpq = vector_search_options.use_ivfpq;
+    //     _vector_distance_column_name = vector_search_options.vector_distance_column_name;
+    //     _vector_slot_id = vector_search_options.vector_slot_id;
+    //     _params.vector_search_option = std::make_shared<VectorSearchOption>();
+    // }
     const TupleDescriptor* tuple_desc = state->desc_tbl().get_tuple_descriptor(thrift_olap_scan_node.tuple_id);
     _slots = &tuple_desc->slots();
 
@@ -248,24 +247,24 @@ Status OlapChunkSource::_init_reader_params(const std::vector<std::unique_ptr<Ol
     if (thrift_olap_scan_node.__isset.enable_gin_filter) {
         _params.enable_gin_filter = thrift_olap_scan_node.enable_gin_filter;
     }
-    _params.use_vector_index = _use_vector_index;
-    if (_use_vector_index) {
-        const TVectorSearchOptions& vector_options = thrift_olap_scan_node.vector_search_options;
+    // _params.use_vector_index = _use_vector_index;
+    // if (_use_vector_index) {
+    //     const TVectorSearchOptions& vector_options = thrift_olap_scan_node.vector_search_options;
 
-        _params.vector_search_option->vector_distance_column_name = _vector_distance_column_name;
-        _params.vector_search_option->k = vector_options.vector_limit_k;
-        for (const std::string& str : vector_options.query_vector) {
-            _params.vector_search_option->query_vector.push_back(std::stof(str));
-        }
-        if (_runtime_state->query_options().__isset.ann_params) {
-            _params.vector_search_option->query_params = _runtime_state->query_options().ann_params;
-        }
-        _params.vector_search_option->vector_range = vector_options.vector_range;
-        _params.vector_search_option->result_order = vector_options.result_order;
-        _params.vector_search_option->use_ivfpq = _use_ivfpq;
-        _params.vector_search_option->k_factor = _runtime_state->query_options().k_factor;
-        _params.vector_search_option->pq_refine_factor = _runtime_state->query_options().pq_refine_factor;
-    }
+    //     _params.vector_search_option->vector_distance_column_name = _vector_distance_column_name;
+    //     _params.vector_search_option->k = vector_options.vector_limit_k;
+    //     for (const std::string& str : vector_options.query_vector) {
+    //         _params.vector_search_option->query_vector.push_back(std::stof(str));
+    //     }
+    //     if (_runtime_state->query_options().__isset.ann_params) {
+    //         _params.vector_search_option->query_params = _runtime_state->query_options().ann_params;
+    //     }
+    //     _params.vector_search_option->vector_range = vector_options.vector_range;
+    //     _params.vector_search_option->result_order = vector_options.result_order;
+    //     _params.vector_search_option->use_ivfpq = _use_ivfpq;
+    //     _params.vector_search_option->k_factor = _runtime_state->query_options().k_factor;
+    //     _params.vector_search_option->pq_refine_factor = _runtime_state->query_options().pq_refine_factor;
+    // }
     if (thrift_olap_scan_node.__isset.sorted_by_keys_per_tablet) {
         _params.sorted_by_keys_per_tablet = thrift_olap_scan_node.sorted_by_keys_per_tablet;
     }

@@ -223,7 +223,7 @@ public:
 
     TabletManager* tablet_manager() { return _tablet_manager.get(); }
 
-    TxnManager* txn_manager() { return _txn_manager.get(); }
+    // TxnManager* txn_manager() { return _txn_manager.get(); }
 
     // ReplicationTxnManager* replication_txn_manager() { return _replication_txn_manager.get(); }
 
@@ -488,7 +488,7 @@ private:
     bool _need_report_disk_stat = false;
 
     std::unique_ptr<TabletManager> _tablet_manager;
-    std::unique_ptr<TxnManager> _txn_manager;
+    // std::unique_ptr<TxnManager> _txn_manager;
 
     // std::unique_ptr<ReplicationTxnManager> _replication_txn_manager;
 
