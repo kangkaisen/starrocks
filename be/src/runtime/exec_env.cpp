@@ -357,39 +357,39 @@ Status CacheEnv::_init_starcache_based_object_cache() {
 }
 
 Status CacheEnv::_init_lru_base_object_cache() {
-    ObjectCacheOptions options;
-    ASSIGN_OR_RETURN(int64_t storage_cache_limit, _global_env->get_storage_page_cache_size());
-    storage_cache_limit = _global_env->check_storage_page_cache_size(storage_cache_limit);
-    options.capacity = storage_cache_limit;
+    // ObjectCacheOptions options;
+    // ASSIGN_OR_RETURN(int64_t storage_cache_limit, _global_env->get_storage_page_cache_size());
+    // storage_cache_limit = _global_env->check_storage_page_cache_size(storage_cache_limit);
+    // options.capacity = storage_cache_limit;
 
-    _lru_based_object_cache = std::make_shared<LRUCacheModule>(options);
-    LOG(INFO) << "object cache init successfully";
+    // _lru_based_object_cache = std::make_shared<LRUCacheModule>(options);
+    // LOG(INFO) << "object cache init successfully";
     return Status::OK();
 }
 
 Status CacheEnv::_init_page_cache() {
-    _page_cache = std::make_shared<StoragePageCache>(_lru_based_object_cache.get());
-    _page_cache->init_metrics();
-    LOG(INFO) << "storage page cache init successfully";
+    // _page_cache = std::make_shared<StoragePageCache>(_lru_based_object_cache.get());
+    // _page_cache->init_metrics();
+    // LOG(INFO) << "storage page cache init successfully";
     return Status::OK();
 }
 
 Status CacheEnv::_init_datacache() {
-    _block_cache = std::make_shared<BlockCache>();
+    // _block_cache = std::make_shared<BlockCache>();
 
-    // When configured old `block_cache` configurations, use the old items for compatibility.
-    if (config::block_cache_enable) {
-        config::datacache_enable = true;
-        config::datacache_mem_size = std::to_string(config::block_cache_mem_size);
-        config::datacache_disk_size = std::to_string(config::block_cache_disk_size);
-        config::datacache_block_size = config::block_cache_block_size;
-        config::datacache_max_concurrent_inserts = config::block_cache_max_concurrent_inserts;
-        config::datacache_checksum_enable = config::block_cache_checksum_enable;
-        config::datacache_direct_io_enable = config::block_cache_direct_io_enable;
-        config::datacache_engine = config::block_cache_engine;
-        LOG(WARNING) << "The configuration items prefixed with `block_cache_` will be deprecated soon"
-                     << ", you'd better use the configuration items prefixed `datacache` instead!";
-    }
+    // // When configured old `block_cache` configurations, use the old items for compatibility.
+    // if (config::block_cache_enable) {
+    //     config::datacache_enable = true;
+    //     config::datacache_mem_size = std::to_string(config::block_cache_mem_size);
+    //     config::datacache_disk_size = std::to_string(config::block_cache_disk_size);
+    //     config::datacache_block_size = config::block_cache_block_size;
+    //     config::datacache_max_concurrent_inserts = config::block_cache_max_concurrent_inserts;
+    //     config::datacache_checksum_enable = config::block_cache_checksum_enable;
+    //     config::datacache_direct_io_enable = config::block_cache_direct_io_enable;
+    //     config::datacache_engine = config::block_cache_engine;
+    //     LOG(WARNING) << "The configuration items prefixed with `block_cache_` will be deprecated soon"
+    //                  << ", you'd better use the configuration items prefixed `datacache` instead!";
+    // }
 
 // #if !defined(WITH_STARCACHE)
 //     if (config::datacache_enable) {

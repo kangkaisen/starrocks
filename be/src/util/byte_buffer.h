@@ -44,7 +44,6 @@
 #include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
 #include "storage/utils.h"
-#include "testutil/sync_point.h"
 
 namespace starrocks {
 

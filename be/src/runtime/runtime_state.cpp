@@ -490,37 +490,37 @@ bool RuntimeState::is_jit_enabled() const {
 }
 
 void RuntimeState::update_load_datacache_metrics(TReportExecStatusParams* load_params) const {
-    if (!_query_options.__isset.catalog) {
-        return;
-    }
+//     if (!_query_options.__isset.catalog) {
+//         return;
+//     }
 
-    TLoadDataCacheMetrics metrics{};
-    metrics.__set_read_bytes(_num_datacache_read_bytes.load(std::memory_order_relaxed));
-    metrics.__set_read_time_ns(_num_datacache_read_time_ns.load(std::memory_order_relaxed));
-    metrics.__set_write_bytes(_num_datacache_write_bytes.load(std::memory_order_relaxed));
-    metrics.__set_write_time_ns(_num_datacache_write_time_ns.load(std::memory_order_relaxed));
-    metrics.__set_count(_num_datacache_count.load(std::memory_order_relaxed));
+//     TLoadDataCacheMetrics metrics{};
+//     metrics.__set_read_bytes(_num_datacache_read_bytes.load(std::memory_order_relaxed));
+//     metrics.__set_read_time_ns(_num_datacache_read_time_ns.load(std::memory_order_relaxed));
+//     metrics.__set_write_bytes(_num_datacache_write_bytes.load(std::memory_order_relaxed));
+//     metrics.__set_write_time_ns(_num_datacache_write_time_ns.load(std::memory_order_relaxed));
+//     metrics.__set_count(_num_datacache_count.load(std::memory_order_relaxed));
 
-    if (_query_options.catalog == "default_catalog") {
-#ifdef USE_STAROS
-        if (config::starlet_use_star_cache) {
-            TDataCacheMetrics t_metrics{};
-            starcache::CacheMetrics cache_metrics;
-            staros::starlet::fslib::star_cache_get_metrics(&cache_metrics);
-            DataCacheUtils::set_metrics_from_thrift(t_metrics, cache_metrics);
-            metrics.__set_metrics(t_metrics);
-            load_params->__set_load_datacache_metrics(metrics);
-        }
-#endif // USE_STAROS
-    } else {
-        const BlockCache* cache = BlockCache::instance();
-        if (cache->is_initialized()) {
-            TDataCacheMetrics t_metrics{};
-            DataCacheUtils::set_metrics_from_thrift(t_metrics, cache->cache_metrics());
-            metrics.__set_metrics(t_metrics);
-            load_params->__set_load_datacache_metrics(metrics);
-        }
-    }
+//     if (_query_options.catalog == "default_catalog") {
+// #ifdef USE_STAROS
+//         if (config::starlet_use_star_cache) {
+//             TDataCacheMetrics t_metrics{};
+//             starcache::CacheMetrics cache_metrics;
+//             staros::starlet::fslib::star_cache_get_metrics(&cache_metrics);
+//             DataCacheUtils::set_metrics_from_thrift(t_metrics, cache_metrics);
+//             metrics.__set_metrics(t_metrics);
+//             load_params->__set_load_datacache_metrics(metrics);
+//         }
+// #endif // USE_STAROS
+//     } else {
+//         const BlockCache* cache = BlockCache::instance();
+//         if (cache->is_initialized()) {
+//             TDataCacheMetrics t_metrics{};
+//             DataCacheUtils::set_metrics_from_thrift(t_metrics, cache->cache_metrics());
+//             metrics.__set_metrics(t_metrics);
+//             load_params->__set_load_datacache_metrics(metrics);
+//         }
+//     }
 }
 
 } // end namespace starrocks

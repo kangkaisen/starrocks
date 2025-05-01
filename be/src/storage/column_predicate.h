@@ -45,6 +45,7 @@ class ExprContext;
 class RuntimeState;
 class SlotDescriptor;
 class BitmapIndexIterator;
+class InvertedIndexIterator;
 struct NgramBloomFilterReaderOptions;
 class RuntimeFilterProbeDescriptor;
 } // namespace starrocks

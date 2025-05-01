@@ -22,7 +22,6 @@
 #include "column/datum_convert.h"
 #include "common/status.h"
 #include "runtime/global_dict/config.h"
-#include "storage/lake/rowset.h"
 #include "storage/rowset/column_iterator.h"
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/rowset.h"
@@ -34,62 +33,62 @@ LakeMetaReader::LakeMetaReader() : MetaReader() {}
 LakeMetaReader::~LakeMetaReader() = default;
 
 Status LakeMetaReader::init(const LakeMetaReaderParams& read_params) {
-    _params = read_params;
+    // _params = read_params;
 
-    ASSIGN_OR_RETURN(auto tablet, ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet(
-                                          read_params.tablet_id, read_params.version.second));
+    // ASSIGN_OR_RETURN(auto tablet, ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet(
+    //                                       read_params.tablet_id, read_params.version.second));
 
-    RETURN_IF_ERROR(_build_collect_context(tablet, read_params));
-    RETURN_IF_ERROR(_init_seg_meta_collecters(tablet, read_params));
+    // RETURN_IF_ERROR(_build_collect_context(tablet, read_params));
+    // RETURN_IF_ERROR(_init_seg_meta_collecters(tablet, read_params));
 
-    _collect_context.cursor_idx = 0;
-    _is_init = true;
-    _has_more = true;
+    // _collect_context.cursor_idx = 0;
+    // _is_init = true;
+    // _has_more = true;
     return Status::OK();
 }
 
 Status LakeMetaReader::_build_collect_context(const lake::VersionedTablet& tablet,
                                               const LakeMetaReaderParams& read_params) {
-    auto tablet_schema = tablet.get_schema();
-    for (const auto& it : *(read_params.id_to_names)) {
-        std::string col_name = "";
-        std::string collect_field = "";
-        RETURN_IF_ERROR(SegmentMetaCollecter::parse_field_and_colname(it.second, &collect_field, &col_name));
+    // auto tablet_schema = tablet.get_schema();
+    // for (const auto& it : *(read_params.id_to_names)) {
+    //     std::string col_name = "";
+    //     std::string collect_field = "";
+    //     RETURN_IF_ERROR(SegmentMetaCollecter::parse_field_and_colname(it.second, &collect_field, &col_name));
 
-        int32_t index = tablet_schema->field_index(col_name);
-        if (index < 0) {
-            std::stringstream ss;
-            ss << "invalid column name: " << it.second;
-            LOG(WARNING) << ss.str();
-            return Status::InternalError(ss.str());
-        }
+    //     int32_t index = tablet_schema->field_index(col_name);
+    //     if (index < 0) {
+    //         std::stringstream ss;
+    //         ss << "invalid column name: " << it.second;
+    //         LOG(WARNING) << ss.str();
+    //         return Status::InternalError(ss.str());
+    //     }
 
-        // get column type
-        LogicalType type = tablet_schema->column(index).type();
-        _collect_context.seg_collecter_params.field_type.emplace_back(type);
+    //     // get column type
+    //     LogicalType type = tablet_schema->column(index).type();
+    //     _collect_context.seg_collecter_params.field_type.emplace_back(type);
 
-        // get collect field
-        _collect_context.seg_collecter_params.fields.emplace_back(collect_field);
+    //     // get collect field
+    //     _collect_context.seg_collecter_params.fields.emplace_back(collect_field);
 
-        // get column id
-        _collect_context.seg_collecter_params.cids.emplace_back(index);
+    //     // get column id
+    //     _collect_context.seg_collecter_params.cids.emplace_back(index);
 
-        // low cardinality threshold
-        _collect_context.seg_collecter_params.low_cardinality_threshold = read_params.low_card_threshold;
+    //     // low cardinality threshold
+    //     _collect_context.seg_collecter_params.low_cardinality_threshold = read_params.low_card_threshold;
 
-        // get result slot id
-        _collect_context.result_slot_ids.emplace_back(it.first);
+    //     // get result slot id
+    //     _collect_context.result_slot_ids.emplace_back(it.first);
 
-        // only collect the field of dict need read data page
-        // others just depend on footer
-        if (collect_field == "dict_merge") {
-            _collect_context.seg_collecter_params.read_page.emplace_back(true);
-        } else {
-            _collect_context.seg_collecter_params.read_page.emplace_back(false);
-        }
-        _has_count_agg |= (collect_field == "count");
-    }
-    _collect_context.seg_collecter_params.tablet_schema = tablet_schema;
+    //     // only collect the field of dict need read data page
+    //     // others just depend on footer
+    //     if (collect_field == "dict_merge") {
+    //         _collect_context.seg_collecter_params.read_page.emplace_back(true);
+    //     } else {
+    //         _collect_context.seg_collecter_params.read_page.emplace_back(false);
+    //     }
+    //     _has_count_agg |= (collect_field == "count");
+    // }
+    // _collect_context.seg_collecter_params.tablet_schema = tablet_schema;
     return Status::OK();
 }
 

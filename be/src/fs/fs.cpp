@@ -89,20 +89,20 @@ StatusOr<std::shared_ptr<FileSystem>> FileSystem::Create(std::string_view uri, c
 
 StatusOr<std::unique_ptr<FileSystem>> FileSystem::CreateUniqueFromString(std::string_view uri,
                                                                          const FSOptions& options) {
-    if (fs::is_fallback_to_hadoop_fs(uri)) {
-        return new_fs_hdfs(options);
-    }
+    // if (fs::is_fallback_to_hadoop_fs(uri)) {
+    //     return new_fs_hdfs(options);
+    // }
     if (fs::is_posix_uri(uri)) {
         return new_fs_posix();
     }
     if (fs::is_s3_uri(uri)) {
         return new_fs_s3(options);
     }
-    if (fs::is_azure_uri(uri) || fs::is_gcs_uri(uri)) {
-        // TODO(SmithCruise):
-        // Now Azure storage and Google Cloud Storage both are using LibHdfs, we can use cpp sdk instead in the future.
-        return new_fs_hdfs(options);
-    }
+    // if (fs::is_azure_uri(uri) || fs::is_gcs_uri(uri)) {
+    //     // TODO(SmithCruise):
+    //     // Now Azure storage and Google Cloud Storage both are using LibHdfs, we can use cpp sdk instead in the future.
+    //     return new_fs_hdfs(options);
+    // }
 #if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
     if (is_starlet_uri(uri)) {
         return new_fs_starlet();
@@ -110,7 +110,7 @@ StatusOr<std::unique_ptr<FileSystem>> FileSystem::CreateUniqueFromString(std::st
 #endif
     // Since almost all famous storage are compatible with Hadoop FileSystem, it's always a choice to fallback using
     // Hadoop FileSystem to access storage.
-    return new_fs_hdfs(options);
+    return new_fs_posix();
 }
 
 StatusOr<std::shared_ptr<FileSystem>> FileSystem::CreateSharedFromString(std::string_view uri) {

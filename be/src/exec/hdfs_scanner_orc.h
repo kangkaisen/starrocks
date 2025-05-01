@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <orc/OrcFile.hh>
+// #include <orc/OrcFile.hh>
 
 #include "exec/hdfs_scanner.h"
 #include "formats/disk_range.hpp"
