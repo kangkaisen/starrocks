@@ -136,7 +136,7 @@ bool MemLimitedChunkQueue::can_push() {
     size_t in_memory_bytes = _total_accumulated_bytes - _flushed_accumulated_bytes;
     if (in_memory_bytes >= _opts.memory_limit && _next_flush_block->next != nullptr) {
         if (bool expected = false; _has_flush_io_task.compare_exchange_strong(expected, true)) {
-            TEST_SYNC_POINT("MemLimitedChunkQueue::can_push::before_submit_flush_task");
+            // TEST_SYNC_POINT("MemLimitedChunkQueue::can_push::before_submit_flush_task");
             auto status = _submit_flush_task();
             if (!status.ok()) {
                 _update_io_task_status(status);
@@ -150,7 +150,7 @@ bool MemLimitedChunkQueue::can_push() {
 }
 
 StatusOr<ChunkPtr> MemLimitedChunkQueue::pop(int32_t consumer_index) {
-    TEST_SYNC_POINT("MemLimitedChunkQueue::pop::before_pop");
+    // TEST_SYNC_POINT("MemLimitedChunkQueue::pop::before_pop");
     DCHECK(consumer_index <= _consumer_number);
     RETURN_IF_ERROR(_get_io_task_status());
     std::unique_lock l(_mutex);
@@ -462,11 +462,11 @@ Status MemLimitedChunkQueue::_flush() {
 
 Status MemLimitedChunkQueue::_submit_flush_task() {
     auto flush_task = [this, guard = RESOURCE_TLS_MEMTRACER_GUARD(_state)](auto& yield_ctx) {
-        TEST_SYNC_POINT("MemLimitedChunkQueue::before_execute_flush_task");
+        // TEST_SYNC_POINT("MemLimitedChunkQueue::before_execute_flush_task");
         RETURN_IF(!guard.scoped_begin(), (void)0);
         DEFER_GUARD_END(guard);
         auto defer = DeferOp([&]() {
-            TEST_SYNC_POINT("MemLimitedChunkQueue::after_execute_flush_task");
+            // TEST_SYNC_POINT("MemLimitedChunkQueue::after_execute_flush_task");
             _has_flush_io_task.store(false);
         });
 

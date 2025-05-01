@@ -92,11 +92,11 @@ StatusOr<ChunkPtr> OlapScanPrepareOperator::pull_chunk(RuntimeState* state) {
     DeferOp defer([&]() {
         _ctx->set_prepare_finished();
         _ctx->notify_observers();
-        TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::after_set_prepare_finished");
+        // TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::after_set_prepare_finished");
     });
 
     if (!status.ok()) {
-        TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::before_set_finished");
+        // TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::before_set_finished");
         // OlapScanOperator::has_output() will `use !_ctx->is_prepare_finished() || _ctx->is_finished()` to
         // determine whether OlapScanOperator::pull_chunk() needs to be executed.
         // When _ctx->parse_conjuncts returns EOF, if set_prepare_finished first, and then set_finished.
@@ -104,7 +104,7 @@ StatusOr<ChunkPtr> OlapScanPrepareOperator::pull_chunk(RuntimeState* state) {
         // causing OlapScanOperator::pull_chunk to be executed, which is invalid, maybe cause crash.
         // So we will set_finished first and set_prepare_finished()
         static_cast<void>(_ctx->set_finished());
-        TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::after_set_finished");
+        // TEST_SYNC_POINT("OlapScnPrepareOperator::pull_chunk::after_set_finished");
         return status;
     } else {
         return nullptr;

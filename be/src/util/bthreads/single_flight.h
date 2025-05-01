@@ -45,7 +45,7 @@ public:
         if (it != _doing.end()) {
             auto f = it->second;
             lock.unlock();
-            TEST_SYNC_POINT("singleflight::Group::Do:1");
+            // TEST_SYNC_POINT("singleflight::Group::Do:1");
             return f;
         }
 
@@ -54,13 +54,13 @@ public:
         _doing.emplace(key, future);
         lock.unlock();
 
-        TEST_SYNC_POINT("singleflight::Group::Do:2");
+        // TEST_SYNC_POINT("singleflight::Group::Do:2");
         try {
             promise.set_value(func(std::forward<Args>(args)...));
         } catch (...) {
             promise.set_exception(std::current_exception());
         }
-        TEST_SYNC_POINT("singleflight::Group::Do:3");
+        // TEST_SYNC_POINT("singleflight::Group::Do:3");
 
         lock.lock();
         it = _doing.find(key);
@@ -76,12 +76,12 @@ public:
     // to Do for this key will call the function rather than waiting for
     // an earlier call to complete.
     void Forget(K key) {
-        TEST_SYNC_POINT("singleflight::Group::Forget:1");
+        // TEST_SYNC_POINT("singleflight::Group::Forget:1");
         {
             std::lock_guard l(_doing_mtx);
             _doing.erase(key);
         }
-        TEST_SYNC_POINT("singleflight::Group::Forget:2");
+        // TEST_SYNC_POINT("singleflight::Group::Forget:2");
     }
 
 private:

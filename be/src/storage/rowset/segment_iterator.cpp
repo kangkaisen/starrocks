@@ -39,12 +39,6 @@
 #include "storage/column_predicate_rewriter.h"
 #include "storage/del_vector.h"
 #include "storage/index/index_descriptor.h"
-#include "storage/index/vector/tenann/del_id_filter.h"
-#include "storage/index/vector/tenann/tenann_index_utils.h"
-#include "storage/index/vector/vector_index_reader.h"
-#include "storage/index/vector/vector_index_reader_factory.h"
-#include "storage/index/vector/vector_search_option.h"
-#include "storage/lake/update_manager.h"
 #include "storage/projection_iterator.h"
 #include "storage/range.h"
 #include "storage/roaring2range.h"
@@ -375,10 +369,6 @@ private:
 
     // vector index params
     int64_t _k;
-#ifdef WITH_TENANN
-    tenann::PrimitiveSeqView _query_view;
-    std::shared_ptr<tenann::IndexMeta> _index_meta;
-#endif
 
     bool _always_build_rowid() const { return _use_vector_index && !_use_ivfpq; }
 
@@ -403,31 +393,6 @@ SegmentIterator::SegmentIterator(std::shared_ptr<Segment> segment, Schema schema
           _bitmap_index_evaluator(_schema, _opts.pred_tree),
           _predicate_columns(_opts.pred_tree.num_columns()),
           _use_vector_index(_opts.use_vector_index) {
-    if (_use_vector_index) {
-        // The K in front of Fe is long, which can be changed to uint32. This can be a problem,
-        // but this k is wasted memory allocation, so it should not exceed the accuracy of uint32
-        // options.query_vector is a string, passed to tenann as a float string, see if you need to use the stof function to convert
-        // and consider precision loss
-        _vector_distance_column_name = _opts.vector_search_option->vector_distance_column_name;
-        _vector_column_id = _opts.vector_search_option->vector_column_id;
-        _vector_slot_id = _opts.vector_search_option->vector_slot_id;
-        _vector_range = _opts.vector_search_option->vector_range;
-        _result_order = _opts.vector_search_option->result_order;
-        _use_ivfpq = _opts.vector_search_option->use_ivfpq;
-        _query_params = _opts.vector_search_option->query_params;
-        if (_vector_range >= 0 && _use_ivfpq) {
-            _k = _opts.vector_search_option->k * _opts.vector_search_option->pq_refine_factor *
-                 _opts.vector_search_option->k_factor;
-        } else {
-            _k = _opts.vector_search_option->k * _opts.vector_search_option->k_factor;
-        }
-#ifdef WITH_TENANN
-        _query_view = tenann::PrimitiveSeqView{
-                .data = reinterpret_cast<uint8_t*>(_opts.vector_search_option->query_vector.data()),
-                .size = static_cast<uint32_t>(_opts.vector_search_option->query_vector.size()),
-                .elem_type = tenann::PrimitiveType::kFloatType};
-#endif
-    }
     // For small segment file (the number of rows is less than chunk_size),
     // the segment iterator will reserve a large amount of memory,
     // especially when there are many columns, many small files, many versions,

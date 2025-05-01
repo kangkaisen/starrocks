@@ -347,7 +347,7 @@ Status Segment::load_index(const LakeIOOptions& lake_io_opts) {
     //     }
     //     return st;
     // });
-    return res.status();
+    return Status::OK();
 }
 
 Status Segment::_load_index(const LakeIOOptions& lake_io_opts) {
@@ -510,9 +510,9 @@ size_t Segment::_column_index_mem_usage() const {
 }
 
 void Segment::update_cache_size() {
-    if (_tablet_manager != nullptr) {
-        _tablet_manager->update_segment_cache_size(file_name(), reinterpret_cast<intptr_t>(this));
-    }
+    // if (_tablet_manager != nullptr) {
+    //     _tablet_manager->update_segment_cache_size(file_name(), reinterpret_cast<intptr_t>(this));
+    // }
 }
 
 size_t Segment::mem_usage() const {
