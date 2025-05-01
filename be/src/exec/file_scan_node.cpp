@@ -203,9 +203,7 @@ void FileScanNode::debug_string(int ident_level, std::stringstream* out) const {
 
 std::unique_ptr<FileScanner> FileScanNode::_create_scanner(const TBrokerScanRange& scan_range,
                                                            ScannerCounter* counter) {
-    if (scan_range.ranges[0].format_type == TFileFormatType::FORMAT_ORC) {
-        return std::make_unique<ORCScanner>(runtime_state(), runtime_profile(), scan_range, counter);
-    } else if (scan_range.ranges[0].format_type == TFileFormatType::FORMAT_PARQUET) {
+    if (scan_range.ranges[0].format_type == TFileFormatType::FORMAT_PARQUET) {
         return std::make_unique<ParquetScanner>(runtime_state(), runtime_profile(), scan_range, counter);
     } else if (scan_range.ranges[0].format_type == TFileFormatType::FORMAT_JSON) {
         return std::make_unique<JsonScanner>(runtime_state(), runtime_profile(), scan_range, counter);

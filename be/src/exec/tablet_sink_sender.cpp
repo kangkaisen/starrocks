@@ -18,7 +18,6 @@
 
 #include "column/chunk.h"
 #include "common/statusor.h"
-#include "exec/write_combined_txn_log.h"
 #include "exprs/expr.h"
 #include "runtime/runtime_state.h"
 
@@ -311,19 +310,19 @@ Status TabletSinkSender::close_wait(RuntimeState* state, Status close_status, Ta
                 }
             }
         }
-        if (status.ok() && write_txn_log) {
-            auto merge_txn_log = [this](NodeChannel* channel) {
-                for (auto& log : channel->txn_logs()) {
-                    _txn_log_map[log.partition_id()].add_txn_logs()->Swap(&log);
-                }
-            };
+        // if (status.ok() && write_txn_log) {
+        //     auto merge_txn_log = [this](NodeChannel* channel) {
+        //         for (auto& log : channel->txn_logs()) {
+        //             _txn_log_map[log.partition_id()].add_txn_logs()->Swap(&log);
+        //         }
+        //     };
 
-            for (auto& index_channel : _channels) {
-                index_channel->for_each_node_channel(merge_txn_log);
-            }
+        //     for (auto& index_channel : _channels) {
+        //         index_channel->for_each_node_channel(merge_txn_log);
+        //     }
 
-            status.update(_write_combined_txn_log());
-        }
+        //     status.update(_write_combined_txn_log());
+        // }
 
         // only if status is ok can we call this _profile->total_time_counter().
         // if status is not ok, this sink may not be prepared, so that _profile is null
@@ -370,14 +369,14 @@ bool TabletSinkSender::get_immutable_partition_ids(std::set<int64_t>* partition_
 }
 
 Status TabletSinkSender::_write_combined_txn_log() {
-    if (config::enable_put_combinded_txn_log_parallel) {
-        return write_combined_txn_log_parallel(_txn_log_map);
-    }
+    // if (config::enable_put_combinded_txn_log_parallel) {
+    //     return write_combined_txn_log_parallel(_txn_log_map);
+    // }
 
-    for (const auto& [partition_id, logs] : _txn_log_map) {
-        (void)partition_id;
-        RETURN_IF_ERROR(write_combined_txn_log(logs));
-    }
+    // for (const auto& [partition_id, logs] : _txn_log_map) {
+    //     (void)partition_id;
+    //     RETURN_IF_ERROR(write_combined_txn_log(logs));
+    // }
     return Status::OK();
 }
 

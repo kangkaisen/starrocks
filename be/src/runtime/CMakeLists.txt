@@ -80,8 +80,6 @@ set(RUNTIME_FILES
     global_dict/types.cpp
     current_thread.cpp
     runtime_filter_cache.cpp
-    lake_tablets_channel.cpp
-    lake_snapshot_loader.cpp
     profile_report_worker.cpp
     schema_table_sink.cpp
     command_executor.cpp

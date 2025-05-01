@@ -19,7 +19,6 @@
 #include "exec/pipeline/fragment_context.h"
 #include "exprs/expr.h"
 #include "formats/csv/csv_file_writer.h"
-#include "formats/orc/orc_file_writer.h"
 #include "formats/parquet/parquet_file_writer.h"
 #include "formats/utils.h"
 #include "util/url_coding.h"
@@ -69,10 +68,6 @@ StatusOr<std::unique_ptr<ConnectorChunkSink>> HiveChunkSinkProvider::create_chun
         file_writer_factory = std::make_unique<formats::ParquetFileWriterFactory>(
                 std::move(fs), ctx->compression_type, ctx->options, ctx->data_column_names,
                 std::move(data_column_evaluators), std::nullopt, ctx->executor, runtime_state);
-    } else if (boost::iequals(ctx->format, formats::ORC)) {
-        file_writer_factory = std::make_unique<formats::ORCFileWriterFactory>(
-                std::move(fs), ctx->compression_type, ctx->options, ctx->data_column_names,
-                std::move(data_column_evaluators), ctx->executor, runtime_state);
     } else if (boost::iequals(ctx->format, formats::TEXTFILE)) {
         file_writer_factory = std::make_unique<formats::CSVFileWriterFactory>(
                 std::move(fs), ctx->compression_type, ctx->options, ctx->data_column_names,

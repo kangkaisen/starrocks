@@ -446,9 +446,9 @@ Status FileScanner::sample_schema(RuntimeState* state, const TBrokerScanRange& s
             p_scanner = std::make_unique<ParquetScanner>(state, &profile, sample_range, &counter, true);
             break;
 
-        case TFileFormatType::FORMAT_ORC:
-            p_scanner = std::make_unique<ORCScanner>(state, &profile, sample_range, &counter, true);
-            break;
+        // case TFileFormatType::FORMAT_ORC:
+        //     p_scanner = std::make_unique<ORCScanner>(state, &profile, sample_range, &counter, true);
+        //     break;
 
         case TFileFormatType::FORMAT_CSV_PLAIN:
         case TFileFormatType::FORMAT_CSV_GZ:

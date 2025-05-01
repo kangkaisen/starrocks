@@ -20,7 +20,6 @@
 #include "fs/fs.h"
 #include "storage/olap_define.h"
 #include "storage/utils.h"
-#include "testutil/sync_point.h"
 #include "util/raw_container.h"
 
 namespace starrocks {

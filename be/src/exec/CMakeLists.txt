@@ -37,7 +37,6 @@ set(EXEC_FILES
     tablet_sink_colocate_sender.cpp
     tablet_sink_index_channel.cpp
     tablet_sink_sender.cpp
-    write_combined_txn_log.cpp
     multi_olap_table_sink.cpp
     mysql_scanner.cpp
     local_file_writer.cpp
@@ -78,7 +77,6 @@ set(EXEC_FILES
     except_hash_set.cpp
     except_node.cpp
     file_scanner.cpp
-    orc_scanner.cpp
     jni_scanner.cpp
     arrow_to_starrocks_converter.cpp
     arrow_to_json_converter.cpp

@@ -276,15 +276,15 @@ Status TabletSinkColocateSender::close_wait(RuntimeState* state, Status close_st
                 status = err_st;
                 for_each_node_channel([&status](NodeChannel* ch) { ch->cancel(status); });
             }
-            if (status.ok() && write_txn_log) {
-                auto merge_txn_log = [this](NodeChannel* channel) {
-                    for (auto& log : channel->txn_logs()) {
-                        _txn_log_map[log.partition_id()].add_txn_logs()->Swap(&log);
-                    }
-                };
-                for_each_node_channel(merge_txn_log);
-                status.update(_write_combined_txn_log());
-            }
+            // if (status.ok() && write_txn_log) {
+            //     auto merge_txn_log = [this](NodeChannel* channel) {
+            //         for (auto& log : channel->txn_logs()) {
+            //             _txn_log_map[log.partition_id()].add_txn_logs()->Swap(&log);
+            //         }
+            //     };
+            //     for_each_node_channel(merge_txn_log);
+            //     status.update(_write_combined_txn_log());
+            // }
             // only if status is ok can we call this _profile->total_time_counter().
             // if status is not ok, this sink may not be prepared, so that _profile is null
             SCOPED_TIMER(ts_profile->runtime_profile->total_time_counter());

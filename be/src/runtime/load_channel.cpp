@@ -143,11 +143,12 @@ void LoadChannel::open(const LoadChannelOpenContext& open_context) {
         }
         auto it = _tablets_channels.find(key);
         if (it == _tablets_channels.end()) {
-            if (is_lake_tablet) {
-                channel = new_lake_tablets_channel(this, _lake_tablet_mgr, key, _mem_tracker.get(), _profile);
-            } else {
-                channel = new_local_tablets_channel(this, key, _mem_tracker.get(), _profile);
-            }
+            // if (is_lake_tablet) {
+            //     channel = new_lake_tablets_channel(this, _lake_tablet_mgr, key, _mem_tracker.get(), _profile);
+            // } else {
+            //     channel = new_local_tablets_channel(this, key, _mem_tracker.get(), _profile);
+            // }
+            channel = new_local_tablets_channel(this, key, _mem_tracker.get(), _profile);
             if (st = channel->open(request, response, _schema, request.is_incremental()); st.ok()) {
                 _tablets_channels.insert({key, std::move(channel)});
             }

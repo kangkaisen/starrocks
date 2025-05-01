@@ -20,7 +20,6 @@
 #include "connector/hive_chunk_sink.h"
 #include "exec/cache_select_scanner.h"
 #include "exec/exec_node.h"
-#include "exec/hdfs_scanner_orc.h"
 #include "exec/hdfs_scanner_parquet.h"
 #include "exec/hdfs_scanner_partition.h"
 #include "exec/hdfs_scanner_text.h"

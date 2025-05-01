@@ -20,7 +20,6 @@
 #include "column/type_traits.h"
 #include "exprs/table_function/generate_series.h"
 #include "exprs/table_function/json_each.h"
-#include "exprs/table_function/list_rowsets.h"
 #include "exprs/table_function/multi_unnest.h"
 #include "exprs/table_function/subdivide_bitmap.h"
 #include "exprs/table_function/table_function.h"
