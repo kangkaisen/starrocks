@@ -47,7 +47,6 @@
 #include "gutil/strings/substitute.h"
 #include "segment_iterator.h"
 #include "segment_options.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/predicate_tree/predicate_tree.hpp"
 #include "storage/rowset/cast_column_iterator.h"
 #include "storage/rowset/column_reader.h"
@@ -230,21 +229,21 @@ Status Segment::open(size_t* footer_length_hint, const FooterPointerPB* partial_
 
 Status Segment::_open(size_t* footer_length_hint, const FooterPointerPB* partial_rowset_footer,
                       const LakeIOOptions& lake_io_opts) {
-    SegmentFooterPB footer;
-    RandomAccessFileOptions opts{.skip_fill_local_cache = !lake_io_opts.fill_data_cache,
-                                 .buffer_size = lake_io_opts.buffer_size};
+    // SegmentFooterPB footer;
+    // RandomAccessFileOptions opts{.skip_fill_local_cache = !lake_io_opts.fill_data_cache,
+    //                              .buffer_size = lake_io_opts.buffer_size};
 
-    if (!_segment_file_info.encryption_meta.empty()) {
-        ASSIGN_OR_RETURN(auto info, KeyCache::instance().unwrap_encryption_meta(_segment_file_info.encryption_meta));
-        opts.encryption_info = std::move(info);
-        _encryption_info = std::make_unique<FileEncryptionInfo>(opts.encryption_info);
-    }
+    // if (!_segment_file_info.encryption_meta.empty()) {
+    //     ASSIGN_OR_RETURN(auto info, KeyCache::instance().unwrap_encryption_meta(_segment_file_info.encryption_meta));
+    //     opts.encryption_info = std::move(info);
+    //     _encryption_info = std::make_unique<FileEncryptionInfo>(opts.encryption_info);
+    // }
 
-    ASSIGN_OR_RETURN(auto read_file, _fs->new_random_access_file(opts, _segment_file_info));
-    RETURN_IF_ERROR(Segment::parse_segment_footer(read_file.get(), &footer, footer_length_hint, partial_rowset_footer));
-    RETURN_IF_ERROR(_create_column_readers(&footer));
-    _num_rows = footer.num_rows();
-    _short_key_index_page = PagePointer(footer.short_key_index_page());
+    // ASSIGN_OR_RETURN(auto read_file, _fs->new_random_access_file(opts, _segment_file_info));
+    // RETURN_IF_ERROR(Segment::parse_segment_footer(read_file.get(), &footer, footer_length_hint, partial_rowset_footer));
+    // RETURN_IF_ERROR(_create_column_readers(&footer));
+    // _num_rows = footer.num_rows();
+    // _short_key_index_page = PagePointer(footer.short_key_index_page());
     return Status::OK();
 }
 
@@ -335,19 +334,19 @@ StatusOr<ChunkIteratorPtr> Segment::new_iterator(const Schema& schema, const Seg
 // }
 
 Status Segment::load_index(const LakeIOOptions& lake_io_opts) {
-    auto res = success_once(_load_index_once, [&] {
-        SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
+    // auto res = success_once(_load_index_once, [&] {
+    //     SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
 
-        Status st = _load_index(lake_io_opts);
-        if (st.ok()) {
-            MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->short_key_index_mem_tracker(),
-                                     _short_key_index_mem_usage());
-            update_cache_size();
-        } else {
-            _reset();
-        }
-        return st;
-    });
+    //     Status st = _load_index(lake_io_opts);
+    //     if (st.ok()) {
+    //         MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->short_key_index_mem_tracker(),
+    //                                  _short_key_index_mem_usage());
+    //         update_cache_size();
+    //     } else {
+    //         _reset();
+    //     }
+    //     return st;
+    // });
     return res.status();
 }
 
