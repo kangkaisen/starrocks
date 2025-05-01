@@ -64,14 +64,14 @@ Status RowsMapperBuilder::finalize() {
 }
 
 RowsMapperIterator::~RowsMapperIterator() {
-    if (_rfile != nullptr) {
-        const std::string filename = _rfile->filename();
-        _rfile.reset(nullptr);
-        auto st = fs::delete_file(filename);
-        if (!st.ok()) {
-            LOG(ERROR) << "delete rows mapper file fail, st: " << st;
-        }
-    }
+    // if (_rfile != nullptr) {
+    //     const std::string filename = _rfile->filename();
+    //     _rfile.reset(nullptr);
+    //     auto st = fs::delete_file(filename);
+    //     if (!st.ok()) {
+    //         LOG(ERROR) << "delete rows mapper file fail, st: " << st;
+    //     }
+    // }
 }
 
 // Open file
