@@ -20,7 +20,6 @@
 #include "exec/meta_scanner.h"
 #include "exec/olap_utils.h"
 #include "runtime/runtime_state.h"
-#include "storage/lake_meta_reader.h"
 
 #ifdef BE_TEST
 // remove final declaration for UT
@@ -59,7 +58,6 @@ protected:
 
     LakeMetaScanNode* _parent;
     int64_t _tablet_id;
-    std::unique_ptr<LakeMetaReader> _reader;
 };
 
 } // namespace starrocks

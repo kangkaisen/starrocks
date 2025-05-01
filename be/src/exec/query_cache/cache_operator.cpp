@@ -21,8 +21,6 @@
 #include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
 #include "exec/pipeline/pipeline_driver.h"
-#include "storage/lake/tablet.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/rowset/base_rowset.h"
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
@@ -259,18 +257,18 @@ void CacheOperator::_handle_stale_cache_value_for_non_pk(int64_t tablet_id, Cach
         rowsets_acq_rel = std::move(acq_rel);
 
     } else {
-        auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
-                tablet_id, cache_value.version + 1, version);
-        // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
-        if (!status.ok()) {
-            buffer->state = PLBS_MISS;
-            buffer->cached_version = 0;
-            return;
-        }
+        // auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
+        //         tablet_id, cache_value.version + 1, version);
+        // // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
+        // if (!status.ok()) {
+        //     buffer->state = PLBS_MISS;
+        //     buffer->cached_version = 0;
+        //     return;
+        // }
 
-        auto& [tablet, rowsets] = status.value();
-        base_tablet = std::static_pointer_cast<BaseTablet>(tablet);
-        base_rowsets = std::move(rowsets);
+        // auto& [tablet, rowsets] = status.value();
+        // base_tablet = std::static_pointer_cast<BaseTablet>(tablet);
+        // base_rowsets = std::move(rowsets);
     }
 
     // Delta versions are captured, several situations should be taken into consideration.
@@ -284,9 +282,9 @@ void CacheOperator::_handle_stale_cache_value_for_non_pk(int64_t tablet_id, Cach
             max_version = std::max(max_version, rs->end_version());
         }
     } else {
-        all_rs_empty = base_rowsets.empty();
-        min_version = cache_value.version + 1;
-        max_version = version;
+        // all_rs_empty = base_rowsets.empty();
+        // min_version = cache_value.version + 1;
+        // max_version = version;
     }
 
     Version delta_versions(min_version, max_version);
@@ -353,21 +351,21 @@ void CacheOperator::_handle_stale_cache_value_for_pk(int64_t tablet_id, starrock
         }
 
     } else {
-        auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
-                tablet_id, cache_value.version + 1, version);
-        // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
-        if (!status.ok()) {
-            buffer->state = PLBS_MISS;
-            buffer->cached_version = 0;
-            return;
-        }
+        // auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
+        //         tablet_id, cache_value.version + 1, version);
+        // // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
+        // if (!status.ok()) {
+        //     buffer->state = PLBS_MISS;
+        //     buffer->cached_version = 0;
+        //     return;
+        // }
 
-        auto& [tablet, rowsets] = status.value();
-        if (!rowsets.empty()) {
-            buffer->state = PLBS_MISS;
-            buffer->cached_version = 0;
-            return;
-        }
+        // auto& [tablet, rowsets] = status.value();
+        // if (!rowsets.empty()) {
+        //     buffer->state = PLBS_MISS;
+        //     buffer->cached_version = 0;
+        //     return;
+        // }
     }
 
     buffer->cached_version = cache_value.version;
