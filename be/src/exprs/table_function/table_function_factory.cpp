@@ -126,11 +126,6 @@ TableFunctionResolver::TableFunctionResolver() {
     add_function_mapping("generate_series", {TYPE, TYPE, TYPE}, {TYPE}, std::make_shared<GenerateSeries<TYPE>>());
     APPLY_FOR_ALL_INT_TYPE(M)
 #undef M
-
-    // ----=====---- list_rowsets ----====----
-    add_function_mapping("list_rowsets", {TYPE_BIGINT, TYPE_BIGINT},
-                         {TYPE_BIGINT, TYPE_BIGINT, TYPE_BIGINT, TYPE_BIGINT, TYPE_BOOLEAN, TYPE_VARCHAR},
-                         std::make_shared<ListRowsets>());
 }
 
 TableFunctionResolver::~TableFunctionResolver() = default;

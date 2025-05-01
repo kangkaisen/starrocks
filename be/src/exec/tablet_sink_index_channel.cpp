@@ -30,7 +30,6 @@
 #include "runtime/current_thread.h"
 #include "runtime/runtime_state.h"
 #include "serde/protobuf_serde.h"
-#include "testutil/sync_point.h"
 #include "util/brpc_stub_cache.h"
 #include "util/compression/compression_utils.h"
 #include "util/failpoint/fail_point.h"

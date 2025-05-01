@@ -786,9 +786,6 @@ Status HiveDataSource::_init_scanner(RuntimeState* state) {
                                   : true
                         : false;
         scanner = new HdfsParquetScanner();
-    } else if (format == THdfsFileFormat::ORC) {
-        scanner_params.orc_use_column_names = state->query_options().orc_use_column_names;
-        scanner = new HdfsOrcScanner();
     } else if (format == THdfsFileFormat::TEXT) {
         scanner = new HdfsTextScanner();
     } else if ((format == THdfsFileFormat::AVRO || format == THdfsFileFormat::RC_BINARY ||

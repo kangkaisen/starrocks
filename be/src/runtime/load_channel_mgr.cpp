@@ -46,7 +46,6 @@
 #include "runtime/load_channel.h"
 #include "runtime/mem_tracker.h"
 #include "runtime/tablets_channel.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/utils.h"
 #include "util/starrocks_metrics.h"
 #include "util/stopwatch.hpp"
@@ -191,20 +190,20 @@ void LoadChannelMgr::_open(LoadChannelOpenContext open_context) {
             channel = it->second;
         } else if (!is_tracker_hit_hard_limit(_mem_tracker, config::load_process_max_memory_hard_limit_ratio) ||
                    config::enable_new_load_on_memory_limit_exceeded) {
-            // When loading memory usage is larger than hard limit, we will reject new loading task.
-            int64_t mem_limit_in_req = request.has_load_mem_limit() ? request.load_mem_limit() : -1;
-            int64_t job_max_memory = calc_job_max_load_memory(mem_limit_in_req, _mem_tracker->limit());
+            // // When loading memory usage is larger than hard limit, we will reject new loading task.
+            // int64_t mem_limit_in_req = request.has_load_mem_limit() ? request.load_mem_limit() : -1;
+            // int64_t job_max_memory = calc_job_max_load_memory(mem_limit_in_req, _mem_tracker->limit());
 
-            int64_t timeout_in_req_s = request.has_load_channel_timeout_s() ? request.load_channel_timeout_s() : -1;
-            int64_t job_timeout_s = calc_job_timeout_s(timeout_in_req_s);
-            auto job_mem_tracker = std::make_unique<MemTracker>(job_max_memory, load_id.to_string(), _mem_tracker);
+            // int64_t timeout_in_req_s = request.has_load_channel_timeout_s() ? request.load_channel_timeout_s() : -1;
+            // int64_t job_timeout_s = calc_job_timeout_s(timeout_in_req_s);
+            // auto job_mem_tracker = std::make_unique<MemTracker>(job_max_memory, load_id.to_string(), _mem_tracker);
 
-            channel.reset(new LoadChannel(this, ExecEnv::GetInstance()->lake_tablet_manager(), load_id, txn_id,
-                                          request.txn_trace_parent(), job_timeout_s, std::move(job_mem_tracker)));
-            if (request.has_load_channel_profile_config()) {
-                channel->set_profile_config(request.load_channel_profile_config());
-            }
-            _load_channels.insert({load_id, channel});
+            // channel.reset(new LoadChannel(this, ExecEnv::GetInstance()->lake_tablet_manager(), load_id, txn_id,
+            //                               request.txn_trace_parent(), job_timeout_s, std::move(job_mem_tracker)));
+            // if (request.has_load_channel_profile_config()) {
+            //     channel->set_profile_config(request.load_channel_profile_config());
+            // }
+            // _load_channels.insert({load_id, channel});
         } else {
             response->mutable_status()->set_status_code(TStatusCode::MEM_LIMIT_EXCEEDED);
             response->mutable_status()->add_error_msgs(
@@ -345,21 +344,21 @@ void LoadChannelMgr::_start_load_channels_clean() {
         }
     }
 
-    // we must cancel these load channels before destroying them
-    // otherwise some object may be invalid before trying to visit it.
-    // eg: MemTracker in load channel
-    for (auto& channel : timeout_channels) {
-        channel->cancel();
-    }
-    for (auto& channel : timeout_channels) {
-        channel->abort();
-        LOG(INFO) << "Deleted timeout channel. load id=" << channel->load_id() << " timeout=" << channel->timeout();
-    }
+    // // we must cancel these load channels before destroying them
+    // // otherwise some object may be invalid before trying to visit it.
+    // // eg: MemTracker in load channel
+    // for (auto& channel : timeout_channels) {
+    //     channel->cancel();
+    // }
+    // for (auto& channel : timeout_channels) {
+    //     channel->abort();
+    //     LOG(INFO) << "Deleted timeout channel. load id=" << channel->load_id() << " timeout=" << channel->timeout();
+    // }
 
-    // clean load in writing data size
-    if (auto lake_tablet_manager = ExecEnv::GetInstance()->lake_tablet_manager(); lake_tablet_manager != nullptr) {
-        lake_tablet_manager->clean_in_writing_data_size();
-    }
+    // // clean load in writing data size
+    // if (auto lake_tablet_manager = ExecEnv::GetInstance()->lake_tablet_manager(); lake_tablet_manager != nullptr) {
+    //     lake_tablet_manager->clean_in_writing_data_size();
+    // }
 }
 
 std::shared_ptr<LoadChannel> LoadChannelMgr::_find_load_channel(const UniqueId& load_id) {

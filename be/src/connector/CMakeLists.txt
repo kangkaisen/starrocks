@@ -18,7 +18,6 @@ add_library(Connector STATIC
         connector.cpp
         hive_connector.cpp
         jdbc_connector.cpp
-        lake_connector.cpp
         mysql_connector.cpp
         file_connector.cpp
         binlog_connector.cpp

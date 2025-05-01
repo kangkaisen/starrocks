@@ -92,7 +92,6 @@ set(EXEC_FILES
     intersect_hash_set.cpp
     intersect_node.cpp
     hdfs_scanner.cpp
-    hdfs_scanner_orc.cpp
     hdfs_scanner_parquet.cpp
     hdfs_scanner_text.cpp
     hdfs_scanner_partition.cpp

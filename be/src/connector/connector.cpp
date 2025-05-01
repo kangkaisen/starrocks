@@ -19,7 +19,6 @@
 #include "connector/hive_connector.h"
 #include "connector/iceberg_connector.h"
 #include "connector/jdbc_connector.h"
-#include "connector/lake_connector.h"
 #include "connector/mysql_connector.h"
 
 namespace starrocks::connector {
@@ -53,12 +52,7 @@ class ConnectorManagerInit {
 public:
     ConnectorManagerInit() {
         ConnectorManager* cm = ConnectorManager::default_instance();
-        cm->put(Connector::HIVE, std::make_unique<HiveConnector>());
-        cm->put(Connector::JDBC, std::make_unique<JDBCConnector>());
-        cm->put(Connector::MYSQL, std::make_unique<MySQLConnector>());
         cm->put(Connector::FILE, std::make_unique<FileConnector>());
-        cm->put(Connector::LAKE, std::make_unique<LakeConnector>());
-        cm->put(Connector::BINLOG, std::make_unique<BinlogConnector>());
         cm->put(Connector::ICEBERG, std::make_unique<IcebergConnector>());
     }
 };

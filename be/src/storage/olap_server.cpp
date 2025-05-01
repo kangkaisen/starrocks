@@ -47,8 +47,6 @@
 #include "fs/fs_util.h"
 #include "storage/compaction.h"
 #include "storage/compaction_manager.h"
-#include "storage/lake/local_pk_index_manager.h"
-#include "storage/lake/update_manager.h"
 #include "storage/olap_common.h"
 #include "storage/olap_define.h"
 #include "storage/persistent_index_compaction_manager.h"
@@ -400,24 +398,24 @@ void* StorageEngine::_base_compaction_thread_callback(void* arg, DataDir* data_d
 }
 
 void* StorageEngine::_pk_index_major_compaction_thread_callback(void* arg) {
-#ifdef GOOGLE_PROFILER
-    ProfilerRegisterThread();
-#endif
-    while (!_bg_worker_stopped.load(std::memory_order_consume)) {
-        SLEEP_IN_BG_WORKER(1);
-        // schedule persistent index compaction
-        if (config::enable_pindex_minor_compaction) {
-            _update_manager->get_pindex_compaction_mgr()->schedule([&]() {
-                return StorageEngine::instance()->tablet_manager()->pick_tablets_to_do_pk_index_major_compaction();
-            });
-#ifdef USE_STAROS
-            auto update_manager = ExecEnv::GetInstance()->lake_update_manager();
-            _local_pk_index_manager->schedule([&]() {
-                return _local_pk_index_manager->pick_tablets_to_do_pk_index_major_compaction(update_manager);
-            });
-#endif
-        }
-    }
+// #ifdef GOOGLE_PROFILER
+//     ProfilerRegisterThread();
+// #endif
+//     while (!_bg_worker_stopped.load(std::memory_order_consume)) {
+//         SLEEP_IN_BG_WORKER(1);
+//         // schedule persistent index compaction
+//         if (config::enable_pindex_minor_compaction) {
+//             _update_manager->get_pindex_compaction_mgr()->schedule([&]() {
+//                 return StorageEngine::instance()->tablet_manager()->pick_tablets_to_do_pk_index_major_compaction();
+//             });
+// #ifdef USE_STAROS
+//             auto update_manager = ExecEnv::GetInstance()->lake_update_manager();
+//             _local_pk_index_manager->schedule([&]() {
+//                 return _local_pk_index_manager->pick_tablets_to_do_pk_index_major_compaction(update_manager);
+//             });
+// #endif
+//         }
+//     }
 
     return nullptr;
 }
@@ -442,25 +440,25 @@ void* StorageEngine::_pk_dump_thread_callback(void* arg) {
 
 #ifdef USE_STAROS
 void* StorageEngine::_local_pk_index_shared_data_gc_evict_thread_callback(void* arg) {
-#ifdef GOOGLE_PROFILER
-    ProfilerRegisterThread();
-#endif
-    auto lake_update_manager = ExecEnv::GetInstance()->lake_update_manager();
+// #ifdef GOOGLE_PROFILER
+//     ProfilerRegisterThread();
+// #endif
+//     auto lake_update_manager = ExecEnv::GetInstance()->lake_update_manager();
 
-    while (!_bg_worker_stopped.load(std::memory_order_consume)) {
-        SLEEP_IN_BG_WORKER(config::pindex_shared_data_gc_evict_interval_seconds);
-        for (DataDir* data_dir : get_stores()) {
-            auto pk_path = data_dir->get_persistent_index_path();
-            std::set<std::string> tablet_ids;
-            Status ret = fs::list_dirs_files(pk_path, &tablet_ids, nullptr);
-            if (!ret.ok()) {
-                LOG(WARNING) << "fail to walk dir. path=[" + pk_path << "] error[" << ret.to_string() << "]";
-                continue;
-            }
-            lake::LocalPkIndexManager::gc(lake_update_manager, data_dir, tablet_ids);
-            lake::LocalPkIndexManager::evict(lake_update_manager, data_dir, tablet_ids);
-        }
-    }
+//     while (!_bg_worker_stopped.load(std::memory_order_consume)) {
+//         SLEEP_IN_BG_WORKER(config::pindex_shared_data_gc_evict_interval_seconds);
+//         for (DataDir* data_dir : get_stores()) {
+//             auto pk_path = data_dir->get_persistent_index_path();
+//             std::set<std::string> tablet_ids;
+//             Status ret = fs::list_dirs_files(pk_path, &tablet_ids, nullptr);
+//             if (!ret.ok()) {
+//                 LOG(WARNING) << "fail to walk dir. path=[" + pk_path << "] error[" << ret.to_string() << "]";
+//                 continue;
+//             }
+//             lake::LocalPkIndexManager::gc(lake_update_manager, data_dir, tablet_ids);
+//             lake::LocalPkIndexManager::evict(lake_update_manager, data_dir, tablet_ids);
+//         }
+//     }
 
     return nullptr;
 }
@@ -745,54 +743,54 @@ void* StorageEngine::_cumulative_compaction_thread_callback(void* arg, DataDir* 
 }
 
 void* StorageEngine::_update_cache_expire_thread_callback(void* arg) {
-#ifdef GOOGLE_PROFILER
-    ProfilerRegisterThread();
-#endif
-    while (!_bg_worker_stopped.load(std::memory_order_consume)) {
-        int32_t expire_sec = config::update_cache_expire_sec;
-        if (expire_sec <= 0) {
-            LOG(WARNING) << "update_cache_expire_sec config is illegal: " << expire_sec << ", force set to 360";
-            expire_sec = 360;
-        }
-        _update_manager->set_cache_expire_ms(expire_sec * 1000);
-#if defined(USE_STAROS) && !defined(BE_TEST)
-        ExecEnv::GetInstance()->lake_update_manager()->set_cache_expire_ms(expire_sec * 1000);
-#endif
-        int32_t sleep_sec = std::max(1, expire_sec / 2);
-        SLEEP_IN_BG_WORKER(sleep_sec);
-        _update_manager->expire_cache();
-#if defined(USE_STAROS) && !defined(BE_TEST)
-        ExecEnv::GetInstance()->lake_update_manager()->expire_cache();
-#endif
-    }
+// #ifdef GOOGLE_PROFILER
+//     ProfilerRegisterThread();
+// #endif
+//     while (!_bg_worker_stopped.load(std::memory_order_consume)) {
+//         int32_t expire_sec = config::update_cache_expire_sec;
+//         if (expire_sec <= 0) {
+//             LOG(WARNING) << "update_cache_expire_sec config is illegal: " << expire_sec << ", force set to 360";
+//             expire_sec = 360;
+//         }
+//         _update_manager->set_cache_expire_ms(expire_sec * 1000);
+// #if defined(USE_STAROS) && !defined(BE_TEST)
+//         ExecEnv::GetInstance()->lake_update_manager()->set_cache_expire_ms(expire_sec * 1000);
+// #endif
+//         int32_t sleep_sec = std::max(1, expire_sec / 2);
+//         SLEEP_IN_BG_WORKER(sleep_sec);
+//         _update_manager->expire_cache();
+// #if defined(USE_STAROS) && !defined(BE_TEST)
+//         ExecEnv::GetInstance()->lake_update_manager()->expire_cache();
+// #endif
+//     }
 
     return nullptr;
 }
 
 void* StorageEngine::_update_cache_evict_thread_callback(void* arg) {
-#ifdef GOOGLE_PROFILER
-    ProfilerRegisterThread();
-#endif
-    while (!_bg_worker_stopped.load(std::memory_order_consume)) {
-        SLEEP_IN_BG_WORKER(config::update_cache_evict_internal_sec);
-        if (!config::enable_auto_evict_update_cache) {
-            continue;
-        }
+// #ifdef GOOGLE_PROFILER
+//     ProfilerRegisterThread();
+// #endif
+//     while (!_bg_worker_stopped.load(std::memory_order_consume)) {
+//         SLEEP_IN_BG_WORKER(config::update_cache_evict_internal_sec);
+//         if (!config::enable_auto_evict_update_cache) {
+//             continue;
+//         }
 
-        // Check config valid
-        int64_t memory_urgent_level = config::memory_urgent_level;
-        int64_t memory_high_level = config::memory_high_level;
-        if (UNLIKELY(!(memory_urgent_level > memory_high_level && memory_high_level >= 1 &&
-                       memory_urgent_level <= 100))) {
-            LOG(ERROR) << "memory water level config is illegal: memory_urgent_level=" << memory_urgent_level
-                       << " memory_high_level=" << memory_high_level;
-            continue;
-        }
-        _update_manager->evict_cache(memory_urgent_level, memory_high_level);
-#if defined(USE_STAROS) && !defined(BE_TEST)
-        ExecEnv::GetInstance()->lake_update_manager()->evict_cache(memory_urgent_level, memory_high_level);
-#endif
-    }
+//         // Check config valid
+//         int64_t memory_urgent_level = config::memory_urgent_level;
+//         int64_t memory_high_level = config::memory_high_level;
+//         if (UNLIKELY(!(memory_urgent_level > memory_high_level && memory_high_level >= 1 &&
+//                        memory_urgent_level <= 100))) {
+//             LOG(ERROR) << "memory water level config is illegal: memory_urgent_level=" << memory_urgent_level
+//                        << " memory_high_level=" << memory_high_level;
+//             continue;
+//         }
+//         _update_manager->evict_cache(memory_urgent_level, memory_high_level);
+// #if defined(USE_STAROS) && !defined(BE_TEST)
+//         ExecEnv::GetInstance()->lake_update_manager()->evict_cache(memory_urgent_level, memory_high_level);
+// #endif
+//     }
     return nullptr;
 }
 
