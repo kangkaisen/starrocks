@@ -261,38 +261,38 @@ Status StorageEngine::_open(const EngineOptions& options) {
 }
 
 Status StorageEngine::_init_store_map() {
-    std::map<std::string, std::unique_ptr<DataDir>> tmp_stores;
-    std::vector<std::thread> threads;
-    SpinLock error_msg_lock;
-    std::string error_msg;
-    for (auto& path : _options.store_paths) {
-        auto store_ptr =
-                std::make_unique<DataDir>(path.path, path.storage_medium, _tablet_manager.get(), _txn_manager.get());
-        DataDir* store = store_ptr.get();
-        tmp_stores.emplace(path.path, std::move(store_ptr));
-        // store_ptr will be invalid ever since
-        threads.emplace_back([store, &error_msg_lock, &error_msg]() {
-            auto st = store->init();
-            if (!st.ok()) {
-                {
-                    std::lock_guard<SpinLock> l(error_msg_lock);
-                    error_msg.append(st.to_string() + ";");
-                }
-                LOG(WARNING) << "Store load failed, status=" << st.to_string() << ", path=" << store->path();
-            }
-        });
-        Thread::set_thread_name(threads.back(), "init_store_path");
-    }
-    for (auto& thread : threads) {
-        DCHECK(thread.joinable());
-        thread.join();
-    }
+    // std::map<std::string, std::unique_ptr<DataDir>> tmp_stores;
+    // std::vector<std::thread> threads;
+    // SpinLock error_msg_lock;
+    // std::string error_msg;
+    // for (auto& path : _options.store_paths) {
+    //     auto store_ptr =
+    //             std::make_unique<DataDir>(path.path, path.storage_medium, _tablet_manager.get(), _txn_manager.get());
+    //     DataDir* store = store_ptr.get();
+    //     tmp_stores.emplace(path.path, std::move(store_ptr));
+    //     // store_ptr will be invalid ever since
+    //     threads.emplace_back([store, &error_msg_lock, &error_msg]() {
+    //         auto st = store->init();
+    //         if (!st.ok()) {
+    //             {
+    //                 std::lock_guard<SpinLock> l(error_msg_lock);
+    //                 error_msg.append(st.to_string() + ";");
+    //             }
+    //             LOG(WARNING) << "Store load failed, status=" << st.to_string() << ", path=" << store->path();
+    //         }
+    //     });
+    //     Thread::set_thread_name(threads.back(), "init_store_path");
+    // }
+    // for (auto& thread : threads) {
+    //     DCHECK(thread.joinable());
+    //     thread.join();
+    // }
 
-    if (!error_msg.empty()) {
-        return Status::InternalError(strings::Substitute("init path failed, error=$0", error_msg));
-    }
+    // if (!error_msg.empty()) {
+    //     return Status::InternalError(strings::Substitute("init path failed, error=$0", error_msg));
+    // }
 
-    _store_map.swap(tmp_stores);
+    // _store_map.swap(tmp_stores);
     return Status::OK();
 }
 

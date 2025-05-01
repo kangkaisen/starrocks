@@ -425,19 +425,19 @@ Status ScalarColumnWriter::init() {
         }
         RETURN_IF_ERROR(BloomFilterIndexWriter::create(bf_options, _type_info, &_bloom_filter_index_builder));
     }
-    if (_opts.need_inverted_index) {
-        _has_index_builder = true;
-        TabletIndex& inverted_tablet_index = _opts.tablet_index.at(GIN);
+    // if (_opts.need_inverted_index) {
+    //     _has_index_builder = true;
+    //     TabletIndex& inverted_tablet_index = _opts.tablet_index.at(GIN);
 
-        ASSIGN_OR_RETURN(auto imp_type, get_inverted_imp_type(inverted_tablet_index))
-        ASSIGN_OR_RETURN(auto inverted_plugin, InvertedPluginFactory::get_plugin(imp_type))
-        RETURN_IF_ERROR(inverted_plugin->create_inverted_index_writer(
-                _type_info, _opts.field_name, _opts.standalone_index_file_paths.at(GIN), &inverted_tablet_index,
-                &_inverted_index_builder));
-        if (_inverted_index_builder != nullptr) {
-            RETURN_IF_ERROR(_inverted_index_builder->init());
-        }
-    }
+    //     ASSIGN_OR_RETURN(auto imp_type, get_inverted_imp_type(inverted_tablet_index))
+    //     ASSIGN_OR_RETURN(auto inverted_plugin, InvertedPluginFactory::get_plugin(imp_type))
+    //     RETURN_IF_ERROR(inverted_plugin->create_inverted_index_writer(
+    //             _type_info, _opts.field_name, _opts.standalone_index_file_paths.at(GIN), &inverted_tablet_index,
+    //             &_inverted_index_builder));
+    //     if (_inverted_index_builder != nullptr) {
+    //         RETURN_IF_ERROR(_inverted_index_builder->init());
+    //     }
+    // }
     return Status::OK();
 }
 
@@ -461,9 +461,9 @@ uint64_t ScalarColumnWriter::estimate_buffer_size() {
     if (_bloom_filter_index_builder != nullptr) {
         size += _bloom_filter_index_builder->size();
     }
-    if (_inverted_index_builder != nullptr) {
-        size += _inverted_index_builder->size();
-    }
+    // if (_inverted_index_builder != nullptr) {
+    //     size += _inverted_index_builder->size();
+    // }
     return size;
 }
 
@@ -568,9 +568,9 @@ Status ScalarColumnWriter::write_bloom_filter_index() {
 }
 
 Status ScalarColumnWriter::write_inverted_index() {
-    if (_inverted_index_builder != nullptr) {
-        return _inverted_index_builder->finish();
-    }
+    // if (_inverted_index_builder != nullptr) {
+    //     return _inverted_index_builder->finish();
+    // }
     return Status::OK();
 }
 
@@ -780,12 +780,12 @@ Status ScalarColumnWriter::append(const uint8_t* data, const uint8_t* null_flags
                     INDEX_ADD_NULLS(_zone_map_index_builder, run);
                     INDEX_ADD_NULLS(_bitmap_index_builder, run);
                     INDEX_ADD_NULLS(_bloom_filter_index_builder, run);
-                    INDEX_ADD_NULLS(_inverted_index_builder, run);
+                    // INDEX_ADD_NULLS(_inverted_index_builder, run);
                 } else {
                     INDEX_ADD_VALUES(_zone_map_index_builder, pdata, run);
                     INDEX_ADD_VALUES(_bitmap_index_builder, pdata, run);
                     INDEX_ADD_VALUES(_bloom_filter_index_builder, pdata, run);
-                    INDEX_ADD_VALUES(_inverted_index_builder, pdata, run);
+                    // INDEX_ADD_VALUES(_inverted_index_builder, pdata, run);
                 }
                 pdata += type_info()->size() * run;
             }
@@ -793,7 +793,7 @@ Status ScalarColumnWriter::append(const uint8_t* data, const uint8_t* null_flags
             INDEX_ADD_VALUES(_zone_map_index_builder, data, num_written);
             INDEX_ADD_VALUES(_bitmap_index_builder, data, num_written);
             INDEX_ADD_VALUES(_bloom_filter_index_builder, data, num_written);
-            INDEX_ADD_VALUES(_inverted_index_builder, data, num_written);
+            // INDEX_ADD_VALUES(_inverted_index_builder, data, num_written);
         }
 
         _next_rowid += num_written;

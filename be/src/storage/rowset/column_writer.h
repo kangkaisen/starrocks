@@ -265,7 +265,7 @@ private:
     std::unique_ptr<ZoneMapIndexWriter> _zone_map_index_builder;
     std::unique_ptr<BitmapIndexWriter> _bitmap_index_builder;
     std::unique_ptr<BloomFilterIndexWriter> _bloom_filter_index_builder;
-    std::unique_ptr<InvertedWriter> _inverted_index_builder;
+    // std::unique_ptr<InvertedWriter> _inverted_index_builder;
 
     // _zone_map_index_builder != NULL || _bitmap_index_builder != NULL || _bloom_filter_index_builder != NULL
     bool _has_index_builder = false;
