@@ -596,7 +596,6 @@ add_definitions(-DHAVE_INTTYPES_H -DHAVE_NETINET_IN_H)
 # Set include dirs
 include_directories(
     BEFORE
-    ${SRC_DIR}/formats/orc/apache-orc/c++/include/
 )
 include_directories(
     ${SRC_DIR}/
@@ -699,7 +698,6 @@ set(STARROCKS_DEPENDENCIES
     gRPC::grpc
     gRPC::grpc++
     parquet
-    orc
     cctz
     fmt
     ryu
