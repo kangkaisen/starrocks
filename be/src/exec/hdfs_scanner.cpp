@@ -18,7 +18,7 @@
 #include "column/column_helper.h"
 #include "connector/deletion_vector/deletion_vector.h"
 #include "exec/exec_node.h"
-#include "fs/hdfs/fs_hdfs.h"
+// #include "fs/hdfs/fs_hdfs.h"
 #include "io/cache_select_input_stream.hpp"
 #include "io/compressed_input_stream.h"
 #include "io/shared_buffered_input_stream.h"

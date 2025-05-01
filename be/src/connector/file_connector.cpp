@@ -87,7 +87,7 @@ Status FileDataSource::_create_scanner() {
         return Status::InternalError("only support csv/json format to log rejected record");
     }
     // create scanner object and open
-    } if (_scan_range.ranges[0].format_type == TFileFormatType::FORMAT_PARQUET) {
+    if (_scan_range.ranges[0].format_type == TFileFormatType::FORMAT_PARQUET) {
         _scanner = std::make_unique<ParquetScanner>(_runtime_state, _runtime_profile, _scan_range, &_counter);
     } else if (_scan_range.ranges[0].format_type == TFileFormatType::FORMAT_JSON) {
         _scanner = std::make_unique<JsonScanner>(_runtime_state, _runtime_profile, _scan_range, &_counter);

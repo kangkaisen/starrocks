@@ -422,90 +422,90 @@ void FileScanner::sample_files(size_t total_file_count, int64_t sample_file_coun
 
 Status FileScanner::sample_schema(RuntimeState* state, const TBrokerScanRange& scan_range,
                                   std::vector<SlotDescriptor>* schema) {
-    std::vector<std::vector<SlotDescriptor>> schemas;
-    // lowercase_name: <file_path, original_name>
-    std::map<std::string, std::pair<std::string, std::string>> unique_names;
+    // std::vector<std::vector<SlotDescriptor>> schemas;
+    // // lowercase_name: <file_path, original_name>
+    // std::map<std::string, std::pair<std::string, std::string>> unique_names;
 
-    // sample some files.
-    std::vector<size_t> sample_file_indexes;
-    sample_files(scan_range.ranges.size(), scan_range.params.schema_sample_file_count, &sample_file_indexes);
+    // // sample some files.
+    // std::vector<size_t> sample_file_indexes;
+    // sample_files(scan_range.ranges.size(), scan_range.params.schema_sample_file_count, &sample_file_indexes);
 
-    for (auto i : sample_file_indexes) {
-        // sample range only contains 1 file.
-        auto sample_range = scan_range;
-        sample_range.ranges = {sample_range.ranges[i]};
+    // for (auto i : sample_file_indexes) {
+    //     // sample range only contains 1 file.
+    //     auto sample_range = scan_range;
+    //     sample_range.ranges = {sample_range.ranges[i]};
 
-        RuntimeProfile profile{"dummy_profile", false};
-        ScannerCounter counter{};
-        std::unique_ptr<FileScanner> p_scanner;
+    //     RuntimeProfile profile{"dummy_profile", false};
+    //     ScannerCounter counter{};
+    //     std::unique_ptr<FileScanner> p_scanner;
 
-        auto tp = sample_range.ranges[0].format_type;
-        switch (tp) {
-        case TFileFormatType::FORMAT_PARQUET:
-            p_scanner = std::make_unique<ParquetScanner>(state, &profile, sample_range, &counter, true);
-            break;
+    //     auto tp = sample_range.ranges[0].format_type;
+    //     switch (tp) {
+    //     case TFileFormatType::FORMAT_PARQUET:
+    //         p_scanner = std::make_unique<ParquetScanner>(state, &profile, sample_range, &counter, true);
+    //         break;
 
-        // case TFileFormatType::FORMAT_ORC:
-        //     p_scanner = std::make_unique<ORCScanner>(state, &profile, sample_range, &counter, true);
-        //     break;
+    //     // case TFileFormatType::FORMAT_ORC:
+    //     //     p_scanner = std::make_unique<ORCScanner>(state, &profile, sample_range, &counter, true);
+    //     //     break;
 
-        case TFileFormatType::FORMAT_CSV_PLAIN:
-        case TFileFormatType::FORMAT_CSV_GZ:
-        case TFileFormatType::FORMAT_CSV_BZ2:
-        case TFileFormatType::FORMAT_CSV_LZ4_FRAME:
-        case TFileFormatType::FORMAT_CSV_DEFLATE:
-        case TFileFormatType::FORMAT_CSV_ZSTD:
-            p_scanner = std::make_unique<CSVScanner>(state, &profile, sample_range, &counter, true);
-            break;
+    //     case TFileFormatType::FORMAT_CSV_PLAIN:
+    //     case TFileFormatType::FORMAT_CSV_GZ:
+    //     case TFileFormatType::FORMAT_CSV_BZ2:
+    //     case TFileFormatType::FORMAT_CSV_LZ4_FRAME:
+    //     case TFileFormatType::FORMAT_CSV_DEFLATE:
+    //     case TFileFormatType::FORMAT_CSV_ZSTD:
+    //         p_scanner = std::make_unique<CSVScanner>(state, &profile, sample_range, &counter, true);
+    //         break;
 
-        case TFileFormatType::FORMAT_AVRO:
-            p_scanner = std::make_unique<AvroCppScanner>(state, &profile, sample_range, &counter, true);
-            break;
+    //     case TFileFormatType::FORMAT_AVRO:
+    //         p_scanner = std::make_unique<AvroCppScanner>(state, &profile, sample_range, &counter, true);
+    //         break;
 
-        default:
-            auto err_msg = fmt::format("get file schema failed, format: {} not supported", to_string(tp));
-            LOG(WARNING) << err_msg;
-            return Status::InvalidArgument(err_msg);
-        }
+    //     default:
+    //         auto err_msg = fmt::format("get file schema failed, format: {} not supported", to_string(tp));
+    //         LOG(WARNING) << err_msg;
+    //         return Status::InvalidArgument(err_msg);
+    //     }
 
-        RETURN_IF_ERROR_WITH_WARN(p_scanner->open(), "open file scanner failed: ");
+    //     RETURN_IF_ERROR_WITH_WARN(p_scanner->open(), "open file scanner failed: ");
 
-        DeferOp defer([&p_scanner] { p_scanner->close(); });
+    //     DeferOp defer([&p_scanner] { p_scanner->close(); });
 
-        std::vector<SlotDescriptor> schema;
-        RETURN_IF_ERROR_WITH_WARN(p_scanner->get_schema(&schema), "get schema failed: ");
+    //     std::vector<SlotDescriptor> schema;
+    //     RETURN_IF_ERROR_WITH_WARN(p_scanner->get_schema(&schema), "get schema failed: ");
 
-        // Column names are case insensitive.
-        // Check duplicated column names.
-        for (const auto& slot : schema) {
-            auto name = slot.col_name();
-            auto lowercase_name = boost::algorithm::to_lower_copy(name);
+    //     // Column names are case insensitive.
+    //     // Check duplicated column names.
+    //     for (const auto& slot : schema) {
+    //         auto name = slot.col_name();
+    //         auto lowercase_name = boost::algorithm::to_lower_copy(name);
 
-            auto itr = unique_names.find(lowercase_name);
-            if (itr == unique_names.end()) {
-                unique_names.emplace(lowercase_name,
-                                     std::pair<std::string, std::string>(sample_range.ranges[0].path, name));
-            } else if (name != itr->second.second) {
-                std::string err_msg;
-                // Duplicated column name in the same file.
-                if (itr->second.first == sample_range.ranges[0].path) {
-                    err_msg = fmt::format("Identical names in upper/lower cases, file: [{}], column names: [{}] [{}]",
-                                          sample_range.ranges[0].path, itr->second.second, name);
-                } else {
-                    err_msg = fmt::format("Identical names in upper/lower cases, files: [{}] [{}], names: [{}] [{}]",
-                                          sample_range.ranges[0].path, itr->second.first, name, itr->second.second);
-                }
-                LOG(WARNING) << err_msg;
-                return Status::NotSupported(err_msg);
-            }
-        }
+    //         auto itr = unique_names.find(lowercase_name);
+    //         if (itr == unique_names.end()) {
+    //             unique_names.emplace(lowercase_name,
+    //                                  std::pair<std::string, std::string>(sample_range.ranges[0].path, name));
+    //         } else if (name != itr->second.second) {
+    //             std::string err_msg;
+    //             // Duplicated column name in the same file.
+    //             if (itr->second.first == sample_range.ranges[0].path) {
+    //                 err_msg = fmt::format("Identical names in upper/lower cases, file: [{}], column names: [{}] [{}]",
+    //                                       sample_range.ranges[0].path, itr->second.second, name);
+    //             } else {
+    //                 err_msg = fmt::format("Identical names in upper/lower cases, files: [{}] [{}], names: [{}] [{}]",
+    //                                       sample_range.ranges[0].path, itr->second.first, name, itr->second.second);
+    //             }
+    //             LOG(WARNING) << err_msg;
+    //             return Status::NotSupported(err_msg);
+    //         }
+    //     }
 
-        schemas.emplace_back(std::move(schema));
-    }
+    //     schemas.emplace_back(std::move(schema));
+    // }
 
-    if (schemas.empty()) return Status::InvalidArgument("get an empty schema");
+    // if (schemas.empty()) return Status::InvalidArgument("get an empty schema");
 
-    merge_schema(schemas, schema);
+    // merge_schema(schemas, schema);
 
     return Status::OK();
 }

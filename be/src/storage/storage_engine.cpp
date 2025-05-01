@@ -109,7 +109,7 @@ StorageEngine::StorageEngine(const EngineOptions& options)
           _available_storage_medium_type_count(0),
           _is_all_cluster_id_exist(true),
           _tablet_manager(new TabletManager(config::tablet_map_shard_size)),
-          _txn_manager(new TxnManager(config::txn_map_shard_size, config::txn_shard_size, options.store_paths.size())),
+        //   _txn_manager(new TxnManager(config::txn_map_shard_size, config::txn_shard_size, options.store_paths.size())),
         //   _replication_txn_manager(new ReplicationTxnManager()),
           _rowset_id_generator(new UniqueRowsetIdGenerator(options.backend_uid)),
           _memtable_flush_executor(nullptr),
@@ -230,7 +230,7 @@ Status StorageEngine::_open(const EngineOptions& options) {
             async_delta_writer,
             static_cast<bthreads::ThreadPoolExecutor*>(_async_delta_writer_executor.get())->get_thread_pool());
 
-    _load_spill_block_merge_executor = std::make_unique<lake::LoadSpillBlockMergeExecutor>();
+    // _load_spill_block_merge_executor = std::make_unique<lake::LoadSpillBlockMergeExecutor>();
     RETURN_IF_ERROR(_load_spill_block_merge_executor->init());
     REGISTER_THREAD_POOL_METRICS(load_spill_block_merge, _load_spill_block_merge_executor->get_thread_pool());
 
@@ -1145,20 +1145,20 @@ void StorageEngine::_clean_unused_rowset_metas() {
 }
 
 void StorageEngine::_clean_unused_txns() {
-    std::set<TabletInfo> tablet_infos;
-    _txn_manager->get_all_related_tablets(&tablet_infos);
-    for (auto& tablet_info : tablet_infos) {
-        TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_info.tablet_id, tablet_info.tablet_uid, true);
-        if (tablet == nullptr) {
-            // TODO(ygl) :  should check if tablet still in meta, it's a improvement
-            // case 1: tablet still in meta, just remove from memory
-            // case 2: tablet not in meta store, remove rowset from meta
-            // currently just remove them from memory
-            // nullptr to indicate not remove them from meta store
-            _txn_manager->force_rollback_tablet_related_txns(nullptr, tablet_info.tablet_id, tablet_info.schema_hash,
-                                                             tablet_info.tablet_uid);
-        }
-    }
+    // std::set<TabletInfo> tablet_infos;
+    // _txn_manager->get_all_related_tablets(&tablet_infos);
+    // for (auto& tablet_info : tablet_infos) {
+    //     TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_info.tablet_id, tablet_info.tablet_uid, true);
+    //     if (tablet == nullptr) {
+    //         // TODO(ygl) :  should check if tablet still in meta, it's a improvement
+    //         // case 1: tablet still in meta, just remove from memory
+    //         // case 2: tablet not in meta store, remove rowset from meta
+    //         // currently just remove them from memory
+    //         // nullptr to indicate not remove them from meta store
+    //         _txn_manager->force_rollback_tablet_related_txns(nullptr, tablet_info.tablet_id, tablet_info.schema_hash,
+    //                                                          tablet_info.tablet_uid);
+    //     }
+    // }
 }
 
 Status StorageEngine::_do_sweep(const std::string& scan_root, const time_t& local_now, const int32_t expire) {

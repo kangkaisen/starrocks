@@ -16,7 +16,6 @@
 #include "column/nullable_column.h"
 #include "common/status.h"
 #include "gutil/casts.h"
-#include "storage/index/vector/vector_index_writer.h"
 #include "storage/rowset/column_writer.h"
 
 namespace starrocks {
@@ -59,7 +58,7 @@ private:
     std::unique_ptr<ScalarColumnWriter> _null_writer;
     std::unique_ptr<ScalarColumnWriter> _array_size_writer;
     std::unique_ptr<ColumnWriter> _element_writer;
-    std::unique_ptr<VectorIndexWriter> _vector_index_writer;
+    // std::unique_ptr<VectorIndexWriter> _vector_index_writer;
 };
 
 StatusOr<std::unique_ptr<ColumnWriter>> create_array_column_writer(const ColumnWriterOptions& opts,
@@ -129,13 +128,13 @@ ArrayColumnWriter::ArrayColumnWriter(const ColumnWriterOptions& opts, TypeInfoPt
           _null_writer(std::move(null_writer)),
           _array_size_writer(std::move(offset_writer)),
           _element_writer(std::move(element_writer)) {
-    if (_opts.need_vector_index) {
-        DCHECK(_opts.tablet_index.count(IndexType::VECTOR) > 0);
-        auto tablet_index = std::make_shared<TabletIndex>(_opts.tablet_index.at(IndexType::VECTOR));
-        std::string index_path = _opts.standalone_index_file_paths.at(IndexType::VECTOR);
-        // Element column of array column MUST BE nullable.
-        VectorIndexWriter::create(tablet_index, index_path, true, &_vector_index_writer);
-    }
+    // if (_opts.need_vector_index) {
+    //     DCHECK(_opts.tablet_index.count(IndexType::VECTOR) > 0);
+    //     auto tablet_index = std::make_shared<TabletIndex>(_opts.tablet_index.at(IndexType::VECTOR));
+    //     std::string index_path = _opts.standalone_index_file_paths.at(IndexType::VECTOR);
+    //     // Element column of array column MUST BE nullable.
+    //     VectorIndexWriter::create(tablet_index, index_path, true, &_vector_index_writer);
+    // }
 }
 
 Status ArrayColumnWriter::init() {
@@ -144,9 +143,9 @@ Status ArrayColumnWriter::init() {
     }
     RETURN_IF_ERROR(_array_size_writer->init());
     RETURN_IF_ERROR(_element_writer->init());
-    if (_opts.need_vector_index) {
-        RETURN_IF_ERROR(_vector_index_writer->init());
-    }
+    // if (_opts.need_vector_index) {
+    //     RETURN_IF_ERROR(_vector_index_writer->init());
+    // }
 
     return Status::OK();
 }
@@ -173,12 +172,12 @@ Status ArrayColumnWriter::append(const Column& column) {
     // 3. writer elements column recursively
     RETURN_IF_ERROR(_element_writer->append(array_column->elements()));
 
-    // 4. write vector index
-    if (_vector_index_writer.get()) {
-        // Vector index only support non-nullable array column.
-        DCHECK(!is_nullable());
-        RETURN_IF_ERROR(_vector_index_writer->append(*array_column));
-    }
+    // // 4. write vector index
+    // if (_vector_index_writer.get()) {
+    //     // Vector index only support non-nullable array column.
+    //     DCHECK(!is_nullable());
+    //     RETURN_IF_ERROR(_vector_index_writer->append(*array_column));
+    // }
 
     return Status::OK();
 }
@@ -188,9 +187,9 @@ uint64_t ArrayColumnWriter::estimate_buffer_size() {
     if (is_nullable()) {
         estimate_size += _null_writer->estimate_buffer_size();
     }
-    if (_vector_index_writer.get()) {
-        estimate_size += _vector_index_writer->estimate_buffer_size();
-    }
+    // if (_vector_index_writer.get()) {
+    //     estimate_size += _vector_index_writer->estimate_buffer_size();
+    // }
     return estimate_size;
 }
 
@@ -213,9 +212,9 @@ uint64_t ArrayColumnWriter::total_mem_footprint() const {
     }
     total_mem_footprint += _array_size_writer->total_mem_footprint();
     total_mem_footprint += _element_writer->total_mem_footprint();
-    if (_vector_index_writer.get()) {
-        total_mem_footprint += _vector_index_writer->total_mem_footprint();
-    }
+    // if (_vector_index_writer.get()) {
+    //     total_mem_footprint += _vector_index_writer->total_mem_footprint();
+    // }
     return total_mem_footprint;
 }
 
@@ -238,9 +237,9 @@ Status ArrayColumnWriter::write_ordinal_index() {
 }
 
 Status ArrayColumnWriter::write_vector_index(uint64_t* index_size) {
-    if (_vector_index_writer.get()) {
-        RETURN_IF_ERROR(_vector_index_writer->finish(index_size));
-    }
+    // if (_vector_index_writer.get()) {
+    //     RETURN_IF_ERROR(_vector_index_writer->finish(index_size));
+    // }
     return Status::OK();
 }
 

@@ -205,28 +205,28 @@ Status SnapshotManager::convert_rowset_ids(const string& clone_dir, int64_t tabl
     std::vector<std::string> new_inverted_index_files;
     RETURN_IF_ERROR(FileSystem::Default()->get_children(clone_dir, &all_files));
     for (const auto& file : all_files) {
-        if (CLucenePlugin::is_index_files(file)) {
-            auto* p1 = (char*)std::memchr(file.data(), '_', file.size());
-            auto* p2 = (char*)std::memchr(p1 + 1, '_', file.size() - (p1 - file.data() + 1));
-            auto* p3 = (char*)std::memchr(p2 + 1, '_', file.size() - (p2 - file.data() + 1));
-            if (p1 == nullptr || p2 == nullptr || p3 == nullptr) {
-                return Status::InternalError("invalid index file name: " + file);
-            }
+        // if (CLucenePlugin::is_index_files(file)) {
+        //     auto* p1 = (char*)std::memchr(file.data(), '_', file.size());
+        //     auto* p2 = (char*)std::memchr(p1 + 1, '_', file.size() - (p1 - file.data() + 1));
+        //     auto* p3 = (char*)std::memchr(p2 + 1, '_', file.size() - (p2 - file.data() + 1));
+        //     if (p1 == nullptr || p2 == nullptr || p3 == nullptr) {
+        //         return Status::InternalError("invalid index file name: " + file);
+        //     }
 
-            std::string rowsetid = file.substr(0, p1 - file.data());
-            std::string segment_id = file.substr(p1 - file.data() + 1, p2 - p1 - 1);
-            std::string index_id = file.substr(p2 - file.data() + 1, p3 - p2 - 1);
-            std::string inverted_index_path = IndexDescriptor::inverted_index_file_path(
-                    clone_dir, rowsetid, std::stoi(segment_id), std::stoi(index_id));
+        //     std::string rowsetid = file.substr(0, p1 - file.data());
+        //     std::string segment_id = file.substr(p1 - file.data() + 1, p2 - p1 - 1);
+        //     std::string index_id = file.substr(p2 - file.data() + 1, p3 - p2 - 1);
+        //     std::string inverted_index_path = IndexDescriptor::inverted_index_file_path(
+        //             clone_dir, rowsetid, std::stoi(segment_id), std::stoi(index_id));
 
-            if (!fs::path_exist(inverted_index_path)) {
-                RETURN_IF_ERROR(fs::create_directories(inverted_index_path));
-            }
+        //     if (!fs::path_exist(inverted_index_path)) {
+        //         RETURN_IF_ERROR(fs::create_directories(inverted_index_path));
+        //     }
 
-            std::string new_file_name = file.substr(p3 - file.data() + 1, file.data() + file.size() - p3);
-            RETURN_IF_ERROR(FileSystem::Default()->rename_file(clone_dir + "/" + file,
-                                                               inverted_index_path + "/" + new_file_name));
-        }
+        //     std::string new_file_name = file.substr(p3 - file.data() + 1, file.data() + file.size() - p3);
+        //     RETURN_IF_ERROR(FileSystem::Default()->rename_file(clone_dir + "/" + file,
+        //                                                        inverted_index_path + "/" + new_file_name));
+        // }
     }
 
     std::unordered_map<string, string> old_to_new_rowsetid;
@@ -774,69 +774,69 @@ StatusOr<SnapshotMeta> SnapshotManager::parse_snapshot_meta(const std::string& f
 
 Status SnapshotManager::assign_new_rowset_id(SnapshotMeta* snapshot_meta, const std::string& clone_dir,
                                              const TabletSchemaCSPtr& tablet_schema) {
-    for (auto& rowset_meta_pb : snapshot_meta->rowset_metas()) {
-        RowsetId old_rowset_id;
-        RowsetId new_rowset_id = StorageEngine::instance()->next_rowset_id();
-        old_rowset_id.init(rowset_meta_pb.rowset_id());
+    // for (auto& rowset_meta_pb : snapshot_meta->rowset_metas()) {
+    //     RowsetId old_rowset_id;
+    //     RowsetId new_rowset_id = StorageEngine::instance()->next_rowset_id();
+    //     old_rowset_id.init(rowset_meta_pb.rowset_id());
 
-        LOG(INFO) << "Replacing rowset id " << rowset_meta_pb.rowset_id() << " with " << new_rowset_id;
+    //     LOG(INFO) << "Replacing rowset id " << rowset_meta_pb.rowset_id() << " with " << new_rowset_id;
 
-        for (int seg_id = 0; seg_id < rowset_meta_pb.num_segments(); seg_id++) {
-            auto old_path = Rowset::segment_file_path(clone_dir, old_rowset_id, seg_id);
-            auto new_path = Rowset::segment_file_path(clone_dir, new_rowset_id, seg_id);
-            RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
-            if (tablet_schema != nullptr && !tablet_schema->indexes()->empty()) {
-                int segment_n = seg_id;
-                const auto& indexes = *tablet_schema->indexes();
-                for (const auto& index : indexes) {
-                    if (index.index_type() == GIN) {
-                        std::string dst_inverted_link_path = IndexDescriptor::inverted_index_file_path(
-                                clone_dir, new_rowset_id.to_string(), segment_n, index.index_id());
-                        std::string src_inverted_file_path = IndexDescriptor::inverted_index_file_path(
-                                clone_dir, old_rowset_id.to_string(), segment_n, index.index_id());
+    //     for (int seg_id = 0; seg_id < rowset_meta_pb.num_segments(); seg_id++) {
+    //         auto old_path = Rowset::segment_file_path(clone_dir, old_rowset_id, seg_id);
+    //         auto new_path = Rowset::segment_file_path(clone_dir, new_rowset_id, seg_id);
+    //         RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
+    //         if (tablet_schema != nullptr && !tablet_schema->indexes()->empty()) {
+    //             int segment_n = seg_id;
+    //             const auto& indexes = *tablet_schema->indexes();
+    //             for (const auto& index : indexes) {
+    //                 if (index.index_type() == GIN) {
+    //                     std::string dst_inverted_link_path = IndexDescriptor::inverted_index_file_path(
+    //                             clone_dir, new_rowset_id.to_string(), segment_n, index.index_id());
+    //                     std::string src_inverted_file_path = IndexDescriptor::inverted_index_file_path(
+    //                             clone_dir, old_rowset_id.to_string(), segment_n, index.index_id());
 
-                        RETURN_IF_ERROR(fs::create_directories(dst_inverted_link_path));
-                        std::set<std::string> files;
-                        RETURN_IF_ERROR(fs::list_dirs_files(src_inverted_file_path, nullptr, &files));
-                        for (const auto& file : files) {
-                            auto src_absolute_path = fmt::format("{}/{}", src_inverted_file_path, file);
-                            auto dst_absolute_path = fmt::format("{}/{}", dst_inverted_link_path, file);
+    //                     RETURN_IF_ERROR(fs::create_directories(dst_inverted_link_path));
+    //                     std::set<std::string> files;
+    //                     RETURN_IF_ERROR(fs::list_dirs_files(src_inverted_file_path, nullptr, &files));
+    //                     for (const auto& file : files) {
+    //                         auto src_absolute_path = fmt::format("{}/{}", src_inverted_file_path, file);
+    //                         auto dst_absolute_path = fmt::format("{}/{}", dst_inverted_link_path, file);
 
-                            if (link(src_absolute_path.c_str(), dst_absolute_path.c_str()) != 0) {
-                                PLOG(WARNING) << "Fail to link " << src_absolute_path << " to " << dst_absolute_path;
-                                return Status::RuntimeError(
-                                        strings::Substitute("Fail to link index inverted file from $0 to $1",
-                                                            src_absolute_path, dst_absolute_path));
-                            }
-                        }
-                    } else if (index.index_type() == VECTOR) {
-                        std::string dst_index_link_path = IndexDescriptor::vector_index_file_path(
-                                clone_dir, new_rowset_id.to_string(), segment_n, index.index_id());
-                        std::string src_index_file_path = IndexDescriptor::vector_index_file_path(
-                                clone_dir, old_rowset_id.to_string(), segment_n, index.index_id());
-                        if (link(src_index_file_path.c_str(), dst_index_link_path.c_str()) != 0) {
-                            PLOG(WARNING) << "Fail to link " << src_index_file_path << " to " << dst_index_link_path;
-                            return Status::RuntimeError("Fail to link index data file");
-                        }
-                    }
-                }
-            }
-        }
-        for (int del_id = 0; del_id < rowset_meta_pb.num_delete_files(); del_id++) {
-            auto old_path = Rowset::segment_del_file_path(clone_dir, old_rowset_id, del_id);
-            auto new_path = Rowset::segment_del_file_path(clone_dir, new_rowset_id, del_id);
-            RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
-        }
-        for (int upt_id = 0; upt_id < rowset_meta_pb.num_update_files(); upt_id++) {
-            auto old_path = Rowset::segment_upt_file_path(clone_dir, old_rowset_id, upt_id);
-            auto new_path = Rowset::segment_upt_file_path(clone_dir, new_rowset_id, upt_id);
-            RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
-        }
-        rowset_meta_pb.set_rowset_id(new_rowset_id.to_string());
-        // reset rowsetid means that it is different from the rowset in snapshot meta.
-        // It is reasonable that reset the creation time here.
-        rowset_meta_pb.set_creation_time(UnixSeconds());
-    }
+    //                         if (link(src_absolute_path.c_str(), dst_absolute_path.c_str()) != 0) {
+    //                             PLOG(WARNING) << "Fail to link " << src_absolute_path << " to " << dst_absolute_path;
+    //                             return Status::RuntimeError(
+    //                                     strings::Substitute("Fail to link index inverted file from $0 to $1",
+    //                                                         src_absolute_path, dst_absolute_path));
+    //                         }
+    //                     }
+    //                 } else if (index.index_type() == VECTOR) {
+    //                     std::string dst_index_link_path = IndexDescriptor::vector_index_file_path(
+    //                             clone_dir, new_rowset_id.to_string(), segment_n, index.index_id());
+    //                     std::string src_index_file_path = IndexDescriptor::vector_index_file_path(
+    //                             clone_dir, old_rowset_id.to_string(), segment_n, index.index_id());
+    //                     if (link(src_index_file_path.c_str(), dst_index_link_path.c_str()) != 0) {
+    //                         PLOG(WARNING) << "Fail to link " << src_index_file_path << " to " << dst_index_link_path;
+    //                         return Status::RuntimeError("Fail to link index data file");
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     for (int del_id = 0; del_id < rowset_meta_pb.num_delete_files(); del_id++) {
+    //         auto old_path = Rowset::segment_del_file_path(clone_dir, old_rowset_id, del_id);
+    //         auto new_path = Rowset::segment_del_file_path(clone_dir, new_rowset_id, del_id);
+    //         RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
+    //     }
+    //     for (int upt_id = 0; upt_id < rowset_meta_pb.num_update_files(); upt_id++) {
+    //         auto old_path = Rowset::segment_upt_file_path(clone_dir, old_rowset_id, upt_id);
+    //         auto new_path = Rowset::segment_upt_file_path(clone_dir, new_rowset_id, upt_id);
+    //         RETURN_IF_ERROR(FileSystem::Default()->link_file(old_path, new_path));
+    //     }
+    //     rowset_meta_pb.set_rowset_id(new_rowset_id.to_string());
+    //     // reset rowsetid means that it is different from the rowset in snapshot meta.
+    //     // It is reasonable that reset the creation time here.
+    //     rowset_meta_pb.set_creation_time(UnixSeconds());
+    // }
     return Status::OK();
 }
 

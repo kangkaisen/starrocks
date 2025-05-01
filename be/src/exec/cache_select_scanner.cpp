@@ -14,8 +14,6 @@
 
 #include "exec/cache_select_scanner.h"
 
-#include "formats/orc/orc_chunk_reader.h"
-#include "formats/orc/orc_input_stream.h"
 #include "formats/parquet/file_reader.h"
 #include "fs/fs.h"
 #include "io/shared_buffered_input_stream.h"
@@ -57,8 +55,6 @@ Status CacheSelectScanner::do_get_next(RuntimeState* runtime_state, ChunkPtr* ch
         RETURN_IF_ERROR(_fetch_textfile());
     } else if (_scanner_params.scan_range->file_format == THdfsFileFormat::PARQUET) {
         RETURN_IF_ERROR(_fetch_parquet());
-    } else if (_scanner_params.scan_range->file_format == THdfsFileFormat::ORC) {
-        RETURN_IF_ERROR(_fetch_orc());
     } else {
         // note: return EOF instead of an error to bypass the cache select.
         // this logic cannot be moved to the upper-level call.
@@ -75,104 +71,105 @@ Status CacheSelectScanner::do_get_next(RuntimeState* runtime_state, ChunkPtr* ch
 }
 
 Status CacheSelectScanner::_fetch_orc() {
-    std::unique_ptr<ORCHdfsFileStream> input_stream = std::make_unique<ORCHdfsFileStream>(
-            _file.get(), _file->get_size().value(), _shared_buffered_input_stream.get());
-    input_stream->set_app_stats(&_app_stats);
+    // std::unique_ptr<ORCHdfsFileStream> input_stream = std::make_unique<ORCHdfsFileStream>(
+    //         _file.get(), _file->get_size().value(), _shared_buffered_input_stream.get());
+    // input_stream->set_app_stats(&_app_stats);
 
-    std::unique_ptr<orc::Reader> reader;
-    try {
-        orc::ReaderOptions options;
-        reader = orc::createReader(std::move(input_stream), options);
-    } catch (std::exception& e) {
-        return Status::InternalError(
-                strings::Substitute("CacheSelectScanner::_fetch_orc failed. reason = $0", e.what()));
-    }
+    // std::unique_ptr<orc::Reader> reader;
+    // try {
+    //     orc::ReaderOptions options;
+    //     reader = orc::createReader(std::move(input_stream), options);
+    // } catch (std::exception& e) {
+    //     return Status::InternalError(
+    //             strings::Substitute("CacheSelectScanner::_fetch_orc failed. reason = $0", e.what()));
+    // }
 
-    // prepare SlotDescriptor
-    std::vector<SlotDescriptor*> slot_descriptors{};
+    // // prepare SlotDescriptor
+    // std::vector<SlotDescriptor*> slot_descriptors{};
 
-    // resolve columns
-    {
-        std::unordered_set<std::string> known_column_names;
-        OrcChunkReader::build_column_name_set(&known_column_names, _scanner_ctx.hive_column_names, reader->getType(),
-                                              _scanner_ctx.case_sensitive, _scanner_ctx.orc_use_column_names);
-        RETURN_IF_ERROR(_scanner_ctx.update_materialized_columns(known_column_names));
-        ASSIGN_OR_RETURN(auto skip, _scanner_ctx.should_skip_by_evaluating_not_existed_slots());
-        if (skip) {
-            LOG(INFO) << "CacheSelectScanner: orc skip file for non existed slot conjuncts.";
-            return Status::EndOfFile("");
-        }
+    // // resolve columns
+    // {
+    //     std::unordered_set<std::string> known_column_names;
+    //     OrcChunkReader::build_column_name_set(&known_column_names, _scanner_ctx.hive_column_names, reader->getType(),
+    //                                           _scanner_ctx.case_sensitive, _scanner_ctx.orc_use_column_names);
+    //     RETURN_IF_ERROR(_scanner_ctx.update_materialized_columns(known_column_names));
+    //     ASSIGN_OR_RETURN(auto skip, _scanner_ctx.should_skip_by_evaluating_not_existed_slots());
+    //     if (skip) {
+    //         LOG(INFO) << "CacheSelectScanner: orc skip file for non existed slot conjuncts.";
+    //         return Status::EndOfFile("");
+    //     }
 
-        for (const auto& column : _scanner_ctx.materialized_columns) {
-            const auto col_name = Utils::format_name(column.name(), _scanner_ctx.case_sensitive);
-            if (known_column_names.contains(col_name)) {
-                slot_descriptors.emplace_back(column.slot_desc);
-            }
-        }
-    }
+    //     for (const auto& column : _scanner_ctx.materialized_columns) {
+    //         const auto col_name = Utils::format_name(column.name(), _scanner_ctx.case_sensitive);
+    //         if (known_column_names.contains(col_name)) {
+    //             slot_descriptors.emplace_back(column.slot_desc);
+    //         }
+    //     }
+    // }
 
-    // get selected column ids
-    std::set<uint64_t> selected_column_ids;
-    {
-        std::list<uint64_t> selected_leaf_column_ids{};
-        OrcMappingOptions orc_mapping_options{};
-        orc_mapping_options.case_sensitive = _scanner_ctx.case_sensitive;
-        orc_mapping_options.filename = _file->filename();
-        orc_mapping_options.invalid_as_null = true;
-        ASSIGN_OR_RETURN(
-                std::unique_ptr<OrcMapping> orc_mapping,
-                OrcMappingFactory::build_mapping(slot_descriptors, reader->getType(), _scanner_ctx.orc_use_column_names,
-                                                 _scanner_ctx.hive_column_names, orc_mapping_options));
+    // // get selected column ids
+    // std::set<uint64_t> selected_column_ids;
+    // {
+    //     std::list<uint64_t> selected_leaf_column_ids{};
+    //     OrcMappingOptions orc_mapping_options{};
+    //     orc_mapping_options.case_sensitive = _scanner_ctx.case_sensitive;
+    //     orc_mapping_options.filename = _file->filename();
+    //     orc_mapping_options.invalid_as_null = true;
+    //     ASSIGN_OR_RETURN(
+    //             std::unique_ptr<OrcMapping> orc_mapping,
+    //             OrcMappingFactory::build_mapping(slot_descriptors, reader->getType(), _scanner_ctx.orc_use_column_names,
+    //                                              _scanner_ctx.hive_column_names, orc_mapping_options));
 
-        for (size_t i = 0; i < slot_descriptors.size(); i++) {
-            SlotDescriptor* desc = slot_descriptors[i];
-            // column not existed in orc file, ignore this SlotDescriptor
-            if (!orc_mapping->contains(i)) continue;
-            RETURN_IF_ERROR(orc_mapping->set_include_column_id(i, desc->type(), &selected_leaf_column_ids));
-        }
+    //     for (size_t i = 0; i < slot_descriptors.size(); i++) {
+    //         SlotDescriptor* desc = slot_descriptors[i];
+    //         // column not existed in orc file, ignore this SlotDescriptor
+    //         if (!orc_mapping->contains(i)) continue;
+    //         RETURN_IF_ERROR(orc_mapping->set_include_column_id(i, desc->type(), &selected_leaf_column_ids));
+    //     }
 
-        orc::RowReaderOptions row_reader_options{};
-        row_reader_options.includeTypes(selected_leaf_column_ids);
-        std::unique_ptr<orc::RowReader> row_reader = reader->createRowReader(row_reader_options);
-        // get selected column ids from RowReader
-        for (uint64_t i = 0; i < row_reader->getSelectedColumns().size(); i++) {
-            if (row_reader->getSelectedColumns()[i]) {
-                selected_column_ids.emplace(i);
-            }
-        }
-    }
+    //     orc::RowReaderOptions row_reader_options{};
+    //     row_reader_options.includeTypes(selected_leaf_column_ids);
+    //     std::unique_ptr<orc::RowReader> row_reader = reader->createRowReader(row_reader_options);
+    //     // get selected column ids from RowReader
+    //     for (uint64_t i = 0; i < row_reader->getSelectedColumns().size(); i++) {
+    //         if (row_reader->getSelectedColumns()[i]) {
+    //             selected_column_ids.emplace(i);
+    //         }
+    //     }
+    // }
 
-    std::vector<DiskRange> disk_ranges{};
-    {
-        uint64_t stripe_number = reader->getNumberOfStripes();
-        std::vector<DiskRange> stripe_disk_ranges{};
+    // std::vector<DiskRange> disk_ranges{};
+    // {
+    //     uint64_t stripe_number = reader->getNumberOfStripes();
+    //     std::vector<DiskRange> stripe_disk_ranges{};
 
-        const auto* scan_range = _scanner_ctx.scan_range;
-        size_t scan_start = scan_range->offset;
-        size_t scan_end = scan_start + scan_range->length;
+    //     const auto* scan_range = _scanner_ctx.scan_range;
+    //     size_t scan_start = scan_range->offset;
+    //     size_t scan_end = scan_start + scan_range->length;
 
-        for (uint64_t idx = 0; idx < stripe_number; idx++) {
-            const auto& stripe_info = reader->getStripe(idx);
-            uint64_t stripe_offset = stripe_info->getOffset();
-            // Read stripes in this scan range
-            if (stripe_offset >= scan_start && stripe_offset < scan_end) {
-                int64_t length = stripe_info->getLength();
-                _app_stats.orc_stripe_sizes.push_back(length);
+    //     for (uint64_t idx = 0; idx < stripe_number; idx++) {
+    //         const auto& stripe_info = reader->getStripe(idx);
+    //         uint64_t stripe_offset = stripe_info->getOffset();
+    //         // Read stripes in this scan range
+    //         if (stripe_offset >= scan_start && stripe_offset < scan_end) {
+    //             int64_t length = stripe_info->getLength();
+    //             _app_stats.orc_stripe_sizes.push_back(length);
 
-                uint64_t cur_offset = stripe_offset;
-                for (uint64_t stream_id = 0; stream_id < stripe_info->getNumberOfStreams(); stream_id++) {
-                    const auto& stream_info = stripe_info->getStreamInformation(stream_id);
-                    // put selected column's stream into disk_ranges
-                    if (selected_column_ids.contains(stream_info->getColumnId())) {
-                        disk_ranges.emplace_back(cur_offset, stream_info->getLength());
-                    }
-                    cur_offset += stream_info->getLength();
-                }
-            }
-        }
-    }
+    //             uint64_t cur_offset = stripe_offset;
+    //             for (uint64_t stream_id = 0; stream_id < stripe_info->getNumberOfStreams(); stream_id++) {
+    //                 const auto& stream_info = stripe_info->getStreamInformation(stream_id);
+    //                 // put selected column's stream into disk_ranges
+    //                 if (selected_column_ids.contains(stream_info->getColumnId())) {
+    //                     disk_ranges.emplace_back(cur_offset, stream_info->getLength());
+    //                 }
+    //                 cur_offset += stream_info->getLength();
+    //             }
+    //         }
+    //     }
+    // }
 
-    return _write_disk_ranges(_shared_buffered_input_stream, _cache_input_stream, disk_ranges);
+    // return _write_disk_ranges(_shared_buffered_input_stream, _cache_input_stream, disk_ranges);
+    return Status::EndOfFile("");
 }
 
 Status CacheSelectScanner::_fetch_parquet() {
