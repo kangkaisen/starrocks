@@ -332,9 +332,9 @@ Status OlapChunkSource::_init_scanner_columns(std::vector<uint32_t>& scanner_col
         DCHECK(slot->is_materialized());
         int32_t index;
         if (_use_vector_index && !_use_ivfpq && slot->id() == _vector_slot_id) {
-            index = _tablet_schema->num_columns();
-            _params.vector_search_option->vector_column_id = index;
-            _params.vector_search_option->vector_slot_id = slot->id();
+            // index = _tablet_schema->num_columns();
+            // _params.vector_search_option->vector_column_id = index;
+            // _params.vector_search_option->vector_slot_id = slot->id();
         } else {
             index = _tablet_schema->field_index(slot->col_name());
         }

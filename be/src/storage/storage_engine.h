@@ -223,7 +223,7 @@ public:
 
     TabletManager* tablet_manager() { return _tablet_manager.get(); }
 
-    // TxnManager* txn_manager() { return _txn_manager.get(); }
+    TxnManager* txn_manager() { return _txn_manager.get(); }
 
     // ReplicationTxnManager* replication_txn_manager() { return _replication_txn_manager.get(); }
 
