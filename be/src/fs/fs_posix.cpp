@@ -34,7 +34,6 @@
 #include "gutil/strings/util.h"
 #include "io/fd_input_stream.h"
 #include "io/io_profiler.h"
-#include "testutil/sync_point.h"
 #include "util/errno.h"
 #include "util/slice.h"
 #include "util/stopwatch.hpp"

@@ -80,9 +80,9 @@ public:
 
     Status seek_inverted_index(const std::string& column_name, InvertedIndexIterator* iterator,
                                roaring::Roaring* row_bitmap) const override {
-        roaring::Roaring null_roaring;
-        RETURN_IF_ERROR(iterator->read_null(column_name, &null_roaring));
-        *row_bitmap &= null_roaring;
+        // roaring::Roaring null_roaring;
+        // RETURN_IF_ERROR(iterator->read_null(column_name, &null_roaring));
+        // *row_bitmap &= null_roaring;
         return Status::OK();
     }
 
@@ -159,9 +159,9 @@ public:
 
     Status seek_inverted_index(const std::string& column_name, InvertedIndexIterator* iterator,
                                roaring::Roaring* row_bitmap) const override {
-        roaring::Roaring null_roaring;
-        RETURN_IF_ERROR(iterator->read_null(column_name, &null_roaring));
-        *row_bitmap -= null_roaring;
+        // roaring::Roaring null_roaring;
+        // RETURN_IF_ERROR(iterator->read_null(column_name, &null_roaring));
+        // *row_bitmap -= null_roaring;
         return Status::OK();
     }
 

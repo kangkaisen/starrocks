@@ -20,11 +20,7 @@
 #include "fs/fs_posix.h"
 #include "fs/fs_s3.h"
 #include "fs/fs_util.h"
-#include "fs/hdfs/fs_hdfs.h"
 #include "runtime/file_result_writer.h"
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-#include "fs/fs_starlet.h"
-#endif
 
 namespace starrocks {
 
@@ -57,9 +53,6 @@ static thread_local std::shared_ptr<FileSystem> tls_fs_starlet;
 #endif
 
 inline std::shared_ptr<FileSystem> get_tls_fs_hdfs() {
-    if (tls_fs_hdfs == nullptr) {
-        tls_fs_hdfs.reset(new_fs_hdfs(FSOptions()).release());
-    }
     return tls_fs_hdfs;
 }
 

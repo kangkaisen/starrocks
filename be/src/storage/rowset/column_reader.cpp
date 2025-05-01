@@ -498,41 +498,42 @@ Status ColumnReader::_load_bloom_filter_index(const IndexReadOptions& opts) {
     return Status::OK();
 }
 
-Status ColumnReader::new_inverted_index_iterator(const std::shared_ptr<TabletIndex>& index_meta,
-                                                 InvertedIndexIterator** iterator, const SegmentReadOptions& opts) {
-    RETURN_IF_ERROR(_load_inverted_index(index_meta, opts));
-    RETURN_IF_ERROR(_inverted_index->new_iterator(index_meta, iterator));
-    return Status::OK();
-}
+// Status ColumnReader::new_inverted_index_iterator(const std::shared_ptr<TabletIndex>& index_meta,
+//                                                  InvertedIndexIterator** iterator, const SegmentReadOptions& opts) {
+//     RETURN_IF_ERROR(_load_inverted_index(index_meta, opts));
+//     RETURN_IF_ERROR(_inverted_index->new_iterator(index_meta, iterator));
+//     return Status::OK();
+// }
 
 Status ColumnReader::_load_inverted_index(const std::shared_ptr<TabletIndex>& index_meta,
                                           const SegmentReadOptions& opts) {
-    if (_inverted_index && index_meta && _inverted_index->get_index_id() == index_meta->index_id() &&
-        _inverted_index_loaded()) {
-        return Status::OK();
-    }
+    // if (_inverted_index && index_meta && _inverted_index->get_index_id() == index_meta->index_id() &&
+    //     _inverted_index_loaded()) {
+    //     return Status::OK();
+    // }
 
-    SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
-    return success_once(_inverted_index_load_once,
-                        [&]() {
-                            LogicalType type;
-                            if (_column_type == LogicalType::TYPE_ARRAY) {
-                                type = _column_child_type;
-                            } else {
-                                type = _column_type;
-                            }
+    // SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
+    // return success_once(_inverted_index_load_once,
+    //                     [&]() {
+    //                         LogicalType type;
+    //                         if (_column_type == LogicalType::TYPE_ARRAY) {
+    //                             type = _column_child_type;
+    //                         } else {
+    //                             type = _column_type;
+    //                         }
 
-                            ASSIGN_OR_RETURN(auto imp_type, get_inverted_imp_type(*index_meta))
-                            std::string index_path = IndexDescriptor::inverted_index_file_path(
-                                    opts.rowset_path, opts.rowsetid.to_string(), _segment->id(),
-                                    index_meta->index_id());
-                            ASSIGN_OR_RETURN(auto inverted_plugin, InvertedPluginFactory::get_plugin(imp_type));
-                            RETURN_IF_ERROR(inverted_plugin->create_inverted_index_reader(index_path, index_meta, type,
-                                                                                          &_inverted_index));
+    //                         ASSIGN_OR_RETURN(auto imp_type, get_inverted_imp_type(*index_meta))
+    //                         std::string index_path = IndexDescriptor::inverted_index_file_path(
+    //                                 opts.rowset_path, opts.rowsetid.to_string(), _segment->id(),
+    //                                 index_meta->index_id());
+    //                         ASSIGN_OR_RETURN(auto inverted_plugin, InvertedPluginFactory::get_plugin(imp_type));
+    //                         RETURN_IF_ERROR(inverted_plugin->create_inverted_index_reader(index_path, index_meta, type,
+    //                                                                                       &_inverted_index));
 
-                            return Status::OK();
-                        })
-            .status();
+    //                         return Status::OK();
+    //                     })
+    //         .status();
+    return Status::OK();
 }
 
 Status ColumnReader::seek_to_first(OrdinalPageIndexIterator* iter) {

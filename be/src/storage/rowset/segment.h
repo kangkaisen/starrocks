@@ -197,8 +197,6 @@ public:
     Status load_index(const LakeIOOptions& lake_io_opts = {});
     bool has_loaded_index() const;
 
-    Status new_inverted_index_iterator(uint32_t cid, InvertedIndexIterator** iter, const SegmentReadOptions& opts);
-
     const ShortKeyIndexDecoder* decoder() const { return _sk_index_decoder.get(); }
 
     size_t mem_usage() const;

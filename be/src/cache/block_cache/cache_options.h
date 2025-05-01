@@ -22,10 +22,6 @@
 #include "cache/block_cache/dummy_types.h"
 #include "common/status.h"
 
-#ifdef WITH_STARCACHE
-#include "starcache/star_cache.h"
-#endif
-
 namespace starrocks {
 
 // Options to control how to create DataCache instance

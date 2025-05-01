@@ -183,8 +183,8 @@ public:
 
     Status load_ordinal_index(const IndexReadOptions& opts);
 
-    Status new_inverted_index_iterator(const std::shared_ptr<TabletIndex>& index_meta, InvertedIndexIterator** iterator,
-                                       const SegmentReadOptions& opts);
+    // Status new_inverted_index_iterator(const std::shared_ptr<TabletIndex>& index_meta, InvertedIndexIterator** iterator,
+    //                                    const SegmentReadOptions& opts);
 
     uint32_t num_rows() const { return _segment->num_rows(); }
 
@@ -261,7 +261,7 @@ private:
     std::unique_ptr<OrdinalIndexReader> _ordinal_index;
     std::unique_ptr<BitmapIndexReader> _bitmap_index;
     std::unique_ptr<BloomFilterIndexReader> _bloom_filter_index;
-    std::unique_ptr<InvertedReader> _inverted_index;
+    // std::unique_ptr<InvertedReader> _inverted_index;
 
     std::unique_ptr<ZoneMapPB> _segment_zone_map;
 
