@@ -22,7 +22,6 @@
 #include "column/vectorized_fwd.h"
 #include "exec/avro_cpp_scanner.h"
 #include "exec/csv_scanner.h"
-#include "exec/orc_scanner.h"
 #include "exec/parquet_scanner.h"
 #include "fs/fs.h"
 // #include "fs/fs_broker.h"

@@ -19,7 +19,6 @@
 #include "exec/csv_scanner.h"
 #include "exec/exec_node.h"
 #include "exec/json_scanner.h"
-#include "exec/orc_scanner.h"
 #include "exec/parquet_scanner.h"
 #include "exprs/expr.h"
 #include "file_chunk_sink.h"

@@ -2286,12 +2286,13 @@ Status TabletUpdates::_commit_compaction(std::unique_ptr<CompactionInfo>* pinfo,
 }
 
 bool TabletUpdates::_use_light_apply_compaction(Rowset* rowset) {
-    // Is config enable ?
-    if (!config::enable_light_pk_compaction_publish) {
-        return false;
-    }
-    // Is rows mapper file exist?
-    return fs::path_exist(local_rows_mapper_filename(&_tablet, rowset->rowset_id_str()));
+    // // Is config enable ?
+    // if (!config::enable_light_pk_compaction_publish) {
+    //     return false;
+    // }
+    // // Is rows mapper file exist?
+    // return fs::path_exist(local_rows_mapper_filename(&_tablet, rowset->rowset_id_str()));
+    return false;
 }
 
 Status TabletUpdates::_light_apply_compaction_commit(const EditVersion& version, Rowset* output_rowset,

@@ -69,7 +69,6 @@
 #include "storage/segment_replicate_executor.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_meta_manager.h"
-#include "storage/task/engine_task.h"
 #include "storage/update_manager.h"
 #include "util/bthreads/executor.h"
 #include "util/lru_cache.h"

@@ -46,8 +46,6 @@
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
 #include "storage/del_vector.h"
-#include "storage/index/index_descriptor.h"
-#include "storage/index/inverted/clucene/clucene_plugin.h"
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_factory.h"
 #include "storage/rowset/rowset_id_generator.h"
