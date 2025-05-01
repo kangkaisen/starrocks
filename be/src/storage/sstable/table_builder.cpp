@@ -15,7 +15,6 @@
 #include "storage/sstable/filter_block.h"
 #include "storage/sstable/filter_policy.h"
 #include "storage/sstable/format.h"
-#include "testutil/sync_point.h"
 #include "util/crc32c.h"
 #include "util/slice.h"
 

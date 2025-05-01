@@ -41,7 +41,6 @@
 #include "fmt/format.h"
 #include "runtime/diagnose_daemon.h"
 #include "runtime/exec_env.h"
-#include "runtime/lake_tablets_channel.h"
 #include "runtime/load_channel_mgr.h"
 #include "runtime/local_tablets_channel.h"
 #include "runtime/mem_tracker.h"

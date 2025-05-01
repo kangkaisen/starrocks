@@ -168,52 +168,52 @@ void LoadChannelMgr::open(brpc::Controller* cntl, const PTabletWriterOpenRequest
 }
 
 void LoadChannelMgr::_open(LoadChannelOpenContext open_context) {
-    ClosureGuard done_guard(open_context.done);
-    const PTabletWriterOpenRequest& request = *open_context.request;
-    PTabletWriterOpenResult* response = open_context.response;
-    if (!request.encryption_meta().empty()) {
-        Status st = KeyCache::instance().refresh_keys(request.encryption_meta());
-        if (!st.ok()) {
-            response->mutable_status()->set_status_code(TStatusCode::INTERNAL_ERROR);
-            response->mutable_status()->add_error_msgs(fmt::format(
-                    "refresh keys using encryption_meta in PTabletWriterOpenRequest failed {}", st.detailed_message()));
-            return;
-        }
-    }
-    UniqueId load_id(request.id());
-    int64_t txn_id = request.txn_id();
-    std::shared_ptr<LoadChannel> channel;
-    {
-        std::lock_guard l(_lock);
-        auto it = _load_channels.find(load_id);
-        if (it != _load_channels.end()) {
-            channel = it->second;
-        } else if (!is_tracker_hit_hard_limit(_mem_tracker, config::load_process_max_memory_hard_limit_ratio) ||
-                   config::enable_new_load_on_memory_limit_exceeded) {
-            // // When loading memory usage is larger than hard limit, we will reject new loading task.
-            // int64_t mem_limit_in_req = request.has_load_mem_limit() ? request.load_mem_limit() : -1;
-            // int64_t job_max_memory = calc_job_max_load_memory(mem_limit_in_req, _mem_tracker->limit());
+    // ClosureGuard done_guard(open_context.done);
+    // const PTabletWriterOpenRequest& request = *open_context.request;
+    // PTabletWriterOpenResult* response = open_context.response;
+    // if (!request.encryption_meta().empty()) {
+    //     Status st = KeyCache::instance().refresh_keys(request.encryption_meta());
+    //     if (!st.ok()) {
+    //         response->mutable_status()->set_status_code(TStatusCode::INTERNAL_ERROR);
+    //         response->mutable_status()->add_error_msgs(fmt::format(
+    //                 "refresh keys using encryption_meta in PTabletWriterOpenRequest failed {}", st.detailed_message()));
+    //         return;
+    //     }
+    // }
+    // UniqueId load_id(request.id());
+    // int64_t txn_id = request.txn_id();
+    // std::shared_ptr<LoadChannel> channel;
+    // {
+    //     std::lock_guard l(_lock);
+    //     auto it = _load_channels.find(load_id);
+    //     if (it != _load_channels.end()) {
+    //         channel = it->second;
+    //     } else if (!is_tracker_hit_hard_limit(_mem_tracker, config::load_process_max_memory_hard_limit_ratio) ||
+    //                config::enable_new_load_on_memory_limit_exceeded) {
+    //         // // When loading memory usage is larger than hard limit, we will reject new loading task.
+    //         // int64_t mem_limit_in_req = request.has_load_mem_limit() ? request.load_mem_limit() : -1;
+    //         // int64_t job_max_memory = calc_job_max_load_memory(mem_limit_in_req, _mem_tracker->limit());
 
-            // int64_t timeout_in_req_s = request.has_load_channel_timeout_s() ? request.load_channel_timeout_s() : -1;
-            // int64_t job_timeout_s = calc_job_timeout_s(timeout_in_req_s);
-            // auto job_mem_tracker = std::make_unique<MemTracker>(job_max_memory, load_id.to_string(), _mem_tracker);
+    //         // int64_t timeout_in_req_s = request.has_load_channel_timeout_s() ? request.load_channel_timeout_s() : -1;
+    //         // int64_t job_timeout_s = calc_job_timeout_s(timeout_in_req_s);
+    //         // auto job_mem_tracker = std::make_unique<MemTracker>(job_max_memory, load_id.to_string(), _mem_tracker);
 
-            // channel.reset(new LoadChannel(this, ExecEnv::GetInstance()->lake_tablet_manager(), load_id, txn_id,
-            //                               request.txn_trace_parent(), job_timeout_s, std::move(job_mem_tracker)));
-            // if (request.has_load_channel_profile_config()) {
-            //     channel->set_profile_config(request.load_channel_profile_config());
-            // }
-            // _load_channels.insert({load_id, channel});
-        } else {
-            response->mutable_status()->set_status_code(TStatusCode::MEM_LIMIT_EXCEEDED);
-            response->mutable_status()->add_error_msgs(
-                    "memory limit exceeded, please reduce load frequency or increase config "
-                    "`load_process_max_memory_hard_limit_ratio` or add more BE nodes");
-            return;
-        }
-    }
-    done_guard.release();
-    channel->open(open_context);
+    //         // channel.reset(new LoadChannel(this, ExecEnv::GetInstance()->lake_tablet_manager(), load_id, txn_id,
+    //         //                               request.txn_trace_parent(), job_timeout_s, std::move(job_mem_tracker)));
+    //         // if (request.has_load_channel_profile_config()) {
+    //         //     channel->set_profile_config(request.load_channel_profile_config());
+    //         // }
+    //         // _load_channels.insert({load_id, channel});
+    //     } else {
+    //         response->mutable_status()->set_status_code(TStatusCode::MEM_LIMIT_EXCEEDED);
+    //         response->mutable_status()->add_error_msgs(
+    //                 "memory limit exceeded, please reduce load frequency or increase config "
+    //                 "`load_process_max_memory_hard_limit_ratio` or add more BE nodes");
+    //         return;
+    //     }
+    // }
+    // done_guard.release();
+    // channel->open(open_context);
 }
 
 void LoadChannelMgr::add_chunk(const PTabletWriterAddChunkRequest& request, PTabletWriterAddBatchResult* response) {

@@ -86,8 +86,6 @@ option(WITH_BRCP_KEEPALIVE "Build binary with brpc_socket_keepalive (requires br
 
 option(WITH_BENCH "Build binary with bench" OFF)
 
-option(USE_STAROS "Use StarOS to manager tablet info" OFF)
-
 option(USE_SSE4_2 "Build with SSE4.2 instruction" ON)
 
 option(USE_BMI_2 "Build with BMI2 instruction" ON)

@@ -8,7 +8,6 @@
 
 #include "common/statusor.h"
 #include "gen_cpp/olap_file.pb.h"
-#include "storage/lake/rowset_update_state.h"
 #include "storage/rowset_update_state.h"
 
 namespace starrocks {
@@ -34,11 +33,11 @@ public:
                                          const TabletSchemaCSPtr& tschema,
                                          AutoIncrementPartialUpdateState& auto_increment_partial_update_state,
                                          std::vector<uint32_t>& column_ids, MutableColumns* columns);
-    static Status rewrite_auto_increment_lake(
-            const FileInfo& src, FileInfo* dest, const TabletSchemaCSPtr& tschema,
-            starrocks::lake::AutoIncrementPartialUpdateState& auto_increment_partial_update_state,
-            const std::vector<uint32_t>& unmodified_column_ids, MutableColumns* unmodified_column_data,
-            const starrocks::lake::Tablet* tablet);
+    // static Status rewrite_auto_increment_lake(
+    //         const FileInfo& src, FileInfo* dest, const TabletSchemaCSPtr& tschema,
+    //         starrocks::lake::AutoIncrementPartialUpdateState& auto_increment_partial_update_state,
+    //         const std::vector<uint32_t>& unmodified_column_ids, MutableColumns* unmodified_column_data,
+    //         const starrocks::lake::Tablet* tablet);
 };
 
 } // namespace starrocks

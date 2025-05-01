@@ -22,7 +22,6 @@
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "testutil/sync_point.h"
 #include "util/priority_thread_pool.hpp"
 
 namespace starrocks::pipeline {

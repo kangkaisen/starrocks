@@ -16,7 +16,6 @@
 
 #include "exec/lake_meta_scan_node.h"
 #include "runtime/global_dict/config.h"
-#include "testutil/sync_point.h"
 
 namespace starrocks {
 

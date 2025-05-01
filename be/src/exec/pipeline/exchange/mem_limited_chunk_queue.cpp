@@ -30,7 +30,6 @@
 #include "fs/fs.h"
 #include "serde/column_array_serde.h"
 #include "serde/protobuf_serde.h"
-#include "testutil/sync_point.h"
 #include "util/defer_op.h"
 #include "util/raw_container.h"
 #include "util/runtime_profile.h"
