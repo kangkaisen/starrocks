@@ -9,7 +9,6 @@
 #include "common/status.h"
 #include "fs/fs.h"
 #include "runtime/exec_env.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/sstable/block.h"
 #include "storage/sstable/comparator.h"
 #include "storage/sstable/filter_block.h"
