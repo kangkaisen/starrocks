@@ -6,6 +6,17 @@ displayed_sidebar: docs
 
 このトピックでは、StarRocks クラスタをアップグレードする方法について説明します。
 
+## 重要な情報
+
+:::important
+StarRocks をアップグレードする前に以下を行ってください:
+
+- アップグレードする StarRocks バージョンと、現在のバージョンからターゲットバージョンまでのすべてのバージョンの [リリースノート](https://docs.starrocks.io/releasenotes/release-3.5/) を読み、以下を確認してください:
+  - StarRocks 内の動作変更をメモする
+  - StarRocks と外部システム（インポート、エクスポート、可視化などに使用される）との統合に関する変更をメモする
+- ターゲットバージョンの [デプロイ前提条件](./deployment_prerequisites.md) を確認してください。例えば、StarRocks 3.5.x は JDK 17 を必要とし、Ubuntu 上の StarRocks 3.4.x は JDK 11 を必要とします。
+:::
+
 ## 概要
 
 アップグレードする前にこのセクションの情報を確認し、推奨されるアクションを実行してください。
@@ -103,12 +114,14 @@ StarRocks v2.0 クラスタをアップグレードする前に、次の BE 設�
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # 旧バージョンでカスタム関数（UDF）が使用されていた場合、旧バージョンのUDFディレクトリを新しいlibディレクトリにコピーする必要があります。
+   cp -r lib.bak/udf lib/
    ```
 
 3. BE ノードを起動します。
 
    ```Bash
-   sh bin/start_be.sh --daemon
+   ./bin/start_be.sh --daemon
    ```
 
 4. BE ノードが正常に起動したかどうかを確認します。
@@ -136,12 +149,14 @@ StarRocks v2.0 クラスタをアップグレードする前に、次の BE 設�
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # 旧バージョンでカスタム関数（UDF）が使用されていた場合、旧バージョンのUDFディレクトリを新しいlibディレクトリにコピーする必要があります。
+   cp -r lib.bak/udf lib/
    ```
 
 3. CN ノードを起動します。
 
    ```Bash
-   sh bin/start_cn.sh --daemon
+   ./bin/start_cn.sh --daemon
    ```
 
 4. CN ノードが正常に起動したかどうかを確認します。
@@ -178,7 +193,7 @@ StarRocks v2.0 クラスタをアップグレードする前に、次の BE 設�
 3. FE ノードを起動します。
 
    ```Bash
-   sh bin/start_fe.sh --daemon
+   ./bin/start_fe.sh --daemon
    ```
 
 4. FE ノードが正常に起動したかどうかを確認します。

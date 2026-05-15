@@ -15,13 +15,14 @@
 package com.starrocks.lake.compaction;
 
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
 import com.starrocks.proto.CompactStat;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,10 +34,10 @@ public class CompactionJobTest {
     public void testGetResult() {
         Database db = new Database();
         Table table = new Table(Table.TableType.CLOUD_NATIVE);
-        PhysicalPartition partition = new PhysicalPartition(0, "", 1, null);
-        CompactionJob job = new CompactionJob(db, table, partition, 10010, true);
+        PhysicalPartition partition = new PhysicalPartition(0, 1, new MaterializedIndex());
+        CompactionJob job = new CompactionJob(db, table, partition, 10010, true, null, "");
 
-        Assert.assertTrue(job.getAllowPartialSuccess());
+        Assertions.assertTrue(job.getAllowPartialSuccess());
         List<CompactionTask> list = new ArrayList<>();
         list.add(new CompactionTask(100));
         list.add(new CompactionTask(101));
@@ -47,7 +48,7 @@ public class CompactionJobTest {
                 return CompactionTask.TaskResult.NOT_FINISHED;
             }
         };
-        Assert.assertEquals(CompactionTask.TaskResult.NOT_FINISHED, job.getResult());
+        Assertions.assertEquals(CompactionTask.TaskResult.NOT_FINISHED, job.getResult());
 
         new MockUp<CompactionTask>() {
             @Mock
@@ -55,7 +56,7 @@ public class CompactionJobTest {
                 return CompactionTask.TaskResult.NONE_SUCCESS;
             }
         };
-        Assert.assertEquals(CompactionTask.TaskResult.NONE_SUCCESS, job.getResult());
+        Assertions.assertEquals(CompactionTask.TaskResult.NONE_SUCCESS, job.getResult());
 
         new MockUp<CompactionTask>() {
             @Mock
@@ -63,7 +64,7 @@ public class CompactionJobTest {
                 return CompactionTask.TaskResult.ALL_SUCCESS;
             }
         };
-        Assert.assertEquals(CompactionTask.TaskResult.ALL_SUCCESS, job.getResult());
+        Assertions.assertEquals(CompactionTask.TaskResult.ALL_SUCCESS, job.getResult());
 
         new MockUp<CompactionTask>() {
             @Mock
@@ -71,15 +72,15 @@ public class CompactionJobTest {
                 return CompactionTask.TaskResult.PARTIAL_SUCCESS;
             }
         };
-        Assert.assertEquals(CompactionTask.TaskResult.PARTIAL_SUCCESS, job.getResult());
+        Assertions.assertEquals(CompactionTask.TaskResult.PARTIAL_SUCCESS, job.getResult());
     }
 
     @Test
     public void testBuildTabletCommitInfo() {
         Database db = new Database();
         Table table = new Table(Table.TableType.CLOUD_NATIVE);
-        PhysicalPartition partition = new PhysicalPartition(0, "", 1, null);
-        CompactionJob job = new CompactionJob(db, table, partition, 10010, false);
+        PhysicalPartition partition = new PhysicalPartition(0, 1, new MaterializedIndex());
+        CompactionJob job = new CompactionJob(db, table, partition, 10010, false, null, "");
         assertDoesNotThrow(() -> {
             job.buildTabletCommitInfo();
         });
@@ -89,14 +90,11 @@ public class CompactionJobTest {
     public void testGetExecutionProfile() {
         Database db = new Database();
         Table table = new Table(Table.TableType.CLOUD_NATIVE);
-        PhysicalPartition partition = new PhysicalPartition(0, "", 1, null);
-        CompactionJob job = new CompactionJob(db, table, partition, 10010, true);
+        PhysicalPartition partition = new PhysicalPartition(0, 1, new MaterializedIndex());
+        CompactionJob job = new CompactionJob(db, table, partition, 10010, true, null, "");
 
-        Assert.assertTrue(job.getExecutionProfile().isEmpty());
-
-        List<CompactionTask> list = new ArrayList<>();
-        list.add(new CompactionTask(100));
-        job.setTasks(list);
+        Assertions.assertTrue(job.getExecutionProfile().isEmpty());
+        job.setAggregateTask(new CompactionTask(100));
         job.finish();
         new MockUp<CompactionTask>() {
             @Mock
@@ -108,24 +106,28 @@ public class CompactionJobTest {
                 stat.readBytesRemote = 3L;
                 stat.readTimeLocal = 4L;
                 stat.readBytesLocal = 5L;
-                stat.inQueueTimeSec = 6;
+                stat.readSegmentCount = 6L;
+                stat.writeSegmentCount = 7L;
+                stat.writeSegmentBytes = 8L;
+                stat.writeTimeRemote = 9L;
+                stat.inQueueTimeSec = 10;
                 list.add(stat);
                 return list;
             }
         };
 
         String s = job.getExecutionProfile();
-        Assert.assertFalse(s.isEmpty());
+        Assertions.assertFalse(s.isEmpty());
     }
 
     @Test
     public void testSuccessCompactInputFIleSize() {
         Database db = new Database();
         Table table = new Table(Table.TableType.CLOUD_NATIVE);
-        PhysicalPartition partition = new PhysicalPartition(0, "", 1, null);
-        CompactionJob job = new CompactionJob(db, table, partition, 10010, true);
+        PhysicalPartition partition = new PhysicalPartition(0, 1, new MaterializedIndex());
+        CompactionJob job = new CompactionJob(db, table, partition, 10010, true, null, "");
 
-        Assert.assertTrue(job.getAllowPartialSuccess());
+        Assertions.assertTrue(job.getAllowPartialSuccess());
         List<CompactionTask> list = new ArrayList<>();
         list.add(new CompactionTask(100));
         list.add(new CompactionTask(101));
@@ -136,6 +138,6 @@ public class CompactionJobTest {
                 return CompactionTask.TaskResult.NOT_FINISHED;
             }
         };
-        Assert.assertEquals(job.getSuccessCompactInputFileSize(), 0);
+        Assertions.assertEquals(job.getSuccessCompactInputFileSize(), 0);
     }
 }

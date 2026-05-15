@@ -125,7 +125,7 @@ public class LakeTableTxnStateListener implements TransactionStateListener {
                     if (validDictCollectedVersions.size() == validDictCacheColumns.size()) {
                         version = validDictCollectedVersions.get(j);
                     }
-                    this.validDictCacheColumns.put(validDictCacheColumns.get(i), version);
+                    this.validDictCacheColumns.put(validDictCacheColumns.get(j), version);
                 }
             }
             if (i == tabletMetaList.size() - 1) {
@@ -148,7 +148,7 @@ public class LakeTableTxnStateListener implements TransactionStateListener {
         List<Long> unfinishedTablets = null;
         for (Long partitionId : dirtyPartitionSet) {
             PhysicalPartition partition = table.getPhysicalPartition(partitionId);
-            List<MaterializedIndex> allIndices = txnState.getPartitionLoadedTblIndexes(table.getId(), partition);
+            List<MaterializedIndex> allIndices = txnState.getPartitionLoadedIndexesWithoutLock(table.getId(), partition);
             for (MaterializedIndex index : allIndices) {
                 Optional<Tablet> unfinishedTablet =
                         index.getTablets().stream().filter(t -> !finishedTabletsOfThisTable.contains(t.getId()))

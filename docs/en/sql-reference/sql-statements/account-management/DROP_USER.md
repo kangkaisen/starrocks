@@ -4,11 +4,9 @@ displayed_sidebar: docs
 
 # DROP USER
 
-import UserManagementPriv from '../../../_assets/commonMarkdown/userManagementPriv.md'
+import UserManagementPriv from '../../../_assets/commonMarkdown/userManagementPriv.mdx'
 
-## Description
-
-Drops a specified user identity.
+DROP USER drops a specified user identity.
 
 <UserManagementPriv />
 

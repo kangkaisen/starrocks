@@ -17,36 +17,85 @@
 
 package com.starrocks.analysis;
 
+import com.starrocks.qe.SimpleScheduler;
+import com.starrocks.qe.StmtExecutor;
 import com.starrocks.sql.analyzer.AnalyzeTestUtil;
 import com.starrocks.sql.ast.AddBackendBlackListStmt;
 import com.starrocks.sql.ast.DelBackendBlackListStmt;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import com.starrocks.system.Backend;
+import com.starrocks.system.SystemInfoService;
+import mockit.Mock;
+import mockit.MockUp;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeFail;
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeSuccess;
 
 public class BackendBlacklistTest {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         AnalyzeTestUtil.init();
+        SimpleScheduler.disableUpdateBlocklistThread();
+    }
+
+    @AfterEach
+    public void tearDown() {
+        SimpleScheduler.getHostBlacklist().clear();
     }
 
     @Test
     public void testBackendBlacklist() {
         AddBackendBlackListStmt st = (AddBackendBlackListStmt) analyzeSuccess("ADD BACKEND BLACKLIST 1, 2, 3");
-        Assert.assertEquals(1L, st.getBackendIds().get(0).longValue());
-        Assert.assertEquals(3L, st.getBackendIds().get(2).longValue());
+        Assertions.assertEquals(1L, st.getBackendIds().get(0).longValue());
+        Assertions.assertEquals(3L, st.getBackendIds().get(2).longValue());
 
         DelBackendBlackListStmt del = (DelBackendBlackListStmt) analyzeSuccess("DELETE BACKEND BLACKLIST 1, 2, 3");
-        Assert.assertEquals(1L, del.getBackendIds().get(0).longValue());
-        Assert.assertEquals(3L, del.getBackendIds().get(2).longValue());
+        Assertions.assertEquals(1L, del.getBackendIds().get(0).longValue());
+        Assertions.assertEquals(3L, del.getBackendIds().get(2).longValue());
         analyzeSuccess("SHOW BACKEND BLACKLIST");
 
         analyzeFail("ADD BACKEND BLACKLIST aa");
         analyzeFail("ADD BACKEND BLACKLIST '1'");
         analyzeFail("ADD BACKEND BLACKLIST 1.0");
         analyzeFail("DELETE BACKEND BLACKLIST 'a',");
+    }
+
+    @Test
+    public void testAddBackendBlacklistExecution() throws Exception {
+        new MockUp<SystemInfoService>() {
+            @Mock
+            Backend getBackend(long backendId) {
+                if (backendId >= 1 && backendId <= 3) {
+                    Backend backend = new Backend();
+                    backend.setId(backendId);
+                    return backend;
+                }
+                return null;
+            }
+        };
+
+        AddBackendBlackListStmt addStmt = (AddBackendBlackListStmt) analyzeSuccess("ADD BACKEND BLACKLIST 1, 2, 3");
+        StmtExecutor addStmtExecutor = new StmtExecutor(AnalyzeTestUtil.getConnectContext(), addStmt);
+        addStmtExecutor.execute();
+
+        Assertions.assertTrue(SimpleScheduler.isInBlocklist(1));
+        Assertions.assertTrue(SimpleScheduler.isInBlocklist(2));
+        Assertions.assertTrue(SimpleScheduler.isInBlocklist(3));
+    }
+
+    @Test
+    public void testAddBackendBlacklistWithNonExistentBackend() throws Exception {
+        AddBackendBlackListStmt addStmt = (AddBackendBlackListStmt) analyzeSuccess("ADD BACKEND BLACKLIST 999999");
+        com.starrocks.qe.ConnectContext ctx = AnalyzeTestUtil.getConnectContext();
+        StmtExecutor addStmtExecutor = new StmtExecutor(ctx, addStmt);
+
+        addStmtExecutor.execute();
+
+        Assertions.assertTrue(ctx.getState().isError());
+        String errMsg = ctx.getState().getErrorMessage();
+        Assertions.assertTrue(errMsg.contains("Not found backend") || errMsg.contains("999999"));
     }
 }

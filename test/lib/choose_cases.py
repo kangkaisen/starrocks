@@ -45,7 +45,7 @@ LOG_FILTERED_WARN = "You can use `--log_filtered` to show the details..."
 
 class ChooseCase(object):
     class CaseTR(object):
-        def __init__(self, ctx, name, file, sql, result, info):
+        def __init__(self, ctx, name, file, sql, result, info, cleanup=None, tags=None):
             """init"""
             super().__init__()
             self.ctx = ctx
@@ -55,6 +55,10 @@ class ChooseCase(object):
             self.sql: List = sql
             self.ori_sql: List = copy.deepcopy(sql)
             self.result: List = result
+            # custom cleanup commands
+            self.cleanup: List = cleanup or []
+            # case tags (e.g., @arrow_flight_sql, @sequential)
+            self.tags: List = tags or []
 
             # # get db from lines
             # self.db = set()
@@ -177,6 +181,12 @@ class ChooseCase(object):
                     tools.assert_in("thread", each_stat, "CONCURRENCY THREAD FORMAT ERROR!")
                     for each_thread in each_stat["thread"]:
                         _case_sqls.extend(each_thread["cmd"])
+                elif isinstance(each_stat, dict) and each_stat.get("type", "") == CLEANUP_FLAG:
+                    tools.assert_in("cmd", each_stat, "CLEANUP STATEMENT FORMAT ERROR!")
+                    _case_sqls.extend(each_stat["cmd"])
+                elif isinstance(each_stat, dict) and each_stat.get("type", "") == SET_VAR_FLAG:
+                    tools.assert_in("stat", each_stat, "SET_VAR STATEMENT FORMAT ERROR!")
+                    _case_sqls.extend(each_stat["stat"])
                 else:
                     tools.ok_(False, "Init data error!")
 
@@ -255,6 +265,12 @@ class ChooseCase(object):
                     tools.assert_in("thread", each_stat, "CONCURRENCY THREAD FORMAT ERROR!")
                     for each_thread in each_stat["thread"]:
                         _case_sqls.extend(each_thread["cmd"])
+                elif isinstance(each_stat, dict) and each_stat.get("type", "") == CLEANUP_FLAG:
+                    tools.assert_in("cmd", each_stat, "CLEANUP STATEMENT FORMAT ERROR!")
+                    _case_sqls.extend(each_stat["cmd"])
+                elif isinstance(each_stat, dict) and each_stat.get("type", "") == SET_VAR_FLAG:
+                    tools.assert_in("stat", each_stat, "SET_VAR STATEMENT FORMAT ERROR!")
+                    _case_sqls.extend(each_stat["stat"])
                 else:
                     tools.ok_(False, "Init data error!")
 
@@ -375,6 +391,8 @@ class ChooseCase(object):
         in_loop_flag = False
 
         tmp_con_stat = []
+        # cleanup blocks for current case
+        tmp_cleanup_stat = []
 
         while line_id < len(f_lines):
             line_content = f_lines[line_id].rstrip("\n")
@@ -404,7 +422,16 @@ class ChooseCase(object):
                         pass
                     else:
                         self.case_list.append(
-                            ChooseCase.CaseTR(self, name, file, copy.deepcopy(tmp_sql), copy.deepcopy(tmp_res), info)
+                            ChooseCase.CaseTR(
+                                self,
+                                name,
+                                file,
+                                copy.deepcopy(tmp_sql),
+                                copy.deepcopy(tmp_res),
+                                info,
+                                cleanup=copy.deepcopy(tmp_cleanup_stat),
+                                tags=copy.deepcopy(tags),
+                            )
                         )
 
                 info = line_content
@@ -415,6 +442,7 @@ class ChooseCase(object):
 
                 tmp_sql.clear()
                 tmp_res.clear()
+                tmp_cleanup_stat.clear()
 
                 line_id += 1
                 continue
@@ -496,7 +524,7 @@ class ChooseCase(object):
 
                     _t_info_line = f_lines[line_id].rstrip()
                     _t_line = _t_info_line.lstrip()
-                    tools.assert_regexp_matches(_t_line.lstrip(), t_info_regex, f"Missing thread info : {_t_line}")
+                    tools.assert_regex(_t_line.lstrip(), t_info_regex, f"Missing thread info : {_t_line}")
 
                     # get thread name & thread count
                     _t_name, _, _t_count = re.findall(r"-- ([0-9a-zA-Z_\- ]+)(\(([0-9]+)\))?:", _t_line)[0]
@@ -546,6 +574,90 @@ class ChooseCase(object):
                     "thread": concurrency_t_list
                 })
 
+            elif line_content.startswith(SET_VAR_FLAG):
+                # SET_VAR { ... } END SET_VAR
+                tools.ok_(not in_loop_flag, "SET_VAR block must not be inside LOOP!")
+
+                if not re.compile(f'{SET_VAR_FLAG}(\\s)*{{(\\s)*').fullmatch(line_content):
+                    tools.ok_(False, "SET_VAR struct illegal: file: %s, line: %s" % (file, line_id))
+
+                l_set_var_line = line_id
+                line_id += 1
+                set_var_stat = []
+                set_var_res = []
+                set_var_combinations = []
+
+                # fetch PROPERTY - JSON array of variable combinations
+                if line_id < len(f_lines) and f_lines[line_id].strip().startswith(PROPERTY_FLAG):
+                    prop_str = f_lines[line_id].strip()[len(PROPERTY_FLAG):]
+                    try:
+                        set_var_combinations = json.loads(prop_str)
+                    except Exception:
+                        raise AssertionError("SET_VAR property must be a JSON array: %s" % prop_str)
+
+                    tools.assert_true(
+                        isinstance(set_var_combinations, list) and len(set_var_combinations) > 0,
+                        "SET_VAR combinations must be a non-empty JSON array"
+                    )
+                    line_id += 1
+                else:
+                    tools.ok_(False, "SET_VAR block must have PROPERTY line with variable combinations: file: %s" % file)
+
+                # Read statements and results inside the block
+                while (line_id < len(f_lines)
+                       and not re.compile(f'}}(\\s)*{END_SET_VAR_FLAG}').fullmatch(f_lines[line_id].strip())):
+                    line_content = f_lines[line_id].strip()
+                    if line_content == "" or (line_content.startswith("--") and not line_content.startswith(NAME_FLAG)):
+                        line_id += 1
+                        continue
+                    line_id = __read_single_stat_and_result(line_content, line_id, set_var_stat, set_var_res)
+
+                tools.assert_less(line_id, len(f_lines), "SET_VAR FORMAT ERROR!")
+                r_set_var_line = line_id
+
+                tools.assert_greater(len(set_var_stat), 0, "SET_VAR FORMAT ERROR(EMPTY)!")
+                tmp_sql.append({
+                    "type": SET_VAR_FLAG,
+                    "combinations": set_var_combinations,
+                    "stat": set_var_stat,
+                    "res": set_var_res,
+                    "ori": f_lines[l_set_var_line: r_set_var_line + 1]
+                })
+                tmp_res.append({
+                    "type": SET_VAR_FLAG,
+                    "combinations": set_var_combinations,
+                    "stat": set_var_stat,
+                    "res": set_var_res,
+                })
+                line_id += 1
+
+            elif line_content.startswith(CLEANUP_FLAG):
+                # CLEANUP { ... } END CLEANUP
+                tools.ok_(not in_loop_flag, "CLEANUP block must not be inside LOOP!")
+                tools.assert_true(
+                    re.compile(f'{CLEANUP_FLAG}(\\s)*{{(\\s)*').fullmatch(line_content) is not None,
+                    f"Cleanup struct illegal: file: {file}, line: {line_id}"
+                )
+                l_cleanup_line = line_id
+                line_id += 1
+                # read cleanup statements (no result expected)
+                tmp_cleanup_lines = []
+                while line_id < len(f_lines) and not re.compile(f'}}(\\s)*{END_CLEANUP_FLAG}').fullmatch(f_lines[line_id].strip()):
+                    line_content = f_lines[line_id].strip()
+                    line_id = __read_single_stat_and_result(line_content, line_id, tmp_cleanup_lines, [])
+                tools.assert_less(line_id, len(f_lines), "CLEANUP FORMAT ERROR!")
+                r_cleanup_line = line_id
+                # collect for execution in tearDown
+                tmp_cleanup_stat.extend(tmp_cleanup_lines)
+                # also keep position for recording into R at the same place
+                tmp_sql.append({
+                    "type": CLEANUP_FLAG,
+                    "cmd": tmp_cleanup_lines,
+                    "ori": f_lines[l_cleanup_line: r_cleanup_line + 1]
+                })
+                tmp_res.append(None)
+                line_id += 1
+
             else:
                 # 1st line of command, SQL/SHELL/FUNCTION
                 line_id = __read_single_stat_and_result(line_content, line_id, tmp_sql, tmp_res, in_loop_flag)
@@ -564,7 +676,16 @@ class ChooseCase(object):
                 pass
             else:
                 self.case_list.append(
-                    ChooseCase.CaseTR(self, name, file, copy.deepcopy(tmp_sql), copy.deepcopy(tmp_res), info)
+                    ChooseCase.CaseTR(
+                        self,
+                        name,
+                        file,
+                        copy.deepcopy(tmp_sql),
+                        copy.deepcopy(tmp_res),
+                        info,
+                        cleanup=copy.deepcopy(tmp_cleanup_stat),
+                        tags=copy.deepcopy(tags),
+                    )
                 )
 
 

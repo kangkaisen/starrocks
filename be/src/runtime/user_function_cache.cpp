@@ -36,31 +36,34 @@
 
 #include <any>
 #include <atomic>
-#include <boost/algorithm/string/predicate.hpp> // boost::algorithm::ends_with
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/concurrency/spinlock.h"
+#include "base/format.h"
+#include "base/utility/dynamic_util.h"
+#include "common/config_udf_fwd.h"
 #include "common/status.h"
 #include "fmt/compile.h"
 #include "fs/fs.h"
 #include "fs/fs_util.h"
 #include "gutil/strings/split.h"
 #include "util/download_util.h"
-#include "util/dynamic_util.h"
-#include "util/spinlock.h"
 
 namespace starrocks {
-
 static const int kLibShardNum = 128;
 
 // function cache entry, store information for
 struct UserFunctionCacheEntry {
-    UserFunctionCacheEntry(int64_t fid_, std::string checksum_, std::string lib_file_, int function_type_)
+    UserFunctionCacheEntry(int64_t fid_, std::string checksum_, std::string lib_file_,
+                           TFunctionBinaryType::type function_type, TCloudConfiguration cloud_configuration)
             : function_id(fid_),
               checksum(std::move(checksum_)),
               lib_file(std::move(lib_file_)),
-              function_type(function_type_) {}
+              function_type(function_type),
+              cloud_configuration(std::move(cloud_configuration)) {}
+
     ~UserFunctionCacheEntry();
 
     int64_t function_id = 0;
@@ -90,7 +93,9 @@ struct UserFunctionCacheEntry {
     void* lib_handle = nullptr;
 
     // function type
-    int function_type;
+    TFunctionBinaryType::type function_type;
+
+    TCloudConfiguration cloud_configuration;
 
     std::any cache_handle;
 };
@@ -125,35 +130,53 @@ Status UserFunctionCache::init(const std::string& lib_dir) {
     _lib_dir = lib_dir;
     // 1. dynamic open current process
     RETURN_IF_ERROR(dynamic_open(nullptr, &_current_process_handle));
-    // 2. load all cached
-    RETURN_IF_ERROR(_load_cached_lib());
+    // 2. load all cached or clear all cache
+    if (config::clear_udf_cache_when_start) {
+        RETURN_IF_ERROR(_reset_cache_dir());
+    } else {
+        RETURN_IF_ERROR(_load_cached_lib());
+    }
     return Status::OK();
 }
 
 Status UserFunctionCache::get_libpath(int64_t fid, const std::string& url, const std::string& checksum,
-                                      std::string* libpath) {
+                                      FuncType function_type, std::string* libpath,
+                                      const TCloudConfiguration& cloud_configuration) {
     UserFunctionCacheEntryPtr entry;
-    RETURN_IF_ERROR(_get_cache_entry(fid, url, checksum, &entry,
-                                     [](const auto& entry) -> StatusOr<std::any> { return std::any{}; }));
+    RETURN_IF_ERROR(_get_cache_entry(
+            fid, url, checksum, function_type, &entry,
+            [](const auto& entry) -> StatusOr<std::any> { return std::any{}; }, cloud_configuration));
     *libpath = entry->lib_file;
     return Status::OK();
 }
 
-StatusOr<std::any> UserFunctionCache::load_cacheable_java_udf(
-        int64_t fid, const std::string& url, const std::string& checksum,
-        const std::function<StatusOr<std::any>(const std::string& path)>& loader) {
+StatusOr<std::pair<bool, std::any>> UserFunctionCache::load_cacheable_java_udf(
+        int64_t fid, const std::string& url, const std::string& checksum, FuncType function_type,
+        const std::function<StatusOr<std::any>(const std::string& path)>& loader,
+        const TCloudConfiguration& cloud_configuration) {
     UserFunctionCacheEntryPtr entry;
-    RETURN_IF_ERROR(_get_cache_entry(fid, url, checksum, &entry, loader));
-    return entry->cache_handle;
+    bool cache_hit = false;
+    RETURN_IF_ERROR(
+            _get_cache_entry(fid, url, checksum, function_type, &entry, loader, cloud_configuration, &cache_hit));
+    return std::make_pair(cache_hit, entry->cache_handle);
+}
+
+auto UserFunctionCache::_get_function_type(const std::string& url) -> FuncType {
+    if (url.ends_with(JAVA_UDF_SUFFIX)) {
+        return UDF_TYPE_JAVA;
+    } else if (url.ends_with(PY_UDF_SUFFIX)) {
+        return UDF_TYPE_PYTHON;
+    }
+    return UDF_TYPE_UNKNOWN;
 }
 
 // Now we only support JAVA_UDF
-Status UserFunctionCache::_load_entry_from_lib(const std::string& dir, const std::string& file) {
-    int type = get_function_type(file);
-    if (type != UDF_TYPE_JAVA) {
-        return Status::InternalError(fmt::format("unknown library file format {}", file));
+Status UserFunctionCache::_load_entry_from_lib(const std::string& dir, const std::string& file,
+                                               TCloudConfiguration& cloud_configuration) {
+    auto type = _get_function_type(file);
+    if (type == UDF_TYPE_UNKNOWN) {
+        return Status::InternalError(fmt::format("unknown udf type:{} for file:{}", type, file));
     }
-
     std::vector<std::string> split_parts = strings::Split(file, ".");
     if (split_parts.size() != 3) {
         return Status::InternalError("user function's name should be function_id.checksum.type");
@@ -167,19 +190,12 @@ Status UserFunctionCache::_load_entry_from_lib(const std::string& dir, const std
         return Status::InternalError("duplicate function id");
     }
     // create a cache entry and put it into entry map
-    auto entry = std::make_shared<UserFunctionCacheEntry>(function_id, checksum, dir + "/" + file, type);
+    auto entry = std::make_shared<UserFunctionCacheEntry>(function_id, checksum, dir + "/" + file, type,
+                                                          cloud_configuration);
     entry->is_downloaded = true;
     _entry_map[function_id] = entry;
 
     return Status::OK();
-}
-int UserFunctionCache::get_function_type(const std::string& url) {
-    if (boost::algorithm::ends_with(url, JAVA_UDF_SUFFIX)) {
-        return UDF_TYPE_JAVA;
-    } else if (boost::algorithm::ends_with(url, PY_UDF_SUFFIX)) {
-        return UDF_TYPE_PYTHON;
-    }
-    return UDF_TYPE_UNKNOWN;
 }
 
 Status UserFunctionCache::_load_cached_lib() {
@@ -194,7 +210,7 @@ Status UserFunctionCache::_load_cached_lib() {
             if (file == "." || file == "..") {
                 return true;
             }
-            auto st = _load_entry_from_lib(sub_dir, std::string(file));
+            auto st = _load_entry_from_lib(sub_dir, std::string(file), _cloud_configuration);
             if (!st.ok()) {
                 LOG(WARNING) << "load a library failed, dir=" << sub_dir << ", file=" << file;
             }
@@ -204,11 +220,12 @@ Status UserFunctionCache::_load_cached_lib() {
     }
     return Status::OK();
 }
+
 template <class Loader>
 Status UserFunctionCache::_get_cache_entry(int64_t fid, const std::string& url, const std::string& checksum,
-                                           UserFunctionCacheEntryPtr* output_entry, Loader&& loader) {
+                                           FuncType type, UserFunctionCacheEntryPtr* output_entry, Loader&& loader,
+                                           const TCloudConfiguration& cloud_configuration, bool* cache_hit) {
     std::string suffix = ".unk";
-    int type = get_function_type(url);
     if (type == UDF_TYPE_JAVA) {
         suffix = JAVA_UDF_SUFFIX;
     }
@@ -224,12 +241,17 @@ Status UserFunctionCache::_get_cache_entry(int64_t fid, const std::string& url, 
         if (it != _entry_map.end()) {
             entry = it->second;
         } else {
-            entry = std::make_shared<UserFunctionCacheEntry>(fid, checksum, _make_lib_file(fid, checksum, suffix),
-                                                             type);
+            entry = std::make_shared<UserFunctionCacheEntry>(fid, checksum, _make_lib_file(fid, checksum, suffix), type,
+                                                             cloud_configuration);
             _entry_map.emplace(fid, entry);
         }
     }
-    auto st = _load_cache_entry(url, entry, loader);
+
+    if (cache_hit != nullptr) {
+        *cache_hit = entry->is_loaded.load();
+    }
+
+    auto st = _load_cache_entry(url, entry, loader, cloud_configuration);
     if (!st.ok()) {
         LOG(WARNING) << "fail to load cache entry, fid=" << fid;
         // if we load a cache entry failed, I think we should delete this entry cache
@@ -252,14 +274,15 @@ void UserFunctionCache::_destroy_cache_entry(UserFunctionCacheEntryPtr& entry) {
 }
 
 template <class Loader>
-Status UserFunctionCache::_load_cache_entry(const std::string& url, UserFunctionCacheEntryPtr& entry, Loader&& loader) {
+Status UserFunctionCache::_load_cache_entry(const std::string& url, UserFunctionCacheEntryPtr& entry, Loader&& loader,
+                                            const TCloudConfiguration& cloud_configuration) {
     if (entry->is_loaded.load()) {
         return Status::OK();
     }
 
     std::unique_lock<std::mutex> l(entry->load_lock);
     if (!entry->is_downloaded) {
-        RETURN_IF_ERROR(_download_lib(url, entry));
+        RETURN_IF_ERROR(_download_lib(url, entry, cloud_configuration));
     }
 
     if (!entry->is_loaded.load()) {
@@ -269,14 +292,13 @@ Status UserFunctionCache::_load_cache_entry(const std::string& url, UserFunction
 }
 
 // entry's lock must be held
-Status UserFunctionCache::_download_lib(const std::string& url, UserFunctionCacheEntryPtr& entry) {
+Status UserFunctionCache::_download_lib(const std::string& url, UserFunctionCacheEntryPtr& entry,
+                                        const TCloudConfiguration& cloud_configuration) {
     DCHECK(!entry->is_downloaded);
 
     std::string target_file = entry->lib_file;
     std::string expected_checksum = entry->checksum;
-    RETURN_IF_ERROR(DownloadUtil::download(url, target_file, expected_checksum));
-
-    entry->function_type = get_function_type(url);
+    RETURN_IF_ERROR(DownloadUtil::download(url, target_file, expected_checksum, cloud_configuration));
 
     // check download
     entry->is_downloaded = true;
@@ -294,7 +316,14 @@ Status UserFunctionCache::_load_cache_entry_internal(const std::string& url, Use
         return Status::NotSupported(fmt::format("unsupport udf type: {}, url: {}. url suffix must be '{}' or '{}'",
                                                 entry->function_type, url, JAVA_UDF_SUFFIX, PY_UDF_SUFFIX));
     }
-    entry->is_loaded.store(true);
+    // Only mark loaded when the loader populated a real cache handle.
+    // get_libpath uses a trivial loader that returns empty std::any{}; if we mark
+    // is_loaded=true there, a subsequent load_cacheable_java_udf for the same fid
+    // would skip building the shared context and return an empty handle, causing
+    // bad_any_cast at the call site.
+    if (entry->cache_handle.has_value()) {
+        entry->is_loaded.store(true);
+    }
     return Status::OK();
 }
 
@@ -304,4 +333,32 @@ std::string UserFunctionCache::_make_lib_file(int64_t function_id, const std::st
     return fmt::format("{}/{}/{}.{}{}", _lib_dir, shard, function_id, checksum, shuffix);
 }
 
+Status UserFunctionCache::_reset_cache_dir() {
+    if (!fs::path_exist(_lib_dir)) {
+        return _load_cached_lib();
+    }
+    return _remove_all_lib_file();
+}
+
+Status UserFunctionCache::_remove_all_lib_file() {
+    for (int i = 0; i < kLibShardNum; ++i) {
+        std::string sub_dir = _lib_dir + "/" + std::to_string(i);
+        RETURN_IF_ERROR(fs::create_directories(sub_dir));
+
+        auto scan_cb = [&sub_dir](std::string_view file) {
+            if (file == "." || file == "..") {
+                return true;
+            }
+            if (!file.ends_with(JAVA_UDF_SUFFIX) || !file.ends_with(PY_UDF_SUFFIX)) {
+                return true;
+            }
+            if (unlink((sub_dir + "/").append(file).c_str()) != 0) {
+                LOG(INFO) << "Deleting file " << file << " error: " << strerror(errno);
+            }
+            return true;
+        };
+        RETURN_IF_ERROR(FileSystem::Default()->iterate_dir(sub_dir, scan_cb));
+    }
+    return Status::OK();
+}
 } // namespace starrocks

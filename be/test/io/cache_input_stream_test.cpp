@@ -16,9 +16,13 @@
 
 #include <gtest/gtest.h>
 
-#include "cache/block_cache/block_cache.h"
+#include "base/testutil/assert.h"
+#include "cache/datacache.h"
+#include "cache/disk_cache/starcache_engine.h"
+#include "cache/disk_cache/test_cache_utils.h"
+#include "common/config_cache_fwd.h"
 #include "fs/fs_util.h"
-#include "testutil/assert.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks::io {
 
@@ -50,18 +54,12 @@ private:
 
 class CacheInputStreamTest : public ::testing::Test {
 public:
-    static void SetUpTestCase() {}
-
-    CacheOptions cache_options() {
-        CacheOptions options;
-        options.mem_space_size = 100 * 1024 * 1024;
-#ifdef WITH_STARCACHE
-        options.engine = "starcache";
-#endif
+    static DiskCacheOptions cache_options() {
+        DiskCacheOptions options;
+        options.mem_space_size = 100 * MB;
         options.enable_checksum = false;
         options.max_concurrent_inserts = 1500000;
         options.max_flying_memory_mb = 100;
-        options.enable_tiered_cache = true;
         options.block_size = block_size;
         options.skip_read_factor = 1.0;
         return options;
@@ -75,10 +73,14 @@ public:
     }
 
     void SetUp() override {
-        _saved_enable_auto_adjust = config::datacache_auto_adjust_enable;
-        config::datacache_auto_adjust_enable = false;
+        _saved_enable_auto_adjust = config::enable_datacache_disk_auto_adjust;
+        config::enable_datacache_disk_auto_adjust = false;
+
+        DiskCacheOptions options = cache_options();
+        auto block_cache = TestCacheUtils::create_cache(options);
+        DataCache::GetInstance()->set_block_cache(block_cache);
     }
-    void TearDown() override { config::datacache_auto_adjust_enable = _saved_enable_auto_adjust; }
+    void TearDown() override { config::enable_datacache_disk_auto_adjust = _saved_enable_auto_adjust; }
 
     static void read_stream_data(io::SeekableInputStream* stream, int64_t offset, int64_t size, char* data) {
         ASSERT_OK(stream->seek(offset));
@@ -112,9 +114,6 @@ private:
 const int64_t CacheInputStreamTest::block_size = 256 * 1024;
 
 TEST_F(CacheInputStreamTest, test_aligned_read) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 3;
 
     int64_t data_size = block_size * block_count;
@@ -135,8 +134,8 @@ TEST_F(CacheInputStreamTest, test_aligned_read) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, block_count);
 
     // first read from cache
     for (int i = 0; i < block_count; ++i) {
@@ -144,13 +143,10 @@ TEST_F(CacheInputStreamTest, test_aligned_read) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, block_count);
 }
 
 TEST_F(CacheInputStreamTest, test_random_read) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 3;
 
     const int64_t data_size = block_size * block_count;
@@ -171,8 +167,8 @@ TEST_F(CacheInputStreamTest, test_random_read) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, block_count);
 
     // seek to a custom postion in second block, and read multiple block
     int64_t off_in_block = 100;
@@ -186,13 +182,10 @@ TEST_F(CacheInputStreamTest, test_random_read) {
     ASSERT_TRUE(check_data_content(buffer, block_size - off_in_block, 'a' + 1));
     ASSERT_TRUE(check_data_content(buffer + block_size - off_in_block, block_size, 'a' + 2));
 
-    ASSERT_EQ(stats.read_cache_count, 2);
+    ASSERT_EQ(stats.read_block_cache_count, 2);
 }
 
 TEST_F(CacheInputStreamTest, test_file_overwrite) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 3;
 
     int64_t data_size = block_size * block_count;
@@ -213,8 +206,8 @@ TEST_F(CacheInputStreamTest, test_file_overwrite) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, block_count);
 
     // first read from cache
     for (int i = 0; i < block_count; ++i) {
@@ -222,7 +215,7 @@ TEST_F(CacheInputStreamTest, test_file_overwrite) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, block_count);
 
     // With different modification time, the old cache cannot be used
     io::CacheInputStream cache_stream2(sb_stream, file_name, data_size, 2000000);
@@ -233,13 +226,10 @@ TEST_F(CacheInputStreamTest, test_file_overwrite) {
         read_stream_data(&cache_stream2, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats2.read_cache_count, 0);
+    ASSERT_EQ(stats2.read_block_cache_count, 0);
 }
 
 TEST_F(CacheInputStreamTest, test_read_from_io_buffer) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 1;
 
     int64_t data_size = block_size * block_count;
@@ -259,14 +249,14 @@ TEST_F(CacheInputStreamTest, test_read_from_io_buffer) {
     char buffer[block_size];
     read_stream_data(&cache_stream, 0, block_size, buffer);
     ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, 1);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, 1);
 
     // read the first 1024 bytes from cache, actually it will read the whole block from cache
     // and save it to block buffer.
     read_stream_data(&cache_stream, 0, 1024, buffer);
     ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
-    ASSERT_EQ(stats.read_cache_count, 1);
+    ASSERT_EQ(stats.read_block_cache_count, 1);
 
     read_stream_data(&cache_stream, 1024, 1024, buffer);
     ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
@@ -274,9 +264,6 @@ TEST_F(CacheInputStreamTest, test_read_from_io_buffer) {
 }
 
 TEST_F(CacheInputStreamTest, test_read_zero_copy) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     int64_t data_size = block_size + 1024;
     char data[data_size + 1];
     gen_test_data(data, data_size, block_size);
@@ -298,9 +285,6 @@ TEST_F(CacheInputStreamTest, test_read_zero_copy) {
 }
 
 TEST_F(CacheInputStreamTest, test_read_with_zero_range) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 1;
     int64_t data_size = block_size * block_count;
     char data[data_size + 1];
@@ -319,23 +303,23 @@ TEST_F(CacheInputStreamTest, test_read_with_zero_range) {
     char buffer[block_size];
     read_stream_data(&cache_stream, 0, block_size, buffer);
     ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, 1);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, 1);
 
     // try read zero length data, expect no crash
     read_stream_data(&cache_stream, 0, 0, nullptr);
-    ASSERT_EQ(stats.read_cache_count, 0);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
 }
 
 TEST_F(CacheInputStreamTest, test_read_with_adaptor) {
     const std::string cache_dir = "./cache_input_stream_cache_dir";
     fs::create_directories(cache_dir);
 
-    CacheOptions options = cache_options();
+    DiskCacheOptions options = cache_options();
     // Because the cache adaptor only work for disk cache.
-    options.disk_spaces.push_back({.path = cache_dir, .size = 300 * 1024 * 1024});
-    options.enable_tiered_cache = false;
-    ASSERT_OK(BlockCache::instance()->init(options));
+    options.dir_spaces.push_back({.path = cache_dir, .size = 300 * 1024 * 1024});
+    auto block_cache = TestCacheUtils::create_cache(options);
+    DataCache::GetInstance()->set_block_cache(block_cache);
 
     const int64_t block_count = 2;
 
@@ -362,8 +346,8 @@ TEST_F(CacheInputStreamTest, test_read_with_adaptor) {
         read_stream_data(&cache_stream, 0, read_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
         ASSERT_TRUE(check_data_content(buffer + block_size, block_size, 'b'));
-        ASSERT_EQ(stats.read_cache_count, 0);
-        ASSERT_EQ(stats.write_cache_count, block_count);
+        ASSERT_EQ(stats.read_block_cache_count, 0);
+        ASSERT_EQ(stats.write_block_cache_count, block_count);
     }
 
     auto cache = BlockCache::instance();
@@ -380,7 +364,7 @@ TEST_F(CacheInputStreamTest, test_read_with_adaptor) {
         read_stream_data(&cache_stream, 0, read_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
         ASSERT_TRUE(check_data_content(buffer + block_size, block_size, 'b'));
-        ASSERT_EQ(stats.read_cache_count, 0);
+        ASSERT_EQ(stats.read_block_cache_count, 0);
     }
 
     {
@@ -394,15 +378,12 @@ TEST_F(CacheInputStreamTest, test_read_with_adaptor) {
         read_stream_data(&cache_stream, 0, read_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a'));
         ASSERT_TRUE(check_data_content(buffer + block_size, block_size, 'b'));
-        ASSERT_EQ(stats.read_cache_count, block_count);
+        ASSERT_EQ(stats.read_block_cache_count, block_count);
     }
     fs::remove_all(cache_dir);
 }
 
 TEST_F(CacheInputStreamTest, test_read_with_shared_buffer) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 2;
 
     int64_t data_size = block_size * block_count;
@@ -445,9 +426,6 @@ TEST_F(CacheInputStreamTest, test_read_with_shared_buffer) {
 }
 
 TEST_F(CacheInputStreamTest, test_peek) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 2;
 
     int64_t data_size = block_size * block_count;
@@ -487,9 +465,6 @@ TEST_F(CacheInputStreamTest, test_peek) {
 }
 
 TEST_F(CacheInputStreamTest, test_try_peer_cache) {
-    CacheOptions options = cache_options();
-    ASSERT_OK(BlockCache::instance()->init(options));
-
     const int64_t block_count = 3;
 
     int64_t data_size = block_size * block_count;
@@ -516,8 +491,8 @@ TEST_F(CacheInputStreamTest, test_try_peer_cache) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, 0);
-    ASSERT_EQ(stats.write_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, 0);
+    ASSERT_EQ(stats.write_block_cache_count, block_count);
 
     // first read from local cache
     for (int i = 0; i < block_count; ++i) {
@@ -525,7 +500,7 @@ TEST_F(CacheInputStreamTest, test_try_peer_cache) {
         read_stream_data(&cache_stream, i * block_size, block_size, buffer);
         ASSERT_TRUE(check_data_content(buffer, block_size, 'a' + i));
     }
-    ASSERT_EQ(stats.read_cache_count, block_count);
+    ASSERT_EQ(stats.read_block_cache_count, block_count);
 }
 
 } // namespace starrocks::io

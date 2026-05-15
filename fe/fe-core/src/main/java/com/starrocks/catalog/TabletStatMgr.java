@@ -37,8 +37,10 @@ package com.starrocks.catalog;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.starrocks.alter.reshard.TabletReshardUtils;
 import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.common.Config;
+import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.common.util.concurrent.lock.LockType;
@@ -55,6 +57,8 @@ import com.starrocks.rpc.ThriftRPCRequestExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
+import com.starrocks.sql.ast.MergeTabletClause;
+import com.starrocks.sql.ast.SplitTabletClause;
 import com.starrocks.statistic.BasicStatsMeta;
 import com.starrocks.system.Backend;
 import com.starrocks.system.ComputeNode;
@@ -62,7 +66,7 @@ import com.starrocks.thrift.BackendService;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TTabletStat;
 import com.starrocks.thrift.TTabletStatResult;
-import com.starrocks.warehouse.Warehouse;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -88,11 +92,18 @@ public class TabletStatMgr extends FrontendDaemon {
     private LocalDateTime lastWorkTimestamp = LocalDateTime.MIN;
 
     public TabletStatMgr() {
-        super("tablet stat mgr", Config.tablet_stat_update_interval_second * 1000L);
+        super("tablet-stat-mgr", Config.tablet_stat_update_interval_second * 1000L);
     }
 
     public LocalDateTime getLastWorkTimestamp() {
         return lastWorkTimestamp;
+    }
+
+    public boolean workTimeIsMustAfter(LocalDateTime time) {
+        if (lastWorkTimestamp.isEqual(LocalDateTime.MIN)) {
+            return false;
+        }
+        return lastWorkTimestamp.minusSeconds(Config.tablet_stat_update_interval_second * 2).isAfter(time);
     }
 
     @Override
@@ -107,38 +118,54 @@ public class TabletStatMgr extends FrontendDaemon {
             return;
         }
 
+        acquireBackgroundComputeResource();
         updateLocalTabletStat();
         updateLakeTabletStat();
 
         // after update replica in all backends, update index row num
         long start = System.currentTimeMillis();
-        List<Long> dbIds = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIds();
-        for (Long dbId : dbIds) {
+        for (Long dbId : GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIds()) {
             Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
             if (db == null) {
                 continue;
             }
             Locker locker = new Locker();
             for (Table table : GlobalStateMgr.getCurrentState().getLocalMetastore().getTables(db.getId())) {
-                long totalRowCount = 0L;
                 if (!table.isNativeTableOrMaterializedView()) {
                     continue;
                 }
 
-                // NOTE: calculate the row first with read lock, then update the stats with write lock
-                locker.lockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
+                long totalRowCount = 0L;
+                long maxTabletSize = 0L;
+                long minAdjacentTabletPairSize = Long.MAX_VALUE;
                 Map<Pair<Long, Long>, Long> indexRowCountMap = Maps.newHashMap();
+                // NOTE: calculate the row first with read lock, then update the stats with write lock
+                OlapTable olapTable = (OlapTable) table;
+                locker.lockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
                 try {
-                    OlapTable olapTable = (OlapTable) table;
                     for (Partition partition : olapTable.getAllPartitions()) {
                         for (PhysicalPartition physicalPartition : partition.getSubPartitions()) {
                             long version = physicalPartition.getVisibleVersion();
-                            for (MaterializedIndex index : physicalPartition.getMaterializedIndices(
+                            long visibleVersionTime = physicalPartition.getVisibleVersionTime();
+                            for (MaterializedIndex index : physicalPartition.getLatestMaterializedIndices(
                                     IndexExtState.VISIBLE)) {
                                 long indexRowCount = 0L;
+                                long prevFreshTabletSize = -1L;
                                 // NOTE: can take a rather long time to iterate lots of tablets
                                 for (Tablet tablet : index.getTablets()) {
                                     indexRowCount += tablet.getRowCount(version);
+                                    long dataSize = tablet.getDataSize(true);
+                                    maxTabletSize = Math.max(maxTabletSize, dataSize);
+                                    if (!(tablet instanceof LakeTablet)
+                                            || ((LakeTablet) tablet).getDataSizeUpdateTime() < visibleVersionTime) {
+                                        prevFreshTabletSize = -1L;
+                                        continue;
+                                    }
+                                    if (prevFreshTabletSize >= 0) {
+                                        minAdjacentTabletPairSize = Math.min(minAdjacentTabletPairSize,
+                                                prevFreshTabletSize + dataSize);
+                                    }
+                                    prevFreshTabletSize = dataSize;
                                 } // end for tablets
                                 indexRowCountMap.put(Pair.create(physicalPartition.getId(), index.getId()),
                                         indexRowCount);
@@ -157,11 +184,10 @@ public class TabletStatMgr extends FrontendDaemon {
                 // update
                 locker.lockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.WRITE);
                 try {
-                    OlapTable olapTable = (OlapTable) table;
                     for (Partition partition : olapTable.getAllPartitions()) {
                         for (PhysicalPartition physicalPartition : partition.getSubPartitions()) {
                             for (MaterializedIndex index :
-                                    physicalPartition.getMaterializedIndices(IndexExtState.VISIBLE)) {
+                                    physicalPartition.getLatestMaterializedIndices(IndexExtState.VISIBLE)) {
                                 Long indexRowCount =
                                         indexRowCountMap.get(Pair.create(physicalPartition.getId(), index.getId()));
                                 if (indexRowCount != null) {
@@ -174,11 +200,43 @@ public class TabletStatMgr extends FrontendDaemon {
                 } finally {
                     locker.unLockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.WRITE);
                 }
+
+                // Trigger tablet reshard
+                if (GlobalStateMgr.getCurrentState().isLeader()) {
+                    triggerTabletReshard(db, olapTable, maxTabletSize, minAdjacentTabletPairSize);
+                }
             }
         }
         LOG.info("finished to update index row num of all databases. cost: {} ms",
                 (System.currentTimeMillis() - start));
         lastWorkTimestamp = LocalDateTime.now();
+    }
+
+    private static void triggerTabletReshard(Database db, OlapTable table,
+                                             long maxTabletSize, long minAdjacentTabletPairSize) {
+        if (!table.isCloudNativeTableOrMaterializedView() || !table.isRangeDistribution()) {
+            return;
+        }
+
+        try {
+            if (TabletReshardUtils.needSplit(maxTabletSize)) {
+                GlobalStateMgr.getCurrentState().getTabletReshardJobMgr().createTabletReshardJob(
+                        db, table, new SplitTabletClause());
+                LOG.info("Auto triggered split tablet job for table {}.{}, maxTabletSize {}",
+                        db.getFullName(), table.getName(), maxTabletSize);
+                return;
+            }
+
+            if (TabletReshardUtils.needMerge(minAdjacentTabletPairSize)) {
+                GlobalStateMgr.getCurrentState().getTabletReshardJobMgr().createTabletReshardJob(
+                        db, table, new MergeTabletClause());
+                LOG.info("Auto triggered merge tablet job for table {}.{}, minAdjacentTabletPairSize {}",
+                        db.getFullName(), table.getName(), minAdjacentTabletPairSize);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to create tablet reshard job for table {}.{}.",
+                    db.getFullName(), table.getName(), e);
+        }
     }
 
     private void updateLocalTabletStat() {
@@ -262,11 +320,11 @@ public class TabletStatMgr extends FrontendDaemon {
     @NotNull
     private Collection<PhysicalPartition> getPartitions(@NotNull Database db, @NotNull OlapTable table) {
         Locker locker = new Locker();
-        locker.lockDatabase(db.getId(), LockType.READ);
+        locker.lockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
         try {
             return table.getPhysicalPartitions();
         } finally {
-            locker.unLockDatabase(db.getId(), LockType.READ);
+            locker.unLockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
         }
     }
 
@@ -278,14 +336,14 @@ public class TabletStatMgr extends FrontendDaemon {
         String tableName = table.getName();
         long partitionId = partition.getId();
         Locker locker = new Locker();
-        locker.lockDatabase(db.getId(), LockType.READ);
+        locker.lockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
         try {
             long visibleVersion = partition.getVisibleVersion();
             long visibleVersionTime = partition.getVisibleVersionTime();
-            List<Tablet> tablets = new ArrayList<>(partition.getBaseIndex().getTablets());
+            List<Tablet> tablets = new ArrayList<>(partition.getLatestBaseIndex().getTablets());
             return new PartitionSnapshot(dbName, tableName, partitionId, visibleVersion, visibleVersionTime, tablets);
         } finally {
-            locker.unLockDatabase(db.getId(), LockType.READ);
+            locker.unLockTableWithIntensiveDbLock(db.getId(), table.getId(), LockType.READ);
         }
     }
 
@@ -299,7 +357,7 @@ public class TabletStatMgr extends FrontendDaemon {
             LOG.debug("Skipped tablet stat collection of partition {}", snapshot.debugName());
             return null;
         }
-        return new CollectTabletStatJob(snapshot);
+        return new CollectTabletStatJob(snapshot, computeResource);
     }
 
     private void updateLakeTableTabletStat(@NotNull Database db, @NotNull OlapTable table) {
@@ -344,8 +402,9 @@ public class TabletStatMgr extends FrontendDaemon {
         private final Map<Long, Tablet> tablets;
         private long collectStatTime = 0;
         private List<Future<TabletStatResponse>> responseList;
+        private final ComputeResource computeResource;
 
-        CollectTabletStatJob(PartitionSnapshot snapshot) {
+        CollectTabletStatJob(PartitionSnapshot snapshot, ComputeResource computeResource) {
             this.dbName = Objects.requireNonNull(snapshot.dbName, "dbName is null");
             this.tableName = Objects.requireNonNull(snapshot.tableName, "tableName is null");
             this.partitionId = snapshot.partitionId;
@@ -354,6 +413,7 @@ public class TabletStatMgr extends FrontendDaemon {
             for (Tablet tablet : snapshot.tablets) {
                 this.tablets.put(tablet.getId(), tablet);
             }
+            this.computeResource = computeResource;
         }
 
         void execute() {
@@ -366,15 +426,20 @@ public class TabletStatMgr extends FrontendDaemon {
         }
 
         private void sendTasks() {
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
             Map<ComputeNode, List<TabletInfo>> beToTabletInfos = new HashMap<>();
             for (Tablet tablet : tablets.values()) {
-                WarehouseManager manager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
-                Warehouse warehouse = manager.getBackgroundWarehouse();
-                ComputeNode node = manager.getComputeNodeAssignedToTablet(warehouse.getName(), (LakeTablet) tablet);
-
-                if (node == null) {
-                    LOG.warn("Stop sending tablet stat task for partition {} because no alive node", debugName());
-                    return;
+                ComputeNode node;
+                try {
+                    node = warehouseManager.getComputeNodeAssignedToTablet(computeResource, tablet.getId());
+                    if (node == null) {
+                        LOG.warn("Skip sending tablet stat task for partition {} because no alive node", debugName());
+                        continue;
+                    }
+                } catch (ErrorReportException e) {
+                    LOG.warn("Skip sending tablet stat task for partition {} because exception: {}",
+                            debugName(), e.getMessage());
+                    continue;
                 }
                 TabletInfo tabletInfo = new TabletInfo();
                 tabletInfo.tabletId = tablet.getId();

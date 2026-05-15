@@ -16,17 +16,13 @@ package com.starrocks.transaction;
 
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.common.StarRocksException;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
 import com.starrocks.lake.compaction.Quantiles;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.ComputeNode;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataInput;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +49,13 @@ public class TransactionStateBatch implements Writable {
 
     public TransactionStateBatch(List<TransactionState> transactionStates) {
         this.transactionStates = transactionStates;
+    }
+
+    public TransactionStateBatch(TransactionStateBatch stateBatch) {
+        this.transactionStates = stateBatch.transactionStates.stream()
+                .map(TransactionState::new)
+                .collect(Collectors.toList());
+        this.partitionToTablets = stateBatch.partitionToTablets;
     }
 
     // No concurrency issues.
@@ -85,7 +88,6 @@ public class TransactionStateBatch implements Writable {
             transactionState.clearErrorMsg();
             transactionState.setNewFinish();
             transactionState.setTransactionStatus(TransactionStatus.VISIBLE);
-            transactionState.notifyVisible();
         }
     }
 
@@ -103,8 +105,13 @@ public class TransactionStateBatch implements Writable {
                 TxnStateChangeCallback callback = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
                         .getCallbackFactory().getCallback(callbackId);
                 if (callback != null) {
-                    if (Objects.requireNonNull(transactionStatus) == TransactionStatus.VISIBLE) {
-                        callback.afterVisible(transactionState, txnOperated);
+                    if (txnOperated && Objects.requireNonNull(transactionStatus) == TransactionStatus.VISIBLE) {
+                        try {
+                            callback.afterVisible(transactionState);
+                        } catch (Throwable t) {
+                            LOG.warn("afterVisible callback failed for txn {}, callbackId {}",
+                                    transactionState.getTransactionId(), callbackId, t);
+                        }
                     }
                 }
             }
@@ -164,11 +171,6 @@ public class TransactionStateBatch implements Writable {
         for (TransactionState transactionState : transactionStates) {
             transactionState.replaySetTransactionStatus();
         }
-    }
-
-
-    public static TransactionStateBatch read(DataInput in) throws IOException {
-        return GsonUtils.GSON.fromJson(Text.readString(in), TransactionStateBatch.class);
     }
 
     @Override

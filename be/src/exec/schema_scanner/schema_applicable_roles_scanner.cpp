@@ -19,22 +19,21 @@
 #include "common/logging.h"
 #include "exec/schema_scanner/schema_helper.h"
 #include "runtime/runtime_state.h"
-#include "runtime/string_value.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
 
 SchemaScanner::ColumnDesc SchemaApplicableRolesScanner::_s_columns[] = {
         //   name,       type,          size,     is_null
-        {"USER", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"HOST", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"GRANTEE", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"GRANTEE_HOST", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"ROLE_NAME", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"ROLE_HOST", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"IS_GRANTABLE", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"IS_DEFAULT", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
-        {"IS_MANDATORY", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
+        {"USER", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"HOST", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"GRANTEE", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"GRANTEE_HOST", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"ROLE_NAME", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"ROLE_HOST", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"IS_GRANTABLE", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"IS_DEFAULT", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
+        {"IS_MANDATORY", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
 };
 
 SchemaApplicableRolesScanner::SchemaApplicableRolesScanner()
@@ -103,61 +102,61 @@ Status SchemaApplicableRolesScanner::fill_chunk(ChunkPtr* chunk) {
         if (slot_id < 1 || slot_id > _column_num) {
             return Status::InternalError(fmt::format("invalid slot id:{}", slot_id));
         }
-        ColumnPtr column = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* column = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
 
         switch (slot_id) {
         case 1: {
             // USER
             Slice user = Slice(info.user);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&user);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&user);
             break;
         }
         case 2: {
             // HOST
             Slice host = Slice(info.host);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&host);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&host);
             break;
         }
         case 3: {
             // GRANTEE
             Slice grantee = Slice(info.grantee);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&grantee);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&grantee);
             break;
         }
         case 4: {
             // GRANTEE_HOST
             Slice grantee_host = Slice(info.grantee_host);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&grantee_host);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&grantee_host);
             break;
         }
         case 5: {
             // ROLE_NAME
             Slice role_name = Slice(info.role_name);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&role_name);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&role_name);
             break;
         }
         case 6: {
             // ROLE_HOST
             Slice role_host = Slice(info.role_host);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&role_host);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&role_host);
             break;
         }
         case 7: {
             // IS_GRANTABLE
             Slice is_grantable = Slice(info.is_grantable);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&is_grantable);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&is_grantable);
             break;
         }
         case 8: {
             // IS_DEFAULT
             Slice is_default = Slice(info.is_default);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&is_default);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&is_default);
             break;
         }
         case 9: {
             // IS_MANDATORY
             Slice is_mandatory = Slice(info.is_mandatory);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&is_mandatory);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&is_mandatory);
             break;
         }
         default:

@@ -17,10 +17,11 @@ package com.starrocks.lake;
 import com.staros.client.StarClientException;
 import com.staros.proto.ShardInfo;
 import com.starrocks.catalog.OlapTable;
+import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
+import com.starrocks.common.Config;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.server.WarehouseManager;
-import com.starrocks.warehouse.Warehouse;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -42,11 +43,19 @@ class LakeTableCleaner {
     public boolean cleanTable() {
         boolean allRemoved = true;
         Set<String> removedPaths = new HashSet<>();
+        ComputeResource computeResource =
+                GlobalStateMgr.getCurrentState().getWarehouseMgr().getBackgroundComputeResource(table.getId());
+        if (Config.lake_enable_drop_tablet_cache) {
+            if (table.getTableProperty() != null && table.getTableProperty().getStorageInfo() != null &&
+                    table.getTableProperty().getStorageInfo().isEnableDataCache()) {
+                for (Partition partition : table.getAllPartitions()) {
+                    LakeTableHelper.dropPartitionCache(partition, computeResource);
+                }
+            }
+        }
         for (PhysicalPartition partition : table.getAllPhysicalPartitions()) {
             try {
-                WarehouseManager manager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
-                Warehouse warehouse = manager.getBackgroundWarehouse();
-                ShardInfo shardInfo = LakeTableHelper.getAssociatedShardInfo(partition, warehouse.getId()).orElse(null);
+                ShardInfo shardInfo = LakeTableHelper.getAssociatedShardInfo(partition, computeResource).orElse(null);
                 if (shardInfo == null || removedPaths.contains(shardInfo.getFilePath().getFullPath())) {
                     continue;
                 }

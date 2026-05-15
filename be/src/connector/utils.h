@@ -17,6 +17,7 @@
 #include <future>
 #include <queue>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/statusor.h"
@@ -26,7 +27,7 @@
 #include "formats/parquet/parquet_file_writer.h"
 #include "formats/utils.h"
 #include "fs/fs.h"
-#include "runtime/types.h"
+#include "types/type_descriptor.h"
 
 namespace starrocks::connector {
 
@@ -37,7 +38,20 @@ public:
             const std::vector<std::unique_ptr<ColumnEvaluator>>& column_evaluators, Chunk* chunk,
             bool support_null_partition);
 
+    static StatusOr<std::string> iceberg_make_partition_name(
+            const std::vector<std::string>& partition_column_names,
+            const std::vector<std::unique_ptr<ColumnEvaluator>>& column_evaluators,
+            const std::vector<std::string>& transform_exprs, Chunk* chunk, bool support_null_partition,
+            std::vector<int8_t>& field_is_null);
+
     static StatusOr<std::string> column_value(const TypeDescriptor& type_desc, const ColumnPtr& column, int idx);
+
+    static StatusOr<std::string> iceberg_column_value(const TypeDescriptor& type_desc, const ColumnPtr& column,
+                                                      const int idx, const std::string& transform_expr,
+                                                      int8_t& is_null);
+
+    template <typename T>
+    static StatusOr<std::string> format_decimal_value(T value, int scale);
 };
 
 class IcebergUtils {
@@ -52,14 +66,14 @@ class PathUtils {
 public:
     // requires: path contains "/"
     static std::string get_parent_path(const std::string& path) {
-        std::size_t i = path.find_last_of("/");
+        std::size_t i = path.find_last_of('/');
         CHECK_NE(i, std::string::npos);
         return path.substr(0, i);
     }
 
     // requires: path contains "/"
     static std::string get_filename(const std::string& path) {
-        std::size_t i = path.find_last_of("/");
+        std::size_t i = path.find_last_of('/');
         CHECK_NE(i, std::string::npos);
         return path.substr(i + 1);
     }
@@ -72,15 +86,28 @@ public:
     }
 };
 
+// Normalize a raw format string (e.g. "csv.gz.csv", "  .Csv  ") to a canonical
+// lowercase base name (e.g. "csv").
+std::string normalize_format_name(std::string format);
+
+// Build canonical output file suffix for connector file sinks.
+// Expects a normalized format name (from normalize_format_name).
+// For CSV, append compression suffix (e.g. csv.gz); for self-describing formats
+// like parquet/orc, keep the format suffix only.
+StatusOr<std::string> build_canonical_file_suffix(const std::string& format, TCompressionType::type compression_type);
+
 // Location provider provides file location for every output file. The name format depends on if the write is partitioned or not.
 class LocationProvider {
 public:
     // file_name_prefix = {query_id}_{be_number}_{driver_id}
+    // or {query_id}_{be_number}_{writer_tag}_{driver_id} when writer_tag is non-empty
     LocationProvider(const std::string& base_path, const std::string& query_id, int be_number, int driver_id,
-                     const std::string& file_suffix)
+                     std::string file_suffix, std::string writer_tag = "")
             : _base_path(PathUtils::remove_trailing_slash(base_path)),
-              _file_name_prefix(fmt::format("{}_{}_{}", query_id, be_number, driver_id)),
-              _file_name_suffix(file_suffix) {}
+              _file_name_prefix(writer_tag.empty()
+                                        ? fmt::format("{}_{}_{}", query_id, be_number, driver_id)
+                                        : fmt::format("{}_{}_{}_{}", query_id, be_number, writer_tag, driver_id)),
+              _file_name_suffix(std::move(file_suffix)) {}
 
     // location = base_path/partition/{query_id}_{be_number}_{driver_id}_index.file_suffix
     std::string get(const std::string& partition) {
@@ -90,6 +117,12 @@ public:
 
     // location = base_path/{query_id}_{be_number}_{driver_id}_index.file_suffix
     std::string get() { return fmt::format("{}/{}_{}.{}", _base_path, _file_name_prefix, _index++, _file_name_suffix); }
+
+    std::string root_location(const std::string& partition) {
+        return fmt::format("{}/{}", _base_path, PathUtils::remove_trailing_slash(partition));
+    }
+
+    std::string root_location() { return fmt::format("{}", PathUtils::remove_trailing_slash(_base_path)); }
 
 private:
     const std::string _base_path;

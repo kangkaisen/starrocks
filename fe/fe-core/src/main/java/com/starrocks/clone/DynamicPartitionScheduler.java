@@ -38,7 +38,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Range;
 import com.google.common.collect.Sets;
-import com.starrocks.analysis.TimestampArithmeticExpr;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DistributionInfo;
@@ -46,8 +45,8 @@ import com.starrocks.catalog.DynamicPartitionProperty;
 import com.starrocks.catalog.HashDistributionInfo;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.PartitionKey;
-import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.RandomDistributionInfo;
+import com.starrocks.catalog.RangeDistributionInfo;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AnalysisException;
@@ -74,8 +73,11 @@ import com.starrocks.sql.ast.HashDistributionDesc;
 import com.starrocks.sql.ast.PartitionKeyDesc;
 import com.starrocks.sql.ast.PartitionValue;
 import com.starrocks.sql.ast.RandomDistributionDesc;
+import com.starrocks.sql.ast.RangeDistributionDesc;
 import com.starrocks.sql.ast.SingleRangePartitionDesc;
+import com.starrocks.sql.ast.expression.TimestampArithmeticExpr;
 import com.starrocks.sql.common.MetaUtils;
+import com.starrocks.type.PrimitiveType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.Nullable;
@@ -273,6 +275,8 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
                         distColumnNames);
         } else if (distributionInfo instanceof RandomDistributionInfo) {
             distributionDesc = new RandomDistributionDesc(dynamicPartitionProperty.getBuckets());
+        } else if (distributionInfo instanceof RangeDistributionInfo) {
+            distributionDesc = new RangeDistributionDesc();
         }
         return distributionDesc;
     }
@@ -344,6 +348,10 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
         }
     }
 
+    public void executePartitionTTLForTable(Long dbId, Long tableId) {
+        ttlPartitionScheduler.executePartitionTTLForTable(dbId, tableId);
+    }
+
     public boolean executeDynamicPartitionForTable(Long dbId, Long tableId) {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (db == null) {
@@ -376,7 +384,8 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
                 return true;
             }
 
-            if (olapTable.getState() != OlapTable.OlapTableState.NORMAL) {
+            if (olapTable.getState() != OlapTable.OlapTableState.NORMAL
+                    && olapTable.getState() != OlapTable.OlapTableState.TABLET_RESHARD) {
                 String errorMsg = "Table[" + olapTable.getName() + "]'s state is not NORMAL." +
                             "Do not allow doing dynamic add partition. table state=" + olapTable.getState();
                 runtimeInfoCollector.recordCreatePartitionFailedMsg(db.getOriginName(), olapTable.getName(), errorMsg);
@@ -413,11 +422,11 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
 
         WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
         ConnectContext ctx = Util.getOrCreateInnerContext();
-        ctx.setCurrentWarehouse(warehouseManager.getBackgroundWarehouse().getName());
+        ctx.setCurrentWarehouse(warehouseManager.getBackgroundWarehouse(olapTable.getId()).getName());
 
         Locker locker = new Locker();
         for (DropPartitionClause dropPartitionClause : dropPartitionClauses) {
-            if (!locker.lockDatabaseAndCheckExist(db, LockType.WRITE)) {
+            if (!locker.lockTableAndCheckDbExist(db, tableId, LockType.WRITE)) {
                 LOG.warn("db: {}({}) has been dropped, skip", db.getFullName(), db.getId());
                 return false;
             }
@@ -430,7 +439,7 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
             } catch (DdlException e) {
                 runtimeInfoCollector.recordDropPartitionFailedMsg(db.getOriginName(), tableName, e.getMessage());
             } finally {
-                locker.unLockDatabase(db.getId(), LockType.WRITE);
+                locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.WRITE);
             }
         }
 
@@ -500,12 +509,13 @@ public class DynamicPartitionScheduler extends FrontendDaemon {
     protected void runAfterCatalogReady() {
         // Find all tables that need to be scheduled.
         long now = System.currentTimeMillis();
-        if ((now - lastFindingTime) > Math.max(300000, Config.dynamic_partition_check_interval_seconds)) {
+        long checkIntervalMs = Config.dynamic_partition_check_interval_seconds * 1000L;
+        if ((now - lastFindingTime) > Math.max(60000, checkIntervalMs)) {
             findSchedulableTables();
         }
 
         // Update scheduler interval.
-        setInterval(Config.dynamic_partition_check_interval_seconds * 1000L);
+        setInterval(checkIntervalMs);
 
         // Schedule tables with dynamic partition enabled (only works for base table).
         if (Config.dynamic_partition_enable) {

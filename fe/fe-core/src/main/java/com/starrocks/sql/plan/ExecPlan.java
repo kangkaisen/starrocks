@@ -16,13 +16,13 @@ package com.starrocks.sql.plan;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.DescriptorTable;
-import com.starrocks.analysis.Expr;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.IdGenerator;
 import com.starrocks.common.util.ProfilingExecPlan;
+import com.starrocks.planner.DescriptorTable;
 import com.starrocks.planner.ExecGroup;
 import com.starrocks.planner.HashJoinNode;
+import com.starrocks.planner.IcebergMetadataDeleteNode;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.PlanFragmentId;
 import com.starrocks.planner.PlanNodeId;
@@ -31,9 +31,11 @@ import com.starrocks.plugin.AuditEvent;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.Explain;
 import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalHashJoinOperator;
+import com.starrocks.sql.optimizer.operator.physical.PhysicalScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.transformer.LogicalPlan;
 import com.starrocks.thrift.TExplainLevel;
@@ -52,11 +54,13 @@ public class ExecPlan {
     private final DescriptorTable descTbl = new DescriptorTable();
     private final Map<ColumnRefOperator, Expr> colRefToExpr = new HashMap<>();
     private final ArrayList<PlanFragment> fragments = new ArrayList<>();
+    private final List<PlanFragment> preExecutedFragments = new ArrayList<>();
     private final Map<Integer, PlanFragment> cteProduceFragments = Maps.newHashMap();
     // splitProduceFragments and joinNodeMap is used for skew join
     private final Map<Integer, PlanFragment> splitProduceFragments = Maps.newHashMap();
 
     private final Map<PhysicalHashJoinOperator, HashJoinNode> joinNodeMap = new HashMap<>();
+    private final Map<PhysicalScanOperator, ScanNode> scanNodeMap = new HashMap<>();
 
     private int planCount = 0;
 
@@ -123,8 +127,21 @@ public class ExecPlan {
         return fragments;
     }
 
+    public List<PlanFragment> getPreExecutedFragments() {
+        return preExecutedFragments;
+    }
+
     public PlanFragment getTopFragment() {
         return fragments.get(0);
+    }
+
+    /**
+     * Check if this plan is for Iceberg metadata-level delete operation.
+     * Metadata delete is performed without generating position delete files.
+     */
+    public boolean isIcebergMetadataDelete() {
+        return fragments.size() == 1
+                && fragments.get(0).getPlanRoot() instanceof IcebergMetadataDeleteNode;
     }
 
     public DescriptorTable getDescTbl() {
@@ -165,6 +182,10 @@ public class ExecPlan {
 
     public Map<PhysicalHashJoinOperator, HashJoinNode> getJoinNodeMap() {
         return joinNodeMap;
+    }
+    
+    public Map<PhysicalScanOperator, ScanNode> getScanNodeMap() {
+        return scanNodeMap;
     }
 
     public OptExpression getPhysicalPlan() {

@@ -16,12 +16,18 @@
 
 #include <gtest/gtest.h>
 
+#include "base/testutil/assert.h"
+#include "base/testutil/id_generator.h"
+#include "base/uid_util.h"
 #include "column/chunk.h"
 #include "column/fixed_length_column.h"
 #include "column/schema.h"
 #include "column/vectorized_fwd.h"
 #include "common/logging.h"
+#include "common/util/thrift_util.h"
+#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
+#include "runtime/exec_env.h"
 #include "runtime/lake_tablets_channel.h"
 #include "runtime/load_channel_mgr.h"
 #include "runtime/local_tablets_channel.h"
@@ -38,10 +44,6 @@
 #include "storage/rowset/segment.h"
 #include "storage/rowset/segment_options.h"
 #include "storage/tablet_schema.h"
-#include "testutil/assert.h"
-#include "testutil/id_generator.h"
-#include "util/thrift_util.h"
-#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -57,7 +59,7 @@ public:
         _update_manager = std::make_unique<lake::UpdateManager>(_location_provider, _mem_tracker.get());
         _tablet_manager = std::make_unique<lake::TabletManager>(_location_provider, _update_manager.get(), 1024 * 1024);
 
-        _load_channel_mgr = std::make_unique<LoadChannelMgr>();
+        _load_channel_mgr = std::make_unique<LoadChannelMgr>(_tablet_manager.get());
 
         auto metadata = new_tablet_metadata(10086);
         _tablet_schema = TabletSchema::create(metadata->schema());
@@ -81,6 +83,7 @@ public:
         auto index = _open_request.mutable_schema()->add_indexes();
         index->set_id(kIndexId);
         index->set_schema_hash(0);
+        index->set_schema_id(_schema_id);
         for (int i = 0, sz = metadata->schema().column_size(); i < sz; i++) {
             auto slot = _open_request.mutable_schema()->add_slot_descs();
             slot->set_id(i);
@@ -191,9 +194,10 @@ protected:
         CHECK_OK(_tablet_manager->put_tablet_metadata(*new_tablet_metadata(10089)));
 
         auto load_mem_tracker = std::make_unique<MemTracker>(-1, "", _mem_tracker.get());
-        _load_channel =
-                std::make_shared<LoadChannel>(_load_channel_mgr.get(), _tablet_manager.get(), UniqueId::gen_uid(),
-                                              next_id(), string(), 1000, std::move(load_mem_tracker));
+        _load_channel = std::make_shared<LoadChannel>(_load_channel_mgr.get(), _tablet_manager.get(),
+                                                      ExecEnv::GetInstance()->diagnose_daemon(),
+                                                      ExecEnv::GetInstance()->brpc_stub_cache(), UniqueId::gen_uid(),
+                                                      next_id(), string(), 1000, std::move(load_mem_tracker));
     }
 
     void TearDown() override {
@@ -202,9 +206,9 @@ protected:
         _tablet_manager->prune_metacache();
     }
 
-    std::shared_ptr<Chunk> read_segment(int64_t tablet_id, const std::string& filename) {
+    ChunkUniquePtr read_segment(int64_t tablet_id, const std::string& filename) {
         // Check segment file
-        ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(kTestGroupPath));
+        ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString(kTestGroupPath));
         auto path = _location_provider->segment_location(tablet_id, filename);
 
         ASSIGN_OR_ABORT(auto seg, Segment::open(fs, FileInfo{path}, 0, _tablet_schema));
@@ -280,6 +284,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_simple_write) {
         add_chunk_request.mutable_id()->set_hi(0);
         add_chunk_request.mutable_id()->set_lo(0);
         add_chunk_request.set_sink_id(0);
+        add_chunk_request.set_timeout_ms(60000);
 
         ASSIGN_OR_ABORT(auto chunk_pb, serde::ProtobufChunkSerde::serialize(chunk));
         add_chunk_request.mutable_chunk()->Swap(&chunk_pb);
@@ -308,6 +313,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_simple_write) {
     finish_request.set_packet_seq(1);
     finish_request.add_partition_ids(10);
     finish_request.add_partition_ids(11);
+    finish_request.set_timeout_ms(60000);
 
     _load_channel->add_chunk(finish_request, &finish_response);
     ASSERT_EQ(TStatusCode::OK, finish_response.status().status_code());
@@ -360,6 +366,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_write_concurrently) {
             add_chunk_request.mutable_id()->set_hi(0);
             add_chunk_request.mutable_id()->set_lo(0);
             add_chunk_request.set_sink_id(0);
+            add_chunk_request.set_timeout_ms(60000);
 
             for (int j = 0; j < kChunkSize; j++) {
                 int64_t tablet_id = 10086 + (j / kChunkSizePerTablet);
@@ -384,6 +391,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_write_concurrently) {
         finish_request.set_packet_seq(kLookCount);
         finish_request.add_partition_ids(10);
         finish_request.add_partition_ids(11);
+        finish_request.set_timeout_ms(60000);
 
         _load_channel->add_chunk(finish_request, &finish_response);
         ASSERT_EQ(TStatusCode::OK, finish_response.status().status_code()) << finish_response.status().error_msgs()[0];
@@ -428,6 +436,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_abort) {
             add_chunk_request.mutable_id()->set_hi(0);
             add_chunk_request.mutable_id()->set_lo(0);
             add_chunk_request.set_sink_id(0);
+            add_chunk_request.set_timeout_ms(60000);
 
             for (int i = 0; i < kChunkSize; i++) {
                 int64_t tablet_id = 10086 + (i / kChunkSizePerTablet);
@@ -452,6 +461,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_abort) {
         finish_request.set_packet_seq(packet_seq++);
         finish_request.add_partition_ids(10);
         finish_request.add_partition_ids(11);
+        finish_request.set_timeout_ms(60000);
         _load_channel->add_chunk(finish_request, &finish_response);
         ASSERT_NE(TStatusCode::OK, finish_response.status().status_code());
         stopped.store(true);
@@ -624,6 +634,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_final_profile) {
         add_chunk_request.mutable_id()->set_hi(0);
         add_chunk_request.mutable_id()->set_lo(0);
         add_chunk_request.set_sink_id(0);
+        add_chunk_request.set_timeout_ms(60000);
 
         ASSIGN_OR_ABORT(auto chunk_pb, serde::ProtobufChunkSerde::serialize(chunk));
         add_chunk_request.mutable_chunk()->Swap(&chunk_pb);
@@ -773,6 +784,7 @@ TEST_F(LoadChannelTestForLakeTablet, test_load_diagnose) {
         add_chunk_request.mutable_id()->set_hi(0);
         add_chunk_request.mutable_id()->set_lo(0);
         add_chunk_request.set_sink_id(0);
+        add_chunk_request.set_timeout_ms(60000);
 
         ASSIGN_OR_ABORT(auto chunk_pb, serde::ProtobufChunkSerde::serialize(chunk));
         add_chunk_request.mutable_chunk()->Swap(&chunk_pb);

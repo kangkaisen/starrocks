@@ -14,65 +14,59 @@
 
 package com.starrocks.connector.iceberg;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.starrocks.analysis.ColumnPosition;
 import com.starrocks.catalog.Column;
-import com.starrocks.catalog.Type;
+import com.starrocks.catalog.ColumnBuilder;
 import com.starrocks.common.DdlException;
-import com.starrocks.common.util.TimeUtils;
-import com.starrocks.connector.BranchOptions;
 import com.starrocks.connector.ConnectorAlterTableExecutor;
 import com.starrocks.connector.HdfsEnvironment;
-import com.starrocks.connector.TagOptions;
 import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.connector.iceberg.procedure.IcebergTableProcedure;
+import com.starrocks.connector.iceberg.procedure.IcebergTableProcedureContext;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.AddColumnClause;
 import com.starrocks.sql.ast.AddColumnsClause;
 import com.starrocks.sql.ast.AddFieldClause;
+import com.starrocks.sql.ast.AddPartitionClause;
+import com.starrocks.sql.ast.AddPartitionColumnClause;
 import com.starrocks.sql.ast.AlterTableCommentClause;
 import com.starrocks.sql.ast.AlterTableOperationClause;
 import com.starrocks.sql.ast.AlterTableStmt;
+import com.starrocks.sql.ast.BranchOptions;
+import com.starrocks.sql.ast.ColumnDef;
+import com.starrocks.sql.ast.ColumnPosition;
 import com.starrocks.sql.ast.ColumnRenameClause;
 import com.starrocks.sql.ast.CreateOrReplaceBranchClause;
 import com.starrocks.sql.ast.CreateOrReplaceTagClause;
 import com.starrocks.sql.ast.DropBranchClause;
 import com.starrocks.sql.ast.DropColumnClause;
 import com.starrocks.sql.ast.DropFieldClause;
+import com.starrocks.sql.ast.DropPartitionColumnClause;
 import com.starrocks.sql.ast.DropTagClause;
 import com.starrocks.sql.ast.ModifyColumnClause;
 import com.starrocks.sql.ast.ModifyTablePropertiesClause;
+import com.starrocks.sql.ast.ReplacePartitionColumnClause;
 import com.starrocks.sql.ast.TableRenameClause;
+import com.starrocks.sql.ast.TagOptions;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.LocatedFileStatus;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.RemoteIterator;
-import org.apache.iceberg.ContentFile;
-import org.apache.iceberg.ExpireSnapshots;
+import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.ManageSnapshots;
-import org.apache.iceberg.ManifestFile;
-import org.apache.iceberg.ManifestFiles;
-import org.apache.iceberg.ManifestReader;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Transaction;
+import org.apache.iceberg.UpdatePartitionSpec;
 import org.apache.iceberg.UpdateProperties;
 import org.apache.iceberg.UpdateSchema;
+import org.apache.iceberg.expressions.Literal;
+import org.apache.iceberg.expressions.Term;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.net.URI;
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -80,16 +74,13 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.starrocks.analysis.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
 import static com.starrocks.connector.iceberg.IcebergApiConverter.toIcebergColumnType;
 import static com.starrocks.connector.iceberg.IcebergMetadata.COMMENT;
 import static com.starrocks.connector.iceberg.IcebergMetadata.COMPRESSION_CODEC;
 import static com.starrocks.connector.iceberg.IcebergMetadata.FILE_FORMAT;
 import static com.starrocks.connector.iceberg.IcebergMetadata.LOCATION_PROPERTY;
-import static com.starrocks.connector.iceberg.IcebergUtil.fileName;
+import static com.starrocks.sql.ast.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
 import static com.starrocks.sql.common.UnsupportedException.unsupportedException;
-import static org.apache.iceberg.ReachableFileUtil.metadataFileLocations;
-import static org.apache.iceberg.ReachableFileUtil.statisticsFilesLocations;
 
 public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
     private static final Logger LOGGER = LoggerFactory.getLogger(IcebergAlterTableExecutor.class);
@@ -97,19 +88,17 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
     private IcebergCatalog icebergCatalog;
     private Transaction transaction;
     private HdfsEnvironment hdfsEnvironment;
-
-    private static final int DELETE_BATCH_SIZE = 1000;
-
-    // TODO:Support using session to set default retention_threshold.
-    private static final Duration DEFAULT_RETENTION_THRESHOLD = Duration.ofDays(7);
+    private ConnectContext context;
 
     public IcebergAlterTableExecutor(AlterTableStmt stmt,
-            Table table,
-            IcebergCatalog icebergCatalog,
-            HdfsEnvironment hdfsEnvironment) {
+                                     Table table,
+                                     IcebergCatalog icebergCatalog,
+                                     ConnectContext context,
+                                     HdfsEnvironment hdfsEnvironment) {
         super(stmt);
         this.table = table;
         this.icebergCatalog = icebergCatalog;
+        this.context = context;
         this.hdfsEnvironment = hdfsEnvironment;
     }
 
@@ -125,23 +114,26 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
         actions.add(() -> {
             UpdateSchema updateSchema = this.transaction.updateSchema();
             ColumnPosition pos = clause.getColPos();
-            Column column = clause.getColumnDef().toColumn(null);
+            ColumnDef columnDef = clause.getColumnDef();
 
             // All non-partition columns must use NULL as the default value.
-            if (!column.isAllowNull()) {
+            if (!columnDef.isAllowNull()) {
                 throw new StarRocksConnectorException("column in iceberg table must be nullable.");
             }
-            updateSchema.addColumn(
-                    column.getName(),
-                    toIcebergColumnType(column.getType()),
-                    column.getComment());
+            org.apache.iceberg.types.Type icebergType = toIcebergColumnType(columnDef.getType());
+            Literal<?> defaultLiteral = buildIcebergDefaultLiteral(columnDef, icebergType);
+            if (defaultLiteral != null) {
+                updateSchema.addColumn(columnDef.getName(), icebergType, columnDef.getComment(), defaultLiteral);
+            } else {
+                updateSchema.addColumn(columnDef.getName(), icebergType, columnDef.getComment());
+            }
 
             // AFTER column / FIRST
             if (pos != null) {
                 if (pos.isFirst()) {
-                    updateSchema.moveFirst(column.getName());
+                    updateSchema.moveFirst(columnDef.getName());
                 } else if (pos.getLastCol() != null) {
-                    updateSchema.moveAfter(column.getName(), pos.getLastCol());
+                    updateSchema.moveAfter(columnDef.getName(), pos.getLastCol());
                 } else {
                     throw new StarRocksConnectorException("Unsupported position: " + pos);
                 }
@@ -156,20 +148,19 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
     public Void visitAddColumnsClause(AddColumnsClause clause, ConnectContext context) {
         actions.add(() -> {
             UpdateSchema updateSchema = this.transaction.updateSchema();
-            List<Column> columns = clause
-                    .getColumnDefs()
-                    .stream()
-                    .map(columnDef -> columnDef.toColumn(null))
-                    .collect(Collectors.toList());
+            List<ColumnDef> columns = clause.getColumnDefs();
 
-            for (Column column : columns) {
-                if (!column.isAllowNull()) {
+            for (ColumnDef columnDef : columns) {
+                if (!columnDef.isAllowNull()) {
                     throw new StarRocksConnectorException("column in iceberg table must be nullable.");
                 }
-                updateSchema.addColumn(
-                        column.getName(),
-                        toIcebergColumnType(column.getType()),
-                        column.getComment());
+                org.apache.iceberg.types.Type icebergType = toIcebergColumnType(columnDef.getType());
+                Literal<?> defaultLiteral = buildIcebergDefaultLiteral(columnDef, icebergType);
+                if (defaultLiteral != null) {
+                    updateSchema.addColumn(columnDef.getName(), icebergType, columnDef.getComment(), defaultLiteral);
+                } else {
+                    updateSchema.addColumn(columnDef.getName(), icebergType, columnDef.getComment());
+                }
             }
             updateSchema.commit();
         });
@@ -201,35 +192,40 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
         actions.add(() -> {
             UpdateSchema updateSchema = this.transaction.updateSchema();
             ColumnPosition colPos = clause.getColPos();
-            Column column = clause.getColumnDef().toColumn(null);
-            org.apache.iceberg.types.Type colType = toIcebergColumnType(column.getType());
+            ColumnDef columnDef = clause.getColumnDef();
+            org.apache.iceberg.types.Type colType = toIcebergColumnType(columnDef.getType());
 
             // UPDATE column type
             if (!colType.isPrimitiveType()) {
                 throw new StarRocksConnectorException(
-                        "Cannot modify " + column.getName() + ", not a primitive type");
+                        "Cannot modify " + columnDef.getName() + ", not a primitive type");
             }
-            updateSchema.updateColumn(column.getName(), colType.asPrimitiveType());
+            updateSchema.updateColumn(columnDef.getName(), colType.asPrimitiveType());
 
             // UPDATE comment
-            if (column.getComment() != null) {
-                updateSchema.updateColumnDoc(column.getName(), column.getComment());
+            if (columnDef.getComment() != null) {
+                updateSchema.updateColumnDoc(columnDef.getName(), columnDef.getComment());
             }
 
             // NOT NULL / NULL
-            if (column.isAllowNull()) {
-                updateSchema.makeColumnOptional(column.getName());
+            if (columnDef.isAllowNull()) {
+                updateSchema.makeColumnOptional(columnDef.getName());
             } else {
                 throw new StarRocksConnectorException(
                         "column in iceberg table must be nullable.");
             }
 
+            if (columnDef.getDefaultValueDef().isSet) {
+                Literal<?> defaultLiteral = buildIcebergDefaultLiteral(columnDef, colType);
+                updateSchema.updateColumnDefault(columnDef.getName(), defaultLiteral);
+            }
+
             // AFTER column / FIRST
             if (colPos != null) {
                 if (colPos.isFirst()) {
-                    updateSchema.moveFirst(column.getName());
+                    updateSchema.moveFirst(columnDef.getName());
                 } else if (colPos.getLastCol() != null) {
-                    updateSchema.moveAfter(column.getName(), colPos.getLastCol());
+                    updateSchema.moveAfter(columnDef.getName(), colPos.getLastCol());
                 } else {
                     throw new StarRocksConnectorException("Unsupported position: " + colPos);
                 }
@@ -322,7 +318,7 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
 
     @Override
     public Void visitTableRenameClause(TableRenameClause clause, ConnectContext context) {
-        icebergCatalog.renameTable(tableName.getDb(), tableName.getTbl(), clause.getNewTableName());
+        icebergCatalog.renameTable(context, tableName.getDb(), tableName.getTbl(), clause.getNewTableName());
         return null;
     }
 
@@ -432,6 +428,11 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
     }
 
     @Override
+    public Void visitAddPartitionClause(AddPartitionClause clause, ConnectContext context) {
+        return null;
+    }
+
+    @Override
     public Void visitDropTagClause(DropTagClause clause, ConnectContext context) {
         actions.add(() -> {
             String tagName = clause.getTag();
@@ -448,194 +449,143 @@ public class IcebergAlterTableExecutor extends ConnectorAlterTableExecutor {
 
     @Override
     public Void visitAlterTableOperationClause(AlterTableOperationClause clause, ConnectContext context) {
-        IcebergTableOperation op = IcebergTableOperation.fromString(clause.getTableOperationName());
-        if (op == IcebergTableOperation.UNKNOWN) {
-            throw new StarRocksConnectorException("Unknown iceberg table operation : %s", clause.getTableOperationName());
+        IcebergTableProcedure tableProcedure = clause.getTableProcedure();
+        if (tableProcedure == null) {
+            throw new StarRocksConnectorException("Table operation clause must have a table procedure");
         }
-        List<ConstantOperator> args = clause.getArgs();
-
-        switch (op) {
-            case FAST_FORWARD:
-                fastForward(args);
-                break;
-            case CHERRYPICK_SNAPSHOT:
-                cherryPickSnapshot(args);
-                break;
-            case EXPIRE_SNAPSHOTS:
-                expireSnapshots(args);
-                break;
-            case REMOVE_ORPHAN_FILES:
-                removeOrphanFiles(args);
-                break;
-            default:
-                throw new StarRocksConnectorException("Unsupported table operation %s", op);
-        }
-
+        Map<String, ConstantOperator> args = clause.getAnalyzedArgs();
+        IcebergTableProcedureContext tableProcedureContext =
+                new IcebergTableProcedureContext(icebergCatalog, table, context != null ? context : ConnectContext.get(),
+                        transaction, hdfsEnvironment, stmt, clause);
+        actions.add(() -> {
+            super.resultSet = tableProcedure.execute(tableProcedureContext, args);
+        });
         return null;
     }
 
-    private void fastForward(List<ConstantOperator> args) {
-        if (args.size() != 2) {
-            throw new StarRocksConnectorException("invalid args. fast forward must contain `from branch` and `to branch`");
+    private Literal<?> buildIcebergDefaultLiteral(ColumnDef columnDef, org.apache.iceberg.types.Type icebergType) {
+        if (!columnDef.getDefaultValueDef().isSet) {
+            return null;
         }
+        Column column = ColumnBuilder.buildColumn(columnDef);
+        return IcebergApiConverter.toIcebergDefaultLiteral(column, icebergType);
+    }
 
-        String from = args.get(0)
-                .castTo(Type.VARCHAR)
-                .map(ConstantOperator::getChar)
-                .orElseThrow(() -> new StarRocksConnectorException("invalid arg %s", args.get(0)));
-
-        String to = args.get(1)
-                .castTo(Type.VARCHAR)
-                .map(ConstantOperator::getChar)
-                .orElseThrow(() -> new StarRocksConnectorException("invalid arg %s", args.get(1)));
-
+    @Override
+    public Void visitAddPartitionColumnClause(AddPartitionColumnClause clause, ConnectContext context) {
         actions.add(() -> {
-            transaction.manageSnapshots().fastForwardBranch(from, to).commit();
-        });
-    }
-
-    private void cherryPickSnapshot(List<ConstantOperator> args) {
-        if (args.size() != 1) {
-            throw new StarRocksConnectorException("invalid args. cherrypick snapshot must contain `snapshot id`");
-        }
-
-        long snapshotId = args.get(0)
-                .castTo(Type.BIGINT)
-                .map(ConstantOperator::getBigint)
-                .orElseThrow(() -> new StarRocksConnectorException("invalid arg %s", args.get(0)));
-
-        actions.add(() -> {
-            transaction.manageSnapshots().cherrypick(snapshotId).commit();
-        });
-    }
-
-    private void expireSnapshots(List<ConstantOperator> args) {
-        if (args.size() > 1) {
-            throw new StarRocksConnectorException("invalid args. only support `older_than` in the expire snapshot operation");
-        }
-
-        long olderThanMillis;
-        if (args.isEmpty()) {
-            olderThanMillis = -1L;
-        } else {
-            LocalDateTime time = Optional.ofNullable(args.get(0))
-                    .flatMap(arg -> arg.castTo(Type.DATETIME).map(ConstantOperator::getDatetime))
-                    .orElseThrow(() -> new StarRocksConnectorException("invalid arg %s", args.get(0)));
-            olderThanMillis = Duration.ofSeconds(time.atZone(TimeUtils.getTimeZone().toZoneId()).toEpochSecond()).toMillis();
-        }
-
-        actions.add(() -> {
-            ExpireSnapshots expireSnapshots = transaction.expireSnapshots();
-            if (olderThanMillis != -1) {
-                expireSnapshots = expireSnapshots.expireOlderThan(olderThanMillis);
-            }
-            expireSnapshots.commit();
-        });
-    }
-
-    private void removeOrphanFiles(List<ConstantOperator> args) {
-        if (args.size() > 1) {
-            throw new StarRocksConnectorException("invalid args. only support " +
-                    "`older_than` in the remove orphan files operation");
-        }
-
-        long olderThanMillis;
-        if (args.isEmpty()) {
-            LocalDateTime time = LocalDateTime.now(TimeUtils.getTimeZone().toZoneId());
-            olderThanMillis = time.minus(DEFAULT_RETENTION_THRESHOLD).toInstant(ZoneOffset.UTC).toEpochMilli();
-        } else {
-            LocalDateTime time = Optional.ofNullable(args.get(0))
-                    .flatMap(arg -> arg.castTo(Type.DATETIME)
-                    .map(ConstantOperator::getDatetime))
-                    .orElseThrow(() -> new StarRocksConnectorException("invalid arg %s", args.get(0)));
-            olderThanMillis = Duration.ofSeconds(time.atZone(TimeUtils.getTimeZone().toZoneId()).toEpochSecond()).toMillis();
-        }
-
-        if (table.currentSnapshot() == null) {
-            return;
-        }
-
-        Set<String> processedManifestFilePaths = new HashSet<>();
-        Set<String> validFileNames = new HashSet<>();
-
-        for (Snapshot snapshot : table.snapshots()) {
-            if (snapshot.manifestListLocation() != null) {
-                validFileNames.add(fileName(snapshot.manifestListLocation()));
-            }
-
-            for (ManifestFile manifest : snapshot.allManifests(table.io())) {
-                if (!processedManifestFilePaths.add(manifest.path())) {
-                    continue;
-                }
-
-                validFileNames.add(fileName(manifest.path()));
-                try (ManifestReader<? extends ContentFile<?>> manifestReader = readerForManifest(table, manifest)) {
-                    for (ContentFile<?> contentFile : manifestReader) {
-                        validFileNames.add(fileName(contentFile.location()));
-                    }
-                } catch (IOException e) {
-                    throw new StarRocksConnectorException("Unable to list manifest file content from " + manifest.path(), e);
-                }
-            }
-        }
-
-        metadataFileLocations(table, false).stream()
-                .map(IcebergUtil::fileName)
-                .forEach(validFileNames::add);
-
-        statisticsFilesLocations(table).stream()
-                .map(IcebergUtil::fileName)
-                .forEach(validFileNames::add);
-
-        validFileNames.add("version-hint.text");
-
-        actions.add(() -> scanAndDeleteInvalidFiles(table.location(), olderThanMillis, validFileNames));
-    }
-
-    private static ManifestReader<? extends ContentFile<?>> readerForManifest(Table table, ManifestFile manifest) {
-        return switch (manifest.content()) {
-            case DATA -> ManifestFiles.read(manifest, table.io());
-            case DELETES -> ManifestFiles.readDeleteManifest(manifest, table.io(), table.specs());
-        };
-    }
-
-    private void scanAndDeleteInvalidFiles(String tableLocation, long expiration, Set<String> validFiles) {
-        try {
-            URI uri = new Path(tableLocation).toUri();
-            FileSystem fileSystem = FileSystem.get(uri, hdfsEnvironment.getConfiguration());
-            RemoteIterator<LocatedFileStatus> allFiles = fileSystem.listFiles(new Path(tableLocation), true);
-            List<Path> filesToDelete = new ArrayList<>();
-            while (allFiles.hasNext()) {
-                LocatedFileStatus entry = allFiles.next();
-                FileStatus status = fileSystem.getFileStatus(entry.getPath());
-                if (status.getModificationTime() < expiration && !validFiles.contains(entry.getPath().getName())) {
-                    filesToDelete.add(entry.getPath());
-                    if (filesToDelete.size() >= DELETE_BATCH_SIZE) {
-                        deleteFiles(fileSystem, filesToDelete);
-                        filesToDelete.clear();
-                    }
-                }
-            }
-            if (!filesToDelete.isEmpty()) {
-                deleteFiles(fileSystem, filesToDelete);
-                filesToDelete.clear();
-            }
-        } catch (IOException e) {
-            throw new StarRocksConnectorException("Failed accessing data: ", e);
-        }
-    }
-
-    // TODO:implement deleteFiles in FsUtils
-    @VisibleForTesting
-    public static void deleteFiles(FileSystem fs, List<Path> files) {
-        files.forEach(file -> {
+            UpdatePartitionSpec spec = this.transaction.updateSpec();
+            List<Term> terms = clause.getPartitionExprList().stream()
+                    .map(IcebergPartitionUtils::convertPartitionExprToTerm).toList();
             try {
-                fs.delete(file, false);
-                LOGGER.debug("Deleted file {}", file);
-            } catch (IOException e) {
-                LOGGER.error("Failed to delete file {}", file, e);
-                throw new StarRocksConnectorException("Failed to delete file " + file, e);
+                for (Term term : terms) {
+                    spec.addField(term);
+                }
+                spec.commit();
+            } catch (Exception e) {
+                throw new StarRocksConnectorException("Failed to add partition column: " + e.getMessage(), e);
             }
         });
+        return null;
+    }
+
+    @Override
+    public Void visitDropPartitionColumnClause(DropPartitionColumnClause clause, ConnectContext context) {
+        actions.add(() -> {
+            UpdatePartitionSpec spec = this.transaction.updateSpec();
+            List<Term> terms = clause.getPartitionExprList().stream()
+                    .map(IcebergPartitionUtils::convertPartitionExprToTerm).toList();
+            try {
+                for (Term term : terms) {
+                    spec.removeField(term);
+                }
+                spec.commit();
+            } catch (Exception e) {
+                throw new StarRocksConnectorException("Failed to drop partition column: " + e.getMessage(), e);
+            }
+        });
+        return null;
+    }
+
+    @Override
+    public Void visitReplacePartitionColumnClause(ReplacePartitionColumnClause clause, ConnectContext context) {
+        actions.add(() -> {
+            if (table instanceof BaseTable baseTable) {
+                int formatVersion = baseTable.operations().current().formatVersion();
+                if (formatVersion < 2) {
+                    throw new StarRocksConnectorException(
+                            "REPLACE PARTITION COLUMN is only supported for Iceberg v2 tables, " +
+                                    "but table is v%d format", formatVersion);
+                }
+            }
+
+            UpdatePartitionSpec spec = this.transaction.updateSpec();
+            Expr oldPartitionExpr = clause.getOldPartitionExpr();
+            Expr newPartitionExpr = clause.getNewPartitionExpr();
+
+            // Resolve old partition: by field name (e.g. "dt_day") or by transform expression (e.g. "day(dt)")
+            String oldFieldName = resolvePartitionFieldName(oldPartitionExpr);
+
+            String newExprStr = IcebergPartitionUtils.normalizePartitionExpr(newPartitionExpr);
+            Set<String> currentPartitionExprs = table.spec().fields().stream()
+                    .map(field -> IcebergApiConverter.toPartitionField(table.spec(), field, false)
+                            .toLowerCase(Locale.ROOT))
+                    .collect(Collectors.toSet());
+
+            if (oldFieldName == null) {
+                String oldExprStr = IcebergPartitionUtils.normalizePartitionExpr(oldPartitionExpr);
+                if (oldExprStr.equalsIgnoreCase(newExprStr)) {
+                    throw new StarRocksConnectorException(
+                            "Failed to replace partition column: old and new partition column are the same: "
+                                    + oldExprStr);
+                }
+                if (!currentPartitionExprs.contains(oldExprStr.toLowerCase(Locale.ROOT))) {
+                    throw new StarRocksConnectorException(
+                            "Failed to replace partition column: old partition column does not exist: " + oldExprStr);
+                }
+            }
+
+            if (currentPartitionExprs.contains(newExprStr.toLowerCase(Locale.ROOT))) {
+                throw new StarRocksConnectorException(
+                        "Failed to replace partition column: new partition column already exists: " + newExprStr);
+            }
+
+            Term newTerm = IcebergPartitionUtils.convertPartitionExprToTerm(newPartitionExpr);
+            try {
+                if (oldFieldName != null) {
+                    spec.removeField(oldFieldName);
+                } else {
+                    Term oldTerm = IcebergPartitionUtils.convertPartitionExprToTerm(oldPartitionExpr);
+                    spec.removeField(oldTerm);
+                }
+                spec.addField(newTerm);
+                spec.commit();
+            } catch (Exception e) {
+                throw new StarRocksConnectorException("Failed to replace partition column: " + e.getMessage(), e);
+            }
+        });
+        return null;
+    }
+
+    /**
+     * Check if the old partition expression is a partition field name reference (e.g., "dt_day")
+     * rather than a transform expression (e.g., "day(dt)").
+     * Returns the field name if resolved by name, null otherwise.
+     */
+    private String resolvePartitionFieldName(Expr expr) {
+        if (!(expr instanceof SlotRef slotRef)) {
+            return null;
+        }
+        String name = slotRef.getColumnName();
+        // If the name matches a schema column, treat as identity transform, not a field name
+        if (table.schema().findField(name) != null) {
+            return null;
+        }
+        // Check if it matches a partition field name
+        return table.spec().fields().stream()
+                .filter(f -> f.name().equalsIgnoreCase(name))
+                .map(f -> f.name())
+                .findFirst()
+                .orElse(null);
     }
 }

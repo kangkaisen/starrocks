@@ -41,6 +41,7 @@ import com.sleepycat.je.rep.ReplicaStateException;
 import com.sleepycat.je.rep.UnknownMasterException;
 import com.sleepycat.je.rep.util.ReplicationGroupAdmin;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.Pair;
@@ -54,7 +55,6 @@ import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.OperationType;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.ModifyFrontendAddressClause;
-import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.system.Frontend;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
@@ -62,25 +62,42 @@ import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.commons.io.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.io.File;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class GlobalStateMgrTest {
+    private String testMetaDir;
+    private String testPluginDir;
 
-    @Before
+    @BeforeEach
     public void setUp() {
-        Config.meta_dir = UUID.randomUUID().toString();
-        Config.plugin_dir = UUID.randomUUID().toString();
+        testMetaDir = UUID.randomUUID().toString();
+        testPluginDir = UUID.randomUUID().toString();
+        Config.meta_dir = testMetaDir;
+        Config.plugin_dir = testPluginDir;
+    }
+
+    @AfterEach
+    public void tearDown() throws Exception {
+        FileUtils.deleteQuietly(new File(testMetaDir));
+        FileUtils.deleteQuietly(new File(testPluginDir));
     }
 
     @Test
@@ -123,30 +140,14 @@ public class GlobalStateMgrTest {
         return globalStateMgr;
     }
 
-    @Test
-    public void testReplayUpdateFrontend() throws Exception {
-        GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
-        List<Frontend> frontends = globalStateMgr.getNodeMgr().getFrontends(null);
-        Frontend fe = frontends.get(0);
-        fe.updateHostAndEditLogPort("testHost", 1000);
-        globalStateMgr.getNodeMgr().replayUpdateFrontend(fe);
-        List<Frontend> updatedFrontends = globalStateMgr.getNodeMgr().getFrontends(null);
-        Frontend updatedfFe = updatedFrontends.get(0);
-        Assert.assertEquals("testHost", updatedfFe.getHost());
-        Assert.assertTrue(updatedfFe.getEditLogPort() == 1000);
-    }
-
     @Mocked
     BDBEnvironment env;
 
     @Mocked
     ReplicationGroupAdmin replicationGroupAdmin;
 
-    @Mocked
-    EditLog editLog;
-
     @Test
-    public void testUpdateFrontend() throws Exception {
+    public void testUpdateFrontend(@Mocked EditLog editLog) throws Exception {
 
         new Expectations() {
             {
@@ -166,12 +167,6 @@ public class GlobalStateMgrTest {
             }
         };
 
-        new MockUp<EditLog>() {
-            @Mock
-            public void logUpdateFrontend(Frontend fe) {
-            }
-        };
-
         GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
         BDBHA ha = new BDBHA(env, "testNode");
         globalStateMgr.setHaProtocol(ha);
@@ -182,26 +177,32 @@ public class GlobalStateMgrTest {
         globalStateMgr.getNodeMgr().modifyFrontendHost(clause);
     }
 
-    @Test(expected = DdlException.class)
-    public void testUpdateFeNotFoundException() throws Exception {
-        GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
-        ModifyFrontendAddressClause clause = new ModifyFrontendAddressClause("test", "sandbox-fqdn");
-        // this case will occur [frontend does not exist] exception
-        globalStateMgr.getNodeMgr().modifyFrontendHost(clause);
+    @Test
+    public void testUpdateFeNotFoundException() {
+        assertThrows(DdlException.class, () -> {
+            GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
+            ModifyFrontendAddressClause clause = new ModifyFrontendAddressClause("test", "sandbox-fqdn");
+            // this case will occur [frontend does not exist] exception
+            globalStateMgr.getNodeMgr().modifyFrontendHost(clause);
+        });
     }
 
-    @Test(expected = DdlException.class)
-    public void testUpdateModifyCurrentMasterException() throws Exception {
-        GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
-        ModifyFrontendAddressClause clause = new ModifyFrontendAddressClause("test-address", "sandbox-fqdn");
-        // this case will occur [can not modify current master node] exception
-        globalStateMgr.getNodeMgr().modifyFrontendHost(clause);
+    @Test
+    public void testUpdateModifyCurrentMasterException() {
+        assertThrows(DdlException.class, () -> {
+            GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
+            ModifyFrontendAddressClause clause = new ModifyFrontendAddressClause("test-address", "sandbox-fqdn");
+            // this case will occur [can not modify current master node] exception
+            globalStateMgr.getNodeMgr().modifyFrontendHost(clause);
+        });
     }
 
-    @Test(expected = DdlException.class)
-    public void testAddRepeatedFe() throws Exception {
-        GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
-        globalStateMgr.getNodeMgr().addFrontend(FrontendNodeType.FOLLOWER, "127.0.0.1", 1000);
+    @Test
+    public void testAddRepeatedFe() {
+        assertThrows(DdlException.class, () -> {
+            GlobalStateMgr globalStateMgr = mockGlobalStateMgr();
+            globalStateMgr.getNodeMgr().addFrontend(FrontendNodeType.FOLLOWER, "127.0.0.1", 1000);
+        });
     }
 
     @Test
@@ -210,24 +211,24 @@ public class GlobalStateMgrTest {
         Config.metadata_journal_ignore_replay_failure = false;
 
         // when recover_on_load_journal_failed is false, the failure of every operation type can not be skipped.
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_CREATE_DB_V2, "failed")));
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_CREATE_DB_V2, "failed")));
 
         Config.metadata_journal_ignore_replay_failure = true;
         // when recover_on_load_journal_failed is false, the failure of recoverable operation type can be skipped.
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_CREATE_DB_V2, "failed")));
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertFalse(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_CREATE_DB_V2, "failed")));
 
         Config.metadata_journal_ignore_replay_failure = originVal;
@@ -235,15 +236,105 @@ public class GlobalStateMgrTest {
         // when metadata_enable_recovery_mode is true, all types of failure can be skipped.
         originVal = Config.metadata_enable_recovery_mode;
         Config.metadata_enable_recovery_mode = true;
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalException(OperationType.OP_CREATE_DB_V2, "failed")));
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_ADD_ANALYZE_STATUS, "failed")));
-        Assert.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
+        Assertions.assertTrue(GlobalStateMgr.getServingState().canSkipBadReplayedJournal(
                 new JournalInconsistentException(OperationType.OP_CREATE_DB_V2, "failed")));
         Config.metadata_enable_recovery_mode = originVal;
+    }
+
+    @Test
+    public void testLeaderLeaseActivation() {
+        GlobalStateMgr globalStateMgr = new GlobalStateMgr(new NodeMgr());
+        globalStateMgr.beginLeaderActivation();
+        Assertions.assertEquals(GlobalStateMgr.LeaderRoleState.ACTIVATING, globalStateMgr.getLeaderRoleState());
+        Assertions.assertFalse(globalStateMgr.isLeaderWorkAdmissionOpen());
+        Assertions.assertEquals(LeaderLease.INVALID, globalStateMgr.captureLeaderLease());
+
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(101L);
+
+        LeaderLease lease = globalStateMgr.captureLeaderLeaseOrThrow();
+        Assertions.assertEquals(101L, lease.getHaEpoch());
+        Assertions.assertEquals(1L, lease.getGeneration());
+        Assertions.assertTrue(globalStateMgr.isLeaderLeaseValid(lease));
+        Assertions.assertTrue(globalStateMgr.isLeaderWorkAdmissionOpen());
+        Assertions.assertEquals(GlobalStateMgr.LeaderRoleState.ACTIVE, globalStateMgr.getLeaderRoleState());
+        Assertions.assertNull(globalStateMgr.getPendingDemotionTargetType());
+    }
+
+    @Test
+    public void testLeaderLeaseActivationAllowsEpochZero() {
+        GlobalStateMgr globalStateMgr = new GlobalStateMgr(new NodeMgr());
+        globalStateMgr.beginLeaderActivation();
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(0L);
+
+        LeaderLease lease = globalStateMgr.captureLeaderLeaseOrThrow();
+        Assertions.assertEquals(0L, lease.getHaEpoch());
+        Assertions.assertTrue(lease.isValid());
+        Assertions.assertTrue(globalStateMgr.isLeaderLeaseValid(lease));
+    }
+
+    @Test
+    public void testLeaderLeaseInvalidatedByDemotionSkeleton() {
+        GlobalStateMgr globalStateMgr = new GlobalStateMgr(new NodeMgr());
+        globalStateMgr.beginLeaderActivation();
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(102L);
+        LeaderLease lease = globalStateMgr.captureLeaderLeaseOrThrow();
+
+        globalStateMgr.beginLeaderDemotion(FrontendNodeType.FOLLOWER);
+
+        Assertions.assertFalse(globalStateMgr.isLeaderWorkAdmissionOpen());
+        Assertions.assertTrue(globalStateMgr.isLeaderDemoting());
+        Assertions.assertFalse(globalStateMgr.isLeaderLeaseValid(lease));
+        Assertions.assertEquals(LeaderLease.INVALID, globalStateMgr.captureLeaderLease());
+        Assertions.assertEquals(GlobalStateMgr.LeaderRoleState.DEMOTING, globalStateMgr.getLeaderRoleState());
+        Assertions.assertEquals(FrontendNodeType.FOLLOWER, globalStateMgr.getPendingDemotionTargetType());
+        Assertions.assertThrows(IllegalStateException.class, globalStateMgr::captureLeaderLeaseOrThrow);
+    }
+
+    @Test
+    public void testLeaderGenerationBumpsAcrossDemotionAndReelection() {
+        GlobalStateMgr globalStateMgr = new GlobalStateMgr(new NodeMgr());
+        globalStateMgr.beginLeaderActivation();
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(103L);
+        LeaderLease firstLease = globalStateMgr.captureLeaderLeaseOrThrow();
+
+        globalStateMgr.beginLeaderDemotion(FrontendNodeType.FOLLOWER);
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.FOLLOWER);
+
+        globalStateMgr.beginLeaderActivation();
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(104L);
+        LeaderLease secondLease = globalStateMgr.captureLeaderLeaseOrThrow();
+
+        Assertions.assertTrue(secondLease.getGeneration() > firstLease.getGeneration());
+        Assertions.assertEquals(104L, secondLease.getHaEpoch());
+        Assertions.assertFalse(globalStateMgr.isLeaderLeaseValid(firstLease));
+    }
+
+    @Test
+    public void testLeaderLeaseRollbackAfterActivationFailure() {
+        GlobalStateMgr globalStateMgr = new GlobalStateMgr(new NodeMgr());
+        globalStateMgr.beginLeaderActivation();
+        globalStateMgr.setFrontendNodeType(FrontendNodeType.LEADER);
+        globalStateMgr.publishLeaderLease(105L);
+        LeaderLease lease = globalStateMgr.captureLeaderLeaseOrThrow();
+
+        globalStateMgr.rollbackLeaderActivation();
+
+        Assertions.assertFalse(globalStateMgr.isLeaderWorkAdmissionOpen());
+        Assertions.assertFalse(globalStateMgr.isLeaderLeaseValid(lease));
+        Assertions.assertEquals(LeaderLease.INVALID, globalStateMgr.captureLeaderLease());
+        Assertions.assertEquals(GlobalStateMgr.LeaderRoleState.INACTIVE, globalStateMgr.getLeaderRoleState());
+        Assertions.assertNull(globalStateMgr.getPendingDemotionTargetType());
     }
 
     private static class MyGlobalStateMgr extends GlobalStateMgr {
@@ -273,27 +364,27 @@ public class GlobalStateMgrTest {
     public void testRemoveRoleAndVersionFileAtFirstTimeStarting() {
         GlobalStateMgr globalStateMgr = new MyGlobalStateMgr(true);
         NodeMgr nodeMgr = globalStateMgr.getNodeMgr();
-        Assert.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
+        Assertions.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
         try {
             globalStateMgr.initialize(null);
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof UnsupportedOperationException);
-            Assert.assertEquals(MyGlobalStateMgr.ERROR_MESSAGE, e.getMessage());
+            Assertions.assertTrue(e instanceof UnsupportedOperationException);
+            Assertions.assertEquals(MyGlobalStateMgr.ERROR_MESSAGE, e.getMessage());
         }
-        Assert.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
+        Assertions.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
     }
 
     @Test
     public void testSuccessfullyInitializeGlobalStateMgr() {
         GlobalStateMgr globalStateMgr = new MyGlobalStateMgr(false);
         NodeMgr nodeMgr = globalStateMgr.getNodeMgr();
-        Assert.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
+        Assertions.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
         try {
             globalStateMgr.initialize(null);
         } catch (Exception e) {
-            Assert.fail("No exception is expected here.");
+            Assertions.fail("No exception is expected here.");
         }
-        Assert.assertFalse(nodeMgr.isVersionAndRoleFilesNotExist());
+        Assertions.assertFalse(nodeMgr.isVersionAndRoleFilesNotExist());
     }
 
     @Test
@@ -304,17 +395,17 @@ public class GlobalStateMgrTest {
         Mockito.doThrow(new RuntimeException(removeFileErrorMessage)).when(nodeMgr).removeClusterIdAndRole();
 
         GlobalStateMgr globalStateMgr = new MyGlobalStateMgr(true, nodeMgr);
-        Assert.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
+        Assertions.assertTrue(nodeMgr.isVersionAndRoleFilesNotExist());
         try {
             globalStateMgr.initialize(null);
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof UnsupportedOperationException);
-            Assert.assertEquals(MyGlobalStateMgr.ERROR_MESSAGE, e.getMessage());
+            Assertions.assertTrue(e instanceof UnsupportedOperationException);
+            Assertions.assertEquals(MyGlobalStateMgr.ERROR_MESSAGE, e.getMessage());
 
             Throwable[] suppressedExceptions = e.getSuppressed();
-            Assert.assertEquals(1, suppressedExceptions.length);
-            Assert.assertTrue(suppressedExceptions[0] instanceof RuntimeException);
-            Assert.assertEquals(removeFileErrorMessage, suppressedExceptions[0].getMessage());
+            Assertions.assertEquals(1, suppressedExceptions.length);
+            Assertions.assertTrue(suppressedExceptions[0] instanceof RuntimeException);
+            Assertions.assertEquals(removeFileErrorMessage, suppressedExceptions[0].getMessage());
         }
     }
 
@@ -322,7 +413,6 @@ public class GlobalStateMgrTest {
     public void testReloadTables() throws Exception {
         ConnectContext ctx = UtFrameUtils.initCtxForNewPrivilege(UserIdentity.ROOT);
         UtFrameUtils.createMinStarRocksCluster();
-        UtFrameUtils.setUpForPersistTest();
         GlobalStateMgr currentState = GlobalStateMgr.getCurrentState();
         StarRocksAssert starRocksAssert = new StarRocksAssert();
 
@@ -357,8 +447,70 @@ public class GlobalStateMgrTest {
         GlobalStateMgr newState = new MyGlobalStateMgr(false);
         newState.loadImage();
         Table table = newState.getLocalMetastore().getTable("db1", "t1");
-        Assert.assertNotNull(table);
+        Assertions.assertNotNull(table);
         table = newState.getLocalMetastore().getTable("db2", "t1");
-        Assert.assertEquals(1, table.getForeignKeyConstraints().size());
+        Assertions.assertEquals(1, table.getForeignKeyConstraints().size());
+    }
+
+    @Test
+    public void testStopOneInvokesAction() throws Exception {
+        GlobalStateMgr mgr = new MyGlobalStateMgr(false);
+        AtomicBoolean ran = new AtomicBoolean(false);
+        Runnable action = () -> ran.set(true);
+
+        Method stopOne = GlobalStateMgr.class.getDeclaredMethod("stopOne", String.class, Runnable.class);
+        stopOne.setAccessible(true);
+        stopOne.invoke(mgr, "fakeDaemon", action);
+
+        Assertions.assertTrue(ran.get(), "stopOne must invoke the action");
+    }
+
+    @Test
+    public void testStopOneSwallowsThrowable() throws Exception {
+        // stopOne wraps each daemon's stopGracefully so that a single misbehaving daemon
+        // does not abort the demotion drain mid-way and leave later daemons running.
+        GlobalStateMgr mgr = new MyGlobalStateMgr(false);
+        AtomicBoolean ran = new AtomicBoolean(false);
+        Runnable action = () -> {
+            ran.set(true);
+            throw new RuntimeException("boom");
+        };
+
+        Method stopOne = GlobalStateMgr.class.getDeclaredMethod("stopOne", String.class, Runnable.class);
+        stopOne.setAccessible(true);
+        // No exception expected to escape.
+        stopOne.invoke(mgr, "throwingDaemon", action);
+
+        Assertions.assertTrue(ran.get(), "action should still run");
+    }
+
+    @Test
+    public void testStopLeaderOnlyDaemonThreadsDrivesEveryWiredDaemon() throws Exception {
+        // Sanity test for the demotion drain wiring: every daemon listed in
+        // stopLeaderOnlyDaemonThreads must be reachable and its stopGracefully invocation must
+        // be shielded by stopOne, so a misbehaving daemon cannot abort the drain. The lazily
+        // initialized timePrinter / txnTimeoutChecker fields are still null here, exercising the
+        // null-skip branches.
+        GlobalStateMgr mgr = new MyGlobalStateMgr(false);
+
+        Method stop = GlobalStateMgr.class.getDeclaredMethod("stopLeaderOnlyDaemonThreads");
+        stop.setAccessible(true);
+        // None of the daemons are running; every stopGracefully is effectively a state reset.
+        // Any throwable from a daemon's onStopped is contained by stopOne, so the call must
+        // complete without propagating.
+        stop.invoke(mgr);
+    }
+
+    @Test
+    public void testStopLeaderOnlyDaemonThreadsCoversLazilyInitializedDaemons() throws Exception {
+        // timePrinter and txnTimeoutChecker are created lazily after the leader has activated;
+        // exercise the non-null branch so the drain stops them too.
+        GlobalStateMgr mgr = new MyGlobalStateMgr(false);
+        mgr.createTxnTimeoutChecker();
+        mgr.createTimePrinter();
+
+        Method stop = GlobalStateMgr.class.getDeclaredMethod("stopLeaderOnlyDaemonThreads");
+        stop.setAccessible(true);
+        stop.invoke(mgr);
     }
 }

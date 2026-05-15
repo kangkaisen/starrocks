@@ -14,24 +14,25 @@
 
 package com.starrocks.sql.analyzer;
 
-import com.starrocks.analysis.LiteralExpr;
-import com.starrocks.analysis.Subquery;
 import com.starrocks.catalog.ResourceGroupMgr;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.SetExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.SetStmt;
-import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.sql.ast.UserVariable;
+import com.starrocks.sql.ast.expression.LiteralExpr;
+import com.starrocks.sql.ast.expression.Subquery;
 import com.starrocks.thrift.TWorkGroup;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
 import com.uber.m3.util.ImmutableMap;
-import mockit.Expectations;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import mockit.Mock;
+import mockit.MockUp;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeFail;
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeSetUserVariableFail;
@@ -42,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class AnalyzeSetVariableTest {
     private static StarRocksAssert starRocksAssert;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         AnalyzeTestUtil.init();
@@ -94,20 +95,20 @@ public class AnalyzeSetVariableTest {
         UserVariable userVariable = (UserVariable) setStmt.getSetListItems().get(0);
         SetExecutor executor = new SetExecutor(ctx, setStmt);
         executor.execute();
-        Assert.assertNotNull(userVariable.getEvaluatedExpression());
-        Assert.assertEquals("3", ((LiteralExpr) userVariable.getEvaluatedExpression()).getStringValue());
+        Assertions.assertNotNull(userVariable.getEvaluatedExpression());
+        Assertions.assertEquals("3", ((LiteralExpr) userVariable.getEvaluatedExpression()).getStringValue());
 
         sql = "set @var = abs(1.2)";
         setStmt = (SetStmt) analyzeSuccess(sql);
         userVariable = (UserVariable) setStmt.getSetListItems().get(0);
         SetStmtAnalyzer.calcuteUserVariable(userVariable);
-        Assert.assertTrue(userVariable.getUnevaluatedExpression() instanceof Subquery);
+        Assertions.assertTrue(userVariable.getUnevaluatedExpression() instanceof Subquery);
 
         sql = "set @var =JSON_ARRAY(1, 2, 3)";
         setStmt = (SetStmt) analyzeSuccess(sql);
         userVariable = (UserVariable) setStmt.getSetListItems().get(0);
         SetStmtAnalyzer.calcuteUserVariable(userVariable);
-        Assert.assertTrue(userVariable.getUnevaluatedExpression() instanceof Subquery);
+        Assertions.assertTrue(userVariable.getUnevaluatedExpression() instanceof Subquery);
 
         sql = "set @var = (select 1)";
         analyzeSuccess(sql);
@@ -121,15 +122,16 @@ public class AnalyzeSetVariableTest {
         sql = "set @var = (select sum(v1) from test.t0 group by v2)";
         setStmt = (SetStmt) analyzeSuccess(sql);
         SetStmtAnalyzer.calcuteUserVariable((UserVariable) setStmt.getSetListItems().get(0));
-        Assert.assertTrue(((UserVariable) setStmt.getSetListItems().get(0)).getUnevaluatedExpression().getType().isIntegerType());
+        Assertions.assertTrue(
+                ((UserVariable) setStmt.getSetListItems().get(0)).getUnevaluatedExpression().getType().isIntegerType());
 
         sql = "set @var1 = 1, @var2 = 2";
         setStmt = (SetStmt) analyzeSuccess(sql);
-        Assert.assertEquals(2, setStmt.getSetListItems().size());
+        Assertions.assertEquals(2, setStmt.getSetListItems().size());
 
         sql = "set @var = [1,2,3]";
         setStmt = (SetStmt) analyzeSuccess(sql);
-        Assert.assertEquals(1, setStmt.getSetListItems().size());
+        Assertions.assertEquals(1, setStmt.getSetListItems().size());
 
         sql = "set @var = to_binary('abab', 'hex')";
         analyzeSetUserVariableFail(sql, "Can't set variable with type VARBINARY");
@@ -168,6 +170,32 @@ public class AnalyzeSetVariableTest {
     }
 
     @Test
+    public void testConnectorSinkShuffleModeVariables() {
+        analyzeSuccess("set connector_sink_shuffle_mode = 'auto'");
+        analyzeSuccess("set connector_sink_shuffle_mode = 'force'");
+        analyzeSuccess("set connector_sink_shuffle_mode = 'never'");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> {
+            com.starrocks.sql.ast.StatementBase stmt = AnalyzeTestUtil.parseSql(
+                    "set connector_sink_shuffle_mode = 'unknown'");
+            Analyzer.analyze(stmt, connectContext);
+        });
+
+        analyzeSuccess("set connector_sink_shuffle_partition_threshold = 1");
+        analyzeFail("set connector_sink_shuffle_partition_threshold = 0",
+                "connector_sink_shuffle_partition_threshold must be equal or greater than 1");
+
+        analyzeSuccess("set connector_sink_shuffle_partition_node_ratio = 0.1");
+        analyzeFail("set connector_sink_shuffle_partition_node_ratio = 0",
+                "connector_sink_shuffle_partition_node_ratio should be a positive finite number");
+        analyzeFail("set connector_sink_shuffle_partition_node_ratio = 'NaN'",
+                "connector_sink_shuffle_partition_node_ratio should be a positive finite number");
+        analyzeFail("set connector_sink_shuffle_partition_node_ratio = 'Infinity'",
+                "connector_sink_shuffle_partition_node_ratio should be a positive finite number");
+        analyzeFail("set connector_sink_shuffle_partition_node_ratio = 'abc'",
+                "failed to parse connector_sink_shuffle_partition_node_ratio");
+    }
+
+    @Test
     public void testSetNames() {
         String sql = "SET NAMES 'utf8mb4' COLLATE 'bogus'";
         analyzeSuccess(sql);
@@ -186,21 +214,17 @@ public class AnalyzeSetVariableTest {
     }
 
     @Test
-    public void testSetResourceGroupName() {
+    public void testSetResourceGroupName() throws Exception {
         String rg1Name = "rg1";
-        TWorkGroup rg1 = new TWorkGroup();
-        ResourceGroupMgr mgr = GlobalStateMgr.getCurrentState().getResourceGroupMgr();
-        new Expectations(mgr) {
-            {
-                mgr.chooseResourceGroupByName(rg1Name);
-                result = rg1;
-            }
 
-            {
-                mgr.chooseResourceGroupByName(anyString);
-                result = null;
-            }
-        };
+        String createRgSql = "create resource group rg1\n" +
+                "to (user='rg1_user1')\n" +
+                "   with (" +
+                "   'mem_limit' = '20%'," +
+                "   'cpu_core_limit' = '17'," +
+                "   'concurrency_limit' = '11'" +
+                "   );";
+        starRocksAssert.executeResourceGroupDdlSql(createRgSql);
 
         String sql;
 
@@ -214,27 +238,23 @@ public class AnalyzeSetVariableTest {
         analyzeSuccess(sql);
     }
 
+    /**
+     * Mock up {@link ResourceGroupMgr#chooseResourceGroupByID(long)}.
+     */
     @Test
     public void testSetResourceGroupID() {
         long rg1ID = 1;
         TWorkGroup rg1 = new TWorkGroup();
         rg1.setId(rg1ID);
         ResourceGroupMgr mgr = GlobalStateMgr.getCurrentState().getResourceGroupMgr();
-        new Expectations(mgr) {
-            {
-                mgr.chooseResourceGroupByID(rg1ID);
-                result = rg1;
-            }
 
-            {
-                mgr.chooseResourceGroupByID(anyLong);
-                result = null;
-            }
-
-            {
-                mgr.createBuiltinResourceGroupsIfNotExist();
-                result = null;
-                minTimes = 0;
+        new MockUp<ResourceGroupMgr>() {
+            @Mock
+            public TWorkGroup chooseResourceGroupByID(long wgID) {
+                if (wgID == rg1ID) {
+                    return rg1;
+                }
+                return null;
             }
         };
 

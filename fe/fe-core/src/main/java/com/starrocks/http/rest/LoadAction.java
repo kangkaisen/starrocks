@@ -37,6 +37,7 @@ package com.starrocks.http.rest;
 import com.google.common.base.Strings;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.PrivilegeType;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
@@ -55,6 +56,9 @@ import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TNetworkAddress;
+import com.starrocks.warehouse.Utils;
+import com.starrocks.warehouse.cngroup.CRAcquireContext;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpUtil;
@@ -84,11 +88,12 @@ public class LoadAction extends RestBaseAction {
                 new LoadAction(controller));
     }
 
-    public static List<Long> selectNodes(String warehouseName) throws DdlException {
+    public static List<Long> selectNodes(ComputeResource computeResource) throws DdlException {
         // Choose a backend sequentially, or choose a cn in shared_data mode
         List<Long> nodeIds = new ArrayList<>();
         if (RunMode.isSharedDataMode()) {
-            List<Long> computeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouseName);
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            final List<Long> computeIds = warehouseManager.getAllComputeNodeIds(computeResource);
             for (long nodeId : computeIds) {
                 ComputeNode node = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(nodeId);
                 if (node != null && node.isAvailable()) {
@@ -158,8 +163,7 @@ public class LoadAction extends RestBaseAction {
         // affect subsequent requests processing.
         response.setForceCloseConnection(true);
 
-        boolean enableBatchWrite = "true".equalsIgnoreCase(
-                request.getRequest().headers().get(StreamLoadHttpHeader.HTTP_ENABLE_BATCH_WRITE));
+        boolean enableBatchWrite = StreamLoadHttpHeader.isEnabledBatchWrite(request);
         if (enableBatchWrite && redirectToLeader(request, response)) {
             return;
         }
@@ -187,13 +191,23 @@ public class LoadAction extends RestBaseAction {
             BaseRequest request, BaseResponse response, String dbName, String tableName) throws DdlException {
         String label = request.getRequest().headers().get(LABEL_KEY);
 
+        final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
         String warehouseName = WarehouseManager.DEFAULT_WAREHOUSE_NAME;
         if (request.getRequest().headers().contains(WAREHOUSE_KEY)) {
             warehouseName = request.getRequest().headers().get(WAREHOUSE_KEY);
+        } else {
+            ConnectContext ctx = request.getConnectContext();
+            if (ctx != null) {
+                Optional<String> userWarehouseName = Utils.getUserDefaultWarehouse(ctx.getCurrentUserIdentity());
+                if (userWarehouseName.isPresent() && warehouseManager.warehouseExists(userWarehouseName.get())) {
+                    warehouseName = userWarehouseName.get();
+                }
+            }
         }
+        final CRAcquireContext acquireContext = CRAcquireContext.of(warehouseName);
+        final ComputeResource computeResource = warehouseManager.acquireComputeResource(acquireContext);
 
-        List<Long> nodeIds = LoadAction.selectNodes(warehouseName);
-
+        final List<Long> nodeIds = LoadAction.selectNodes(computeResource);
         // TODO: need to refactor after be split into cn + dn
         ComputeNode node = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(nodeIds.get(0));
         if (node == null) {
@@ -211,8 +225,10 @@ public class LoadAction extends RestBaseAction {
             BaseRequest request, BaseResponse response, String dbName, String tableName) throws DdlException {
         TableId tableId = new TableId(dbName, tableName);
         StreamLoadKvParams params = StreamLoadKvParams.fromHttpHeaders(request.getRequest().headers());
-        RequestCoordinatorBackendResult result = GlobalStateMgr.getCurrentState()
-                .getBatchWriteMgr().requestCoordinatorBackends(tableId, params);
+        ConnectContext ctx = request.getConnectContext();
+        UserIdentity userIdentity = ctx != null ? ctx.getCurrentUserIdentity() : null;
+        RequestCoordinatorBackendResult result = GlobalStateMgr.getCurrentState().getBatchWriteMgr().requestCoordinatorBackends(
+                tableId, params, userIdentity);
         if (!result.isOk()) {
             BatchWriteResponseResult responseResult = new BatchWriteResponseResult(
                     result.getStatus().status_code.name(), ActionStatus.FAILED,

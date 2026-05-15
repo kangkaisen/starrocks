@@ -4,6 +4,8 @@ displayed_sidebar: docs
 
 # CREATE MATERIALIZED VIEW
 
+import MVWarehouse from '../../../_assets/commonMarkdown/mv_warehouse.mdx'
+
 ## 説明
 
 マテリアライズドビューを作成します。マテリアライズドビューの使用方法については、[同期マテリアライズドビュー](../../../using_starrocks/Materialized_view-single_table.md)および[非同期マテリアライズドビュー](../../../using_starrocks/async_mv/Materialized_view.md)を参照してください。
@@ -76,7 +78,7 @@ SELECT select_expr[, select_expr ...]
   > - v3.1以降、各同期マテリアライズドビューはベーステーブルの各列に対して複数の集計関数をサポートできます。例: `select b, sum(a), min(a) from table group by b`のようなクエリステートメント。
   > - v3.1以降、同期マテリアライズドビューはSELECTおよび集計関数の複雑な式をサポートします。例: `select b, sum(a + 1) as sum_a1, min(cast (a as bigint)) as min_a from table group by b`や`select abs(b) as col1, a + 1 as col2, cast(a as bigint) as col3 from table`のようなクエリステートメント。同期マテリアライズドビューで使用される複雑な式には次の制限があります:
   >   - 各複雑な式にはエイリアスが必要で、ベーステーブルのすべての同期マテリアライズドビュー間で異なる複雑な式には異なるエイリアスを割り当てる必要があります。例: `select b, sum(a + 1) as sum_a from table group by b`と`select b, sum(a) as sum_a from table group by b`のようなクエリステートメントは、同じベーステーブルに対して同期マテリアライズドビューを作成するために使用できません。複雑な式に異なるエイリアスを設定できます。
-  >   - 複雑な式で作成された同期マテリアライズドビューによってクエリが書き換えられているかどうかを確認するには、`EXPLAIN <sql_statement>`を実行します。詳細については、[クエリ分析](../../../administration/Query_planning.md)を参照してください。
+  >   - 複雑な式で作成された同期マテリアライズドビューによってクエリが書き換えられているかどうかを確認するには、`EXPLAIN <sql_statement>`を実行します。詳細については、[クエリ分析](../../../best_practices/query_tuning/query_planning.md)を参照してください。
 
 - WHERE (オプション)
 
@@ -125,6 +127,30 @@ SELECT * FROM <mv_name> [_SYNC_MV_];
 | hll_raw_agg, hll_union_agg, ndv, approx_count_distinct | hll_union                                       |
 | percentile_approx, percentile_union                    | percentile_union                                |
 
+上記の関数に加えて、StarRocks v3.4.0以降では、同期マテリアライズドビューは汎用集計関数もサポートしています。汎用集計関数の詳細については、[汎用集計関数の状態](../../../table_design/table_types/aggregate_table.md#use-generic-aggregate-states-in-materialized-views)を参照してください。
+
+```SQL
+-- Create a synchronous materialized view test_mv1 to store aggregate states.
+CREATE MATERIALIZED VIEW test_mv1 
+AS
+SELECT 
+    dt,
+    -- Original aggregate functions.
+    min(id) AS min_id,
+    max(id) AS max_id,
+    sum(id) AS sum_id,
+    bitmap_union(to_bitmap(id)) AS bitmap_union_id,
+    hll_union(hll_hash(id)) AS hll_union_id,
+    percentile_union(percentile_hash(id)) AS percentile_union_id,
+    -- Generic aggregate state functions.
+    ds_hll_count_distinct_union(ds_hll_count_distinct_state(id)) AS hll_id,
+    avg_union(avg_state(id)) AS avg_id,
+    array_agg_union(array_agg_state(id)) AS array_agg_id,
+    min_by_union(min_by_state(province, id)) AS min_by_province_id
+FROM t1
+GROUP BY dt;
+```
+
 ## 非同期マテリアライズドビュー
 
 ### 構文
@@ -140,7 +166,7 @@ CREATE MATERIALIZED VIEW [IF NOT EXISTS] [database.]<mv_name>
 -- refresh_moment
     [IMMEDIATE | DEFERRED]
 -- refresh_scheme
-    [ASYNC | ASYNC [START (<start_time>)] EVERY (INTERVAL <refresh_interval>) | MANUAL]
+    [ASYNC | SCHEDULE [START (<start_time>)] EVERY (INTERVAL <refresh_interval>) | MANUAL]
 ]
 -- partition_expression
 [PARTITION BY 
@@ -220,12 +246,13 @@ AS
 
 > **注意**
 >
-> 非同期マテリアライズドビューを作成する際、`distribution_desc`または`refresh_scheme`のいずれか、または両方を指定する必要があります。
+> - 非同期マテリアライズドビューを作成する際、`distribution_desc`または`refresh_scheme`のいずれか、または両方を指定する必要があります。
+> - 外部テーブルのマテリアライズドビューは、**ベーステーブルのデータ変更によってトリガーされる**自動リフレッシュをサポートしていません。**非同期の定期**リフレッシュと手動リフレッシュのみをサポートします。
 
 非同期マテリアライズドビューのリフレッシュ戦略。有効な値:
 
 - `ASYNC`: 自動リフレッシュモード。ベーステーブルデータが変更されるたびに、マテリアライズドビューが自動的にリフレッシュされます。
-- `ASYNC [START (<start_time>)] EVERY(INTERVAL <interval>)`: 定期リフレッシュモード。定義された間隔でマテリアライズドビューが定期的にリフレッシュされます。間隔は`EVERY (interval n day/hour/minute/second)`として指定できます。使用可能な単位は`DAY`、`HOUR`、`MINUTE`、`SECOND`です。デフォルト値は`10 MINUTE`です。リフレッシュ開始時間を`START('yyyy-MM-dd hh:mm:ss')`としてさらに指定できます。開始時間が指定されていない場合、現在の時間が使用されます。例: `ASYNC START ('2023-09-12 16:30:25') EVERY (INTERVAL 5 MINUTE)`。
+- `SCHEDULE [START (<start_time>)] EVERY(INTERVAL <interval>)`: 定期リフレッシュモード。定義された間隔でマテリアライズドビューが定期的にリフレッシュされます。間隔は`EVERY (interval n day/hour/minute/second)`として指定できます。使用可能な単位は`DAY`、`HOUR`、`MINUTE`、`SECOND`です。デフォルト値は`10 MINUTE`です。リフレッシュ開始時間を`START('yyyy-MM-dd hh:mm:ss')`としてさらに指定できます。開始時間が指定されていない場合、現在の時間が使用されます。例: `SCHEDULE START ('2023-09-12 16:30:25') EVERY (INTERVAL 5 MINUTE)`。互換性のため `ASYNC [START (...)] EVERY (...)` も引き続き受け付けますが、`SHOW CREATE MATERIALIZED VIEW` の出力は常に `SCHEDULE` で表示されます。
 - `MANUAL`: 手動リフレッシュモード。リフレッシュタスクを手動でトリガーしない限り、マテリアライズドビューはリフレッシュされません。
 
 このパラメータが指定されていない場合、デフォルト値`MANUAL`が使用されます。
@@ -234,14 +261,6 @@ AS
 
 非同期マテリアライズドビューのパーティション戦略。StarRocksの現在のバージョンでは、非同期マテリアライズドビューを作成する際に1つのパーティション式のみがサポートされています。
 
-> **注意**
->
-> v3.3.3以降、StarRocksはリストパーティション化戦略を使用した非同期マテリアライズドビューの作成をサポートしています。
->
-> - リストパーティション化または式に基づくパーティション化戦略で作成されたテーブルに基づいて、リストパーティション化されたマテリアライズドビューを作成できます。
-> - 現在、リストパーティション化戦略でマテリアライズドビューを作成する際には、1つのパーティションキーのみを指定できます。ベーステーブルに複数のパーティションキーがある場合は、1つのパーティションキーを選択する必要があります。
-> - リストパーティション化戦略を持つマテリアライズドビューのリフレッシュ動作とクエリの書き換えロジックは、レンジパーティション化戦略を持つものと一致しています。
-
 有効な値:
 
 - `column_name`: パーティション化に使用される列の名前。`PARTITION BY dt`という式は、`dt`列に従ってマテリアライズドビューをパーティション化することを意味します。
@@ -249,24 +268,92 @@ AS
 - `str2date`関数: ベーステーブルの文字列型パーティションをマテリアライズドビューのパーティションに変換するために使用される関数。`PARTITION BY str2date(dt, "%Y%m%d")`は、`dt`列が`"%Y%m%d"`の日付形式を持つ文字列日付型であることを意味します。`str2date`関数は多くの日付形式をサポートしており、詳細については[str2date](../../sql-functions/date-time-functions/str2date.md)を参照してください。v3.1.4からサポートされています。
 - `time_slice`関数: v3.1以降、これらの関数を使用して、指定された時間の粒度に基づいて、与えられた時間を時間間隔の開始または終了に変換することができます。例: `PARTITION BY date_trunc("MONTH", time_slice(dt, INTERVAL 7 DAY))`。time_sliceはdate_truncよりも細かい粒度を持たなければなりません。これらを使用して、パーティションキーよりも細かい粒度を持つGROUP BY列を指定することができます。例: `GROUP BY time_slice(dt, INTERVAL 1 MINUTE) PARTITION BY date_trunc('DAY', ts)`。
 
+v3.5.0以降、非同期マテリアライズドビューは複数列パーティション式をサポートしています。マテリアライズドビューに複数のパーティション列を指定し、ベーステーブルのパーティション列と1対1でマッピングできます。
+
+**複数列パーティション式に関する注意事項**:
+
+- 現在、マテリアライズドビューの複数列パーティションは、ベーステーブルのパーティション列と直接マッピングすることのみがサポートされており、ベーステーブルのパーティション列+関数式の加工後のマッピングはサポートされていません。
+- Icebergのパーティション式はTransform機能をサポートしているため、Icebergのパーティション式をStarRocksにマッピングする際は、パーティション式の追加処理が必要です。以下が両者の対応関係です：
+
+  | Iceberg Transform | Iceberg パーティション式      | マテリアライズドビューパーティション式             |
+  | ----------------- | --------------------- | ---------------------------- |
+  | Identity          | `<col>`               | `<col>`                      |
+  | hour              | `hour(<col>)`         | `date_trunc('hour', <col>)`  |
+  | day               | `day(<col>)`          | `date_trunc('day', <col>)`   |
+  | month             | `month(<col>)`        | `date_trunc('month', <col>)` |
+  | year              | `year(<col>)`         | `date_trunc('year', <col>)`  |
+  | bucket            | `bucket(<col>, <n>)`  | サポートされていません                |
+  | truncate          | `truncate(<col>)`     | サポートされていません                |
+
+- 非Icebergタイプのパーティション列については、パーティション式の計算が関与しないため、マテリアライズドビュー作成時は直接マッピングを選択するだけで、追加のパーティション式処理は必要ありません。
+
+複数列パーティション式の詳細なガイダンスについては、[例5](#例)を参照してください。
+
 このパラメータが指定されていない場合、デフォルトではパーティション戦略は採用されません。
 
 **order_by_expression** (オプション)
 
 非同期マテリアライズドビューのソートキー。このソートキーを指定しない場合、StarRocksはSELECT列からいくつかのプレフィックス列をソートキーとして選択します。例: `select a, b, c, d`では、ソートキーとして`a`と`b`を使用できます。このパラメータはStarRocks v3.0以降でサポートされています。
 
+> **注意**
+> マテリアライズドビューには2つの異なる`ORDER BY`の使用方法があります：
+> - CREATE MATERIALIZED VIEWステートメントの`ORDER BY`はマテリアライズドビューのソートキーを定義し、ソートキーに基づくクエリの加速に役立ちます。これはマテリアライズドビューのSPJGベースの透過的加速機能には影響しませんが、マテリアライズドビューのクエリ結果のグローバルソートを保証しません。
+> - マテリアライズドビューのクエリ定義の`ORDER BY`はクエリ結果のグローバルソートを保証しますが、マテリアライズドビューがSPJGベースの透過的クエリの書き換えに使用されることを防ぎます。したがって、マテリアライズドビューがクエリの書き換えに使用される場合、マテリアライズドビューのクエリ定義で`ORDER BY`を使用すべきではありません。
+
+**INDEX** (オプション)
+
+非同期マテリアライズドビューは、クエリパフォーマンスを高速化するために Bitmap インデックスと BloomFilter インデックスをサポートしています。Bitmap インデックスと BloomFilter インデックスの使用例と情報の詳細については、[Bitmap Index](../../../table_design/indexes/Bitmap_index.md) と [Bloom filter Index](../../../table_design/indexes/Bloomfilter_index.md) を参照してください。
+
+Bitmap インデックスの使用：  
+```sql
+-- インデックスを作成する  
+CREATE INDEX <index_name> ON <mv_name>(<column_name>) USING BITMAP COMMENT '<comment>';  
+
+-- インデックス作成の状況を確認する  
+SHOW ALTER TABLE COLUMN;  
+
+-- インデックスを確認する  
+SHOW INDEXES FROM <mv_name>;  
+
+-- インデックスを削除する  
+DROP INDEX <index_name> ON <mv_name>;  
+```  
+
+BloomFilter インデックスの使用：  
+```sql
+-- インデックスを作成する  
+ALTER MATERIALIZED VIEW <mv_name> SET ("bloom_filter_columns" = "<col1,col2,col3,...>");  
+
+-- インデックスを確認する  
+SHOW CREATE MATERIALIZED VIEW <mv_name>;  
+
+-- インデックスを削除する  
+ALTER MATERIALIZED VIEW <mv_name> SET ("bloom_filter_columns" = "");  
+```
+
 **PROPERTIES** (オプション)
 
 非同期マテリアライズドビューのプロパティ。既存のマテリアライズドビューのプロパティを変更するには、[ALTER MATERIALIZED VIEW](ALTER_MATERIALIZED_VIEW.md)を使用できます。
 
-- `session.`: マテリアライズドビューのセッション変数関連のプロパティを変更したい場合、プロパティに`session.`プレフィックスを追加する必要があります。例: `session.query_timeout`。非セッションプロパティの場合、プレフィックスを指定する必要はありません。例: `mv_rewrite_staleness_second`。
+- `session.`: マテリアライズドビューのセッション変数関連のプロパティを変更したい場合、プロパティに`session.`プレフィックスを追加する必要があります。例: `session.insert_timeout`。非セッションプロパティの場合、プレフィックスを指定する必要はありません。例: `mv_rewrite_staleness_second`。
 - `replication_num`: 作成するマテリアライズドビューのレプリカの数。
 - `storage_medium`: 記憶媒体のタイプ。有効な値: `HDD`と`SSD`。
 - `storage_cooldown_time`: パーティションのストレージクールダウン時間。HDDとSSDの両方の記憶媒体が使用されている場合、このプロパティで指定された時間の後、SSDストレージのデータはHDDストレージに移動されます。形式: "yyyy-MM-dd HH:mm:ss"。指定された時間は現在の時間より後でなければなりません。このプロパティが明示的に指定されていない場合、デフォルトではストレージクールダウンは実行されません。
+- `bloom_filter_columns`: BloomFilter インデックスを有効にするカラム名の配列。BloomFilter インデックスについての詳細は、[ブルーム・フィルター・インデックス](../../../table_design/indexes/Bloomfilter_index.md) を参照ください。
 - `partition_ttl`: パーティションの有効期限 (TTL)。指定された時間範囲内のデータを持つパーティションが保持されます。期限切れのパーティションは自動的に削除されます。単位: `YEAR`、`MONTH`、`DAY`、`HOUR`、`MINUTE`。例: `2 MONTH`としてこのプロパティを指定できます。このプロパティは`partition_ttl_number`より推奨されます。v3.1.5以降でサポートされています。
 - `partition_ttl_number`: 保持する最新のマテリアライズドビューのパーティション数。開始時間が現在の時間より前のパーティションについて、この値を超えると、古いパーティションが削除されます。StarRocksはFE設定項目`dynamic_partition_check_interval_seconds`で指定された時間間隔に従ってマテリアライズドビューパーティションを定期的にチェックし、期限切れのパーティションを自動的に削除します。[動的パーティション化](../../../table_design/data_distribution/dynamic_partitioning.md)戦略を有効にした場合、事前に作成されたパーティションはカウントされません。値が`-1`の場合、マテリアライズドビューのすべてのパーティションが保持されます。デフォルト: `-1`。
 - `partition_refresh_number`: 単一のリフレッシュでリフレッシュする最大パーティション数。リフレッシュするパーティションの数がこの値を超える場合、StarRocksはリフレッシュタスクを分割し、バッチで完了します。前のバッチのパーティションが正常にリフレッシュされると、StarRocksは次のバッチのパーティションをリフレッシュし続け、すべてのパーティションがリフレッシュされるまで続けます。パーティションのいずれかがリフレッシュに失敗した場合、後続のリフレッシュタスクは生成されません。値が`-1`の場合、リフレッシュタスクは分割されません。デフォルト値はv3.3以降`-1`から`1`に変更され、StarRocksはパーティションを1つずつリフレッシュします。
+- `partition_refresh_strategy`：単一のリフレッシュ操作中のマテリアライズドビューのリフレッシュ戦略。このプロパティが `adaptive` に設定されている場合、ベーステーブルのパーティション内のデータ量に基づいてリフレッシュするパーティション数が自動的に決定され、リフレッシュ効率が大幅に向上します。このプロパティが指定されていない場合、デフォルト戦略は `strict` であり、単一の操作でリフレッシュされるパーティション数は `partition_refresh_number` によって厳密に制御されます。
 - `excluded_trigger_tables`: マテリアライズドビューのベーステーブルがここにリストされている場合、ベーステーブルのデータが変更されても自動リフレッシュタスクはトリガーされません。このパラメータはロードトリガー型リフレッシュ戦略にのみ適用され、通常はプロパティ`auto_refresh_partitions_limit`と一緒に使用されます。形式: `[db_name.]table_name`。値が空文字列の場合、すべてのベーステーブルのデータ変更が対応するマテリアライズドビューのリフレッシュをトリガーします。デフォルト値は空文字列です。
+
+- `excluded_refresh_tables`： このプロパティにリストされているベーステーブルは、データが変更されてもマテリアライズドビューに更新されません。フォーマット `db_name.]table_name`。デフォルト値は空文字列です。値が空文字列の場合、ベーステーブルのデータが変更されると、対応するマテリアライズドビューが更新されます。
+
+  :::tip
+  `excluded_trigger_tables` と `excluded_refresh_tables` の違いは以下の通りである：
+  - `excluded_trigger_tables` はリフレッシュをトリガーするかどうかを制御するものであり、リフレッシュに参加するかどうかを制御するものではありません。例えば、パーティショニングされたマテリアライズドビューは 2 つのパーティショニングされたテーブル A と B を結合することで得られ、2 つのテーブル A と B のパーティショニングは 1 対 1 に対応します。`excluded_trigger_table` はテーブル A を含んでいる。ある期間中、テーブル A はパーティション `[1,2,3]` を更新したが、`excluded_trigger_table` であるため、マテリアライズドビューのリフレッシュはトリガーされなかった。この時、テーブル B はパーティション `[3]` を更新し、マテリアライズドビューはリフレッシュをトリガーして、3 つのパーティション `[1, 2, 3]` をリフレッシュします。ここで、`excluded_trigger_table` はリフレッシュをトリガーするかどうかを制御するだけであることがわかります。テーブル A の更新がマテリアライズドビューのリフレッシュのトリガーになることはありませんが、テーブル B の更新がマテリアライズドビューのリフレッシュのトリガーになると、テーブルAによって更新されたパーティションもリフレッシュタスクに追加されます。
+  - `excluded_refresh_tables` はリフレッシュに参加するかどうかを制御します。上の例では、テーブル A が `excluded_trigger_table` と `excluded_refresh_tables` の両方に存在する場合、テーブル B の更新がマテリアライズドビューのリフレッシュのトリガーになると、パーティション `[3]` だけがリフレッシュされます。
+  :::
+
 - `auto_refresh_partitions_limit`: マテリアライズドビューのリフレッシュがトリガーされたときにリフレッシュする必要がある最新のマテリアライズドビューパーティションの数。このプロパティを使用してリフレッシュ範囲を制限し、リフレッシュコストを削減できます。ただし、すべてのパーティションがリフレッシュされないため、マテリアライズドビューのデータがベーステーブルと一致しない場合があります。デフォルト: `-1`。値が`-1`の場合、すべてのパーティションがリフレッシュされます。値が正の整数Nの場合、StarRocksは既存のパーティションを時系列順に並べ替え、現在のパーティションとN-1の最新パーティションをリフレッシュします。パーティションの数がN未満の場合、StarRocksはすべての既存のパーティションをリフレッシュします。マテリアライズドビューに事前に作成された動的パーティションがある場合、StarRocksはすべての事前作成されたパーティションをリフレッシュします。
 - `mv_rewrite_staleness_second`: マテリアライズドビューの最終リフレッシュがこのプロパティで指定された時間間隔内である場合、マテリアライズドビューはクエリの書き換えに直接使用できます。ベーステーブルのデータが変更されているかどうかに関係なく、マテリアライズドビューがクエリの書き換えに使用されるかどうかを決定します。単位: 秒。このプロパティはv3.0からサポートされています。
 - `colocate_with`: 非同期マテリアライズドビューのコロケーショングループ。詳細については、[Colocate Join](../../../using_starrocks/Colocate_join.md)を参照してください。このプロパティはv3.0からサポートされています。
@@ -284,6 +371,18 @@ AS
     - `mv_rewrite_staleness_second`が指定されていない場合、マテリアライズドビューはそのデータがすべてのベーステーブルのデータと一致している場合にのみクエリの書き換えに使用できます。
     - `mv_rewrite_staleness_second`が指定されている場合、マテリアライズドビューはその最終リフレッシュが新鮮さの時間間隔内である場合にクエリの書き換えに使用できます。
   - `loose`: 自動クエリの書き換えを直接有効にし、一貫性のチェックは必要ありません。
+  - `force_mv`: v3.5.0以降、StarRocksマテリアライズドビューは共通パーティション式（Common Partition Expression）TTLをサポートしています。`force_mv`セマンティクスは、このシナリオ専用に設計されています。このセマンティクスが有効になっている場合：
+    - マテリアライズドビューに`partition_retention_condition`プロパティが定義されていない場合、ベーステーブルが更新されているかどうかに関係なく、常にクエリの書き換えに強制的に使用されます。
+    - マテリアライズドビューに`partition_retention_condition`プロパティが定義されている場合：
+      - TTL範囲内のパーティションについては、ベーステーブルが更新されているかどうかに関係なく、マテリアライズドビューベースのクエリの書き換えが常に利用可能です。
+      - TTL範囲外のパーティションについては、ベーステーブルが更新されているかどうかに関係なく、マテリアライズドビューとベーステーブル間のUnion補償が必要です。
+
+    例えば、マテリアライズドビューに`partition_retention_condition`プロパティが定義されており、パーティション`20241131`が期限切れになっているが、ベーステーブルの`20241203`データが更新されて作成されているが、マテリアライズドビューの`20241203`データがまだリフレッシュされていない場合、マテリアライズドビューの`query_rewrite_consistency`が`force_mv`に定義されている場合：
+    - マテリアライズドビューは、TTL範囲内（例えば`20241201`から`20241203`の間）で`partition_retention_condition`条件に適合するパーティションのクエリが常に透過的に書き換え可能であることを保証します。
+    - `partition_retention_condition`条件に適合しないパーティション上のクエリについては、システムは自動的にマテリアライズドビューとベーステーブルのUnionに基づいて補償を行います。
+
+    共通パーティション式TTLと`force_mv`セマンティクスの詳細なガイダンスについては、[例6](#例)を参照してください。
+
 - `storage_volume`: 共有データクラスタを使用している場合、作成する非同期マテリアライズドビューを保存するために使用されるストレージボリュームの名前。このプロパティはv3.1以降でサポートされています。このプロパティが指定されていない場合、デフォルトのストレージボリュームが使用されます。例: `"storage_volume" = "def_volume"`。
 - `force_external_table_query_rewrite`: 外部カタログベースのマテリアライズドビューのクエリの書き換えを有効にするかどうか。このプロパティはv3.2からサポートされています。有効な値:
   - `true`(v3.3以降のデフォルト値): 外部カタログベースのマテリアライズドビューのクエリの書き換えを有効にします。
@@ -299,6 +398,20 @@ AS
   - `true`: マテリアライズドビューに直接対するクエリは書き換えられ、マテリアライズドビューの定義クエリの結果と一致する最新のデータが返されます。マテリアライズドビューが非アクティブであるか、透過的なクエリの書き換えをサポートしていない場合、これらのクエリはマテリアライズドビューの定義クエリとして実行されます。
   - `transparent_or_error`: マテリアライズドビューに直接対するクエリは、適格であれば書き換えられます。マテリアライズドビューが非アクティブであるか、透過的なクエリの書き換えをサポートしていない場合、これらのクエリはエラーとして返されます。
   - `transparent_or_default`: マテリアライズドビューに直接対するクエリは、適格であれば書き換えられます。マテリアライズドビューが非アクティブであるか、透過的なクエリの書き換えをサポートしていない場合、これらのクエリはマテリアライズドビューに存在するデータで返されます。
+- `partition_retention_condition`: v3.5.0以降、StarRocksマテリアライズドビューは共通パーティション式（Common Partition Expression）TTLをサポートしています。このプロパティは、動的に保持するパーティションを宣言する式です。式内の条件を満たさないパーティションは定期的に削除されます。例: `"partition_retention_condition" = "dt >= CURRENT_DATE() - INTERVAL 3 MONTH"`。
+  - 式にはパーティション列と定数のみを含めることができます。非パーティション列はサポートされていません。
+  - 共通パーティション式は、ListパーティションとRangeパーティションに対して異なる方法で処理されます：
+    - Listパーティションのマテリアライズドビューについては、StarRocksは共通パーティション式でフィルタリングされたパーティションの削除をサポートしています。
+    - Rangeパーティションのマテリアライズドビューについては、StarRocksはFEのパーティション剪定機能を使用してパーティションをフィルタリングおよび削除することのみができます。パーティション剪定でサポートされていない述語に対応するパーティションは、フィルタリングおよび削除できません。
+
+  共通パーティション式TTLと`force_mv`セマンティクスの詳細なガイダンスについては、[例6](#例)を参照してください。
+
+- `refresh_mode`: マテリアライズドビューの更新方法を制御します。StarRocks v4.1 で導入され、Iceberg の追記（append-only）テーブルでのみサポートされています。有効な値：
+
+  - `PCT`: （デフォルト）パーティション化されたマテリアライズドビューの場合、ベーステーブルにデータの変更があると影響を受けたパーティションのみリフレッシュされ、そのパーティションの結果の一貫性が保証されます。パーティション化されていないマテリアライズドビューの場合、ベーステーブルのいずれかが変更されるとマテリアライズドビュー全体がフルリフレッシュされます。
+  - `INCREMENTAL`: 増分リフレッシュのみを行うことを保証します。マテリアライズドビューの定義で増分リフレッシュがサポートされていない場合や、非増分データに遭遇した場合、作成やリフレッシュが失敗します。
+
+<MVWarehouse />
 
 **query_statement** (必須)
 
@@ -375,6 +488,37 @@ StarRocks v2.5は、SPJGタイプの非同期マテリアライズドビュー�
   - 外部カタログ内のマテリアライズドビューとベーステーブル間の厳密な一貫性は保証されません。
   - 現在、外部リソースに基づくマテリアライズドビューの構築はサポートされていません。
   - 現在、StarRocksは外部カタログ内のベーステーブルデータが変更されたかどうかを認識できないため、ベーステーブルがリフレッシュされるたびにすべてのパーティションがデフォルトでリフレッシュされます。[REFRESH MATERIALIZED VIEW](REFRESH_MATERIALIZED_VIEW.md)を使用して、一部のパーティションのみを手動でリフレッシュできます。
+
+### インクリメンタルマテリアライズドビュー
+
+StarRocks v4.1 では、マテリアライズドビューのリフレッシュ動作を制御するための `refresh_mode` パラメータが導入されました。各MVの作成時に `refresh_mode` を指定できます。作成時に `refresh_mode` を設定しない場合、システムは `Config.default_mv_refresh_mode` パラメータ（デフォルト：`pct`）で制御される既定値を使用します。以下の運用指針にご注意ください。
+
+- `refresh_mode` を調整する際には次の制限があります：
+  - レガシーなマテリアライズドビュー（たとえば`PCT`型など）を `INCREMENTAL` 更新モードで使用するように変更することはできません。変更するには、マテリアライズドビューを再構築する必要があります。
+  - マテリアライズドビューを `INCREMENTAL` タイプから変更する場合、システムは増分更新が可能かどうかを確認します。不可能な場合、操作は失敗します。
+- `refresh_mode` が `INCREMENTAL` に設定されたマテリアライズドビューでは、パーティションを指定したリフレッシュはサポートされません。`INCREMENTAL` 方式のマテリアライズドビューでは、パーティションのリフレッシュを試みると例外が発生します。
+
+#### 対応しているインクリメンタル演算子
+
+インクリメンタルリフレッシュは、ベーステーブルへの追記（append-only）操作のみをサポートします。`UPDATE`、`MERGE`、`OVERWRITE` などのサポートされていない操作が実行された場合、`refresh_mode` が `INCREMENTAL` に設定されているマテリアライズドビューのリフレッシュは失敗します。
+
+現在、インクリメンタルリフレッシュでサポートされている演算子は以下の通りです：
+
+| 演算子                         | インクリメンタルリフレッシュのサポート                                                                                            |
+|------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| Select                       | サポート済み                                                                                                              |
+| From `<Table>`               | Iceberg テーブルのみサポート；その他のテーブルタイプは未対応                                                                  |
+| Filter                       | サポート済み                                                                                                              |
+| Group By付き集約              | サポート済み<ul><li>`distinct`を伴う集約関数は未対応</li><li>GROUP BYなし集約も未対応</li></ul>                                                |
+| Inner Join                   | サポート済み                                                                                                              |
+| Union All                    | サポート済み                                                                                                              |
+| Left/Right/Full Outer Join   | まだサポートされていません                                                                                                                |
+
+:::note
+- 上述の各演算子は一般的にインクリメンタルリフレッシュをサポートしますが、組み合わせによる制約があります：  
+  - join後の集約や、union後の集約に対してはインクリメンタル計算がサポートされています。
+  - 一方で、集約後にjoinや、集約後のunion allについてはインクリメンタル計算は**サポートされていません**。
+:::
 
 ## 例
 
@@ -714,8 +858,10 @@ PROPERTIES (
 例1: 非パーティション化されたマテリアライズドビューを作成します。
 
 ```SQL
+-- lo_custkeyでソートされた非パーティション化されたマテリアライズドビューを作成
 CREATE MATERIALIZED VIEW lo_mv1
 DISTRIBUTED BY HASH(`lo_orderkey`)
+ORDER BY `lo_custkey`
 REFRESH ASYNC
 AS
 select
@@ -726,15 +872,16 @@ select
     count(lo_shipmode) as shipmode_count
 from lineorder 
 group by lo_orderkey, lo_custkey 
-order by lo_orderkey;
 ```
 
 例2: パーティション化されたマテリアライズドビューを作成します。
 
 ```SQL
+-- `lo_orderdate`でパーティション化され、`lo_custkey`でソートされたパーティション化されたマテリアライズドビューを作成
 CREATE MATERIALIZED VIEW lo_mv2
 PARTITION BY `lo_orderdate`
 DISTRIBUTED BY HASH(`lo_orderkey`)
+ORDER BY `lo_custkey`
 REFRESH ASYNC START('2023-07-01 10:00:00') EVERY (interval 1 day)
 AS
 select
@@ -745,8 +892,8 @@ select
     sum(lo_revenue) as total_revenue, 
     count(lo_shipmode) as shipmode_count
 from lineorder 
-group by lo_orderkey, lo_orderdate, lo_custkey
-order by lo_orderkey;
+group by lo_orderkey, lo_orderdate, lo_custkey;
+```
 
 -- date_trunc()関数を使用して、マテリアライズドビューを月単位でパーティション化します。
 CREATE MATERIALIZED VIEW order_mv1
@@ -867,4 +1014,122 @@ SELECT
    `d_datekey`
 FROM
  `hive_catalog`.`ssb_1g_orc`.`part_dates` ;
+```
+
+例5: 複数列パーティション式を使用してIceberg Catalog（Spark）のベーステーブルに基づいてパーティション化されたマテリアライズドビューを作成します。
+
+Sparkでのベーステーブルの定義は以下の通りです：
+
+```SQL
+-- パーティション式には複数のパーティション列と`days` Transformが含まれています。
+CREATE TABLE lineitem_days (
+      l_orderkey    BIGINT,
+      l_partkey     INT,
+      l_suppkey     INT,
+      l_linenumber  INT,
+      l_quantity    DECIMAL(15, 2),
+      l_extendedprice  DECIMAL(15, 2),
+      l_discount    DECIMAL(15, 2),
+      l_tax         DECIMAL(15, 2),
+      l_returnflag  VARCHAR(1),
+      l_linestatus  VARCHAR(1),
+      l_shipdate    TIMESTAMP,
+      l_commitdate  TIMESTAMP,
+      l_receiptdate TIMESTAMP,
+      l_shipinstruct VARCHAR(25),
+      l_shipmode     VARCHAR(10),
+      l_comment      VARCHAR(44)
+) USING ICEBERG
+PARTITIONED BY (l_returnflag, l_linestatus, days(l_shipdate));
+```
+
+複数列パーティション1対1マッピングマテリアライズドビューを作成します：
+
+```SQL
+CREATE MATERIALIZED VIEW test_days
+PARTITION BY (l_returnflag, l_linestatus, date_trunc('day', l_shipdate))
+REFRESH DEFERRED MANUAL
+AS 
+SELECT * FROM iceberg_catalog.test_db.lineitem_days;
+```
+
+例6: 共通パーティション式TTLを指定し、`force_mv`クエリの書き換えセマンティクスを有効にしてパーティション化されたマテリアライズドビューを作成します。
+
+```SQL
+CREATE MATERIALIZED VIEW test_mv1 
+PARTITION BY (dt, province)
+REFRESH MANUAL 
+PROPERTIES (
+    "partition_retention_condition" = "dt >= CURRENT_DATE() - INTERVAL 3 MONTH",
+    "query_rewrite_consistency" = "force_mv"
+)
+AS SELECT * from t1;
+```
+
+例7: 特定のソートキーを持つパーティション化されたマテリアライズドビューを作成します：
+```SQL
+CREATE MATERIALIZED VIEW lo_mv2
+PARTITION BY `lo_orderdate`
+DISTRIBUTED BY HASH(`lo_orderkey`)
+ORDER BY `lo_custkey`
+REFRESH ASYNC START('2023-07-01 10:00:00') EVERY (interval 1 day)
+AS
+select
+    lo_orderkey,
+    lo_orderdate,
+    lo_custkey, 
+    sum(lo_quantity) as total_quantity, 
+    sum(lo_revenue) as total_revenue, 
+    count(lo_shipmode) as shipmode_count
+from lineorder 
+group by lo_orderkey, lo_orderdate, lo_custkey;
+```
+
+例 8: インクリメンタルマテリアライズドビューを作成する。
+
+```SQL
+CREATE MATERIALIZED VIEW test_mv1 PARTITION BY dt 
+REFRESH DEFERRED MANUAL 
+properties
+(
+    "refresh_mode" = "INCREMENTAL"
+)
+AS SELECT 
+  t1.dt, t1.col1 as col11, t2.col1 as col21, t3.col1 as col31, t4.col1 as col41, t5.col1 as col51,
+  sum(t1.col2) as col12, sum(t2.col2) as col22, sum(t3.col2) as col32, sum(t4.col2) as col42, sum(t5.col2) as col52,
+  avg(t1.col2) as col13, avg(t2.col2) as col23, avg(t3.col2) as col33, avg(t4.col2) as col43, avg(t5.col2) as col53,
+  min(t1.col2) as col14, min(t2.col2) as col24, min(t3.col2) as col34, min(t4.col2) as col44, min(t5.col2) as col54,
+  max(t1.col2) as col15, max(t2.col2) as col25, max(t3.col2) as col35, max(t4.col2) as col45, max(t5.col2) as col55,
+  count(t1.col2) as col16, count(t2.col2) as col26, count(t3.col2) as col36, count(t4.col2) as col46, count(t5.col2) as col56,
+  approx_count_distinct(t1.col2) as col17, approx_count_distinct(t2.col2) as col27, approx_count_distinct(t3.col2) as col37, approx_count_distinct(t4.col2) as col47, approx_count_distinct(t5.col2) as col57
+FROM 
+  iceberg_catalog.iceberg_test_dbt1 
+  JOIN iceberg_catalog.iceberg_test_dbt2 ON t1.dt = t2.dt
+  JOIN iceberg_catalog.iceberg_test_dbt3 ON t1.dt = t3.dt
+  JOIN iceberg_catalog.iceberg_test_dbt4 ON t1.dt = t4.dt
+  JOIN iceberg_catalog.iceberg_test_dbt5 ON t1.dt = t5.dt
+ GROUP BY t1.dt, t1.col1, t2.col1, t3.col1, t4.col1, t5.col1;
+ 
+REFRESH MATERIALIZED VIEW test_mv1 WITH SYNC MODE;
+```
+
+`information_schema.task_runs` の `EXTRA_MESSAGE` カラムに `refreshMode` フィールドが追加され、`TaskRun` のリフレッシュモードが示されるようになっています。より詳細については [materialized_view_task_run_details](../../../using_starrocks/async_mv/materialized_view_task_run_details.md) を参照してください。
+
+```SQL
+mysql> select * from information_schema.task_runs order by CREATE_TIME desc limit 1\G;
+     QUERY_ID: 0199f00e-2152-70a8-83da-26d6a8321ac6
+    TASK_NAME: mv-78190
+  CREATE_TIME: 2025-10-17 10:44:41
+  FINISH_TIME: 2025-10-17 10:44:44
+        STATE: SUCCESS
+      CATALOG: NULL
+     DATABASE: test_mv_async_db_621c29ff_ab02_11f0_9e41_00163e09349d
+   DEFINITION: insert overwrite `test_mv_case_iceberg_transform_day_44` SELECT `t1`.`id`, `t1`.`v1`, `t1`.`v2`, `t1`.`dt` FROM `iceberg_catalog_621c2b62_ab02_11f0_a703_00163e09349d`.`iceberg_db_621c2bc9_ab02_11f0_885d_00163e09349d`.`t1` WHERE (`t1`.`id` > 1) AND (`t1`.`dt` >= '2025-06-01')
+  EXPIRE_TIME: 2025-10-24 10:44:41
+   ERROR_CODE: 0
+ERROR_MESSAGE: NULL
+     PROGRESS: 100%
+EXTRA_MESSAGE: {"forceRefresh":false,"mvPartitionsToRefresh":["p20250718000000","p20250715000000","p20250721000000","p20250615000000","p20250618000000","p20250524000000","p20250621000000","p20250518000000"],"refBasePartitionsToRefreshMap":{"t1":["p20250718000000","p20250721000000","p20250618000000","p20250524000000","p20250621000000","p20250518000000","p20250715000000","p20250615000000","pNULL","p20250521000000","p20250624000000","p20250724000000","p20250515000000"]},"basePartitionsToRefreshMap":{},"processStartTime":1760669082430,"executeOption":{"priority":80,"taskRunProperties":{"FORCE":"false","mvId":"78190","warehouse":"default_warehouse"},"isMergeRedundant":false,"isManual":true,"isSync":true,"isReplay":false},"planBuilderMessage":{},"refreshMode":"INCREMENTAL"}
+   PROPERTIES: {"FORCE":"false","mvId":"78190","warehouse":"default_warehouse"}
+       JOB_ID: 0199f00e-2152-76b0-987c-76a9a19e77f9
 ```

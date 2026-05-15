@@ -16,17 +16,13 @@
 package com.starrocks.alter;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.common.AnalysisException;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.task.AgentBatchTask;
 import com.starrocks.task.AgentTaskExecutor;
@@ -35,9 +31,6 @@ import com.starrocks.transaction.GlobalTransactionMgr;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataOutput;
-import java.io.IOException;
-import java.util.List;
 import java.util.Optional;
 import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
@@ -60,15 +53,10 @@ public abstract class LakeTableSchemaChangeJobBase extends AlterJobV2 {
         super(jobType);
     }
 
-    protected void restoreColumnUniqueIdIfNeed(List<Column> columns) {
-        boolean needRestoreColumnUniqueId = (columns.get(0).getUniqueId() < 0);
-        if (needRestoreColumnUniqueId) {
-            for (int i = 0; i < columns.size(); i++) {
-                Column col = columns.get(i);
-                Preconditions.checkState(col.getUniqueId() <= 0, col.getUniqueId());
-                col.setUniqueId(i);
-            }
-        }
+    protected LakeTableSchemaChangeJobBase(LakeTableSchemaChangeJobBase job) {
+        super(job);
+        this.watershedTxnId = job.watershedTxnId;
+        this.watershedGtid = job.watershedGtid;
     }
 
     @Nullable
@@ -179,11 +167,4 @@ public abstract class LakeTableSchemaChangeJobBase extends AlterJobV2 {
         AgentTaskQueue.addBatchTask(batchTask);
         AgentTaskExecutor.submit(batchTask);
     }
-
-    @Override
-    public void write(DataOutput out) throws IOException {
-        String json = GsonUtils.GSON.toJson(this, AlterJobV2.class);
-        Text.writeString(out, json);
-    }
-
 }

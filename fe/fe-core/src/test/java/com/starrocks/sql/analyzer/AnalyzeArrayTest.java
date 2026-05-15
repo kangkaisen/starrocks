@@ -14,14 +14,14 @@
 
 package com.starrocks.sql.analyzer;
 
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeFail;
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeSuccess;
 
 public class AnalyzeArrayTest {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         AnalyzeTestUtil.init();
     }
@@ -81,5 +81,14 @@ public class AnalyzeArrayTest {
         analyzeFail("select array_flatten(1)");
         analyzeFail("select array_flatten([1, 2, 3])");
         analyzeSuccess("select array_flatten([[1, 2], [1, 4]])");
+    }
+
+    @Test
+    public void testNullOrEmpty() {
+        analyzeFail("select null_or_empty()");
+        analyzeSuccess("select null_or_empty('abc')");
+        analyzeSuccess("select null_or_empty([])");
+        analyzeSuccess("select null_or_empty([1, 2, 3])");
+        analyzeSuccess("select null_or_empty([[1, 2], [1, 4]])");
     }
 }

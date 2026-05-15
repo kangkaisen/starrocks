@@ -17,12 +17,12 @@ package com.starrocks.statistic.columns;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.persist.gson.GsonPostProcessable;
@@ -30,6 +30,8 @@ import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.LocalMetastore;
 import org.apache.commons.lang3.EnumUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -39,6 +41,8 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 public class ColumnUsage implements GsonPostProcessable {
+
+    private static final Logger LOG = LogManager.getLogger(ColumnUsage.class);
 
     @SerializedName("columnId")
     private ColumnFullId columnId;
@@ -69,10 +73,10 @@ public class ColumnUsage implements GsonPostProcessable {
 
     public static Optional<ColumnUsage> build(Column column, Table table, UseCase useCase) {
         LocalMetastore meta = GlobalStateMgr.getCurrentState().getLocalMetastore();
-        Optional<String> dbName = table.mayGetDatabaseName();
-        Optional<Database> db = dbName.flatMap(meta::mayGetDb);
+        Optional<Long> dbId = table.mayGetDatabaseId();
+        Optional<Database> db = dbId.flatMap(meta::mayGetDb);
         if (db.isPresent()) {
-            TableName tableName = new TableName(dbName.get(), table.getName());
+            TableName tableName = new TableName(db.get().getFullName(), table.getName());
             ColumnFullId columnFullId = ColumnFullId.create(db.get(), table, column);
             return Optional.of(new ColumnUsage(columnFullId, tableName, useCase));
         }
@@ -91,9 +95,8 @@ public class ColumnUsage implements GsonPostProcessable {
         return tableName;
     }
 
-    public String getOlapColumnName(OlapTable olap) {
-        return Preconditions.checkNotNull(olap.getColumnByUniqueId(columnId.getColumnUniqueId()),
-                this + " not exists").getName();
+    public Optional<String> getOlapColumnName(OlapTable olap) {
+        return Optional.ofNullable(olap.getColumnByUniqueId(columnId.getColumnUniqueId())).map(Column::getName);
     }
 
     public EnumSet<UseCase> getUseCases() {
@@ -176,6 +179,8 @@ public class ColumnUsage implements GsonPostProcessable {
         Optional<Pair<TableName, ColumnId>> names = getColumnFullId().toNames();
         if (names.isPresent()) {
             setTableName(names.get().first);
+        } else {
+            LOG.warn("unable to find column: {}", this);
         }
     }
 

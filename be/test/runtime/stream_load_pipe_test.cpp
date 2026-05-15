@@ -40,9 +40,9 @@
 #include <memory>
 #include <thread>
 
-#include "testutil/assert.h"
-#include "testutil/parallel_test.h"
-#include "util/monotime.h"
+#include "base/testutil/assert.h"
+#include "base/testutil/parallel_test.h"
+#include "base/time/monotime.h"
 
 namespace starrocks {
 
@@ -154,7 +154,7 @@ PARALLEL_TEST(StreamLoadPipeTest, append_buffer) {
             char c = '0' + (k++ % 10);
             buf->put_bytes(&c, sizeof(c));
         }
-        buf->flip();
+        buf->flip_to_read();
         pipe.append(std::move(buf));
         pipe.finish();
     };
@@ -193,7 +193,7 @@ PARALLEL_TEST(StreamLoadPipeTest, append_and_read_buffer) {
             char c = '0' + (k++ % 10);
             buf->put_bytes(&c, sizeof(c));
         }
-        buf->flip();
+        buf->flip_to_read();
         pipe.append(std::move(buf));
         pipe.finish();
     };
@@ -271,8 +271,15 @@ PARALLEL_TEST(StreamLoadPipeTest, compressed_reader) {
     auto producer = std::thread([&pipe]() {
         // append data with size larger than max_buffered_bytes
         auto buf = readFileAsBytes("./be/test/runtime/test_data/compressed_file/foo.json.lz4");
-        EXPECT_OK(pipe->append(buf.data(), buf.size()));
-        pipe->finish();
+        auto byte_buffer = ByteBuffer::allocate_with_tracker(buf.size(), 0, ByteBufferMetaType::KAFKA).value();
+        byte_buffer->put_bytes(buf.data(), buf.size());
+        byte_buffer->flip_to_read();
+        KafkaByteBufferMeta* meta = dynamic_cast<KafkaByteBufferMeta*>(byte_buffer->meta());
+        EXPECT_TRUE(meta != nullptr);
+        meta->set_partition(1);
+        meta->set_offset(5);
+        EXPECT_OK(pipe->append(std::move(byte_buffer)));
+        EXPECT_OK(pipe->finish());
     });
 
     CompressedStreamLoadPipeReader reader(pipe, TCompressionType::LZ4_FRAME);
@@ -282,6 +289,10 @@ PARALLEL_TEST(StreamLoadPipeTest, compressed_reader) {
     auto buf = res.value();
     EXPECT_EQ(buf->remaining(), 42000021);
     EXPECT_EQ(std::string_view(R"({"foo": 1, "bar": 2})"), std::string_view(buf->ptr, 20));
+    KafkaByteBufferMeta* meta = dynamic_cast<KafkaByteBufferMeta*>(buf->meta());
+    EXPECT_TRUE(meta != nullptr);
+    EXPECT_EQ(1, meta->partition());
+    EXPECT_EQ(5, meta->offset());
     producer.join();
 }
 
@@ -293,7 +304,7 @@ PARALLEL_TEST(StreamLoadPipeTest, append_after_finish) {
         char c = '0' + j;
         buf1->put_bytes(&c, sizeof(c));
     }
-    buf1->flip();
+    buf1->flip_to_read();
     ASSERT_OK(pipe.append(std::move(buf1)));
 
     auto appender = [&pipe] {
@@ -309,7 +320,7 @@ PARALLEL_TEST(StreamLoadPipeTest, append_after_finish) {
         char c = '0' + j;
         buf2->put_bytes(&c, sizeof(c));
     }
-    buf2->flip();
+    buf2->flip_to_read();
     EXPECT_TRUE(pipe.append(std::move(buf2)).is_capacity_limit_exceeded());
     t1.join();
 }
@@ -324,7 +335,7 @@ PARALLEL_TEST(StreamLoadPipeTest, non_blocking_read) {
         char c = '0' + j;
         buf->put_bytes(&c, sizeof(c));
     }
-    buf->flip();
+    buf->flip_to_read();
     ASSERT_OK(pipe.append(std::move(buf)));
 
     auto ret = pipe.read();

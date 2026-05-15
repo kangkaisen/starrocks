@@ -46,6 +46,8 @@ from lib import *
 #    - t: run sql and save result into r dir
 #    - r: run sql and compare result with r
 record_mode = os.environ.get("record_mode", "false") == "true"
+arrow_mode = os.environ.get("arrow_mode", "false") == "true"
+case_time = int(os.environ.get("case_timeout", 600))
 
 case_list = choose_cases.choose_cases(record_mode).case_list
 
@@ -85,9 +87,22 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
     def setUp(self, *args, **kwargs):
         """set up"""
         super().setUp()
+        # Note: Actual connection will be done in test_sql_basic after checking @arrow_flight_sql tag
+        
+    def _set_up(self):
+        # Check if case has @arrow_flight_sql tag and setup connection accordingly
+        if "arrow_flight_sql" in self.case_info.tags or arrow_mode:
+            self_print(f"Case {self.case_info.name} uses Arrow Flight SQL protocol", ColorEnum.CYAN, bold=True)
+            log.info(f"Case {self.case_info.name} uses Arrow Flight SQL protocol")
+            self.mysql_lib = self.arrow_sql_lib
+        else:
+            self.mysql_lib = self.starrocks_sql_lib
+
         self.connect_starrocks()
         self.create_starrocks_conn_pool()
+        self.check_cluster_status()
         self._init_global_configs()
+        self._init_global_session_variables()
 
     def _init_global_configs(self):
         """
@@ -104,12 +119,35 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
             sql = "ADMIN SET FRONTEND CONFIG (%s)" % config
             self.execute_sql(sql)
 
+    def _init_global_session_variables(self):
+        """
+        Session variables that are not ready for production but it can be used for testing.
+        """
+        session_variables = [
+            "new_planner_optimize_timeout = 10000",
+        ]
+        for session_variable in session_variables:
+            sql = "SET %s;" % session_variable
+            self.execute_sql(sql)
+
+
     @sql_annotation.ignore_timeout()
     def tearDown(self):
         """tear down"""
         super().tearDown()
 
         log.info("[TearDown begin]: %s" % self.case_info.name)
+
+        # run custom cleanup (always)
+        try:
+            if hasattr(self.case_info, "cleanup"):
+                for stmt in self.case_info.cleanup:
+                    try:
+                        self.execute_single_statement(stmt, -1, False)
+                    except Exception as e:
+                        log.warning(f"cleanup stmt error: {e}")
+        except Exception as e:
+            log.warning(f"cleanup error: {e}")
 
         for each_db in self.db:
             self.drop_database(each_db)
@@ -132,7 +170,6 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
         self.close_trino()
         self.close_spark()
         self.close_hive()
-        self.close_starrocks_arrow()
 
         if record_mode:
             tools.assert_true(res, "Save %s.%s result error" % (self.case_info.file, self.case_info.name))
@@ -175,6 +212,24 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
                         resource_name = self._get_resource_name(each_cmd)
                         if len(resource_name) > 0:
                             self.resource.append(resource_name)
+            elif isinstance(sql, dict) and sql.get("type", "") == CLEANUP_FLAG:
+                tools.assert_in("cmd", sql, "CLEANUP STATEMENT FORMAT ERROR!")
+                for each_cmd in sql["cmd"]:
+                    db_name = self._get_db_name(each_cmd)
+                    if len(db_name) > 0:
+                        self.db.append(db_name)
+                    resource_name = self._get_resource_name(each_cmd)
+                    if len(resource_name) > 0:
+                        self.resource.append(resource_name)
+            elif isinstance(sql, dict) and sql.get("type", "") == SET_VAR_FLAG:
+                tools.assert_in("stat", sql, "SET_VAR STATEMENT FORMAT ERROR!")
+                for each_sql in sql["stat"]:
+                    db_name = self._get_db_name(each_sql)
+                    if len(db_name) > 0:
+                        self.db.append(db_name)
+                    resource_name = self._get_resource_name(each_sql)
+                    if len(resource_name) > 0:
+                        self.resource.append(resource_name)
             else:
                 tools.ok_(False, "Init data error!")
 
@@ -227,11 +282,25 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
                             db_name = self._get_db_name(each_cmd)
                             if len(db_name) > 0:
                                 all_db_dict.setdefault(db_name, set()).add(case.name)
+                elif isinstance(sql, dict) and sql.get("type", "") == CLEANUP_FLAG:
+                    tools.assert_in("cmd", sql, "CLEANUP STATEMENT FORMAT ERROR!")
+                    for each_cmd in sql["cmd"]:
+                        db_name = self._get_db_name(each_cmd)
+                        if len(db_name) > 0:
+                            all_db_dict.setdefault(db_name, set()).add(case.name)
+                elif isinstance(sql, dict) and sql.get("type", "") == SET_VAR_FLAG:
+                    tools.assert_in("stat", sql, "SET_VAR STATEMENT FORMAT ERROR!")
+                    for each_sql in sql["stat"]:
+                        db_name = self._get_db_name(each_sql)
+                        if len(db_name) > 0:
+                            all_db_dict.setdefault(db_name, set()).add(case.name)
                 else:
                     tools.ok_(False, "Check db uniqueness error!")
 
         error_info_dict = {db: list(cases) for db, cases in all_db_dict.items() if len(cases) > 1}
-        tools.assert_true(len(error_info_dict) <= 0, "Pre Check Failed, Duplicate DBs: \n%s" % json.dumps(error_info_dict, indent=2))
+        tools.assert_true(
+            len(error_info_dict) <= 0, "Pre Check Failed, Duplicate DBs: \n%s" % json.dumps(error_info_dict, indent=2)
+        )
 
     @staticmethod
     def _replace_uuid_variables(sql_list: List) -> List:
@@ -262,6 +331,20 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
                         for each_uuid in uuid_vars:
                             if each_uuid not in variable_dict:
                                 variable_dict[each_uuid] = uuid.uuid4().hex
+            elif isinstance(sql, dict) and sql.get("type", "") == CLEANUP_FLAG:
+                tools.assert_in("cmd", sql, "CLEANUP STATEMENT FORMAT ERROR!")
+                for each_cmd in sql["cmd"]:
+                    uuid_vars = re.findall(r"\${(uuid[0-9]*)}", each_cmd)
+                    for each_uuid in uuid_vars:
+                        if each_uuid not in variable_dict:
+                            variable_dict[each_uuid] = uuid.uuid4().hex
+            elif isinstance(sql, dict) and sql.get("type", "") == SET_VAR_FLAG:
+                tools.assert_in("stat", sql, "SET_VAR STATEMENT FORMAT ERROR!")
+                for each_sql in sql["stat"]:
+                    uuid_vars = re.findall(r"\${(uuid[0-9]*)}", each_sql)
+                    for each_uuid in uuid_vars:
+                        if each_uuid not in variable_dict:
+                            variable_dict[each_uuid] = uuid.uuid4().hex
 
             else:
                 tools.ok_(False, "Replace uuid error!")
@@ -293,6 +376,25 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
                     each_thread["cmd"] = tmp_cmd
 
                 ret.append(_sql)
+            elif isinstance(sql, dict) and sql.get("type", "") == CLEANUP_FLAG:
+                _sql = copy.deepcopy(sql)
+                tools.assert_in("cmd", _sql, "CLEANUP STATEMENT FORMAT ERROR!")
+                tmp_cmd = []
+                for each_cmd in _sql["cmd"]:
+                    for each_var in variable_dict:
+                        each_cmd = each_cmd.replace("${%s}" % each_var, variable_dict[each_var])
+                    tmp_cmd.append(each_cmd)
+                _sql["cmd"] = tmp_cmd
+                ret.append(_sql)
+            elif isinstance(sql, dict) and sql.get("type", "") == SET_VAR_FLAG:
+                _sql = copy.deepcopy(sql)
+                tmp_stat = []
+                for each_sql in _sql["stat"]:
+                    for each_var in variable_dict:
+                        each_sql = each_sql.replace("${%s}" % each_var, variable_dict[each_var])
+                    tmp_stat.append(each_sql)
+                _sql["stat"] = tmp_stat
+                ret.append(_sql)
 
         return ret
 
@@ -307,14 +409,14 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
     def _get_resource_name(sql: str) -> str:
         matches = list()
         if "CREATE EXTERNAL RESOURCE" in sql.upper():
-            matches = re.findall(r'CREATE EXTERNAL RESOURCE \"?([a-zA-Z0-9_-]+)\"?', sql, flags=re.IGNORECASE)
+            matches = re.findall(r"CREATE EXTERNAL RESOURCE \"?([a-zA-Z0-9_-]+)\"?", sql, flags=re.IGNORECASE)
         return matches[0] if len(matches) > 0 else ""
 
     # -------------------------------------------
     #         [CASE]
     # -------------------------------------------
     @parameterized.expand([[case_info] for case_info in case_list], doc_func=doc_func, name_func=name_func)
-    @sql_annotation.timeout()
+    @sql_annotation.timeout(case_time)
     def test_sql_basic(self, case_info: choose_cases.ChooseCase.CaseTR):
         """
         sql tester
@@ -335,6 +437,8 @@ class TestSQLCases(sr_sql_lib.StarrocksSQLApiLib):
         self_print(f"[case name]: {case_info.name}", ColorEnum.GREEN, bold=True)
         self_print(f"[case file]: {case_info.file}", ColorEnum.GREEN, bold=True)
         self_print("-" * 60, ColorEnum.GREEN, bold=True)
+
+        self._set_up()
 
         sql_list = self._init_data(case_info.sql)
 
@@ -365,9 +469,11 @@ Start to run: %s
                 # uncheck flag, owns the highest priority
                 if sql.startswith(sr_sql_lib.UNCHECK_FLAG):
                     uncheck = True
-                    sql = sql[len(sr_sql_lib.UNCHECK_FLAG):]
+                    sql = sql[len(sr_sql_lib.UNCHECK_FLAG) :]
 
-                actual_res, actual_res_log, var, order = self.execute_single_statement(sql, sql_id, record_mode)
+                actual_res, actual_res_log, var, order = self.execute_single_statement(
+                    sql, sql_id, record_mode and not uncheck
+                )
 
                 if not record_mode and not uncheck:
                     # check mode only work in validating mode
@@ -375,9 +481,11 @@ Start to run: %s
                     expect_res = case_info.result[sql_id]
                     expect_res_for_log = expect_res if len(expect_res) < 1000 else expect_res[:1000] + "..."
 
-                    log.info(f"""[{sql_id}.result]: 
+                    log.info(
+                        f"""[{sql_id}.result]: 
     - [exp]: {expect_res_for_log}
-    - [act]: {actual_res}""")
+    - [act]: {actual_res}"""
+                    )
 
                     # -------------------------------------------
                     #               [CHECKER]
@@ -400,6 +508,123 @@ Start to run: %s
 
                 self_print(f"[LOOP] Finish!\n", color=ColorEnum.BLUE, logout=True, bold=True)
                 tools.ok_(loop_check_res, f"Loop checker fail: {''.join(sql['ori'])}!")
+
+            elif isinstance(sql, dict) and sql.get("type", "") == CLEANUP_FLAG:
+                # record mode: write cleanup block in-place to res_log to keep position
+                if record_mode:
+                    if isinstance(sql.get("ori"), list):
+                        self.res_log.append("".join(sql["ori"]))
+                    else:
+                        self.res_log.append("CLEANUP {")
+                        for stmt in sql.get("cmd", []):
+                            self.res_log.append(stmt)
+                        self.res_log.append("} END CLEANUP")
+                # do nothing during execution here; cleanup executes in tearDown
+                continue
+            elif isinstance(sql, dict) and sql.get("type", "") == SET_VAR_FLAG:
+                # SET_VAR block: run SQL statements with each session variable combination
+                combinations = sql["combinations"]
+                set_var_stats = sql["stat"]
+                set_var_results = sql.get("res", [])
+
+                self_print(
+                    f"\n[SET_VAR] Start: {len(combinations)} combination(s)...",
+                    color=ColorEnum.BLUE, logout=True, bold=True
+                )
+
+                if record_mode:
+                    # Record mode: execute with first combination and record results,
+                    # then verify remaining combinations produce the same outcome.
+                    self.res_log.append(SET_VAR_FLAG + " {")
+                    self.res_log.append("  PROPERTY: %s" % json.dumps(combinations))
+
+                    # --- first combination: execute & record ---
+                    first_combo = combinations[0]
+                    combo_desc = ", ".join(f"{k}={v}" for k, v in first_combo.items())
+                    self_print(
+                        f"[SET_VAR] Recording combination 1/{len(combinations)}: {combo_desc}",
+                        color=ColorEnum.BLUE, logout=True
+                    )
+                    for var_name, var_value in first_combo.items():
+                        self.execute_sql("SET %s = %s;" % (var_name, var_value))
+
+                    ori_set_var = case_info.ori_sql[sql_id]
+                    for stmt_id, stmt in enumerate(set_var_stats):
+                        # append original statement text (with ${uuid} placeholders) to R file
+                        if isinstance(ori_set_var, dict):
+                            self.res_log.append(ori_set_var["stat"][stmt_id])
+                        else:
+                            self.res_log.append(stmt)
+
+                        uncheck = False
+                        run_stmt = stmt
+                        if run_stmt.startswith(sr_sql_lib.UNCHECK_FLAG):
+                            uncheck = True
+                            run_stmt = run_stmt[len(sr_sql_lib.UNCHECK_FLAG):]
+
+                        actual_res, actual_res_log, var, order = self.execute_single_statement(
+                            run_stmt, sql_id, not uncheck
+                        )
+
+                    # --- remaining combinations: execute & verify against recorded results ---
+                    for combo_id, combo in enumerate(combinations[1:], 2):
+                        combo_desc = ", ".join(f"{k}={v}" for k, v in combo.items())
+                        self_print(
+                            f"[SET_VAR] Verifying combination {combo_id}/{len(combinations)}: {combo_desc}",
+                            color=ColorEnum.BLUE, logout=True
+                        )
+                        for var_name, var_value in combo.items():
+                            self.execute_sql("SET %s = %s;" % (var_name, var_value))
+
+                        for stmt_id, stmt in enumerate(set_var_stats):
+                            run_stmt = stmt
+                            uncheck = False
+                            if run_stmt.startswith(sr_sql_lib.UNCHECK_FLAG):
+                                uncheck = True
+                                run_stmt = run_stmt[len(sr_sql_lib.UNCHECK_FLAG):]
+                            self.execute_single_statement(run_stmt, sql_id, False)
+
+                    self.res_log.append("} " + END_SET_VAR_FLAG)
+
+                else:
+                    # Validation mode: run all combinations and check results
+                    for combo_id, combo in enumerate(combinations):
+                        combo_desc = ", ".join(f"{k}={v}" for k, v in combo.items())
+                        self_print(
+                            f"[SET_VAR] Combination {combo_id + 1}/{len(combinations)}: {combo_desc}",
+                            color=ColorEnum.BLUE, logout=True
+                        )
+
+                        # set session variables for this combination
+                        for var_name, var_value in combo.items():
+                            self.execute_sql("SET %s = %s;" % (var_name, var_value))
+
+                        # execute all statements and check results
+                        for stmt_id, stmt in enumerate(set_var_stats):
+                            uncheck = False
+                            ori_stmt = stmt
+
+                            if stmt.startswith(sr_sql_lib.UNCHECK_FLAG):
+                                uncheck = True
+                                stmt = stmt[len(sr_sql_lib.UNCHECK_FLAG):]
+
+                            actual_res, actual_res_log, var, order = self.execute_single_statement(
+                                stmt, sql_id, False
+                            )
+
+                            if not uncheck and stmt_id < len(set_var_results):
+                                expect_res = set_var_results[stmt_id]
+                                expect_res_for_log = expect_res if len(expect_res) < 1000 else expect_res[:1000] + "..."
+
+                                log.info(
+                                    f"[SET_VAR {combo_id + 1}/{len(combinations)} - {stmt_id}.result]: "
+                                    f"\n    - [exp]: {expect_res_for_log}"
+                                    f"\n    - [act]: {actual_res}"
+                                )
+
+                                self.check(sql_id, stmt, expect_res, actual_res, order, ori_stmt)
+
+                self_print(f"[SET_VAR] Finish!", color=ColorEnum.BLUE, logout=True, bold=True)
 
             elif isinstance(sql, dict) and sql["type"] == sr_sql_lib.CONCURRENCY_FLAG:
                 # concurrency statement
@@ -426,15 +651,17 @@ Start to run: %s
 
                     # thread exec, set count in (*)
                     for _t_exec_id in range(_t_count):
-                        this_t_id = f'{_t_name}-{_t_info_id}-{_t_exec_id}'
+                        this_t_id = f"{_t_name}-{_t_info_id}-{_t_exec_id}"
 
                         # init a conn for thread
                         this_conn = self.connection_pool.connection()
                         _t_conn_list.append([this_conn, this_t_id])
 
-                        t = threading.Thread(name=f"Thread-{this_t_id}",
-                                             target=self.execute_thread,
-                                             args=(this_t_id, _t_cmd, _t_res, _t_ori_cmd, record_mode, _outer_db, this_conn))
+                        t = threading.Thread(
+                            name=f"Thread-{this_t_id}",
+                            target=self.execute_thread,
+                            args=(this_t_id, _t_cmd, _t_res, _t_ori_cmd, record_mode, _outer_db, this_conn),
+                        )
                         thread_list.append(t)
 
                 threading.excepthook = self.custom_except_hook
@@ -466,19 +693,28 @@ Start to run: %s
                     for _t_info_id, _thread in enumerate(t_info_list):
                         _t_name = _thread["name"]
                         _t_count = _thread["count"]
-                        _t_uid = f'{_t_name}-{_t_info_id}'
+                        _t_uid = f"{_t_name}-{_t_info_id}"
 
                         _t_info_line = _thread["info"]
                         self.res_log.append(_t_info_line)
 
                         # check thread result info
                         tools.assert_in(_t_uid, self.thread_res_log, f"Thread log of {_t_uid} is not found!")
-                        tools.eq_(len(self.thread_res_log[_t_uid]), _t_count, f"Thread log size: {len(self.thread_res_log[_t_uid])} error, maybe you used the same thread name?")
+                        tools.eq_(
+                            len(self.thread_res_log[_t_uid]),
+                            _t_count,
+                            f"Thread log size: {len(self.thread_res_log[_t_uid])} error, maybe you used the same thread name?",
+                        )
 
                         s_thread_log = self.thread_res_log[_t_uid][0]
                         for exec_res_log in self.thread_res_log[_t_uid]:
                             if exec_res_log != s_thread_log:
-                                self_print("Thread result of exec not equal: \n - %s\n - %s" % (exec_res_log, s_thread_log), color=ColorEnum.RED, logout=True, bold=True)
+                                self_print(
+                                    "Thread result of exec not equal: \n - %s\n - %s" % (exec_res_log, s_thread_log),
+                                    color=ColorEnum.RED,
+                                    logout=True,
+                                    bold=True,
+                                )
 
                         self.res_log.extend(s_thread_log)
                         self.res_log.append("")
@@ -486,4 +722,3 @@ Start to run: %s
                 self_print(f"[CONCURRENCY] SUCCESS!", color=ColorEnum.CYAN, logout=True)
                 if record_mode:
                     self.res_log.append("} " + END_CONCURRENCY_FLAG + "\n")
-

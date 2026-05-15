@@ -16,6 +16,7 @@ package com.starrocks.lake;
 
 import com.google.common.collect.Lists;
 import com.staros.proto.ShardGroupInfo;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DistributionInfo;
 import com.starrocks.catalog.HashDistributionInfo;
@@ -25,25 +26,48 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.SinglePartitionInfo;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
+import com.starrocks.common.StarRocksException;
+import com.starrocks.proto.DropTabletCacheRequest;
+import com.starrocks.proto.DropTabletCacheResponse;
+import com.starrocks.proto.StatusPB;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.rpc.BrpcProxy;
+import com.starrocks.rpc.LakeService;
+import com.starrocks.rpc.LakeServiceWithMetrics;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.NodeMgr;
 import com.starrocks.server.RunMode;
+import com.starrocks.sql.ast.AggregateType;
 import com.starrocks.sql.ast.CreateDbStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
+import com.starrocks.sql.ast.KeysType;
+import com.starrocks.system.ComputeNode;
+import com.starrocks.system.SystemInfoService;
+import com.starrocks.thrift.TStorageMedium;
+import com.starrocks.thrift.TStorageType;
 import com.starrocks.transaction.TransactionState;
+import com.starrocks.type.IntegerType;
 import com.starrocks.utframe.UtFrameUtils;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -51,7 +75,7 @@ public class LakeTableHelperTest {
     private static ConnectContext connectContext;
     private static final String DB_NAME = "test_lake_table_helper";
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster(RunMode.SHARED_DATA);
         // create connect context
@@ -62,7 +86,7 @@ public class LakeTableHelperTest {
         GlobalStateMgr.getCurrentState().getLocalMetastore().createDb(createDbStmt.getFullDbName());
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
     }
 
@@ -80,17 +104,23 @@ public class LakeTableHelperTest {
     @Test
     public void testSupportCombinedTxnLog() throws Exception {
         Config.lake_use_combined_txn_log = true;
-        Assert.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BACKEND_STREAMING));
-        Assert.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.ROUTINE_LOAD_TASK));
-        Assert.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.INSERT_STREAMING));
-        Assert.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BATCH_LOAD_JOB));
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.LAKE_COMPACTION));
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.FRONTEND_STREAMING));
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BYPASS_WRITE));
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.DELETE));
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.MV_REFRESH));
+        Assertions.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BACKEND_STREAMING));
+        Assertions.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.ROUTINE_LOAD_TASK));
+        Assertions.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.INSERT_STREAMING));
+        Assertions.assertTrue(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BATCH_LOAD_JOB));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.LAKE_COMPACTION));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.FRONTEND_STREAMING));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BYPASS_WRITE));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.DELETE));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.MV_REFRESH));
         Config.lake_use_combined_txn_log = false;
-        Assert.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BACKEND_STREAMING));
+        Assertions.assertFalse(LakeTableHelper.supportCombinedTxnLog(TransactionState.LoadJobSourceType.BACKEND_STREAMING));
+    }
+
+    @Test
+    public void testEnablePartitionAggregation() throws Exception {
+        List<Long> tableIdList = Lists.newArrayList(1001L, 1002L, 1003L);
+        Assertions.assertFalse(LakeTableHelper.fileBundling(1L, tableIdList));
     }
 
     @Test
@@ -116,7 +146,7 @@ public class LakeTableHelperTest {
         Collection<PhysicalPartition> subPartitions = partition.getSubPartitions();
         subPartitions.forEach(physicalPartition -> {
             MaterializedIndex materializedIndex =
-                    physicalPartition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL).get(0);
+                    physicalPartition.getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL).get(0);
             materializedIndex.setShardGroupId(groupIdToClear);
         });
 
@@ -140,6 +170,279 @@ public class LakeTableHelperTest {
         };
 
         LakeTableHelper.deleteShardGroupMeta(partition);
-        Assert.assertEquals(0, shardGroupInfos.size());
+        Assertions.assertEquals(0, shardGroupInfos.size());
+    }
+
+    @Test
+    public void testDropPartitionCache(@Mocked StarOSAgent starOSAgent,
+                                       @Mocked NodeMgr nodeMgr,
+                                       @Mocked SystemInfoService systemInfoService,
+                                       @Mocked ComputeResource computeResource) {
+        long partitionId = 1001L;
+        long physicalPartitionId = 1002L;
+        long indexId = 1003L;
+        long tabletId = 1004L;
+        long beId = 2001L;
+        long workerGroupId = 3001L;
+
+        DistributionInfo distributionInfo = new HashDistributionInfo(10, Lists.newArrayList());
+        MaterializedIndex index = new MaterializedIndex(indexId, MaterializedIndex.IndexState.NORMAL);
+        Partition partition = new Partition(partitionId, physicalPartitionId, "p1", index, distributionInfo);
+        PhysicalPartition physicalPartition =
+                new PhysicalPartition(physicalPartitionId, partitionId, new MaterializedIndex(indexId,
+                        MaterializedIndex.IndexState.NORMAL));
+        MaterializedIndex materializedIndex = new MaterializedIndex(indexId, MaterializedIndex.IndexState.NORMAL);
+        Tablet tablet = new LakeTablet(tabletId);
+
+        ComputeNode computeNode = new ComputeNode(beId, "127.0.0.1", 9050);
+        computeNode.setBrpcPort(8060);
+
+        DropTabletCacheResponse response = new DropTabletCacheResponse();
+        response.status = new StatusPB();
+        response.status.statusCode = 0;
+
+        final boolean[] nodeExists = {true};
+        final boolean[] throwShardLookup = {false};
+        final boolean[] throwFutureGet = {false};
+        final boolean[] interruptOnGet = {false};
+        final boolean[] nonOkStatus = {false};
+
+        new MockUp<Partition>() {
+            @Mock
+            public Collection<PhysicalPartition> getSubPartitions() {
+                return Lists.newArrayList(physicalPartition);
+            }
+        };
+
+        new MockUp<PhysicalPartition>() {
+            @Mock
+            public long getVisibleVersion() {
+                return 7L;
+            }
+
+            @Mock
+            public List<MaterializedIndex> getAllMaterializedIndices(MaterializedIndex.IndexExtState extState) {
+                return Lists.newArrayList(materializedIndex);
+            }
+        };
+
+        new MockUp<MaterializedIndex>() {
+            @Mock
+            public List<Tablet> getTablets() {
+                return Lists.newArrayList(tablet);
+            }
+        };
+
+        new MockUp<NodeMgr>() {
+            @Mock
+            public SystemInfoService getClusterInfo() {
+                return systemInfoService;
+            }
+        };
+
+        new MockUp<ComputeResource>() {
+            @Mock
+            public long getWorkerGroupId() {
+                return workerGroupId;
+            }
+
+            @Mock
+            public long getWarehouseId() {
+                return 0;
+            }
+        };
+
+        new MockUp<StarOSAgent>() {
+            @Mock
+            public long getPrimaryComputeNodeIdByShard(long shardId, long workerGroup) throws StarRocksException {
+                if (throwShardLookup[0]) {
+                    throw new StarRocksException("lookup failed");
+                }
+                return beId;
+            }
+        };
+
+        new MockUp<SystemInfoService>() {
+            @Mock
+            public ComputeNode getBackendOrComputeNode(long nodeId) {
+                if (!nodeExists[0]) {
+                    return null;
+                }
+                return computeNode;
+            }
+        };
+
+        new MockUp<BrpcProxy>() {
+            @Mock
+            public LakeService getLakeService(String host, int port) {
+                return new LakeServiceWithMetrics(null);
+            }
+        };
+
+        new MockUp<LakeServiceWithMetrics>() {
+            @Mock
+            public Future<DropTabletCacheResponse> dropTabletCache(DropTabletCacheRequest request) {
+                return new CompletableFuture<>() {
+                    @Override
+                    public DropTabletCacheResponse get() throws InterruptedException, ExecutionException {
+                        if (interruptOnGet[0]) {
+                            throw new InterruptedException("interrupted");
+                        }
+                        if (throwFutureGet[0]) {
+                            throw new ExecutionException("future failed", new RuntimeException("future failed"));
+                        }
+                        if (nonOkStatus[0]) {
+                            DropTabletCacheResponse nonOk = new DropTabletCacheResponse();
+                            nonOk.status = new StatusPB();
+                            nonOk.status.statusCode = 1;
+                            nonOk.status.errorMsgs = Lists.newArrayList("bad");
+                            return nonOk;
+                        }
+                        return response;
+                    }
+                };
+            }
+        };
+
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+
+        // shard lookup throws, should skip sending rpc
+        throwShardLookup[0] = true;
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+        throwShardLookup[0] = false;
+
+        // node missing, should skip sending rpc
+        nodeExists[0] = false;
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+        nodeExists[0] = true;
+
+        // future.get interrupted
+        interruptOnGet[0] = true;
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+        interruptOnGet[0] = false;
+        Thread.interrupted();
+
+        // future.get failed
+        throwFutureGet[0] = true;
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+        throwFutureGet[0] = false;
+
+        // non-ok status
+        nonOkStatus[0] = true;
+        LakeTableHelper.dropPartitionCache(partition, computeResource);
+    }
+
+    @Test
+    public void testRestoreColumnUniqueIdIfNeeded() throws Exception {
+        String sql = "create table test_lake_table_helper.test_tb (k1 int, k2 int, k3 varchar)";
+        LakeTable table = createTable(sql);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(DB_NAME);
+
+        // add one more index meta
+        long indexId = 1000L;
+        long partitionId = 1001L;
+        KeysType keysType = KeysType.DUP_KEYS;
+        Column c0 = new Column("c0", IntegerType.INT, true, AggregateType.NONE, false, null, null);
+        Column c1 = new Column("c1", IntegerType.INT, true, AggregateType.NONE, false, null, null);
+
+        DistributionInfo dist = new HashDistributionInfo(10, Arrays.asList(c0, c1));
+        MaterializedIndex index = new MaterializedIndex(indexId, MaterializedIndex.IndexState.NORMAL);
+        Partition partition = new Partition(partitionId, partitionId + 100, "t0", index, dist);
+        TStorageMedium storage = TStorageMedium.HDD;
+        TabletMeta tabletMeta =
+                new TabletMeta(db.getId(), table.getId(), partition.getId(), index.getId(), storage, true);
+        for (int i = 0; i < 10; i++) {
+            Tablet tablet = new LakeTablet(GlobalStateMgr.getCurrentState().getNextId());
+            index.addTablet(tablet, tabletMeta);
+        }
+        table.addPartition(partition);
+        table.setIndexMeta(index.getMetaId(), "t0", Arrays.asList(c0, c1), 0, 0, (short) 1, TStorageType.COLUMN,
+                keysType);
+        List<Column> newIndexSchema = table.getSchemaByIndexMetaId(index.getMetaId());
+        List<Column> baseSchema = table.getBaseSchema();
+
+        {
+            // reset column unique id to invalid value
+            c0.setUniqueId(-1);
+            c1.setUniqueId(0);
+            Assertions.assertEquals(2, table.getIndexMetaIdToSchema().size());
+
+            // base schema is fine
+            Assertions.assertFalse(LakeTableHelper.restoreColumnUniqueId(baseSchema));
+            // index schema needs to be restored
+            Assertions.assertTrue(LakeTableHelper.restoreColumnUniqueId(newIndexSchema));
+            Assertions.assertEquals(0, c0.getUniqueId());
+            Assertions.assertEquals(1, c1.getUniqueId());
+            for (int ordinal = 0; ordinal < baseSchema.size(); ordinal++) {
+                Column column = baseSchema.get(ordinal);
+                Assertions.assertEquals(ordinal, column.getUniqueId());
+            }
+        }
+
+        {
+            // reset column unique id to invalid value
+            c0.setUniqueId(-1);
+            c1.setUniqueId(0);
+            // case for restoring table
+            LakeTableHelper.restoreColumnUniqueIdIfNeeded(table);
+            Assertions.assertEquals(0, c0.getUniqueId());
+            Assertions.assertEquals(1, c1.getUniqueId());
+            baseSchema = table.getBaseSchema();
+            for (int ordinal = 0; ordinal < baseSchema.size(); ordinal++) {
+                Column column = baseSchema.get(ordinal);
+                Assertions.assertEquals(ordinal, column.getUniqueId());
+            }
+        }
+
+        {
+            // reset column unique id to invalid value
+            c0.setUniqueId(-1);
+            c1.setUniqueId(0);
+            baseSchema.get(2).setUniqueId(-1);
+            // case for restoring table
+            LakeTableHelper.restoreColumnUniqueIdIfNeeded(table);
+            Assertions.assertEquals(0, c0.getUniqueId());
+            Assertions.assertEquals(1, c1.getUniqueId());
+            baseSchema = table.getBaseSchema();
+            for (int ordinal = 0; ordinal < baseSchema.size(); ordinal++) {
+                Column column = baseSchema.get(ordinal);
+                Assertions.assertEquals(ordinal, column.getUniqueId());
+            }
+        }
+    }
+
+    @Test
+    public void testExtractIdFromPath() {
+        Optional<Long> result = LakeTableHelper.extractIdFromPath(null);
+        Assertions.assertFalse(result.isPresent());
+
+        result = LakeTableHelper.extractIdFromPath("12345");
+        Assertions.assertFalse(result.isPresent());
+
+        result = LakeTableHelper.extractIdFromPath("s3://bucket/path/12345");
+        Assertions.assertTrue(result.isPresent());
+        Assertions.assertEquals(12345L, result.get().longValue());
+    }
+
+    @Test
+    public void testIsTransactionSupportCombinedTxnLog() {
+        Assertions.assertTrue(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.BACKEND_STREAMING));
+        Assertions.assertTrue(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.ROUTINE_LOAD_TASK));
+        Assertions.assertTrue(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.INSERT_STREAMING));
+        Assertions.assertTrue(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.BATCH_LOAD_JOB));
+        Assertions.assertTrue(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.LAKE_COMPACTION));
+        Assertions.assertFalse(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.FRONTEND_STREAMING));
+        Assertions.assertFalse(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.BYPASS_WRITE));
+        Assertions.assertFalse(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.DELETE));
+        Assertions.assertFalse(LakeTableHelper.isTransactionSupportCombinedTxnLog(
+                    TransactionState.LoadJobSourceType.MV_REFRESH));
     }
 }

@@ -18,6 +18,7 @@
 #include <memory>
 #include <queue>
 
+#include "base/concurrency/race_detect.h"
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "exec/spill/block_manager.h"
@@ -31,8 +32,7 @@
 #include "exec/workgroup/scan_task_queue.h"
 #include "fmt/format.h"
 #include "fs/fs.h"
-#include "runtime/runtime_state.h"
-#include "util/race_detect.h"
+#include "runtime/runtime_state_fwd.h"
 
 namespace starrocks::spill {
 class Spiller;
@@ -351,6 +351,9 @@ private:
 
     Status _split_input_partitions(workgroup::YieldContext& ctx, SerdeContext& context,
                                    const std::vector<SpilledPartition*>& splitting_partitions);
+
+    Status _pick_and_compact_skew_partitions(std::vector<SpilledPartition*>& partitions);
+    Status _compact_skew_chunks(size_t num_rows, std::vector<ChunkPtr>& chunks, AggregatorParamsPtr& aggregator_params);
 
     // split partition by hash
     // hash-based partitioning can have significant degradation in the case of heavily skewed data.

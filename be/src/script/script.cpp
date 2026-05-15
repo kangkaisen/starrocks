@@ -18,30 +18,31 @@
 
 #include <regex>
 
+#include "base/url_coding.h"
 #include "common/greplog.h"
 #include "common/logging.h"
-#include "common/prof/heap_prof.h"
+#include "common/stack_util.h"
 #include "common/vlog_cntl.h"
 #include "exec/schema_scanner/schema_be_tablets_scanner.h"
 #include "fs/key_cache.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "gutil/strings/substitute.h"
-#include "http/action/compaction_action.h"
-#include "io/io_profiler.h"
+#include "io/core/io_profiler.h"
 #include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
+#include "runtime/prof/heap_prof.h"
 #include "storage/del_vector.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake/tablet_metadata.h"
+#include "storage/lake/vacuum.h"
+#include "storage/manual_compaction.h"
 #include "storage/primary_key_dump.h"
 #include "storage/storage_engine.h"
 #include "storage/tablet.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_meta_manager.h"
 #include "storage/tablet_updates.h"
-#include "util/stack_util.h"
-#include "util/url_coding.h"
 #include "wrenbind17/wrenbind17.hpp"
 
 using namespace wrenbind17;
@@ -230,7 +231,6 @@ void bind_exec_env(ForeignModule& m) {
         REG_METHOD(GlobalEnv, page_cache_mem_tracker);
         REG_METHOD(GlobalEnv, jit_cache_mem_tracker);
         REG_METHOD(GlobalEnv, update_mem_tracker);
-        REG_METHOD(GlobalEnv, chunk_allocator_mem_tracker);
         REG_METHOD(GlobalEnv, passthrough_mem_tracker);
         REG_METHOD(GlobalEnv, clone_mem_tracker);
         REG_METHOD(GlobalEnv, consistency_mem_tracker);
@@ -249,6 +249,7 @@ void bind_exec_env(ForeignModule& m) {
         REG_METHOD(GlobalEnv, ordinal_index_mem_tracker);
         REG_METHOD(GlobalEnv, bitmap_index_mem_tracker);
         REG_METHOD(GlobalEnv, bloom_filter_index_mem_tracker);
+        REG_METHOD(GlobalEnv, builtin_inverted_index_mem_tracker);
         REG_METHOD(GlobalEnv, segment_zonemap_mem_tracker);
         REG_METHOD(GlobalEnv, short_key_index_mem_tracker);
     }
@@ -310,6 +311,16 @@ public:
         return proto_to_json(pb);
     }
 
+    static std::string garbage_file_check(const std::string& root_location) {
+        auto val_st = lake::garbage_file_check(root_location);
+        if (!val_st.ok()) {
+            LOG(WARNING) << "garbage_file_check failed: " << val_st.status().to_string();
+            // return empty string to indicate failure
+            return "";
+        }
+        return std::to_string(val_st.value());
+    }
+
     static std::shared_ptr<TabletBasicInfo> get_tablet_info(int64_t tablet_id) {
         std::vector<TabletBasicInfo> tablet_infos;
         auto manager = StorageEngine::instance()->tablet_manager();
@@ -336,7 +347,7 @@ public:
      * @return
      */
     static Status do_compaction(int64_t tablet_id, const string& type) {
-        return CompactionAction::do_compaction(tablet_id, type, "");
+        return run_manual_compaction(tablet_id, type, "");
     }
 
     static std::string set_error_state(int64_t tablet_id) {
@@ -599,6 +610,7 @@ public:
             REG_STATIC_METHOD(StorageEngineRef, ls_tablet_dir);
             REG_STATIC_METHOD(StorageEngineRef, set_error_state);
             REG_STATIC_METHOD(StorageEngineRef, recover_tablet);
+            REG_STATIC_METHOD(StorageEngineRef, garbage_file_check);
         }
     }
 };

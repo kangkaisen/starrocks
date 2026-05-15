@@ -61,11 +61,13 @@ import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
 import mockit.Verifications;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
+import java.util.concurrent.ExecutorService;
 
 public class HeartbeatMgrTest {
 
@@ -75,7 +77,7 @@ public class HeartbeatMgrTest {
     @Mocked
     private NodeMgr nodeMgr;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         new Expectations() {
             {
@@ -121,25 +123,25 @@ public class HeartbeatMgrTest {
         FrontendHeartbeatHandler handler = new FrontendHeartbeatHandler(fe, 0, "abcd");
         HeartbeatResponse response = handler.call();
 
-        Assert.assertTrue(response instanceof FrontendHbResponse);
+        Assertions.assertTrue(response instanceof FrontendHbResponse);
         FrontendHbResponse hbResponse = (FrontendHbResponse) response;
-        Assert.assertEquals(191224, hbResponse.getReplayedJournalId());
-        Assert.assertEquals(9121, hbResponse.getRpcPort());
-        Assert.assertEquals(9131, hbResponse.getQueryPort());
-        Assert.assertEquals(HbStatus.OK, hbResponse.getStatus());
-        Assert.assertEquals(1637288321250L, hbResponse.getFeStartTime());
-        Assert.assertEquals("2.0-ac45651a", hbResponse.getFeVersion());
+        Assertions.assertEquals(191224, hbResponse.getReplayedJournalId());
+        Assertions.assertEquals(9121, hbResponse.getRpcPort());
+        Assertions.assertEquals(9131, hbResponse.getQueryPort());
+        Assertions.assertEquals(HbStatus.OK, hbResponse.getStatus());
+        Assertions.assertEquals(1637288321250L, hbResponse.getFeStartTime());
+        Assertions.assertEquals("2.0-ac45651a", hbResponse.getFeVersion());
 
         Frontend fe2 = new Frontend(FrontendNodeType.FOLLOWER, "test2", "192.168.1.2", 9010);
         handler = new FrontendHeartbeatHandler(fe2, 0, "abcd");
         response = handler.call();
 
-        Assert.assertTrue(response instanceof FrontendHbResponse);
+        Assertions.assertTrue(response instanceof FrontendHbResponse);
         hbResponse = (FrontendHbResponse) response;
-        Assert.assertEquals(0, hbResponse.getReplayedJournalId());
-        Assert.assertEquals(0, hbResponse.getRpcPort());
-        Assert.assertEquals(0, hbResponse.getQueryPort());
-        Assert.assertEquals(HbStatus.BAD, hbResponse.getStatus());
+        Assertions.assertEquals(0, hbResponse.getReplayedJournalId());
+        Assertions.assertEquals(0, hbResponse.getRpcPort());
+        Assertions.assertEquals(0, hbResponse.getQueryPort());
+        Assertions.assertEquals(HbStatus.BAD, hbResponse.getStatus());
 
     }
 
@@ -177,10 +179,10 @@ public class HeartbeatMgrTest {
         BrokerHeartbeatHandler handler = new BrokerHeartbeatHandler("hdfs", broker, "abc");
         HeartbeatResponse response = handler.call();
 
-        Assert.assertTrue(response instanceof BrokerHbResponse);
+        Assertions.assertTrue(response instanceof BrokerHbResponse);
         BrokerHbResponse hbResponse = (BrokerHbResponse) response;
         System.out.println(hbResponse.toString());
-        Assert.assertEquals(HbStatus.OK, hbResponse.getStatus());
+        Assertions.assertEquals(HbStatus.OK, hbResponse.getStatus());
     }
 
     @Test
@@ -231,20 +233,37 @@ public class HeartbeatMgrTest {
         new HeartbeatMgr(false).setLeader(1, "123", 1);
 
         ComputeNode cn = new ComputeNode(1, "192.168.1.1", 8111);
-        HeartbeatMgr.BackendHeartbeatHandler handler = new HeartbeatMgr.BackendHeartbeatHandler(cn);
+        HeartbeatMgr.BackendHeartbeatHandler handler = new HeartbeatMgr.BackendHeartbeatHandler(cn, true);
         HeartbeatResponse response = handler.call();
-        Assert.assertTrue(response instanceof BackendHbResponse);
+        Assertions.assertTrue(response instanceof BackendHbResponse);
         BackendHbResponse hbResponse = (BackendHbResponse) response;
-        Assert.assertEquals(HbStatus.BAD, hbResponse.getStatus());
+        Assertions.assertEquals(HbStatus.BAD, hbResponse.getStatus());
 
         new Verifications() {
             {
                 TMasterInfo masterInfo;
                 client.heartbeat(masterInfo = withCapture());
                 // verify the runMode is set in the masterInfo request
-                Assert.assertNotNull(masterInfo);
-                Assert.assertEquals(TRunMode.SHARED_DATA, masterInfo.getRun_mode());
+                Assertions.assertNotNull(masterInfo);
+                Assertions.assertEquals(TRunMode.SHARED_DATA, masterInfo.getRun_mode());
             }
         };
+    }
+
+    @Test
+    public void testOnStoppedShutsDownAndClearsExecutor() throws Exception {
+        HeartbeatMgr mgr = new HeartbeatMgr(false);
+        // start() lazy-inits the executor.
+        mgr.start();
+        Field execField = HeartbeatMgr.class.getDeclaredField("executor");
+        execField.setAccessible(true);
+        ExecutorService before = (ExecutorService) execField.get(mgr);
+        Assertions.assertNotNull(before, "executor must be initialized after start()");
+
+        // protected onStopped() is visible from the same package.
+        mgr.onStopped();
+
+        Assertions.assertTrue(before.isShutdown(), "previous executor must be shut down");
+        Assertions.assertNull(execField.get(mgr), "executor reference must be nulled for re-init on next start()");
     }
 }

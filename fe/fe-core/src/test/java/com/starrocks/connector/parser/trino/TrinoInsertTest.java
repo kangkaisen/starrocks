@@ -14,17 +14,20 @@
 
 package com.starrocks.connector.parser.trino;
 
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import com.starrocks.sql.ast.InsertStmt;
+import com.starrocks.sql.ast.StatementBase;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TrinoInsertTest extends TrinoTestBase {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         TrinoTestBase.beforeClass();
     }
 
-    @Before
+    @BeforeEach
     public void setUp() {
         connectContext.getSessionVariable().setSqlDialect("trino");
     }
@@ -65,5 +68,23 @@ public class TrinoInsertTest extends TrinoTestBase {
         assertPlanContains(sql, "0:UNION\n" +
                 "     constant exprs: \n" +
                 "         20220306");
+    }
+
+    @Test
+    public void testExplainInsert() throws Exception {
+        String sql = "explain insert into t0 select * from t1";
+        StatementBase statement = analyzeSuccess(sql);
+        Assertions.assertInstanceOf(InsertStmt.class, statement);
+        Assertions.assertTrue(statement.isExplain());
+        assertPlanContains(sql, "OLAP TABLE SINK");
+    }
+
+    @Test
+    public void testExplainAnalyzeInsert() throws Exception {
+        String sql = "explain analyze insert into t0 select * from t1";
+        StatementBase statement = analyzeSuccess(sql);
+        Assertions.assertInstanceOf(InsertStmt.class, statement);
+        Assertions.assertTrue(statement.isExplainAnalyze());
+        assertPlanContains(sql, "OLAP TABLE SINK");
     }
 }

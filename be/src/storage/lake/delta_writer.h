@@ -18,12 +18,14 @@
 #include <memory>
 #include <vector>
 
+#include "common/runtime_profile.h"
 #include "common/statusor.h"
 #include "gen_cpp/olap_file.pb.h"
 #include "gutil/macros.h"
+#include "runtime/global_dict/types_fwd_decl.h"
 #include "storage/lake/delta_writer_finish_mode.h"
 #include "storage/memtable_flush_executor.h"
-#include "util/runtime_profile.h"
+#include "storage/rowset/segment_file_info.h"
 
 namespace starrocks {
 class MemTracker;
@@ -33,6 +35,7 @@ class TabletSchema;
 class ThreadPool;
 struct FileInfo;
 class TxnLogPB;
+class BundleWritableFileContext;
 } // namespace starrocks
 
 namespace starrocks::lake {
@@ -52,6 +55,8 @@ struct DeltaWriterStat {
     std::atomic_int32_t write_count = 0;
     // The number of rows to write
     std::atomic_int32_t row_count = 0;
+    // The number of bytes to write (approximate)
+    std::atomic_int64_t input_bytes = 0;
     // Accumulated time for write()
     std::atomic_int64_t write_time_ns = 0;
     // The number that memtable is full
@@ -71,8 +76,6 @@ struct DeltaWriterStat {
     std::atomic_int64_t finish_prepare_txn_log_time_ns = 0;
     // Time to put txn log
     std::atomic_int64_t finish_put_txn_log_time_ns = 0;
-    // Time to preload pk
-    std::atomic_int64_t finish_pk_preload_time_ns = 0;
 
     // ====== statistics for close()
 
@@ -122,6 +125,11 @@ public:
     // NOTE: Do NOT invoke this method in a bthread unless you are sure that `write()` has never been called.
     void close();
 
+    // Cancel the delta writer with the given status.
+    // This method can be called concurrently and it is thread-safe.
+    // After cancellation, subsequent write/flush operations will fail quickly.
+    void cancel(const Status& st);
+
     [[nodiscard]] int64_t partition_id() const;
 
     [[nodiscard]] int64_t tablet_id() const;
@@ -134,7 +142,9 @@ public:
 
     // Return the list of file infos created by this DeltaWriter.
     // NOTE: Do NOT invoke this function after `close()`, otherwise may get unexpected result.
-    std::vector<FileInfo> files() const;
+    const std::vector<SegmentFileInfo>& segments() const;
+
+    const std::vector<FileInfo>& dels() const;
 
     // The sum of all segment file sizes, in bytes.
     // NOTE: Do NOT invoke this function after `close()`, otherwise may get unexpected result.
@@ -156,7 +166,21 @@ public:
 
     const FlushStatistic* get_flush_stats() const;
 
+    // Thread-safe accessor: returns a shared_ptr copy of the FlushToken.
+    // The caller holds the token alive while reading stats, preventing
+    // use-after-free when close() concurrently resets the token.
+    std::shared_ptr<FlushToken> get_flush_token() const;
+
     bool has_spill_block() const;
+
+    const DictColumnsValidMap* global_dict_columns_valid_info() const;
+    const GlobalDictByNameMaps* global_dict_map() const;
+
+    // Set the finished state. Called after finish task completes to prevent subsequent write/flush tasks.
+    void set_already_finished(bool val);
+
+    // Check if finish() has been called. Used to guard against write/flush tasks after finish.
+    bool already_finished() const;
 
 private:
     DeltaWriterImpl* _impl;
@@ -178,6 +202,11 @@ public:
 
     DeltaWriterBuilder& set_txn_id(int64_t txn_id) {
         _txn_id = txn_id;
+        return *this;
+    }
+
+    DeltaWriterBuilder& set_db_id(int64_t db_id) {
+        _db_id = db_id;
         return *this;
     }
 
@@ -231,6 +260,15 @@ public:
         return *this;
     }
 
+    // Pre-set the tablet schema. When provided, DeltaWriter skips the schema lookup that
+    // would otherwise consult TableSchemaService (cache + tablet metadata + FE RPC). Useful
+    // when the caller already holds the exact schema and wants to avoid the dependency on
+    // catalog ids and the schema cache, e.g. lake schema-change rewrites.
+    DeltaWriterBuilder& set_tablet_schema(std::shared_ptr<const TabletSchema> tablet_schema) {
+        _tablet_schema = std::move(tablet_schema);
+        return *this;
+    }
+
     DeltaWriterBuilder& set_partial_update_mode(const PartialUpdateMode& partial_update_mode) {
         _partial_update_mode = partial_update_mode;
         return *this;
@@ -251,11 +289,27 @@ public:
         return *this;
     }
 
+    DeltaWriterBuilder& set_bundle_writable_file_context(BundleWritableFileContext* bundle_writable_file_context) {
+        _bundle_writable_file_context = bundle_writable_file_context;
+        return *this;
+    }
+
+    DeltaWriterBuilder& set_global_dicts(GlobalDictByNameMaps* global_dicts) {
+        _global_dicts = global_dicts;
+        return *this;
+    }
+
+    DeltaWriterBuilder& set_is_multi_statements_txn(bool is_multi_statements_txn) {
+        _is_multi_statements_txn = is_multi_statements_txn;
+        return *this;
+    }
+
     StatusOr<DeltaWriterPtr> build();
 
 private:
     TabletManager* _tablet_mgr{nullptr};
     int64_t _txn_id{0};
+    int64_t _db_id{0};
     int64_t _table_id{0};
     int64_t _partition_id{0};
     int64_t _schema_id{0};
@@ -270,6 +324,10 @@ private:
     const std::map<std::string, std::string>* _column_to_expr_value{nullptr};
     PUniqueId _load_id;
     RuntimeProfile* _profile{nullptr};
+    BundleWritableFileContext* _bundle_writable_file_context{nullptr};
+    GlobalDictByNameMaps* _global_dicts = nullptr;
+    bool _is_multi_statements_txn = false;
+    std::shared_ptr<const TabletSchema> _tablet_schema;
 };
 
 } // namespace starrocks::lake

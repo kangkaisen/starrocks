@@ -14,32 +14,42 @@
 
 #include "aggregate_blocking_sink_operator.h"
 
+#include <atomic>
 #include <memory>
 #include <variant>
 
+#include "base/concurrency/race_detect.h"
 #include "column/column_helper.h"
 #include "column/vectorized_fwd.h"
+#include "common/status.h"
+#include "exec/agg_runtime_filter_builder.h"
 #include "runtime/current_thread.h"
-#include "util/race_detect.h"
+#include "runtime/runtime_filter_worker.h"
+#include "runtime/runtime_state.h"
 
 namespace starrocks::pipeline {
 
 Status AggregateBlockingSinkOperator::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(Operator::prepare(state));
-    RETURN_IF_ERROR(_aggregator->prepare(state, state->obj_pool(), _unique_metrics.get()));
+    _aggregator->attach_sink_observer(state, this->_observer);
+    return Status::OK();
+}
+
+Status AggregateBlockingSinkOperator::prepare_local_state(RuntimeState* state) {
+    RETURN_IF_ERROR(Operator::prepare_local_state(state));
+    RETURN_IF_ERROR(_aggregator->prepare(state, _unique_metrics.get()));
     RETURN_IF_ERROR(_aggregator->open(state));
 
     _agg_group_by_with_limit = (!_aggregator->is_none_group_by_exprs() &&     // has group by keys
                                 _aggregator->limit() != -1 &&                 // has limit
                                 _aggregator->conjunct_ctxs().empty() &&       // no 'having' clause
                                 _aggregator->get_aggr_phase() == AggrPhase2); // phase 2, keep it to make things safe
-    _aggregator->attach_sink_observer(state, this->_observer);
     return Status::OK();
 }
 
 void AggregateBlockingSinkOperator::close(RuntimeState* state) {
     auto* counter = ADD_COUNTER(_unique_metrics, "HashTableMemoryUsage", TUnit::BYTES);
-    counter->set(_aggregator->hash_map_memory_usage());
+    COUNTER_SET(counter, _aggregator->hash_map_memory_usage());
     _aggregator->unref(state);
     Operator::close(state);
 }
@@ -65,8 +75,7 @@ Status AggregateBlockingSinkOperator::set_finishing(RuntimeState* state) {
         if (_aggregator->hash_map_variant().size() == 0) {
             _aggregator->set_ht_eos();
         }
-        _aggregator->hash_map_variant().visit(
-                [&](auto& hash_map_with_key) { _aggregator->it_hash() = _aggregator->_state_allocator.begin(); });
+        _aggregator->it_hash() = _aggregator->state_allocator().begin();
 
     } else if (_aggregator->is_none_group_by_exprs()) {
         // for aggregate no group by, if _num_input_rows is 0,
@@ -122,11 +131,31 @@ Status AggregateBlockingSinkOperator::push_chunk(RuntimeState* state, const Chun
         }
     }
     TRY_CATCH_ALLOC_SCOPE_END()
-
+    _build_in_runtime_filters(state);
     _aggregator->update_num_input_rows(chunk_size);
     RETURN_IF_ERROR(_aggregator->check_has_error());
 
     return Status::OK();
+}
+
+void AggregateBlockingSinkOperator::_build_in_runtime_filters(RuntimeState* state) {
+    if (!_agg_group_by_with_limit || _shared_limit_countdown.load(std::memory_order_acquire) > 0 ||
+        _in_runtime_filter_built) {
+        return;
+    }
+    std::list<RuntimeFilterBuildDescriptor*> merged_runtime_filters;
+    const auto& build_runtime_filters = factory()->build_runtime_filters();
+    for (size_t i = 0; i < build_runtime_filters.size(); ++i) {
+        auto desc = build_runtime_filters[i];
+        auto* runtime_filter = _aggregator->build_in_filters(state, build_runtime_filters[i]);
+        auto* merger = factory()->in_filter_merger(build_runtime_filters[i]->filter_id());
+        if (merger->merge(_driver_sequence, desc, runtime_filter)) {
+            desc->set_runtime_filter(merger->merged_runtime_filter());
+            merged_runtime_filters.emplace_back(desc);
+        }
+    }
+    state->runtime_filter_port()->publish_runtime_filters(merged_runtime_filters);
+    _in_runtime_filter_built = true;
 }
 
 Status AggregateBlockingSinkOperatorFactory::prepare(RuntimeState* state) {
@@ -135,6 +164,14 @@ Status AggregateBlockingSinkOperatorFactory::prepare(RuntimeState* state) {
 }
 
 OperatorPtr AggregateBlockingSinkOperatorFactory::create(int32_t degree_of_parallelism, int32_t driver_sequence) {
+    const auto& build_runtime_filters = this->build_runtime_filters();
+    if (!build_runtime_filters.empty() && _in_filter_mergers.empty()) {
+        for (auto desc : build_runtime_filters) {
+            _in_filter_mergers.emplace(desc->filter_id(),
+                                       std::make_shared<AggInRuntimeFilterMerger>(degree_of_parallelism));
+        }
+    }
+
     // init operator
     auto aggregator = _aggregator_factory->get_or_create(driver_sequence);
     auto op = std::make_shared<AggregateBlockingSinkOperator>(aggregator, this, _id, _plan_node_id, driver_sequence,

@@ -24,6 +24,7 @@ import com.starrocks.common.Status;
 import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.common.util.Counter;
 import com.starrocks.common.util.DebugUtil;
+import com.starrocks.common.util.ProfileKeyDictionary;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.ProfilingExecPlan;
 import com.starrocks.common.util.RuntimeProfile;
@@ -35,7 +36,6 @@ import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.scheduler.dag.FragmentInstanceExecState;
 import com.starrocks.qe.scheduler.dag.JobSpec;
-import com.starrocks.service.arrow.flight.sql.ArrowFlightSqlConnectContext;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.task.LoadEtlTask;
 import com.starrocks.thrift.TLoadDataCacheMetrics;
@@ -97,7 +97,7 @@ public class QueryRuntimeProfile {
      * if the time costs of stream load is less than {@link Config#stream_load_profile_collect_threshold_second},
      * the profile will not be reported to FE to reduce the overhead of profile under high-frequency import
      */
-    private boolean profileAlreadyReported = false;
+    private volatile boolean profileAlreadyReported = false;
 
     private RuntimeProfile queryProfile;
     private List<RuntimeProfile> fragmentProfiles;
@@ -129,14 +129,14 @@ public class QueryRuntimeProfile {
     // ------------------------------------------------------------------------------------
     // Fields for export.
     // ------------------------------------------------------------------------------------
-    private final List<String> exportFiles = Lists.newArrayList();
-    private final List<TTabletCommitInfo> commitInfos = Lists.newArrayList();
-    private final List<TTabletFailInfo> failInfos = Lists.newArrayList();
+    private final List<String> exportFiles = Lists.newCopyOnWriteArrayList();
+    private final List<TTabletCommitInfo> commitInfos = Lists.newCopyOnWriteArrayList();
+    private final List<TTabletFailInfo> failInfos = Lists.newCopyOnWriteArrayList();
 
     // ------------------------------------------------------------------------------------
     // Fields for external table sink
     // ------------------------------------------------------------------------------------
-    private final List<TSinkCommitInfo> sinkCommitInfos = Lists.newArrayList();
+    private final List<TSinkCommitInfo> sinkCommitInfos = Lists.newCopyOnWriteArrayList();
 
     // Fields for datacache
     private final DataCacheSelectMetrics dataCacheSelectMetrics = new DataCacheSelectMetrics();
@@ -259,17 +259,10 @@ public class QueryRuntimeProfile {
     }
 
     public boolean isFinished() {
-        return profileDoneSignal.getCount() == 0;
+        return profileDoneSignal != null && profileDoneSignal.getCount() == 0;
     }
 
     public boolean addListener(Consumer<Boolean> task) {
-        if (connectContext instanceof ArrowFlightSqlConnectContext) {
-            profileDoneSignal.addListener(() -> EXECUTOR.submit(() -> {
-                task.accept(true);
-            }));
-            return true;
-        }
-
         if (EXECUTOR.getQueue().remainingCapacity() <= 0) {
             return false;
         }
@@ -454,11 +447,11 @@ public class QueryRuntimeProfile {
                 }
 
                 // Get query level peak memory usage, cpu cost, wall time
-                Counter toBeRemove = instanceProfile.getCounter("QueryCumulativeCpuTime");
+                Counter toBeRemove = instanceProfile.getCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_CPU_TIME);
                 if (toBeRemove != null) {
                     sumQueryCumulativeCpuTime += toBeRemove.getValue();
                 }
-                instanceProfile.removeCounter("QueryCumulativeCpuTime");
+                instanceProfile.removeCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_CPU_TIME);
 
                 toBeRemove = instanceProfile.getCounter("QueryPeakMemoryUsage");
                 if (toBeRemove != null) {
@@ -468,28 +461,28 @@ public class QueryRuntimeProfile {
                 }
                 instanceProfile.removeCounter("QueryPeakMemoryUsage");
 
-                toBeRemove = instanceProfile.getCounter("QueryExecutionWallTime");
+                toBeRemove = instanceProfile.getCounter(ProfileKeyDictionary.QUERY_EXECUTION_WALL_TIME);
                 if (toBeRemove != null) {
                     maxQueryExecutionWallTime = Math.max(maxQueryExecutionWallTime, toBeRemove.getValue());
                 }
-                instanceProfile.removeCounter("QueryExecutionWallTime");
+                instanceProfile.removeCounter(ProfileKeyDictionary.QUERY_EXECUTION_WALL_TIME);
 
-                toBeRemove = instanceProfile.getCounter("QuerySpillBytes");
+                toBeRemove = instanceProfile.getCounter(ProfileKeyDictionary.QUERY_SPILL_BYTES);
                 if (toBeRemove != null) {
                     sumQuerySpillBytes += toBeRemove.getValue();
                 }
-                instanceProfile.removeCounter("QuerySpillBytes");
+                instanceProfile.removeCounter(ProfileKeyDictionary.QUERY_SPILL_BYTES);
             }
             newFragmentProfile.addInfoString("BackendAddresses", String.join(",", backendAddresses));
             newFragmentProfile.addInfoString("InstanceIds", String.join(",", instanceIds));
             if (!missingInstanceIds.isEmpty()) {
                 newFragmentProfile.addInfoString("MissingInstanceIds", String.join(",", missingInstanceIds));
             }
-            Counter backendNum = newFragmentProfile.addCounter("BackendNum", TUnit.UNIT, null);
+            Counter backendNum = newFragmentProfile.addCounter(ProfileKeyDictionary.BACKEND_NUM, TUnit.UNIT, null);
             backendNum.setValue(backendAddresses.size());
 
             // Setup number of instance
-            Counter counter = newFragmentProfile.addCounter("InstanceNum", TUnit.UNIT, null);
+            Counter counter = newFragmentProfile.addCounter(ProfileKeyDictionary.INSTANCE_NUM, TUnit.UNIT, null);
             counter.setValue(instanceProfiles.size());
 
             RuntimeProfile mergedInstanceProfile =
@@ -535,7 +528,7 @@ public class QueryRuntimeProfile {
 
             for (Pair<RuntimeProfile, Boolean> pipelineProfilePair : fragmentProfile.getChildList()) {
                 RuntimeProfile pipelineProfile = pipelineProfilePair.first;
-                Counter scheduleTime = pipelineProfile.getMaxCounter("ScheduleTime");
+                Counter scheduleTime = pipelineProfile.getMaxCounter(ProfileKeyDictionary.SCHEDULE_TIME);
                 if (scheduleTime != null) {
                     maxScheduleTime = Math.max(maxScheduleTime, scheduleTime.getValue());
                 }
@@ -549,30 +542,32 @@ public class QueryRuntimeProfile {
 
                     if (commonMetrics.containsInfoString("IsFinalSink")) {
                         long resultDeliverTime = 0;
-                        Counter outputFullTime = pipelineProfile.getMaxCounter("OutputFullTime");
+                        Counter outputFullTime = pipelineProfile.getMaxCounter(ProfileKeyDictionary.OUTPUT_FULL_TIME);
                         if (outputFullTime != null) {
                             resultDeliverTime += outputFullTime.getValue();
                         }
-                        Counter pendingFinishTime = pipelineProfile.getMaxCounter("PendingFinishTime");
+                        Counter pendingFinishTime =
+                                pipelineProfile.getMaxCounter(ProfileKeyDictionary.PENDING_FINISH_TIME);
                         if (pendingFinishTime != null) {
                             resultDeliverTime += pendingFinishTime.getValue();
                         }
                         Counter resultDeliverTimer =
-                                newQueryProfile.addCounter("ResultDeliverTime", TUnit.TIME_NS, null);
+                                newQueryProfile.addCounter(ProfileKeyDictionary.RESULT_DELIVER_TIME, TUnit.TIME_NS,
+                                        null);
                         resultDeliverTimer.setValue(resultDeliverTime);
                     }
 
-                    Counter operatorTotalTime = commonMetrics.getMaxCounter("OperatorTotalTime");
+                    Counter operatorTotalTime = commonMetrics.getMaxCounter(ProfileKeyDictionary.OPERATOR_TOTAL_TIME);
                     Preconditions.checkNotNull(operatorTotalTime);
                     queryCumulativeOperatorTime += operatorTotalTime.getValue();
 
-                    Counter scanTime = uniqueMetrics.getMaxCounter("ScanTime");
+                    Counter scanTime = uniqueMetrics.getMaxCounter(ProfileKeyDictionary.SCAN_TIME);
                     if (scanTime != null) {
                         queryCumulativeScanTime += scanTime.getValue();
                         queryCumulativeOperatorTime += scanTime.getValue();
                     }
 
-                    Counter networkTime = uniqueMetrics.getMaxCounter("NetworkTime");
+                    Counter networkTime = uniqueMetrics.getMaxCounter(ProfileKeyDictionary.NETWORK_TIME);
                     if (networkTime != null) {
                         queryCumulativeNetworkTime += networkTime.getValue();
                         queryCumulativeOperatorTime += networkTime.getValue();
@@ -581,40 +576,45 @@ public class QueryRuntimeProfile {
             }
         }
         Counter queryAllocatedMemoryUsageCounter =
-                newQueryProfile.addCounter("QueryAllocatedMemoryUsage", TUnit.BYTES, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_ALLOCATED_MEMORY_USAGE, TUnit.BYTES, null);
         queryAllocatedMemoryUsageCounter.setValue(queryAllocatedMemoryUsage);
         Counter queryDeallocatedMemoryUsageCounter =
-                newQueryProfile.addCounter("QueryDeallocatedMemoryUsage", TUnit.BYTES, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_DEALLOCATED_MEMORY_USAGE, TUnit.BYTES, null);
         queryDeallocatedMemoryUsageCounter.setValue(queryDeallocatedMemoryUsage);
         Counter queryCumulativeOperatorTimer =
-                newQueryProfile.addCounter("QueryCumulativeOperatorTime", TUnit.TIME_NS, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_OPERATOR_TIME, TUnit.TIME_NS, null);
         queryCumulativeOperatorTimer.setValue(queryCumulativeOperatorTime);
         Counter queryCumulativeScanTimer =
-                newQueryProfile.addCounter("QueryCumulativeScanTime", TUnit.TIME_NS, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_SCAN_TIME, TUnit.TIME_NS, null);
         queryCumulativeScanTimer.setValue(queryCumulativeScanTime);
         Counter queryCumulativeNetworkTimer =
-                newQueryProfile.addCounter("QueryCumulativeNetworkTime", TUnit.TIME_NS, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_NETWORK_TIME, TUnit.TIME_NS, null);
         queryCumulativeNetworkTimer.setValue(queryCumulativeNetworkTime);
-        Counter queryPeakScheduleTime = newQueryProfile.addCounter("QueryPeakScheduleTime", TUnit.TIME_NS, null);
+        Counter queryPeakScheduleTime =
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_PEAK_SCHEDULE_TIME, TUnit.TIME_NS, null);
         queryPeakScheduleTime.setValue(maxScheduleTime);
         newQueryProfile.getCounterTotalTime().setValue(0);
 
-        Counter queryCumulativeCpuTime = newQueryProfile.addCounter("QueryCumulativeCpuTime", TUnit.TIME_NS, null);
+        Counter queryCumulativeCpuTime =
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_CUMULATIVE_CPU_TIME, TUnit.TIME_NS, null);
         queryCumulativeCpuTime.setValue(sumQueryCumulativeCpuTime);
-        Counter queryPeakMemoryUsage = newQueryProfile.addCounter("QueryPeakMemoryUsagePerNode", TUnit.BYTES, null);
+        Counter queryPeakMemoryUsage =
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_PEAK_MEMORY_USAGE_PER_NODE, TUnit.BYTES, null);
         queryPeakMemoryUsage.setValue(maxQueryPeakMemoryUsage);
-        Counter sumQueryPeakMemoryUsage = newQueryProfile.addCounter("QuerySumMemoryUsage", TUnit.BYTES, null);
+        Counter sumQueryPeakMemoryUsage =
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_SUM_MEMORY_USAGE, TUnit.BYTES, null);
         sumQueryPeakMemoryUsage.setValue(peakMemoryEachBE.values().stream().reduce(0L, Long::sum));
-        Counter queryExecutionWallTime = newQueryProfile.addCounter("QueryExecutionWallTime", TUnit.TIME_NS, null);
+        Counter queryExecutionWallTime =
+                newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_EXECUTION_WALL_TIME, TUnit.TIME_NS, null);
         queryExecutionWallTime.setValue(maxQueryExecutionWallTime);
-        Counter querySpillBytes = newQueryProfile.addCounter("QuerySpillBytes", TUnit.BYTES, null);
+        Counter querySpillBytes = newQueryProfile.addCounter(ProfileKeyDictionary.QUERY_SPILL_BYTES, TUnit.BYTES, null);
         querySpillBytes.setValue(sumQuerySpillBytes);
 
         if (execPlan != null) {
-            newQueryProfile.addInfoString("Topology", execPlan.getProfilingPlan().toTopologyJson());
+            newQueryProfile.addInfoString(ProfileKeyDictionary.TOPOLOGY, execPlan.getProfilingPlan().toTopologyJson());
         }
         Counter processTimer =
-                newQueryProfile.addCounter("FrontendProfileMergeTime", TUnit.TIME_NS, null);
+                newQueryProfile.addCounter(ProfileKeyDictionary.FRONTEND_PROFILE_MERGE_TIME, TUnit.TIME_NS, null);
         processTimer.setValue(System.nanoTime() - start);
 
         Optional<RuntimeProfile> mergedLoadChannelProfile = mergeLoadChannelProfile();
@@ -653,7 +653,7 @@ public class QueryRuntimeProfile {
                 .map(pair -> pair.first)
                 .collect(Collectors.toList());
 
-        Counter counter = mergedProfile.addCounter("ChannelNum", TUnit.UNIT, null);
+        Counter counter = mergedProfile.addCounter(ProfileKeyDictionary.CHANNEL_NUM, TUnit.UNIT, null);
         counter.setValue(channelProfiles.size());
 
         String hosts = channelProfiles.stream()
@@ -692,7 +692,11 @@ public class QueryRuntimeProfile {
         return matcher.matches() ? Optional.of(matcher.group(1)) : Optional.empty();
     }
 
-    private List<String> getUnfinishedInstanceIds() {
+    public List<String> getUnfinishedInstanceIds() {
+        if (profileDoneSignal == null) {
+            return Lists.newArrayList();
+        }
+
         return profileDoneSignal.getLeftMarks().stream()
                 .map(Map.Entry::getKey)
                 .map(DebugUtil::printId)

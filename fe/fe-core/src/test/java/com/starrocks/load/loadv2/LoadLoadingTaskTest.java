@@ -14,19 +14,19 @@
 
 package com.starrocks.load.loadv2;
 
-import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.catalog.CatalogIdGenerator;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.common.LoadException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.RuntimeProfile;
+import com.starrocks.persist.OriginStatementInfo;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.qe.OriginStatement;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.VariableMgr;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.BrokerDesc;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.LoadStmt;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.transaction.GlobalTransactionMgr;
@@ -34,10 +34,10 @@ import com.starrocks.transaction.TransactionState;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mocked;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class LoadLoadingTaskTest {
     @Injectable
@@ -68,7 +68,7 @@ public class LoadLoadingTaskTest {
 
 
         LoadJob.JSONOptions realJSONOptions =  Deencapsulation.getField(task, "jsonOptions");
-        Assert.assertEquals(jsonOptions, realJSONOptions);
+        Assertions.assertEquals(jsonOptions, realJSONOptions);
     }
 
     @Test
@@ -100,14 +100,14 @@ public class LoadLoadingTaskTest {
         OlapTable olapTable = new OlapTable(10001L, "tbl", null, KeysType.AGG_KEYS, null, null);
         LoadStmt stmt = new LoadStmt(null, null, new BrokerDesc(null), null, null);
         LoadLoadingTask loadLoadingTask = new LoadLoadingTask.Builder().setDb(database).setLoadStmt(stmt)
-                .setTable(olapTable).setContext(connectContext).setOriginStmt(new OriginStatement("")).build();
+                .setTable(olapTable).setContext(connectContext).setOriginStmt(new OriginStatementInfo("")).build();
         RuntimeProfile profile = loadLoadingTask.buildRunningTopLevelProfile();
         // Perform assertions to verify the behavior
-        assertNotNull("Profile should not be null", profile);
+        assertNotNull(profile, "Profile should not be null");
 
         profile = loadLoadingTask.buildFinishedTopLevelProfile();
         // Perform assertions to verify the behavior
-        assertNotNull("Profile should not be null", profile);
+        assertNotNull(profile, "Profile should not be null");
     }
 
     @Test
@@ -129,11 +129,11 @@ public class LoadLoadingTaskTest {
         try {
             loadLoadingTask.executeTask();
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof LoadException);
+            Assertions.assertTrue(e instanceof LoadException);
             exceptionThrown = true;
         }
 
-        Assert.assertTrue(exceptionThrown);
+        Assertions.assertTrue(exceptionThrown);
 
         // table not exist
         exceptionThrown = false;
@@ -141,10 +141,10 @@ public class LoadLoadingTaskTest {
         try {
             loadLoadingTask.executeTask();
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof LoadException);
+            Assertions.assertTrue(e instanceof LoadException);
             exceptionThrown = true;
         }
-        Assert.assertTrue(exceptionThrown);
+        Assertions.assertTrue(exceptionThrown);
     }
 
     @Test
@@ -180,6 +180,6 @@ public class LoadLoadingTaskTest {
         } catch (Exception e) {
             exceptionThrown = true;
         }
-        Assert.assertTrue(exceptionThrown);
+        Assertions.assertTrue(exceptionThrown);
     }
 }

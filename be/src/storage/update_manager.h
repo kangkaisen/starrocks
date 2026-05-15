@@ -17,14 +17,14 @@
 #include <string>
 #include <unordered_map>
 
+#include "base/string/parse_util.h"
+#include "common/system/mem_info.h"
+#include "common/thread/threadpool.h"
 #include "storage/del_vector.h"
 #include "storage/delta_column_group.h"
 #include "storage/olap_common.h"
 #include "storage/primary_index.h"
 #include "util/dynamic_cache.h"
-#include "util/mem_info.h"
-#include "util/parse_util.h"
-#include "util/threadpool.h"
 
 namespace starrocks {
 
@@ -43,7 +43,7 @@ class PersistentIndexLoadExecutor;
 class LocalDelvecLoader : public DelvecLoader {
 public:
     LocalDelvecLoader(KVStore* meta) : _meta(meta) {}
-    Status load(const TabletSegmentId& tsid, int64_t version, DelVectorPtr* pdelvec);
+    Status load(const TabletSegmentId& tsid, int64_t version, DelVectorPtr* pdelvec) override;
 
 private:
     KVStore* _meta = nullptr;
@@ -52,9 +52,9 @@ private:
 class LocalDeltaColumnGroupLoader : public DeltaColumnGroupLoader {
 public:
     LocalDeltaColumnGroupLoader(KVStore* meta) : _meta(meta) {}
-    Status load(const TabletSegmentId& tsid, int64_t version, DeltaColumnGroupList* pdcgs);
+    Status load(const TabletSegmentId& tsid, int64_t version, DeltaColumnGroupList* pdcgs) override;
     Status load(int64_t tablet_id, RowsetId rowsetid, uint32_t segment_id, int64_t version,
-                DeltaColumnGroupList* pdcgs);
+                DeltaColumnGroupList* pdcgs) override;
     KVStore* meta() const { return _meta; }
 
 private:
@@ -66,6 +66,9 @@ private:
 // async apply thread pool.
 class UpdateManager {
 public:
+    UpdateManager(const UpdateManager&) = delete;
+    const UpdateManager& operator=(const UpdateManager&) = delete;
+
     UpdateManager(MemTracker* mem_tracker);
     ~UpdateManager();
 
@@ -118,10 +121,13 @@ public:
 
     void clear_cache();
 
+    void clear_cached_del_vec_by_tablet_id(int64_t tablet_id);
     void clear_cached_del_vec(const std::vector<TabletSegmentId>& tsids);
 
+    void clear_cached_delta_column_group_by_tablet_id(int64_t tablet_id);
     void clear_cached_delta_column_group(const std::vector<TabletSegmentId>& tsids);
 
+    int64_t get_delta_column_group_file_size_by_tablet_id(int64_t tablet_id);
     StatusOr<size_t> clear_delta_column_group_before_version(KVStore* meta, const std::string& tablet_path,
                                                              int64_t tablet_id, int64_t min_readable_version);
 
@@ -139,12 +145,7 @@ public:
 
     string topn_memory_stats(size_t topn);
 
-    Status update_primary_index_memory_limit(int32_t update_memory_limit_percent) {
-        ASSIGN_OR_RETURN(int64_t byte_limits, ParseUtil::parse_mem_spec(config::mem_limit, MemInfo::physical_mem()));
-        int32_t update_mem_percent = std::max(std::min(100, update_memory_limit_percent), 0);
-        _index_cache.set_capacity(byte_limits * update_mem_percent);
-        return Status::OK();
-    }
+    Status update_primary_index_memory_limit(int32_t update_memory_limit_percent);
 
     bool keep_pindex_bf() { return _keep_pindex_bf; }
     void set_keep_pindex_bf(bool keep_pindex_bf) { _keep_pindex_bf = keep_pindex_bf; }
@@ -152,9 +153,6 @@ public:
     // Used in UT only
     bool TEST_update_state_exist(Tablet* tablet, Rowset* rowset);
     bool TEST_primary_index_refcnt(int64_t tablet_id, uint32_t expected_cnt);
-
-private:
-    void* _schedule_apply_thread_callback(void* arg);
 
 private:
     // default 6min
@@ -189,9 +187,6 @@ private:
     std::unique_ptr<PersistentIndexLoadExecutor> _pindex_load_executor;
 
     bool _keep_pindex_bf = true;
-
-    UpdateManager(const UpdateManager&) = delete;
-    const UpdateManager& operator=(const UpdateManager&) = delete;
 };
 
 } // namespace starrocks

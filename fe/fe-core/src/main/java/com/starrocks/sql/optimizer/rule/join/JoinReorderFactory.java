@@ -39,13 +39,20 @@ public interface JoinReorderFactory {
         return (context, multiJoinNode) -> List.of(new JoinReorderCardinalityPreserving(context));
     }
 
+    static JoinReorderFactory createJoinReorderDrivingTable() {
+        return (context, multiJoinNode) -> List.of(new JoinReorderDrivingTable(context));
+    }
+
     static JoinReorderFactory createJoinReorderAdaptive() {
         return (context, multiJoinNode) -> {
             List<JoinOrder> algorithms = Lists.newArrayList();
             algorithms.add(new JoinReorderLeftDeep(context));
 
             SessionVariable sv = context.getSessionVariable();
-            if (sv.isCboEnableDPJoinReorder() && multiJoinNode.getAtoms().size() <= sv.getCboMaxReorderNodeUseDP()) {
+            // Hard cap DP join reorder to avoid pathological cases.
+            // DP enumerates bipartitions (exponential); also the subset enumeration uses a long mask.
+            if (sv.isCboEnableDPJoinReorder() && multiJoinNode.getAtoms().size() <= 62
+                    && multiJoinNode.getAtoms().size() <= sv.getCboMaxReorderNodeUseDP()) {
                 algorithms.add(new JoinReorderDP(context));
             }
 

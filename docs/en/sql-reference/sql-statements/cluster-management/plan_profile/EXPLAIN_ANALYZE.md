@@ -4,9 +4,7 @@ displayed_sidebar: docs
 
 # EXPLAIN ANALYZE
 
-## Description
-
-Executes the specified SQL statement, and shows the query profile of this statement. For more information about query profile, see [Query Profile Overview](../../../../administration/query_profile_overview.md).
+EXPLAIN ANALYZE executes the specified SQL statement, and shows the query profile of this statement. For more information about query profile, see [Query Profile Overview](../../../../best_practices/query_tuning/query_profile_overview.md).
 
 This feature is supported from v3.1 onwards.
 
@@ -22,7 +20,7 @@ EXPLAIN ANALYZE <statement>
 
 ## Parameters
 
-`statement`: the SQL statement of which to show the query profile. Both [SELECT](../../table_bucket_part_index/SELECT.md) and [INSERT INTO](../../loading_unloading/INSERT.md) are supported.
+`statement`: the SQL statement of which to show the query profile. Both [SELECT](../../table_bucket_part_index/SELECT/SELECT.md) and [INSERT INTO](../../loading_unloading/INSERT.md) are supported.
 
 ## Usage notes
 

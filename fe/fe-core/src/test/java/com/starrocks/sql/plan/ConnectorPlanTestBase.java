@@ -24,7 +24,6 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DeltaLakeTable;
 import com.starrocks.catalog.JDBCResource;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.connector.ConnectorProperties;
@@ -36,12 +35,15 @@ import com.starrocks.connector.hive.MockedHiveMetadata;
 import com.starrocks.connector.iceberg.MockIcebergMetadata;
 import com.starrocks.connector.jdbc.MockedJDBCMetadata;
 import com.starrocks.connector.kudu.KuduMetadata;
+import com.starrocks.connector.metastore.MetastoreTable;
 import com.starrocks.connector.paimon.PaimonMetadata;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.CatalogMgr;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.DropCatalogStmt;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.StringType;
 import io.delta.kernel.types.BasePrimitiveType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
@@ -61,10 +63,11 @@ import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -76,12 +79,12 @@ public class ConnectorPlanTestBase extends PlanTestBase {
     public static final String MOCK_PAIMON_CATALOG_NAME = "paimon0";
     public static final String MOCK_KUDU_CATALOG_NAME = "kudu0";
 
-    @ClassRule
-    public static TemporaryFolder temp = new TemporaryFolder();
+    @TempDir
+    public static File temp;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
-        String warehouse = temp.newFolder().toURI().toString();
+        String warehouse = newFolder(temp, "junit").toURI().toString();
         doInit(warehouse);
     }
 
@@ -293,8 +296,8 @@ public class ConnectorPlanTestBase extends PlanTestBase {
 
             long tableId = GlobalStateMgr.getCurrentState().getNextId();
             List<Column> columns = ImmutableList.<Column>builder()
-                    .add(new Column("col1", Type.INT))
-                    .add(new Column("col2", Type.STRING))
+                    .add(new Column("col1", IntegerType.INT))
+                    .add(new Column("col2", StringType.STRING))
                     .build();
 
             StructType structType = new StructType(List.of(new StructField("col1",
@@ -304,7 +307,8 @@ public class ConnectorPlanTestBase extends PlanTestBase {
             List<String> partitionNames = new ArrayList<>();
             long createTime = System.currentTimeMillis();
             DeltaLakeTable table = new DeltaLakeTable(tableId, MOCKED_CATALOG_NAME, MOCKED_DB_NAME, MOCKED_TABLE_NAME,
-                    columns, partitionNames, null, null, null, createTime);
+                    columns, partitionNames, null, null, new MetastoreTable(MOCKED_DB_NAME,
+                    MOCKED_TABLE_NAME, "file://path/to/delta/table", createTime));
 
             MOCK_TABLE_MAP.put(MOCKED_TABLE_NAME, table);
         }
@@ -378,5 +382,14 @@ public class ConnectorPlanTestBase extends PlanTestBase {
 
         MockIcebergMetadata mockIcebergMetadata = new MockIcebergMetadata();
         metadataMgr.registerMockedMetadata(MockIcebergMetadata.MOCKED_ICEBERG_CATALOG_NAME, mockIcebergMetadata);
+    }
+
+    public static File newFolder(File root, String... subDirs) throws IOException {
+        String subFolder = String.join("/", subDirs);
+        File result = new File(root, subFolder);
+        if (!result.mkdirs()) {
+            throw new IOException("Couldn't create folders " + root);
+        }
+        return result;
     }
 }

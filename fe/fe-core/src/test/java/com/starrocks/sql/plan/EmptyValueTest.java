@@ -15,19 +15,19 @@
 package com.starrocks.sql.plan;
 
 import com.starrocks.common.FeConstants;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 public class EmptyValueTest extends PlanTestBase {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         PlanTestBase.beforeClass();
         FeConstants.enablePruneEmptyOutputScan = true;
         FeConstants.runningUnitTest = true;
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         FeConstants.enablePruneEmptyOutputScan = false;
         PlanTestBase.afterClass();
@@ -113,6 +113,42 @@ public class EmptyValueTest extends PlanTestBase {
 
         String plan = getFragmentPlan(sql);
         assertCContains(plan, "other predicates: (43: L_RETURNFLAG != 'R') OR (58: L_DISCOUNT != 0.05)");
+    }
+
+    @Test
+    public void testPruneAsofJoinWithEmptyNode() throws Exception {
+        String sql = "select L_PARTKEY, test_all_type.t1d from lineitem_partition p " +
+                "asof left outer join test_all_type on p.L_ORDERKEY = test_all_type.t1d and " +
+                "p.L_COMMITDATE >= test_all_type.id_date where L_SHIPDATE = '2000-01-01' ";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "RESULT SINK\n" +
+                "\n  0:EMPTYSET");
+
+
+        sql = "select L_PARTKEY, t0.t1d from test_all_type t0 asof left outer join " +
+                "(select * from lineitem_partition p where L_SHIPDATE = '2000-01-01') x " +
+                "on x.L_ORDERKEY = t0.t1d and x.L_COMMITDATE >= t0.id_date";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "1:Project\n" +
+                "  |  <slot 4> : 4: t1d\n" +
+                "  |  <slot 12> : NULL\n" +
+                "  |  \n" +
+                "  0:OlapScanNode\n" +
+                "     TABLE: test_all_type");
+
+        sql = "select L_PARTKEY, test_all_type.t1d from lineitem_partition p " +
+                "asof join test_all_type on p.L_ORDERKEY = test_all_type.t1d and " +
+                "p.L_COMMITDATE >= test_all_type.id_date where L_SHIPDATE = '2000-01-01' ";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "RESULT SINK\n" +
+                "\n  0:EMPTYSET");
+
+        sql = "select L_PARTKEY, t0.t1d from test_all_type t0 asof join " +
+                "(select * from lineitem_partition p where L_SHIPDATE = '2000-01-01') x " +
+                "on x.L_ORDERKEY = t0.t1d and x.L_COMMITDATE >= t0.id_date";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "RESULT SINK\n" +
+                "\n  0:EMPTYSET");
     }
 
     @Test
@@ -233,6 +269,11 @@ public class EmptyValueTest extends PlanTestBase {
         plan = getFragmentPlan(sql);
         connectContext.getSessionVariable().setCboCTERuseRatio(1.5);
         assertContains(plan, "0:EMPTYSET");
+
+        connectContext.getSessionVariable().setCboDisabledRules("TF_PRUNE_EMPTY_JOIN, TF_PRUNE_EMPTY_SCAN");
+        plan = getFragmentPlan(sql);
+        assertNotContains(plan, "EMPTYSET");
+        connectContext.getSessionVariable().setCboDisabledRules("");
     }
 
     @Test

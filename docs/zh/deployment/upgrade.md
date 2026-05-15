@@ -7,6 +7,17 @@ keywords: ['shengji']
 
 本文介绍如何升级您的 StarRocks 集群。
 
+## 重要信息
+
+:::important
+在升级 StarRocks 之前，您应该：
+
+- 阅读您要升级到的 StarRocks 版本的[发行说明](https://docs.starrocks.io/releasenotes/release-3.5/)，以及当前版本和目标版本之间的所有版本，并：
+  - 记录 StarRocks 内的任何行为变化
+  - 记录 StarRocks 与用于导入、导出、可视化等的外部系统之间的任何集成变化
+- 验证目标版本的[部署先决条件](./deployment_prerequisites.md)。例如，StarRocks 3.5.x 需要 JDK 17，而 Ubuntu 上的 StarRocks 3.4.x 需要 JDK 11。
+:::
+
 ## 概述
 
 请在升级前查看本节中的信息。建议您按照文中推荐的操作升级集群。
@@ -105,12 +116,14 @@ ADMIN SET FRONTEND CONFIG ("disable_colocate_balance"="false");
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # 如在旧版本中使用了自定义函数(UDF)，需复制旧版本 udf 目录到新 lib 目录下
+   cp -r lib.bak/udf lib/
    ```
 
 3. 启动该 BE 节点。
 
    ```Bash
-   sh bin/start_be.sh --daemon
+   ./bin/start_be.sh --daemon
    ```
 
 4. 查看节点是否启动成功。
@@ -138,12 +151,14 @@ ADMIN SET FRONTEND CONFIG ("disable_colocate_balance"="false");
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # 如在旧版本中使用了自定义函数(UDF)，需复制旧版本 udf 目录到新 lib 目录下
+   cp -r lib.bak/udf lib/
    ```
 
 3. 启动该 CN 节点。
 
    ```Bash
-   sh bin/start_cn.sh --daemon
+   ./bin/start_cn.sh --daemon
    ```
 
 4. 查看节点是否启动成功。
@@ -180,7 +195,7 @@ ADMIN SET FRONTEND CONFIG ("disable_colocate_balance"="false");
 3. 启动该 FE 节点。
 
    ```Bash
-   sh bin/start_fe.sh --daemon
+   ./bin/start_fe.sh --daemon
    ```
 
 4. 查看节点是否启动成功。

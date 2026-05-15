@@ -16,6 +16,7 @@
 
 #include <filesystem>
 
+#include "common/config_exec_fwd.h"
 #include "common/status.h"
 #include "formats/parquet/file_reader.h"
 #include "fs/fs.h"
@@ -50,7 +51,7 @@ public:
         THdfsScanRange* scan_range = _create_scan_range(_filepath);
 
         // create temporary reader to load schema.
-        FileMetaData* file_metadata = nullptr;
+        const FileMetaData* file_metadata = nullptr;
         HdfsScannerContext ctx;
         HdfsScanStats stats;
         ctx.stats = &stats;
@@ -253,7 +254,7 @@ private:
     std::unique_ptr<RandomAccessFile> _file;
     std::shared_ptr<HdfsScannerContext> _scanner_ctx;
     std::shared_ptr<HdfsScanStats> _scan_stats;
-    std::shared_ptr<Chunk> _chunk;
+    ChunkPtr _chunk;
     ObjectPool _pool;
 };
 

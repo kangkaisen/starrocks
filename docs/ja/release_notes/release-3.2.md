@@ -4,6 +4,25 @@ displayed_sidebar: docs
 
 # StarRocks version 3.2
 
+## 3.2.16
+
+リリース日：2025年4月30日
+
+### 改善点
+
+- Stream Loadタスクスケジューリングは、BE ノードのブラックリストをサポートするようになりました。ブラックリスト内のノードは、タスクスケジューリングから除外されます。[#57919](https://github.com/StarRocks/starrocks/pull/57919)
+
+### バグ修正
+
+以下の問題が修正されました：
+
+- Tablet 作成時のタイムアウト。[#55808](https://github.com/StarRocks/starrocks/pull/55808)
+- `files()` 関数を使ってビューを作成する際、認証情報が失われる問題。[#56606](https://github.com/StarRocks/starrocks/pull/56606)
+- 空集合を処理する際、最適化器が定数比較を正しく処理できず、クエリが失敗する問題。[#57735](https://github.com/StarRocks/starrocks/pull/57735)
+- プレアグリゲーション戦略がデータオーバーフローを処理する際に BE クラッシュを引き起こす問題。[#58022](https://github.com/StarRocks/starrocks/pull/58022)
+- 基本テーブルの一部のパーティションが削除された後、関連するマテリアライズドビューを削除しようとすると例外が発生し、削除操作が失敗する問題。[#58037](https://github.com/StarRocks/starrocks/pull/58037)
+- 主キー表の Tablet をロードする際、優先度評価ロジックに欠陥があり、バージョン認識エラーによりデータが失われる問題。[#58404](https://github.com/StarRocks/starrocks/pull/58404)
+
 ## 3.2.15
 
 リリース日: 2025年2月14日
@@ -458,7 +477,7 @@ displayed_sidebar: docs
 ### 改善点
 
 - JDK8 のデフォルト GC アルゴリズムを G1 にアップグレードしました。 [#37268](https://github.com/StarRocks/starrocks/pull/37268)
-- セッション変数 [sql_mode](https://docs.starrocks.io/docs/3.2/reference/System_variable/#sql_mode) に新しい値オプション `GROUP_CONCAT_LEGACY` を追加し、v2.5 より前のバージョンでの [group_concat](https://docs.starrocks.io/docs/3.2/sql-reference/sql-functions/string-functions/group_concat/) 関数の実装ロジックとの互換性を提供します。 [#36150](https://github.com/StarRocks/starrocks/pull/36150)
+- セッション変数 [sql_mode](https://docs.starrocks.io/docs/3.2/sql-reference/System_variable/#sql_mode) に新しい値オプション `GROUP_CONCAT_LEGACY` を追加し、v2.5 より前のバージョンでの [group_concat](https://docs.starrocks.io/docs/3.2/sql-reference/sql-functions/string-functions/group_concat/) 関数の実装ロジックとの互換性を提供します。 [#36150](https://github.com/StarRocks/starrocks/pull/36150)
 - [AWS S3 の Broker Load ジョブ](https://docs.starrocks.io/docs/3.2/loading/s3/) の認証情報 `aws.s3.access_key` と `aws.s3.access_secret` を監査ログで非表示にしました。 [#36571](https://github.com/StarRocks/starrocks/pull/36571)
 - `information_schema` データベースの `be_tablets` ビューに新しいフィールド `INDEX_DISK` を追加しました。これは永続インデックスのディスク使用量（バイト単位）を記録します。 [#35615](https://github.com/StarRocks/starrocks/pull/35615)
 - [SHOW ROUTINE LOAD](https://docs.starrocks.io/docs/3.2/sql-reference/sql-statements/data-manipulation/SHOW_ROUTINE_LOAD/) ステートメントが返す結果に新しいフィールド `OtherMsg` を追加しました。これは最後に失敗したタスクに関する情報を示します。 [#35806](https://github.com/StarRocks/starrocks/pull/35806)

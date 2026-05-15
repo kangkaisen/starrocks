@@ -14,26 +14,28 @@
 
 package com.starrocks.connector;
 
-import com.starrocks.analysis.ParseNode;
-import com.starrocks.analysis.TableName;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.DdlException;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.ShowResultSet;
 import com.starrocks.sql.ast.AlterClause;
 import com.starrocks.sql.ast.AlterTableStmt;
-import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.AstVisitorExtendInterface;
+import com.starrocks.sql.ast.ParseNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
-public class ConnectorAlterTableExecutor implements AstVisitor<Void, ConnectContext> {
+public class ConnectorAlterTableExecutor implements AstVisitorExtendInterface<Void, ConnectContext> {
     protected AlterTableStmt stmt;
     protected final TableName tableName;
     protected List<Runnable> actions;
+    protected ShowResultSet resultSet;
 
     public ConnectorAlterTableExecutor(AlterTableStmt stmt) {
         this.stmt = stmt;
-        tableName = stmt.getTbl();
+        tableName = com.starrocks.catalog.TableName.fromTableRef(stmt.getTableRef());
         actions = new ArrayList<>();
     }
 
@@ -48,8 +50,9 @@ public class ConnectorAlterTableExecutor implements AstVisitor<Void, ConnectCont
         }
     }
 
-    public void execute() throws DdlException {
+    public ShowResultSet execute() throws DdlException {
         applyClauses();
+        return resultSet;
     }
 
     @Override

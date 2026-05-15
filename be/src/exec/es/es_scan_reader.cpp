@@ -38,14 +38,13 @@
 #include <sstream>
 #include <string>
 
-#include "common/config.h"
+#include "common/config_exec_flow_fwd.h"
 #include "common/logging.h"
 #include "common/status.h"
+#include "common/thread/priority_thread_pool.hpp"
 #include "exec/es/es_scroll_parser.h"
 #include "exec/es/es_scroll_query.h"
 #include "fmt/compile.h"
-#include "runtime/exec_env.h"
-#include "util/priority_thread_pool.hpp"
 
 namespace starrocks {
 
@@ -56,14 +55,14 @@ const std::string SOURCE_SCROLL_SEARCH_FILTER_PATH =
 const std::string DOCVALUE_SCROLL_SEARCH_FILTER_PATH =
         "filter_path=_scroll_id,hits.total,hits.hits._score,hits.hits.fields";
 
-const std::string REQUEST_PREFERENCE_PREFIX = "&preference=_shards:";
 const std::string REQUEST_SEARCH_SCROLL_PATH = "/_search/scroll";
 
 ESScanReader::ESScanReader(const std::string& target, const std::map<std::string, std::string>& props,
-                           bool doc_value_mode)
+                           bool doc_value_mode, PriorityThreadPool* executor)
         : _scroll_keep_alive(config::es_scroll_keepalive),
           _http_timeout_ms(config::es_http_timeout_ms),
-          _doc_value_mode(doc_value_mode) {
+          _doc_value_mode(doc_value_mode),
+          _executor(executor) {
     _target = target;
     _index = props.at(KEY_INDEX);
     if (props.find(KEY_TYPE) != props.end()) {
@@ -127,7 +126,9 @@ Status ESScanReader::open() {
         RETURN_IF_ERROR(_network_client.init(_init_scroll_url));
         LOG(INFO) << "First scroll request URL: " << _init_scroll_url;
     }
-    _network_client.set_basic_auth(_user_name, _passwd);
+    if (!_user_name.empty() || !_passwd.empty()) {
+        _network_client.set_basic_auth(_user_name, _passwd);
+    }
     _network_client.set_content_type("application/json");
     if (_ssl_enabled) {
         _network_client.trust_all_ssl();
@@ -160,7 +161,9 @@ Status ESScanReader::get_next(bool* scan_eos, std::unique_ptr<T>& scroll_parser)
             return Status::OK();
         }
         RETURN_IF_ERROR(_network_client.init(_next_scroll_url));
-        _network_client.set_basic_auth(_user_name, _passwd);
+        if (!_user_name.empty() || !_passwd.empty()) {
+            _network_client.set_basic_auth(_user_name, _passwd);
+        }
         _network_client.set_content_type("application/json");
         _network_client.set_timeout_ms(_http_timeout_ms);
         if (_ssl_enabled) {
@@ -220,7 +223,9 @@ Status ESScanReader::close() {
                                               scroll_id = _scroll_id, scratch_target]() {
         HttpClient client;
         RETURN_IF(!client.init(scratch_target).ok(), (void)0);
-        client.set_basic_auth(user_name, passwd);
+        if (!user_name.empty() || !passwd.empty()) {
+            client.set_basic_auth(user_name, passwd);
+        }
         client.set_method(DELETE);
         client.set_content_type("application/json");
         client.set_timeout_ms(5 * 1000);
@@ -238,8 +243,7 @@ Status ESScanReader::close() {
             LOG(WARNING) << "es_scan_reader delete scroll context failure status code:" << client.get_http_status();
         }
     };
-    auto* thread_pool = ExecEnv::GetInstance()->pipeline_sink_io_pool();
-    if (!thread_pool->try_offer(send_del_request)) {
+    if (!_executor->try_offer(send_del_request)) {
         LOG(WARNING) << "try to delete scroll id failed";
     }
     return Status::OK();

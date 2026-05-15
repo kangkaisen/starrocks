@@ -15,14 +15,17 @@
 package com.starrocks.sql.plan;
 
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.IcebergTable;
-import com.starrocks.catalog.Type;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.util.UUIDUtil;
+import com.starrocks.connector.ConnectorSinkShuffleMode;
+import com.starrocks.planner.DataSink;
+import com.starrocks.planner.OlapTableSink;
+import com.starrocks.planner.PlanFragment;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.server.MetadataMgr;
@@ -35,32 +38,54 @@ import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.common.MetaUtils;
 import com.starrocks.sql.optimizer.dump.QueryDumpInfo;
 import com.starrocks.sql.parser.SqlParser;
+import com.starrocks.thrift.TDataSink;
 import com.starrocks.thrift.TExplainLevel;
+import com.starrocks.type.DateType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.StringType;
 import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
 import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.hadoop.HadoopFileIO;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.iceberg.types.Types;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static com.starrocks.sql.ast.LoadStmt.MERGE_CONDITION;
+
 public class InsertPlanTest extends PlanTestBase {
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         PlanTestBase.beforeClass();
+        starRocksAssert.withTable("CREATE TABLE iceberg_shuffle_src (\n" +
+                "  id INT,\n" +
+                "  dt DATE,\n" +
+                "  ts DATETIME,\n" +
+                "  data VARCHAR(20)\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(id)\n" +
+                "DISTRIBUTED BY HASH(id) BUCKETS 1\n" +
+                "PROPERTIES ('replication_num' = '1');");
     }
 
     @Test
     public void testInsert() throws Exception {
         String explainString = getInsertExecPlan("insert into t0 values(1,2,3)");
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:1: column_0 | 2: column_1 | 3: column_2\n" +
                 "  PARTITION: UNPARTITIONED\n" +
                 "\n" +
@@ -74,7 +99,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "         1 | 2 | 3"));
 
         explainString = getInsertExecPlan("insert into t0(v1) values(1),(2)");
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:1: column_0 | 2: expr | 3: expr\n" +
                 "  PARTITION: UNPARTITIONED\n" +
                 "\n" +
@@ -94,7 +119,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "         2"));
 
         explainString = getInsertExecPlan("insert into t0(v1) select v5 from t1");
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:2: v5 | 4: expr | 5: expr\n" +
                 "  PARTITION: RANDOM\n" +
                 "\n" +
@@ -116,7 +141,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "     tabletRatio=0/0\n" +
                 "     tabletList=\n" +
                 "     cardinality=1\n" +
-                "     avgRowSize=3.0\n"));
+                "     avgRowSize=17.0\n"));
     }
 
     @Test
@@ -138,18 +163,18 @@ public class InsertPlanTest extends PlanTestBase {
 
         String explainString = getInsertExecPlan("insert into test_insert_mv_sum values(1,2,3)");
 
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: column_1 | 3: column_2"));
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: column_1 | 3: column_2"));
 
         explainString = getInsertExecPlan("insert into test_insert_mv_sum(v1) values(1)");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: expr | 3: expr"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: expr | 3: expr"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: column_0\n" +
                         "  |  <slot 2> : NULL\n" +
                         "  |  <slot 3> : NULL"));
 
         explainString = getInsertExecPlan("insert into test_insert_mv_sum(v3,v1) values(3,1)");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:2: column_1 | 3: expr | 1: column_0"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:2: column_1 | 3: expr | 1: column_0"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: column_0\n" +
                         "  |  <slot 2> : 2: column_1\n" +
                         "  |  <slot 3> : NULL"));
@@ -176,33 +201,33 @@ public class InsertPlanTest extends PlanTestBase {
         starRocksAssert.withMaterializedView(createMVSQL);
 
         String explainString = getInsertExecPlan("insert into test_insert_mv_count values(1,2,3)");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: column_1 | 3: column_2 | 4: if\n"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: column_1 | 3: column_2 | 4: if\n"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: column_0\n" +
                         "  |  <slot 2> : 2: column_1\n" +
                         "  |  <slot 3> : 3: column_2\n" +
                         "  |  <slot 4> : if(2: column_1 IS NULL, 0, 1)"));
 
         explainString = getInsertExecPlan("insert into test_insert_mv_count(v1) values(1)");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: expr | 3: expr | 4: if"));
-        Assert.assertTrue(explainString, explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:1: column_0 | 2: expr | 3: expr | 4: if"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: column_0\n" +
                         "  |  <slot 2> : NULL\n" +
                         "  |  <slot 3> : NULL\n" +
-                        "  |  <slot 4> : 0"));
+                        "  |  <slot 4> : 0"), explainString);
 
         explainString = getInsertExecPlan("insert into test_insert_mv_count(v3,v1) values(3,1)");
 
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:2: column_1 | 3: expr | 1: column_0 | 4: if"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:2: column_1 | 3: expr | 1: column_0 | 4: if"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: column_0\n" +
                         "  |  <slot 2> : 2: column_1\n" +
                         "  |  <slot 3> : NULL\n" +
                         "  |  <slot 4> : 0"));
 
         explainString = getInsertExecPlan("insert into test_insert_mv_count select 1,2,3");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:6: v1 | 7: v2 | 8: v3 | 5: if"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:6: v1 | 7: v2 | 8: v3 | 5: if"));
+        Assertions.assertTrue(explainString.contains(
                 "1:Project\n" +
                         "  |  <slot 5> : 1\n" +
                         "  |  <slot 6> : 1\n" +
@@ -239,11 +264,11 @@ public class InsertPlanTest extends PlanTestBase {
                 ");");
 
         String explainString = getInsertExecPlan("insert into ti1 select * from ti2");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:1: v1 | 2: v2 | 3: v3"));
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:1: v1 | 2: v2 | 3: v3"));
 
         explainString = getInsertExecPlan("insert into ti1(v1,v3) select v2,v1 from ti2");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:2: v2 | 4: expr | 1: v1"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:2: v2 | 4: expr | 1: v1"));
+        Assertions.assertTrue(explainString.contains(
                 "  |  <slot 1> : 1: v1\n" +
                         "  |  <slot 2> : 2: v2\n" +
                         "  |  <slot 4> : NULL\n"));
@@ -253,8 +278,8 @@ public class InsertPlanTest extends PlanTestBase {
         starRocksAssert.withMaterializedView(createMVSQL);
 
         explainString = getInsertExecPlan("insert into ti2(v2,v1,v3) select v1,2,NULL from ti1");
-        Assert.assertTrue(explainString.contains("OUTPUT EXPRS:7: v1 | 1: v1 | 8: v3 | 6: to_bitmap"));
-        Assert.assertTrue(explainString.contains(
+        Assertions.assertTrue(explainString.contains("OUTPUT EXPRS:7: v1 | 1: v1 | 8: v3 | 6: to_bitmap"));
+        Assertions.assertTrue(explainString.contains(
                 "  1:Project\n" +
                         "  |  <slot 1> : 1: v1\n" +
                         "  |  <slot 6> : to_bitmap(1: v1)\n" +
@@ -262,7 +287,7 @@ public class InsertPlanTest extends PlanTestBase {
                         "  |  <slot 8> : NULL\n"));
 
         explainString = getInsertExecPlan("insert into ti2 select * from ti2");
-        Assert.assertTrue(explainString.contains("1:Project\n" +
+        Assertions.assertTrue(explainString.contains("1:Project\n" +
                 "  |  <slot 1> : 1: v1\n" +
                 "  |  <slot 2> : 2: v2\n" +
                 "  |  <slot 3> : 3: v3\n" +
@@ -273,7 +298,7 @@ public class InsertPlanTest extends PlanTestBase {
     public void testInsertIntoMysqlTable() throws Exception {
         String sql = "insert into test.mysql_table select v1,v2 from t0";
         String explainString = getInsertExecPlan(sql);
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:4: k1 | 5: k2\n" +
                 "  PARTITION: RANDOM\n" +
                 "\n" +
@@ -296,7 +321,7 @@ public class InsertPlanTest extends PlanTestBase {
 
         sql = "insert into test.mysql_table(k1) select v1 from t0";
         explainString = getInsertExecPlan(sql);
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:5: k1 | 4: expr\n" +
                 "  PARTITION: RANDOM\n" +
                 "\n" +
@@ -315,7 +340,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "     tabletRatio=0/0\n" +
                 "     tabletList=\n" +
                 "     cardinality=1\n" +
-                "     avgRowSize=3.0\n"));
+                "     avgRowSize=6.0\n"));
     }
 
     @Test
@@ -342,7 +367,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "('2020-06-25', '2020-06-25 00:16:23', 'beijing', 'haidian', 0, 87, -31785, " +
                 "default, default, -18446744073709550633, default, default, -2.18);";
         String explainString = getInsertExecPlan(sql);
-        Assert.assertTrue(explainString.contains("constant exprs: \n" +
+        Assertions.assertTrue(explainString.contains("constant exprs: \n" +
                 "         '2020-06-25' | '2020-06-25 00:16:23' | 'beijing' | 'haidian' | FALSE | " +
                 "87 | -31785 | 0 | 0 | -18446744073709550633 | -1.0 | 0.0 | -2.18"));
 
@@ -353,7 +378,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "(default, '2020-06-25 00:16:23', 'beijing', 'haidian', 0, 87, -31785, " +
                 "default, default, -18446744073709550633, default, default, -2.18)";
         explainString = getInsertExecPlan(sql);
-        Assert.assertTrue(explainString.contains("constant exprs: \n" +
+        Assertions.assertTrue(explainString.contains("constant exprs: \n" +
                 "         '2020-06-25' | '2020-06-25 00:16:23' | 'beijing' | 'haidian' | FALSE " +
                 "| 87 | -31785 | 0 | 0 | -18446744073709550633 | -1.0 | 0.0 | -2.18\n" +
                 "         '1970-01-01' | '2020-06-25 00:16:23' | 'beijing' | 'haidian' | FALSE " +
@@ -365,14 +390,27 @@ public class InsertPlanTest extends PlanTestBase {
         try {
             getInsertExecPlan(sql);
         } catch (SemanticException e) {
-            Assert.assertTrue(e.getMessage(), e.getMessage().equals("Getting analyzing error. Detail message: " +
-                    "Column has no default value, column=k5."));
+            Assertions.assertTrue(e.getMessage().equals("Getting analyzing error. Detail message: " +
+                    "Column has no default value, column=k5."), e.getMessage());
         }
 
         sql = "insert into duplicate_table_with_default(K1,k2,k3) " +
                 "values('2020-06-25', '2020-06-25 00:16:23', 'beijing')";
         explainString = getInsertExecPlan(sql);
-        Assert.assertTrue(explainString.contains("<slot 1> : 1: column_0"));
+        Assertions.assertTrue(explainString.contains("<slot 1> : 1: column_0"));
+    }
+
+    public static DataSink getDataSink(String originStmt) throws Exception {
+        connectContext.setQueryId(UUIDUtil.genUUID());
+        connectContext.setExecutionId(UUIDUtil.toTUniqueId(connectContext.getQueryId()));
+        connectContext.setDumpInfo(new QueryDumpInfo(connectContext));
+        StatementBase statementBase =
+                com.starrocks.sql.parser.SqlParser.parse(originStmt, connectContext.getSessionVariable().getSqlMode())
+                        .get(0);
+        connectContext.getDumpInfo().setOriginStmt(originStmt);
+        ExecPlan execPlan = new StatementPlanner().plan(statementBase, connectContext);
+        PlanFragment sinkFragment = execPlan.getFragments().get(0);
+        return sinkFragment.getSink();
     }
 
     public static String getInsertExecPlan(String originStmt) throws Exception {
@@ -390,7 +428,7 @@ public class InsertPlanTest extends PlanTestBase {
     }
 
     public static void containsKeywords(String plan, String... keywords) throws Exception {
-        Assert.assertTrue(Stream.of(keywords).allMatch(plan::contains));
+        Assertions.assertTrue(Stream.of(keywords).allMatch(plan::contains));
     }
 
     @Test
@@ -410,13 +448,15 @@ public class InsertPlanTest extends PlanTestBase {
         plan = getInsertExecPlan(sql);
         containsKeywords(plan, "OUTPUT EXPRS:1: id | 2: id2", "OLAP TABLE SINK", "0:OlapScanNode");
 
-        Assert.assertThrows("No matching function with signature: to_bitmap(bitmap).", SemanticException.class,
+        Assertions.assertThrows(SemanticException.class,
                 () -> getInsertExecPlan(
-                        "insert into test.bitmap_table select id, to_bitmap(id2) from test.bitmap_table_2;"));
+                        "insert into test.bitmap_table select id, to_bitmap(id2) from test.bitmap_table_2;"),
+                "No matching function with signature: to_bitmap(bitmap).");
 
-        Assert.assertThrows("No matching function with signature: bitmap_hash(bitmap).", SemanticException.class,
+        Assertions.assertThrows(SemanticException.class,
                 () -> getInsertExecPlan(
-                        "insert into test.bitmap_table select id, bitmap_hash(id2) from test.bitmap_table_2;"));
+                        "insert into test.bitmap_table select id, bitmap_hash(id2) from test.bitmap_table_2;"),
+                "No matching function with signature: bitmap_hash(bitmap).");
 
         sql = "insert into test.bitmap_table select id, id from test.bitmap_table_2;";
         plan = getInsertExecPlan(sql);
@@ -584,15 +624,15 @@ public class InsertPlanTest extends PlanTestBase {
                 "LEFT JOIN  (SELECT  distinct_id,tag_value  FROM user_tag_bq004 WHERE base_time ='2021-06-23' )  a3   " +
                 "ON a.distinct_id =  a3.distinct_id;";
         String plan = getInsertExecPlan(sql);
-        Assert.assertTrue(plan.contains("  11:HASH JOIN\n" +
+        Assertions.assertTrue(plan.contains("  11:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (COLOCATE)\n" +
                 "  |  colocate: true\n" +
                 "  |  equal join conjunct: 1: distinct_id = 41: distinct_id"));
-        Assert.assertTrue(plan.contains("  7:HASH JOIN\n" +
+        Assertions.assertTrue(plan.contains("  7:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (COLOCATE)\n" +
                 "  |  colocate: true\n" +
                 "  |  equal join conjunct: 1: distinct_id = 49: distinct_id"));
-        Assert.assertTrue(plan.contains("  3:HASH JOIN\n" +
+        Assertions.assertTrue(plan.contains("  3:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (COLOCATE)\n" +
                 "  |  colocate: true\n" +
                 "  |  equal join conjunct: 1: distinct_id = 45: distinct_id"));
@@ -605,7 +645,7 @@ public class InsertPlanTest extends PlanTestBase {
         StatementBase statementBase =
                 com.starrocks.sql.parser.SqlParser.parse(sql, connectContext.getSessionVariable().getSqlMode()).get(0);
         ExecPlan execPlan = new StatementPlanner().plan(statementBase, connectContext);
-        Assert.assertTrue(((InsertStmt) statementBase).getQueryStatement().isExplain());
+        Assertions.assertTrue(((InsertStmt) statementBase).getQueryStatement().isExplain());
     }
 
     @Test
@@ -742,7 +782,7 @@ public class InsertPlanTest extends PlanTestBase {
     @Test
     public void testInsertSelectWithConstant() throws Exception {
         String explainString = getInsertExecPlan("insert into tarray select 1,null,null from tarray");
-        Assert.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
+        Assertions.assertTrue(explainString.contains("PLAN FRAGMENT 0\n" +
                 " OUTPUT EXPRS:7: v1 | 8: v2 | 9: v3\n" +
                 "  PARTITION: RANDOM\n" +
                 "\n" +
@@ -760,22 +800,22 @@ public class InsertPlanTest extends PlanTestBase {
     @Test
     public void testInsertMapColumn() throws Exception {
         String explainString = getInsertExecPlan("insert into tmap values (2,2,map())");
-        Assert.assertTrue(explainString.contains("2 | 2 | map{}"));
+        Assertions.assertTrue(explainString.contains("2 | 2 | map{}"));
 
         explainString = getInsertExecPlan("insert into tmap values (2,2,null)");
-        Assert.assertTrue(explainString.contains("2 | 2 | NULL"));
+        Assertions.assertTrue(explainString.contains("2 | 2 | NULL"));
 
         explainString = getInsertExecPlan("insert into tmap values (2,2,map(2,2))");
-        Assert.assertTrue(explainString.contains("2 | 2 | map{2:'2'}")); // implicit cast
+        Assertions.assertTrue(explainString.contains("2 | 2 | map{2:'2'}")); // implicit cast
 
         explainString = getInsertExecPlan("insert into tmap values (2,2,map{})");
-        Assert.assertTrue(explainString.contains("2 | 2 | map{}"));
+        Assertions.assertTrue(explainString.contains("2 | 2 | map{}"));
 
         explainString = getInsertExecPlan("insert into tmap values (2,2,map{2:3, 2:4})");
-        Assert.assertTrue(explainString.contains("2 | 2 | map{2:'3',2:'4'}")); // will distinct in BE
+        Assertions.assertTrue(explainString.contains("2 | 2 | map{2:'3',2:'4'}")); // will distinct in BE
 
         explainString = getInsertExecPlan("insert into tmap values (2,2,map{2:2})");
-        Assert.assertTrue(explainString.contains("2 | 2 | map{2:'2'}")); // implicit cast
+        Assertions.assertTrue(explainString.contains("2 | 2 | map{2:'2'}")); // implicit cast
     }
 
     @Test
@@ -804,8 +844,8 @@ public class InsertPlanTest extends PlanTestBase {
 
         Table nativeTable = new BaseTable(null, null);
 
-        Column k1 = new Column("k1", Type.INT);
-        Column k2 = new Column("k2", Type.INT);
+        Column k1 = new Column("k1", IntegerType.INT);
+        Column k2 = new Column("k2", IntegerType.INT);
         IcebergTable.Builder builder = IcebergTable.builder();
         builder.setCatalogName("iceberg_catalog");
         builder.setCatalogDBName("iceberg_db");
@@ -827,6 +867,9 @@ public class InsertPlanTest extends PlanTestBase {
 
                 icebergTable.getPartitionColumnNames();
                 result = new ArrayList<>();
+
+                icebergTable.getPartitionColumns();
+                result = new ArrayList<>();
             }
         };
 
@@ -847,6 +890,9 @@ public class InsertPlanTest extends PlanTestBase {
                 nativeTable.io();
                 result = new HadoopFileIO();
                 minTimes = 0;
+
+                nativeTable.spec();
+                result = PartitionSpec.unpartitioned();
             }
         };
 
@@ -892,7 +938,266 @@ public class InsertPlanTest extends PlanTestBase {
                 "  0:UNION\n" +
                 "     constant exprs: \n" +
                 "         NULL\n";
-        Assert.assertEquals(expected, actualRes);
+        Assertions.assertEquals(expected, actualRes);
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffle() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "k1", Types.IntegerType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec identitySpec = PartitionSpec.builderFor(icebergSchema).identity("k1").build();
+        Column k1 = new Column("k1", IntegerType.INT);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_shuffle", "iceberg_table", 12345566, icebergSchema, identitySpec,
+                Lists.newArrayList(k1, k2), Lists.newArrayList(k1), Arrays.asList(0), "select 1, 2 from t0");
+        String expected = "PLAN FRAGMENT 0\n" +
+                " OUTPUT EXPRS:6: k1 | 7: k2\n" +
+                "  PARTITION: HASH_PARTITIONED: 6: k1\n" +
+                "\n" +
+                "  Iceberg TABLE SINK\n" +
+                "    TABLE: 12345566\n" +
+                "    TUPLE ID: 2\n" +
+                "    RANDOM\n" +
+                "\n" +
+                "  2:EXCHANGE\n" +
+                "\n" +
+                "PLAN FRAGMENT 1\n" +
+                " OUTPUT EXPRS:\n" +
+                "  PARTITION: RANDOM\n" +
+                "\n" +
+                "  STREAM DATA SINK\n" +
+                "    EXCHANGE ID: 02\n" +
+                "    HASH_PARTITIONED: 6: k1\n" +
+                "\n" +
+                "  1:Project\n" +
+                "  |  <slot 6> : 1\n" +
+                "  |  <slot 7> : 2\n" +
+                "  |  \n" +
+                "  0:OlapScanNode\n" +
+                "     TABLE: t0\n" +
+                "     PREAGGREGATION: ON\n" +
+                "     partitions=0/1\n" +
+                "     rollup: t0\n" +
+                "     tabletRatio=0/0\n" +
+                "     tabletList=\n" +
+                "     cardinality=1\n" +
+                "     avgRowSize=9.0\n";
+        Assertions.assertEquals(expected, actualRes);
+        Assertions.assertFalse(actualRes.contains(FeConstants.ICEBERG_TRANSFORM_EXPRESSION_PREFIX),
+                "Identity partition should shuffle on source column, but got:\n" + actualRes);
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "k1", Types.IntegerType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec bucketSpec = PartitionSpec.builderFor(icebergSchema).bucket("k1", 10).build();
+        Column k1 = new Column("k1", IntegerType.INT);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform", "iceberg_transform_table", 12345567, icebergSchema, bucketSpec,
+                Lists.newArrayList(k1, k2), Lists.newArrayList(k1), Arrays.asList(0), "select v1, v2 from t0");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_bucket");
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleYearTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "ts", Types.DateType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec yearSpec = PartitionSpec.builderFor(icebergSchema).year("ts").build();
+        Column ts = new Column("ts", DateType.DATE);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform_year", "iceberg_year_table", 12345568, icebergSchema, yearSpec,
+                Lists.newArrayList(ts, k2), Lists.newArrayList(ts), Arrays.asList(0),
+                "select dt, id from iceberg_shuffle_src");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_year");
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleMonthTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "ts", Types.DateType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec monthSpec = PartitionSpec.builderFor(icebergSchema).month("ts").build();
+        Column ts = new Column("ts", DateType.DATE);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform_month", "iceberg_month_table", 12345569, icebergSchema, monthSpec,
+                Lists.newArrayList(ts, k2), Lists.newArrayList(ts), Arrays.asList(0),
+                "select dt, id from iceberg_shuffle_src");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_month");
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleDayTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "ts", Types.DateType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec daySpec = PartitionSpec.builderFor(icebergSchema).day("ts").build();
+        Column ts = new Column("ts", DateType.DATE);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform_day", "iceberg_day_table", 12345570, icebergSchema, daySpec,
+                Lists.newArrayList(ts, k2), Lists.newArrayList(ts), Arrays.asList(0),
+                "select dt, id from iceberg_shuffle_src");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_day");
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleHourTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "ts", Types.TimestampType.withoutZone()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec hourSpec = PartitionSpec.builderFor(icebergSchema).hour("ts").build();
+        Column ts = new Column("ts", DateType.DATETIME);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform_hour", "iceberg_hour_table", 12345571, icebergSchema, hourSpec,
+                Lists.newArrayList(ts, k2), Lists.newArrayList(ts), Arrays.asList(0),
+                "select ts, id from iceberg_shuffle_src");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_hour");
+    }
+
+    @Test
+    public void testInsertIcebergWithGlobalShuffleTruncateTransformPartition() throws Exception {
+        Schema icebergSchema = new Schema(
+                Types.NestedField.required(1, "data", Types.StringType.get()),
+                Types.NestedField.required(2, "k2", Types.IntegerType.get())
+        );
+        PartitionSpec truncateSpec = PartitionSpec.builderFor(icebergSchema).truncate("data", 5).build();
+        Column data = new Column("data", StringType.STRING);
+        Column k2 = new Column("k2", IntegerType.INT);
+        String actualRes = getIcebergInsertExecPlanWithGlobalShuffle(
+                "iceberg_catalog_transform_truncate", "iceberg_truncate_table", 12345572, icebergSchema, truncateSpec,
+                Lists.newArrayList(data, k2), Lists.newArrayList(data), Arrays.asList(0),
+                "select data, id from iceberg_shuffle_src");
+        assertHashPartitionedByExpression(actualRes, "__iceberg_transform_truncate");
+    }
+
+    private String getIcebergInsertExecPlanWithGlobalShuffle(String catalogName, String tableName, long tableId,
+                                                             Schema icebergSchema, PartitionSpec partitionSpec,
+                                                             List<Column> fullSchema, List<Column> partitionColumns,
+                                                             List<Integer> partitionColumnIndexes, String selectSql)
+            throws Exception {
+        String createIcebergCatalogStmt = String.format(
+                "create external catalog %s properties (\"type\"=\"iceberg\", " +
+                        "\"hive.metastore.uris\"=\"thrift://hms:9083\", \"iceberg.catalog.type\"=\"hive\")",
+                catalogName);
+        starRocksAssert.withCatalog(createIcebergCatalogStmt);
+        MetadataMgr metadata = starRocksAssert.getCtx().getGlobalStateMgr().getMetadataMgr();
+
+        Table nativeTable = new BaseTable(null, null);
+        IcebergTable.Builder builder = IcebergTable.builder();
+        builder.setCatalogName(catalogName);
+        builder.setCatalogDBName("iceberg_db");
+        builder.setCatalogTableName(tableName);
+        builder.setSrTableName(tableName);
+        builder.setFullSchema(fullSchema);
+        builder.setNativeTable(nativeTable);
+        IcebergTable icebergTable = builder.build();
+
+        new Expectations(icebergTable) {
+            {
+                icebergTable.getUUID();
+                result = tableId;
+                minTimes = 0;
+
+                icebergTable.isUnPartitioned();
+                result = false;
+                minTimes = 0;
+
+                icebergTable.getPartitionColumns();
+                result = partitionColumns;
+                minTimes = 0;
+
+                icebergTable.partitionColumnIndexes();
+                result = partitionColumnIndexes;
+                minTimes = 0;
+            }
+        };
+
+        new Expectations(nativeTable) {
+            {
+                nativeTable.sortOrder();
+                result = SortOrder.unsorted();
+                minTimes = 0;
+
+                nativeTable.location();
+                result = "hdfs://fake_location";
+                minTimes = 0;
+
+                nativeTable.properties();
+                result = new HashMap<String, String>();
+                minTimes = 0;
+
+                nativeTable.io();
+                result = new HadoopFileIO();
+                minTimes = 0;
+
+                nativeTable.spec();
+                result = partitionSpec;
+                minTimes = 0;
+
+                nativeTable.schema();
+                result = icebergSchema;
+                minTimes = 0;
+            }
+        };
+
+        new Expectations(metadata) {
+            {
+                metadata.getDb((ConnectContext) any, catalogName, "iceberg_db");
+                result = new Database(tableId, "iceberg_db");
+                minTimes = 0;
+
+                metadata.getTable((ConnectContext) any, catalogName, "iceberg_db", tableName);
+                result = icebergTable;
+                minTimes = 0;
+            }
+        };
+
+        new MockUp<SessionVariable>() {
+            @Mock
+            public ConnectorSinkShuffleMode getConnectorSinkShuffleMode() {
+                return ConnectorSinkShuffleMode.FORCE;
+            }
+        };
+
+        new MockUp<MetaUtils>() {
+            @Mock
+            public Database getDatabase(String currentCatalogName, String dbName) {
+                return new Database(tableId, "iceberg_db");
+            }
+
+            @Mock
+            public com.starrocks.catalog.Table getSessionAwareTable(
+                    ConnectContext context, Database database, TableName currentTableName) {
+                return icebergTable;
+            }
+        };
+
+        return getInsertExecPlan(String.format(
+                "explain insert into %s.iceberg_db.%s %s", catalogName, tableName, selectSql));
+    }
+
+    private void assertHashPartitionedByExpression(String actualRes, String expectedExpr) {
+        Assertions.assertTrue(actualRes.contains(expectedExpr),
+                "Expected shuffle expression " + expectedExpr + " but got:\n" + actualRes);
+        Pattern distributionPattern = Pattern.compile(
+                "HASH_PARTITIONED:[^\\n]*" + Pattern.quote(expectedExpr));
+        Assertions.assertTrue(distributionPattern.matcher(actualRes).find(),
+                "Expected HASH_PARTITIONED on " + expectedExpr + " but got:\n" + actualRes);
     }
 
     @Test
@@ -900,18 +1205,18 @@ public class InsertPlanTest extends PlanTestBase {
         String sql = "insert into test_all_type_partition_by_date " +
                 "partition(p1992) (t1a, id_date) SELECT `t1a`, `id_date` FROM `test_all_type_partition_by_date` ";
         var stmts = SqlParser.parse(sql, new SessionVariable());
-        Assert.assertEquals(1, stmts.size());
+        Assertions.assertEquals(1, stmts.size());
 
         // verify generated SQL
         String genSql = AstToSQLBuilder.toSQL(stmts.get(0));
-        Assert.assertEquals("INSERT INTO `test_all_type_partition_by_date` " +
+        Assertions.assertEquals("INSERT INTO `test_all_type_partition_by_date` " +
                 "PARTITION (p1992) (`t1a`,`id_date`) " +
                 "SELECT `t1a`, `id_date`\n" +
                 "FROM `test_all_type_partition_by_date`", genSql);
 
         // parse it again
         var stmts2 = SqlParser.parse(genSql, new SessionVariable());
-        Assert.assertEquals(genSql, AstToSQLBuilder.toSQL(stmts2.get(0)));
+        Assertions.assertEquals(genSql, AstToSQLBuilder.toSQL(stmts2.get(0)));
     }
 
     @Test
@@ -919,7 +1224,7 @@ public class InsertPlanTest extends PlanTestBase {
         try {
             getInsertExecPlan("insert into not_exist_table values (1)");
         } catch (Exception e) {
-            Assert.assertTrue(e.getMessage().contains("Table not_exist_table is not found"));
+            Assertions.assertTrue(e.getMessage().contains("Table not_exist_table is not found"));
         }
     }
 
@@ -955,7 +1260,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "  0:UNION\n" +
                 "     constant exprs: \n" +
                 "         NULL\n";
-        Assert.assertEquals(expected, actual);
+        Assertions.assertEquals(expected, actual);
     }
 
     @Test
@@ -982,7 +1287,7 @@ public class InsertPlanTest extends PlanTestBase {
                 "  0:UNION\n" +
                 "     constant exprs: \n" +
                 "         NULL\n";
-        Assert.assertEquals(expected, actual);
+        Assertions.assertEquals(expected, actual);
     }
 
     @Test
@@ -1021,6 +1326,81 @@ public class InsertPlanTest extends PlanTestBase {
                 "     tabletList=\n" +
                 "     cardinality=1\n" +
                 "     avgRowSize=2.0\n";
-        Assert.assertEquals(expected, actual);
+        Assertions.assertEquals(expected, actual);
+    }
+
+    public static boolean hasUnixTimestamp(String plan) {
+        Pattern pattern = Pattern.compile("<slot 3>\\s*:\\s*'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\'");
+        Matcher matcher = pattern.matcher(plan);
+        return matcher.find();
+    }
+
+    public static boolean hasMicroseconds(String plan) {
+        Pattern pattern = Pattern.compile("<slot 2>\\s*:\\s*'\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}'");
+        Matcher matcher = pattern.matcher(plan);
+        return matcher.find();
+    }
+
+    @Test
+    public void testInsertCurrentTimestamp_DefaultValue() throws Exception {
+        String sql = "CREATE TABLE `test_create_default_current_timestamp` (\n" +
+                "    k1 int,\n" +
+                "    ts datetime NOT NULL DEFAULT CURRENT_TIMESTAMP\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`k1`)\n" +
+                "COMMENT \"OLAP\"\n" +
+                "DISTRIBUTED BY HASH(`k1`) BUCKETS 2\n" +
+                "PROPERTIES (\n" +
+                "    \"replication_num\" = \"1\",\n" +
+                "    \"in_memory\" = \"false\"\n" +
+                ");";
+        starRocksAssert.withTable(sql);
+        String explainString = getInsertExecPlan("insert into test_create_default_current_timestamp(k1) values(1)");
+        Assertions.assertTrue(hasUnixTimestamp(explainString));
+    }
+
+    @Test
+    public void testInsertCurrentTimestamp6_DefaultValue() throws Exception {
+        String sql = "CREATE TABLE `test_create_default_current_timestamp_6` (\n" +
+                "    k1 int,\n" +
+                "    ts datetime NOT NULL DEFAULT CURRENT_TIMESTAMP(6)\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`k1`)\n" +
+                "COMMENT \"OLAP\"\n" +
+                "DISTRIBUTED BY HASH(`k1`) BUCKETS 2\n" +
+                "PROPERTIES (\n" +
+                "    \"replication_num\" = \"1\",\n" +
+                "    \"in_memory\" = \"false\"\n" +
+                ");";
+        starRocksAssert.withTable(sql);
+        String explainString = getInsertExecPlan("insert into test_create_default_current_timestamp_6(k1) values(1)");
+        Assertions.assertTrue(hasMicroseconds(explainString));
+    }
+
+    @Test
+    public void testInsertConditionalUpdate() throws Exception {
+        starRocksAssert.withTable("CREATE TABLE `tc` (\n" +
+                "  `v1` bigint COMMENT \"\",\n" +
+                "  `v2` bigint COMMENT \"\",\n" +
+                "  `v3` bigint NULL\n" +
+                ") ENGINE=OLAP\n" +
+                "PRIMARY KEY(`v1`, `v2`)\n" +
+                "DISTRIBUTED BY HASH(`v1`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+        DataSink sink = getDataSink("INSERT INTO tc properties(\"" + MERGE_CONDITION + "\" = \"v3\") select 1,2,3");
+        Assertions.assertInstanceOf(OlapTableSink.class, sink);
+        TDataSink tDataSink = ((OlapTableSink) sink).toThrift();
+        String mergeCondition = tDataSink.getOlap_table_sink().getMerge_condition();
+        Assertions.assertEquals("v3", mergeCondition);
+
+        try {
+            getDataSink("INSERT INTO tc properties (\"" + MERGE_CONDITION + "\" = \"v4\") select 1,2,3");
+            Assertions.fail("Conditional update use nonexistent column.");
+        } catch (SemanticException e) {
+            // ignore.
+        }
     }
 }

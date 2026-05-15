@@ -17,21 +17,21 @@
 #include <memory>
 #include <utility>
 
+#include "base/container/raw_container.h"
 #include "column/column.h"
 #include "common/global_types.h"
 #include "common/object_pool.h"
+#include "common/runtime_profile.h"
 #include "common/status.h"
 #include "exec/data_sink.h"
 #include "exec/pipeline/exchange/shuffler.h"
 #include "exec/pipeline/exchange/sink_buffer.h"
 #include "exec/pipeline/fragment_context.h"
-#include "exec/pipeline/operator.h"
+#include "exec/pipeline/operator_factory.h"
 #include "gen_cpp/data.pb.h"
 #include "gen_cpp/internal_service.pb.h"
 #include "serde/compress_strategy.h"
 #include "serde/protobuf_serde.h"
-#include "util/raw_container.h"
-#include "util/runtime_profile.h"
 
 namespace butil {
 class IOBuf;
@@ -52,11 +52,14 @@ public:
                          const int32_t num_shuffles_per_channel, int32_t sender_id, PlanNodeId dest_node_id,
                          const std::vector<ExprContext*>& partition_expr_ctxs, bool enable_exchange_pass_through,
                          bool enable_exchange_perf, FragmentContext* const fragment_ctx,
-                         const std::vector<int32_t>& output_columns);
+                         const std::vector<int32_t>& output_columns,
+                         const std::vector<TBucketProperty>& bucket_properties, std::atomic<int32_t>& num_sinkers);
 
     ~ExchangeSinkOperator() override = default;
 
     Status prepare(RuntimeState* state) override;
+
+    Status prepare_local_state(RuntimeState* state) override;
 
     void close(RuntimeState* state) override;
 
@@ -87,11 +90,21 @@ public:
 
     std::string get_name() const override;
 
+    bool releaseable() const override { return true; }
+
+    void set_execute_mode(int performance_level) override;
+
+#ifdef BE_TEST
+    // For testing only: inject a custom codec to simulate exceed_max_input_size scenarios.
+    void set_compress_codec_for_testing(const BlockCompressionCodec* codec) { _compress_codec = codec; }
+#endif
+
 private:
     bool _is_large_chunk(size_t sz) const {
         // ref olap_scan_node.cpp release_large_columns
-        return sz > runtime_state()->chunk_size() * 512;
+        return sz > get_factory()->runtime_state()->chunk_size() * 512;
     }
+    void _calc_hash_values_and_bucket_ids();
 
 private:
     class Channel;
@@ -147,6 +160,8 @@ private:
     const int32_t _sender_id;
     const PlanNodeId _dest_node_id;
     int32_t _encode_level = 0;
+    // Hash function version for exchange shuffle: 0=fnv_hash (default), 1=xxh3_hash
+    int32_t _exchange_hash_function_version = 0;
     // Will set in prepare
     int32_t _be_number = 0;
     phmap::flat_hash_map<int64_t, std::unique_ptr<Channel>, StdHash<int64_t>> _instance_id2channel;
@@ -211,8 +226,14 @@ private:
     FragmentContext* const _fragment_ctx;
 
     const std::vector<int32_t>& _output_columns;
+    const std::vector<TBucketProperty>& _bucket_properties;
+    std::vector<uint32_t> _round_hashes;
+    std::vector<uint32_t> _round_ids;
+    std::vector<uint32_t> _bucket_ids;
 
     std::unique_ptr<Shuffler> _shuffler;
+
+    std::atomic<int32_t>& _num_sinkers;
 };
 
 class ExchangeSinkOperatorFactory final : public OperatorFactory {
@@ -223,7 +244,8 @@ public:
                                 bool is_pipeline_level_shuffle, int32_t num_shuffles_per_channel, int32_t sender_id,
                                 PlanNodeId dest_node_id, std::vector<ExprContext*> partition_expr_ctxs,
                                 bool enable_exchange_pass_through, bool enable_exchange_perf,
-                                FragmentContext* const fragment_ctx, std::vector<int32_t> output_columns);
+                                FragmentContext* const fragment_ctx, std::vector<int32_t> output_columns,
+                                std::vector<TBucketProperty> bucket_properties);
 
     ~ExchangeSinkOperatorFactory() override = default;
 
@@ -236,6 +258,8 @@ public:
     void close(RuntimeState* state) override;
 
 private:
+    void _increment_num_sinkers_no_barrier() { _num_sinkers.fetch_add(1, std::memory_order_relaxed); }
+
     std::shared_ptr<SinkBuffer> _buffer;
     const TPartitionType::type _part_type;
 
@@ -254,6 +278,9 @@ private:
     FragmentContext* const _fragment_ctx;
 
     const std::vector<int32_t> _output_columns;
+    const std::vector<TBucketProperty> _bucket_properties;
+
+    std::atomic<int32_t> _num_sinkers = 0;
 };
 
 } // namespace pipeline

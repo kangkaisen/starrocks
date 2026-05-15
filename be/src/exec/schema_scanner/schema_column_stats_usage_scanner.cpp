@@ -17,19 +17,18 @@
 #include "common/status.h"
 #include "exec/schema_scanner/schema_helper.h"
 #include "runtime/runtime_state.h"
-#include "runtime/string_value.h"
 
 namespace starrocks {
 
 SchemaScanner::ColumnDesc SchemaColumnStatsUsageScanner::_s_tbls_columns[] = {
         //   name,       type,          size,     is_null
-        {"TABLE_CATALOG", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"TABLE_DATABASE", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"TABLE_NAME", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"COLUMN_NAME", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"USAGE", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"LAST_USED", TypeDescriptor::from_logical_type(TYPE_DATETIME), sizeof(StringValue), false},
-        {"CREATED", TypeDescriptor::from_logical_type(TYPE_DATETIME), sizeof(StringValue), false},
+        {"TABLE_CATALOG", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"TABLE_DATABASE", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"TABLE_NAME", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"COLUMN_NAME", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"USAGE", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"LAST_USED", TypeDescriptor::from_logical_type(TYPE_DATETIME), sizeof(Slice), false},
+        {"CREATED", TypeDescriptor::from_logical_type(TYPE_DATETIME), sizeof(Slice), false},
 };
 
 SchemaColumnStatsUsageScanner::SchemaColumnStatsUsageScanner()
@@ -86,7 +85,7 @@ Status SchemaColumnStatsUsageScanner::_fill_chunk(ChunkPtr* chunk) {
     auto& slot_id_map = (*chunk)->get_slot_id_to_index_map();
     auto datum_array = _build_row();
     for (const auto& [slot_id, index] : slot_id_map) {
-        Column* column = (*chunk)->get_column_by_slot_id(slot_id).get();
+        auto* column = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         column->append_datum(datum_array[slot_id - 1]);
     }
     return {};

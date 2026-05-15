@@ -14,9 +14,10 @@
 
 #include "runtime/profile_report_worker.h"
 
+#include "common/config_exec_flow_fwd.h"
+#include "common/util/misc.h"
 #include "exec/pipeline/query_context.h"
 #include "runtime/fragment_mgr.h"
-#include "util/misc.h"
 
 namespace starrocks {
 
@@ -82,9 +83,8 @@ void ProfileReportWorker::_start_report_profile() {
         }
     }
 
-    FragmentMgr* fragment_mgr = ExecEnv::GetInstance()->fragment_mgr();
-    DCHECK(fragment_mgr != nullptr);
-    fragment_mgr->report_fragments(non_pipeline_need_report_fragment_ids);
+    DCHECK(_fragment_mgr != nullptr);
+    _fragment_mgr->report_fragments(non_pipeline_need_report_fragment_ids);
 
     // report pipeline load task
     std::vector<PipeLineReportTaskKey> pipeline_need_report_query_fragment_ids;
@@ -102,35 +102,39 @@ void ProfileReportWorker::_start_report_profile() {
         }
     }
 
-    pipeline::QueryContextManager* query_context_manager = ExecEnv::GetInstance()->query_context_mgr();
-    DCHECK(query_context_manager != nullptr);
-    query_context_manager->report_fragments(pipeline_need_report_query_fragment_ids);
+    DCHECK(_query_context_manager != nullptr);
+    _query_context_manager->report_fragments(pipeline_need_report_query_fragment_ids);
 }
 
 void ProfileReportWorker::execute() {
     LOG(INFO) << "ProfileReportWorker start working.";
 
-    int32_t interval = config::profile_report_interval;
-
     while (!_stop.load(std::memory_order_consume)) {
         _start_report_profile();
 
+        // interval can be changed by config dynamically
+        int32_t interval = config::profile_report_interval;
         if (interval <= 0) {
             LOG(WARNING) << "profile_report_interval config is illegal: " << interval << ", force set to 1";
             interval = 1;
         }
+
         nap_sleep(interval, [this] { return _stop.load(std::memory_order_consume); });
     }
     LOG(INFO) << "ProfileReportWorker going to exit.";
 }
 
-ProfileReportWorker::ProfileReportWorker(ExecEnv* env) : _thread([this] { execute(); }), _stop(false) {
+ProfileReportWorker::ProfileReportWorker(FragmentMgr* fragment_mgr,
+                                         pipeline::QueryContextManager* query_context_manager)
+        : _fragment_mgr(fragment_mgr), _query_context_manager(query_context_manager), _thread([this] { execute(); }) {
     Thread::set_thread_name(_thread, "profile_report");
 }
 
 void ProfileReportWorker::close() {
     _stop.store(true, std::memory_order_release);
-    _thread.join();
+    if (_thread.joinable()) {
+        _thread.join();
+    }
 }
 
 } // namespace starrocks

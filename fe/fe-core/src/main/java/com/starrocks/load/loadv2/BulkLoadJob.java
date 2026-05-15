@@ -39,7 +39,6 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
@@ -53,16 +52,20 @@ import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.load.BrokerFileGroupAggInfo;
 import com.starrocks.load.FailMsg;
 import com.starrocks.load.routineload.TxnStatusChangeReason;
+import com.starrocks.persist.BrokerPropertiesPersistInfo;
+import com.starrocks.persist.OriginStatementInfo;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.qe.OriginStatement;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.SqlModeHelper;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.DataDescription;
 import com.starrocks.sql.ast.LoadStmt;
+import com.starrocks.sql.ast.OriginStatement;
 import com.starrocks.transaction.TabletCommitInfo;
 import com.starrocks.transaction.TabletFailInfo;
 import com.starrocks.transaction.TransactionState;
+import com.starrocks.warehouse.cngroup.CRAcquireContext;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -78,12 +81,12 @@ public abstract class BulkLoadJob extends LoadJob {
 
     // input params
     @SerializedName("bds")
-    protected BrokerDesc brokerDesc;
+    protected BrokerPropertiesPersistInfo brokerPersistInfo;
     // this param is used to persist the expr of columns
     // the origin stmt is persisted instead of columns expr
     // the expr of columns will be reanalyze when the log is replayed
     @SerializedName("ost")
-    protected OriginStatement originStmt;
+    protected OriginStatementInfo originStmt;
 
     // include broker desc and data desc
     protected BrokerFileGroupAggInfo fileGroupAggInfo = new BrokerFileGroupAggInfo();
@@ -108,7 +111,9 @@ public abstract class BulkLoadJob extends LoadJob {
 
     public BulkLoadJob(long dbId, String label, OriginStatement originStmt) {
         super(dbId, label);
-        this.originStmt = originStmt;
+        if (originStmt != null) {
+            this.originStmt = new OriginStatementInfo(originStmt.getOrigStmt(), originStmt.getIdx());
+        }
 
         if (ConnectContext.get() != null) {
             SessionVariable var = ConnectContext.get().getSessionVariable();
@@ -160,6 +165,11 @@ public abstract class BulkLoadJob extends LoadJob {
                         Long.toString(bulkLoadJob.logRejectedRecordNum));
             }
             bulkLoadJob.checkAndSetDataSourceInfo(db, stmt.getDataDescriptions());
+
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            final CRAcquireContext crAcquireContext = CRAcquireContext.of(bulkLoadJob.warehouseId, bulkLoadJob.computeResource);
+            bulkLoadJob.computeResource = warehouseManager.acquireComputeResource(crAcquireContext);
+
             return bulkLoadJob;
         } catch (MetaNotFoundException e) {
             throw new DdlException(e.getMessage());
@@ -238,6 +248,17 @@ public abstract class BulkLoadJob extends LoadJob {
         return failInfos;
     }
 
+    // Update failInfos under load job write lock when task is failed
+    protected void updateTabletFailInfos(TaskAttachment attachment) {
+    }
+
+    @Override
+    protected void reset() {
+        super.reset();
+        commitInfos.clear();
+        failInfos.clear();
+    }
+
     /**
      * Not retryable cases
      * 1. already retry too many times
@@ -252,8 +273,8 @@ public abstract class BulkLoadJob extends LoadJob {
     }
 
     @Override
-    public void onTaskFailed(long taskId, FailMsg failMsg) {
-        boolean needRetry = false;
+    public void onTaskFailed(long taskId, FailMsg failMsg, TaskAttachment attachment) {
+        List<TabletFailInfo> lastFailInfos = null;
         writeLock();
         try {
             // check if job has been completed
@@ -265,27 +286,29 @@ public abstract class BulkLoadJob extends LoadJob {
                 return;
             }
 
-            needRetry = isRetryable(failMsg);
+            updateTabletFailInfos(attachment);
+            lastFailInfos = Lists.newArrayList(failInfos);
+
+            boolean needRetry = isRetryable(failMsg);
             if (!needRetry) {
-                unprotectedExecuteCancel(failMsg, true);
-                logFinalOperation();
+                // For not retryable failure, cancel job and return
+                unprotectedExecuteCancel(failMsg, true, true);
+                return;
             }
         } finally {
             writeUnlock();
         }
 
         // For retryable failure, should abort the transaction and retry as soon as possible
-        if (needRetry) {
-            try {
-                LOG.debug("Loading task with retryable failure try to abort transaction, " +
-                                "job_id: {}, task_id: {}, txn_id: {}, task fail message: {}",
-                        id, taskId, transactionId, failMsg.getMsg());
-                GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().abortTransaction(
-                        dbId, transactionId, failMsg.getMsg());
-            } catch (StarRocksException e) {
-                LOG.warn("Loading task failed to abort transaction, job_id: {}, task_id: {}, txn_id: {}, " +
-                        "task fail message: {}, abort exception:", id, taskId, transactionId, failMsg.getMsg(), e);
-            }
+        try {
+            LOG.debug("Loading task with retryable failure try to abort transaction, " +
+                            "job_id: {}, task_id: {}, txn_id: {}, task fail message: {}",
+                    id, taskId, transactionId, failMsg.getMsg());
+            GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().abortTransaction(
+                    dbId, transactionId, failMsg.getMsg(), lastFailInfos);
+        } catch (StarRocksException e) {
+            LOG.warn("Loading task failed to abort transaction, job_id: {}, task_id: {}, txn_id: {}, " +
+                    "task fail message: {}, abort exception:", id, taskId, transactionId, failMsg.getMsg(), e);
         }
     }
 
@@ -317,7 +340,7 @@ public abstract class BulkLoadJob extends LoadJob {
                     .add("msg", "The failure happens in analyze, the load job will be cancelled with error:"
                             + e.getMessage())
                     .build(), e);
-            cancelJobWithoutCheck(new FailMsg(FailMsg.CancelType.LOAD_RUN_FAIL, e.getMessage()), false, true);
+            cancelJobWithoutCheck(new FailMsg(FailMsg.CancelType.LOAD_RUN_FAIL, e.getMessage()), false);
         }
     }
 

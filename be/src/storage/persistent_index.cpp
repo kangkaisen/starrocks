@@ -18,12 +18,32 @@
 #include <numeric>
 #include <utility>
 
+#include "base/bit/bit_util.h"
+#include "base/coding.h"
+#include "base/concurrency/stopwatch.hpp"
+#include "base/container/raw_container.h"
+#include "base/failpoint/fail_point.h"
+#include "base/hash/crc32c.h"
+#include "base/hash/xxh3.h"
+#include "base/path/filesystem_util.h"
+#include "base/string/faststring.h"
+#include "base/testutil/sync_point.h"
+#include "base/utility/defer_op.h"
+#include "column/raw_data_visitor.h"
+#include "common/config_cache_fwd.h"
+#include "common/config_compression_fwd.h"
+#include "common/config_primary_key_fwd.h"
+#include "common/config_storage_fwd.h"
+#include "common/util/debug_util.h"
 #include "fs/fs.h"
+#include "fs/fs_factory.h"
 #include "gutil/strings/escaping.h"
 #include "gutil/strings/substitute.h"
-#include "io/io_profiler.h"
+#include "io/core/io_profiler.h"
+#include "runtime/current_thread.h"
 #include "storage/chunk_helper.h"
 #include "storage/chunk_iterator.h"
+#include "storage/persistent_index_parallel_publish_context.h"
 #include "storage/persistent_index_tablet_loader.h"
 #include "storage/primary_key_dump.h"
 #include "storage/primary_key_encoder.h"
@@ -33,17 +53,6 @@
 #include "storage/tablet_meta_manager.h"
 #include "storage/tablet_updates.h"
 #include "storage/update_manager.h"
-#include "util/bit_util.h"
-#include "util/coding.h"
-#include "util/crc32c.h"
-#include "util/debug_util.h"
-#include "util/defer_op.h"
-#include "util/failpoint/fail_point.h"
-#include "util/faststring.h"
-#include "util/filesystem_util.h"
-#include "util/raw_container.h"
-#include "util/stopwatch.hpp"
-#include "util/xxh3.h"
 
 namespace starrocks {
 
@@ -60,6 +69,12 @@ constexpr size_t kPackSize = 16;
 constexpr size_t kBucketSizeMax = 256;
 constexpr size_t kFixedMaxKeySize = 128;
 constexpr size_t kBatchBloomFilterReadSize = 4ULL << 20;
+constexpr uint32_t kMutableIndexFormatVersion1 = 1;
+constexpr uint32_t kMutableIndexFormatVersion2 = 2;
+// The introduction of this magic number serves two purposes:
+// 1. To detect endianness mismatches in cross-platform scenarios
+// 2. To identify the new snapshot encoding format
+constexpr uint32_t kSnapshotMagicNum = 0xF2345678;
 
 const char* const kIndexFileMagic = "IDX1";
 
@@ -234,12 +249,14 @@ Status ImmutableIndexShard::compress_and_write(const CompressionTypePB& compress
         RETURN_IF_ERROR(get_block_compression_codec(compression_type, &codec));
         int32_t offset = 0;
         faststring compressed_body;
+        BlockCompressionOptions compression_options;
+        compression_options.lz4_acceleration = config::lz4_acceleration;
         for (int32_t i = 0; i < npage(); i++) {
             compressed_body.resize(codec->max_compressed_len(_page_size));
             Slice input((uint8_t*)_pages.data() + i * _page_size, _page_size);
             *uncompressed_size += input.get_size();
             Slice compressed_slice(compressed_body);
-            RETURN_IF_ERROR(codec->compress(input, &compressed_slice));
+            RETURN_IF_ERROR(codec->compress(input, &compressed_slice, compression_options));
             RETURN_IF_ERROR(wb.append(compressed_slice));
             compressed_pages_off[i] = offset;
             offset += compressed_slice.get_size();
@@ -609,7 +626,7 @@ Status ImmutableIndexWriter::init(const string& idx_file_path, const EditVersion
     _version = version;
     _idx_file_path = idx_file_path;
     _idx_file_path_tmp = _idx_file_path + ".tmp";
-    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_idx_file_path_tmp));
+    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_idx_file_path_tmp));
     WritableFileOptions wblock_opts{.sync_on_close = sync_on_close, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(_idx_wb, _fs->new_writable_file(wblock_opts, _idx_file_path_tmp));
 
@@ -773,7 +790,7 @@ Status ImmutableIndexWriter::finish() {
             _meta.compression_type());
     _version.to_pb(_meta.mutable_version());
     _meta.set_size(_total);
-    _meta.set_format_version(PERSISTENT_INDEX_VERSION_6);
+    _meta.set_format_version(PERSISTENT_INDEX_VERSION_7);
     for (const auto& [key_size, shard_info] : _shard_info_by_length) {
         const auto [shard_offset, shard_num] = shard_info;
         auto info = _meta.add_shard_info();
@@ -963,7 +980,31 @@ public:
     }
 
     Status load_snapshot(phmap::BinaryInputArchive& ar) override {
-        TRY_CATCH_BAD_ALLOC(_map.load(ar));
+        if (_mutable_index_format_version == kMutableIndexFormatVersion1) {
+            TRY_CATCH_BAD_ALLOC(RETURN_IF_ERROR(_map.load(ar)));
+        } else if (_mutable_index_format_version == kMutableIndexFormatVersion2) {
+            // We introduced the new format specifically to address cross-platform compatibility issues with snapshot files.
+            // In previous format, we met issue when migrate from x86 to arm64.
+            // https://github.com/StarRocks/starrocks/issues/57952
+            uint64_t size = 0;
+            RETURN_IF(!ar.load(&size), Status::Corruption("FixedMutableIndex load snapshot size failed"));
+            RETURN_IF(size == 0, Status::OK());
+            TRY_CATCH_BAD_ALLOC(reserve(size));
+            for (auto i = 0; i < size; ++i) {
+                KeyType key;
+                IndexValue value;
+                RETURN_IF((!ar.load(reinterpret_cast<char*>(&key), sizeof(KeyType))),
+                          Status::Corruption("FixedMutableIndex load snapshot failed because load key failed"));
+                RETURN_IF((!ar.load(reinterpret_cast<char*>(&value), sizeof(IndexValue))),
+                          Status::Corruption("FixedMutableIndex load snapshot failed because load value failed"));
+                uint64_t hash = FixedKeyHash<KeySize>()(key);
+                if (auto [it, inserted] = _map.emplace_with_hash(hash, key, value); !inserted) {
+                    it->second = value;
+                }
+            }
+        } else {
+            return Status::Corruption("FixedMutableIndex load snapshot failed because format version is not supported");
+        }
         return Status::OK();
     }
 
@@ -1006,7 +1047,33 @@ public:
     // will use `sizeof(size_t)` as return value.
     size_t dump_bound() override { return _map.empty() ? sizeof(size_t) : _map.dump_bound(); }
 
-    bool dump(phmap::BinaryOutputArchive& ar) override { return _map.dump(ar); }
+    Status completeness_check(phmap::BinaryInputArchive& ar) override { return _map.completeness_check(ar); }
+
+    Status dump(phmap::BinaryOutputArchive& ar) override {
+        bool use_old_format = false;
+        TEST_SYNC_POINT_CALLBACK("FixedMutableIndex::dump::1", &use_old_format);
+        if (UNLIKELY(use_old_format)) {
+            // For UT only.
+            RETURN_IF_ERROR(_map.dump(ar));
+            return Status::OK();
+        }
+
+        if (!ar.dump(static_cast<uint64_t>(size()))) {
+            return Status::InternalError("FixedMutableIndex dump size failed");
+        }
+        if (size() == 0) {
+            return Status::OK();
+        }
+        for (const auto& each : _map) {
+            if (!ar.dump(reinterpret_cast<const char*>(each.first.data), sizeof(KeyType))) {
+                return Status::InternalError("FixedMutableIndex dump key failed");
+            }
+            if (!ar.dump(reinterpret_cast<const char*>(&each.second), sizeof(IndexValue))) {
+                return Status::InternalError("FixedMutableIndex dump value failed");
+            }
+        }
+        return Status::OK();
+    }
 
     Status pk_dump(PrimaryKeyDump* dump, PrimaryIndexDumpPB* dump_pb) override {
         for (const auto& each : _map) {
@@ -1058,8 +1125,11 @@ public:
 
     size_t memory_usage() override { return _map.capacity() * (1 + (KeySize + 3) / 4 * 4 + kIndexValueSize); }
 
+    void set_mutable_index_format_version(uint32_t ver) override { _mutable_index_format_version = ver; }
+
 private:
     phmap::flat_hash_map<KeyType, IndexValue, FixedKeyHash<KeySize>> _map;
+    uint32_t _mutable_index_format_version = kMutableIndexFormatVersion2;
 };
 
 std::tuple<size_t, size_t, size_t> MutableIndex::estimate_nshard_and_npage(const size_t total_kv_pairs_usage,
@@ -1346,32 +1416,48 @@ public:
     //  |total num|| data size ||  data    | ... | data size ||  data    |
     size_t dump_bound() override { return sizeof(size_t) * (1 + size()) + _total_kv_pairs_usage; }
 
-    bool dump(phmap::BinaryOutputArchive& ar) override {
-        if (!ar.dump(size())) {
-            LOG(ERROR) << "Pindex dump snapshot size failed";
-            return false;
+    Status dump(phmap::BinaryOutputArchive& ar) override {
+        if (!ar.dump(static_cast<uint64_t>(size()))) {
+            return Status::Corruption("SliceMutableIndex dump size failed");
         }
         if (size() == 0) {
-            return true;
+            return Status::OK();
         }
         for (const auto& composite_key : _set) {
-            if (!ar.dump(static_cast<size_t>(composite_key.size()))) {
-                LOG(ERROR) << "Pindex dump compose_key_size failed";
-                return false;
+            if (!ar.dump(static_cast<uint64_t>(composite_key.size()))) {
+                return Status::Corruption("SliceMutableIndex dump composite_key size failed");
             }
             if (composite_key.size() == 0) {
                 continue;
             }
             if (!ar.dump(composite_key.data(), composite_key.size())) {
-                LOG(ERROR) << "Pindex dump composite_key failed.";
-                return false;
+                return Status::Corruption("SliceMutableIndex dump composite_key failed");
             }
         }
-        return true;
+        return Status::OK();
 
         // TODO: construct a large buffer and write instead of one by one.
         // TODO: dive in phmap internal detail and implement dump of std::string type inside, use ctrl_&slot_ directly to improve performance
         // return _set.dump(ar);
+    }
+
+    Status completeness_check(phmap::BinaryInputArchive& ar) override {
+        uint64_t size = 0;
+        RETURN_IF(!ar.load(&size), Status::Corruption("Pindex load snapshot size failed"));
+        RETURN_IF(size == 0, Status::OK());
+        for (auto i = 0; i < size; ++i) {
+            uint64_t compose_key_size = 0;
+            RETURN_IF(!ar.load(&compose_key_size),
+                      Status::Corruption("Pindex load snapshot failed because load compose_key_size failed"));
+            if (compose_key_size == 0) {
+                continue;
+            }
+            std::string composite_key;
+            TRY_CATCH_BAD_ALLOC(raw::stl_string_resize_uninitialized(&composite_key, compose_key_size));
+            RETURN_IF((!ar.load(composite_key.data(), composite_key.size())),
+                      Status::Corruption("Pindex load snapshot failed because load composite_key failed"));
+        }
+        return Status::OK();
     }
 
     Status pk_dump(PrimaryKeyDump* dump, PrimaryIndexDumpPB* dump_pb) override {
@@ -1384,7 +1470,7 @@ public:
     }
 
     Status load_snapshot(phmap::BinaryInputArchive& ar) override {
-        size_t size = 0;
+        uint64_t size = 0;
         RETURN_IF(!ar.load(&size), Status::Corruption("Pindex load snapshot size failed"));
         RETURN_IF(size == 0, Status::OK());
         TRY_CATCH_BAD_ALLOC(reserve(size));
@@ -1393,7 +1479,7 @@ public:
             return Status::MemoryLimitExceeded("error phmap size");
         });
         for (auto i = 0; i < size; ++i) {
-            size_t compose_key_size = 0;
+            uint64_t compose_key_size = 0;
             RETURN_IF(!ar.load(&compose_key_size),
                       Status::Corruption("Pindex load snapshot failed because load compose_key_size failed"));
             if (compose_key_size == 0) {
@@ -1505,6 +1591,8 @@ public:
         }
         return ret;
     }
+
+    void set_mutable_index_format_version(uint32_t ver) override {}
 
 private:
     friend ShardByLengthMutableIndex;
@@ -1963,7 +2051,40 @@ Status ShardByLengthMutableIndex::append_wal(const Slice* keys, const IndexValue
     return Status::OK();
 }
 
+Status ShardByLengthMutableIndex::check_snapshot_file(phmap::BinaryInputArchive& ar, const std::set<uint32_t>& idxes) {
+    // Check if this file is generated by old version of SR. There could be two types based on whether support SSE.
+    // https://github.com/StarRocks/starrocks/blob/0d19cb4f9bc58d0cab5237a469b9e4bd30c0eb31/be/src/base/phmap/phmap.h#L447
+    // If the `completeness_check` fails or `ar` doesn't reach end of file, it indicates that the file is either corrupted
+    // or was generated on a different CPU architecture. In this case, compatibility loading will be skipped,
+    // and the snapshot will be rebuilt.
+    ar.reset();
+    for (const auto idx : idxes) {
+        RETURN_IF_ERROR(_shards[idx]->completeness_check(ar));
+    }
+    // Must reach the end of the file.
+    if (!ar.eof()) {
+        return Status::Corruption(fmt::format(
+                "ShardByLengthMutableIndex snapshot file {} is generated by different arch or corrupt, will rebuild.",
+                _path));
+    }
+    return Status::OK();
+}
+
 Status ShardByLengthMutableIndex::load_snapshot(phmap::BinaryInputArchive& ar, const std::set<uint32_t>& idxes) {
+    uint32_t magic_num = 0;
+    RETURN_IF(!ar.load(&magic_num), Status::Corruption("ShardByLengthMutableIndex load snapshot magic num failed"));
+    if (magic_num != kSnapshotMagicNum) {
+        // There are three possible reasons:
+        // 1. This file is corrupted.
+        // 2. This file was generated at a different cpu architecture.
+        // 3. This file was generated by a old version of SR.
+        RETURN_IF_ERROR(check_snapshot_file(ar, idxes));
+        // keep load snapshot using old format.
+        for (const auto idx : idxes) {
+            _shards[idx]->set_mutable_index_format_version(kMutableIndexFormatVersion1);
+        }
+        ar.reset();
+    }
     for (const auto idx : idxes) {
         RETURN_IF_ERROR(_shards[idx]->load_snapshot(ar));
     }
@@ -1977,17 +2098,25 @@ size_t ShardByLengthMutableIndex::dump_bound() {
                            [](size_t s, const auto& e) { return e->size() > 0 ? s + e->dump_bound() : s; });
 }
 
-bool ShardByLengthMutableIndex::dump(phmap::BinaryOutputArchive& ar_out, std::set<uint32_t>& dumped_shard_idxes) {
+Status ShardByLengthMutableIndex::dump(phmap::BinaryOutputArchive& ar_out, std::set<uint32_t>& dumped_shard_idxes) {
+    bool use_old_format = false;
+    TEST_SYNC_POINT_CALLBACK("ShardByLengthMutableIndex::dump::1", &use_old_format);
+    // We introduced the new format specifically to address cross-platform compatibility issues with snapshot files.
+    // In previous format, we met issue when migrate from x86 to arm64.
+    // https://github.com/StarRocks/starrocks/issues/57952
+    if (LIKELY(!use_old_format)) {
+        if (!ar_out.dump(kSnapshotMagicNum)) {
+            return Status::InternalError("ShardByLengthMutableIndex dump snapshot magic num failed");
+        }
+    }
     for (uint32_t i = 0; i < _shards.size(); ++i) {
         const auto& shard = _shards[i];
         if (shard->size() > 0) {
-            if (!shard->dump(ar_out)) {
-                return false;
-            }
+            RETURN_IF_ERROR(shard->dump(ar_out));
             dumped_shard_idxes.insert(i);
         }
     }
-    return true;
+    return Status::OK();
 }
 
 Status ShardByLengthMutableIndex::pk_dump(PrimaryKeyDump* dump, PrimaryIndexDumpPB* dump_pb) {
@@ -2008,7 +2137,7 @@ static Status checksum_of_file(RandomAccessFile* file, uint64_t offset, uint32_t
 
 Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVersion& version, const CommitType& type) {
     std::shared_ptr<FileSystem> fs;
-    ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
     switch (type) {
     case kFlush: {
         // create a new empty _l0 file because all data in _l0 has write into _l1 files
@@ -2029,7 +2158,7 @@ Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVer
         // create a new empty _l0 file, set _offset to 0
         data->set_offset(0);
         data->set_size(0);
-        meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _offset = 0;
         _page_size = 0;
         _checksum = 0;
@@ -2046,11 +2175,7 @@ Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVer
             // closed. So the archive object needed to be destroyed before reopen the file and assigned it
             // to _index_file. Otherwise some data of file maybe overwrite in future append.
             phmap::BinaryOutputArchive ar_out(file_name.data());
-            if (!dump(ar_out, dumped_shard_idxes)) {
-                std::string err_msg = strings::Substitute("failed to dump snapshot to file $0", file_name);
-                LOG(WARNING) << err_msg;
-                return Status::InternalError(err_msg);
-            }
+            RETURN_IF_ERROR(dump(ar_out, dumped_shard_idxes));
             if (!ar_out.close()) {
                 std::string err_msg =
                         strings::Substitute("failed to dump snapshot to file $0, because of close", file_name);
@@ -2070,7 +2195,9 @@ Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVer
         size_t snapshot_size = _index_file->size();
         // special case, snapshot file was written by phmap::BinaryOutputArchive which does not use system profiled API
         // so add write stats manually
+#ifndef __APPLE__
         IOProfiler::add_write(snapshot_size, watch.elapsed_time());
+#endif
         meta->clear_wals();
         IndexSnapshotMetaPB* snapshot = meta->mutable_snapshot();
         version.to_pb(snapshot->mutable_version());
@@ -2081,7 +2208,7 @@ Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVer
         snapshot->mutable_dumped_shard_idxes()->Add(dumped_shard_idxes.begin(), dumped_shard_idxes.end());
         RETURN_IF_ERROR(checksum_of_file(l0_rfile.get(), 0, snapshot_size, &_checksum));
         snapshot->set_checksum(_checksum);
-        meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _offset = snapshot_size;
         _page_size = 0;
         _checksum = 0;
@@ -2094,7 +2221,7 @@ Status ShardByLengthMutableIndex::commit(MutableIndexMetaPB* meta, const EditVer
         data->set_offset(_offset);
         data->set_size(_page_size);
         wal_pb->set_checksum(_checksum);
-        meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _offset += _page_size;
         _page_size = 0;
         _checksum = 0;
@@ -2111,7 +2238,7 @@ Status ShardByLengthMutableIndex::load(const MutableIndexMetaPB& meta) {
     auto format_version = meta.format_version();
     if (format_version != PERSISTENT_INDEX_VERSION_2 && format_version != PERSISTENT_INDEX_VERSION_3 &&
         format_version != PERSISTENT_INDEX_VERSION_4 && format_version != PERSISTENT_INDEX_VERSION_5 &&
-        format_version != PERSISTENT_INDEX_VERSION_6) {
+        format_version != PERSISTENT_INDEX_VERSION_6 && format_version != PERSISTENT_INDEX_VERSION_7) {
         std::string msg = strings::Substitute("different l0 format, should rebuid index. actual:$0, expect:$1",
                                               format_version, PERSISTENT_INDEX_VERSION_5);
         LOG(WARNING) << msg;
@@ -2133,7 +2260,7 @@ Status ShardByLengthMutableIndex::load(const MutableIndexMetaPB& meta) {
     }
     std::string index_file_name = get_l0_index_file_name(_path, start_version);
     std::shared_ptr<FileSystem> fs;
-    ASSIGN_OR_RETURN(fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(fs, FileSystemFactory::CreateSharedFromString(_path));
     ASSIGN_OR_RETURN(auto read_file, fs->new_random_access_file(index_file_name));
     phmap::BinaryInputArchive ar(index_file_name.data());
     if (snapshot_size > 0) {
@@ -2158,7 +2285,9 @@ Status ShardByLengthMutableIndex::load(const MutableIndexMetaPB& meta) {
         RETURN_IF_ERROR(load_snapshot(ar, dumped_shard_idxes));
         // special case, snapshot file was written by phmap::BinaryOutputArchive which does not use system profiled API
         // so add read stats manually
+#ifndef __APPLE__
         IOProfiler::add_read(snapshot_size, watch.elapsed_time());
+#endif
     }
     // if mutable index is empty, set _offset as 0, otherwise set _offset as snapshot size
     _offset = snapshot_off + snapshot_size;
@@ -2166,7 +2295,7 @@ Status ShardByLengthMutableIndex::load(const MutableIndexMetaPB& meta) {
     // read wals and build hash map
     for (int i = 0; i < n; i++) {
         const auto& page_pointer_pb = meta.wals(i).data();
-        auto offset = page_pointer_pb.offset();
+        size_t offset = page_pointer_pb.offset();
         const auto end = offset + page_pointer_pb.size();
         std::string buff;
         raw::stl_string_resize_uninitialized(&buff, 4);
@@ -2264,7 +2393,7 @@ Status ShardByLengthMutableIndex::create_index_file(std::string& path) {
         std::string msg = strings::Substitute("l0 index file already exist: $0", _index_file->filename());
         return Status::InternalError(msg);
     }
-    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_path));
     WritableFileOptions wblock_opts{.sync_on_close = true, .mode = FileSystem::CREATE_OR_OPEN_WITH_TRUNCATE};
     ASSIGN_OR_RETURN(_index_file, _fs->new_writable_file(wblock_opts, path));
     return Status::OK();
@@ -2635,7 +2764,7 @@ Status ImmutableIndex::_get_in_shard_by_page(size_t shard_idx, size_t n, const S
                                              IOStat* stat) const {
     const auto& shard_info = _shards[shard_idx];
     std::map<size_t, LargeIndexPage> pages;
-    for (auto [pageid, keys_info] : keys_info_by_page) {
+    for (const auto& [pageid, keys_info] : keys_info_by_page) {
         LargeIndexPage page(shard_info.page_size / kPageSize);
         RETURN_IF_ERROR(_read_page(shard_idx, pageid, &page, stat));
         pages[pageid] = std::move(page);
@@ -3015,10 +3144,10 @@ StatusOr<std::unique_ptr<ImmutableIndex>> ImmutableIndex::load(std::unique_ptr<R
     auto format_version = meta.format_version();
     if (format_version != PERSISTENT_INDEX_VERSION_2 && format_version != PERSISTENT_INDEX_VERSION_3 &&
         format_version != PERSISTENT_INDEX_VERSION_4 && format_version != PERSISTENT_INDEX_VERSION_5 &&
-        format_version != PERSISTENT_INDEX_VERSION_6) {
+        format_version != PERSISTENT_INDEX_VERSION_6 && format_version != PERSISTENT_INDEX_VERSION_7) {
         std::string msg =
                 strings::Substitute("different immutable index format, should rebuid index. actual:$0, expect:$1",
-                                    format_version, PERSISTENT_INDEX_VERSION_6);
+                                    format_version, PERSISTENT_INDEX_VERSION_7);
         LOG(WARNING) << msg;
         return Status::InternalError(msg);
     }
@@ -3092,6 +3221,7 @@ StatusOr<std::unique_ptr<ImmutableIndex>> ImmutableIndex::load(std::unique_ptr<R
     size_t nshard_bf = meta.shard_bf_off_size();
     DCHECK(nshard_bf == 0 || nshard_bf == nshard + 1);
     std::vector<size_t> bf_off;
+    bf_off.reserve(nshard_bf);
     for (size_t i = 0; i < nshard_bf; i++) {
         bf_off.emplace_back(meta.shard_bf_off(i));
     }
@@ -3174,7 +3304,7 @@ Status PersistentIndex::create(size_t key_size, const EditVersion& version) {
         return st.status();
     }
     _l0 = std::move(st).value();
-    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_path));
     return Status::OK();
 }
 
@@ -3187,7 +3317,7 @@ Status PersistentIndex::load(const PersistentIndexMetaPB& index_meta) {
         return st.status();
     }
     _l0 = std::move(st).value();
-    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_path));
     RETURN_IF_ERROR(_load(index_meta));
     // delete expired _l0 file and _l1 file
     const MutableIndexMetaPB& l0_meta = index_meta.l0_meta();
@@ -3381,11 +3511,12 @@ Status PersistentIndex::_insert_rowsets(TabletLoader* loader, const Schema& pkey
                 } else if (!st.ok()) {
                     return st;
                 } else {
-                    Column* pkc = nullptr;
+                    const Column* pkc = nullptr;
                     if (pk_column != nullptr) {
                         pk_column->reset_column();
-                        TRY_CATCH_BAD_ALLOC(
-                                PrimaryKeyEncoder::encode(pkey_schema, *chunk, 0, chunk->num_rows(), pk_column.get()));
+                        TRY_CATCH_BAD_ALLOC(PrimaryKeyEncoder::encode(pkey_schema, *chunk, 0, chunk->num_rows(),
+                                                                      pk_column.get(),
+                                                                      PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1));
                         pkc = pk_column.get();
                     } else {
                         pkc = chunk->columns()[0].get();
@@ -3399,17 +3530,21 @@ Status PersistentIndex::_insert_rowsets(TabletLoader* loader, const Schema& pkey
                         values.emplace_back(base + rowids[i]);
                     }
                     Status st;
-                    if (pkc->is_binary()) {
-                        st = insert(pkc->size(), reinterpret_cast<const Slice*>(pkc->raw_data()), values.data(), false);
+                    // TODO: Refactor the code to remove tmp slice array.
+                    Buffer<Slice> keys;
+                    TRY_CATCH_BAD_ALLOC(keys.reserve(pkc->size()));
+                    if (pkc->is_binary() || pkc->is_large_binary()) {
+                        ColumnHelper::build_slices(pkc, keys);
+                        st = insert(pkc->size(), keys.data(), values.data(), false);
                     } else {
-                        std::vector<Slice> keys;
-                        TRY_CATCH_BAD_ALLOC(keys.reserve(pkc->size()));
-                        const auto* fkeys = pkc->continuous_data();
-                        for (size_t i = 0; i < pkc->size(); ++i) {
+                        RawBytesVisitor visitor;
+                        RETURN_IF_ERROR(pkc->accept(&visitor));
+                        const auto* fkeys = visitor.result();
+                        for (size_t j = 0; j < pkc->size(); ++j) {
                             keys.emplace_back(fkeys, _key_size);
                             fkeys += _key_size;
                         }
-                        st = insert(pkc->size(), reinterpret_cast<const Slice*>(keys.data()), values.data(), false);
+                        st = insert(pkc->size(), keys.data(), values.data(), false);
                     }
                     if (!st.ok()) {
                         LOG(ERROR) << "load index failed: tablet=" << loader->tablet_id() << " rowset:" << rowset_id
@@ -3568,7 +3703,7 @@ Status PersistentIndex::commit(PersistentIndexMetaPB* index_meta, IOStat* stat) 
         // update PersistentIndexMetaPB
         index_meta->set_size(_size);
         index_meta->set_usage(_usage);
-        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _version.to_pb(index_meta->mutable_version());
         _version.to_pb(index_meta->mutable_l1_version());
         MutableIndexMetaPB* l0_meta = index_meta->mutable_l0_meta();
@@ -3578,20 +3713,21 @@ Status PersistentIndex::commit(PersistentIndexMetaPB* index_meta, IOStat* stat) 
     } else if (_dump_snapshot) {
         index_meta->set_size(_size);
         index_meta->set_usage(_usage);
-        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _version.to_pb(index_meta->mutable_version());
         MutableIndexMetaPB* l0_meta = index_meta->mutable_l0_meta();
         RETURN_IF_ERROR(_l0->commit(l0_meta, _version, kSnapshot));
     } else {
         index_meta->set_size(_size);
         index_meta->set_usage(_usage);
-        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+        index_meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
         _version.to_pb(index_meta->mutable_version());
         MutableIndexMetaPB* l0_meta = index_meta->mutable_l0_meta();
         RETURN_IF_ERROR(_l0->commit(l0_meta, _version, kAppendWAL));
     }
     if (stat != nullptr) {
         stat->reload_meta_cost += watch.elapsed_time();
+        stat->total_file_size = (_l0 ? _l0->file_size() : 0) + _l1_l2_file_size();
     }
     _calc_memory_usage();
 
@@ -3669,7 +3805,9 @@ public:
               _io_stat_entry(io_stat_entry) {}
 
     void run() override {
+#ifndef __APPLE__
         auto scope = IOProfiler::scope(_io_stat_entry);
+#endif
         WARN_IF_ERROR(_index->get_from_one_immutable_index(_immu_index, _num, _keys, _values, _keys_info_by_key_size,
                                                            _found_keys_info),
                       "Failed to run GetFromImmutableIndexTask");
@@ -3683,7 +3821,7 @@ private:
     std::map<size_t, KeysInfo>* _keys_info_by_key_size;
     KeysInfo* _found_keys_info;
     PersistentIndex* _index;
-    IOStatEntry* _io_stat_entry;
+    [[maybe_unused]] IOStatEntry* _io_stat_entry;
 };
 
 Status PersistentIndex::get_from_one_immutable_index(ImmutableIndex* immu_index, size_t n, const Slice* keys,
@@ -3830,8 +3968,8 @@ Status PersistentIndex::_update_usage_and_size_by_key_length(
             LOG(WARNING) << msg;
             return Status::InternalError(msg);
         } else {
-            iter->second.first = std::max(0L, iter->second.first + add_usage_and_size[_key_size].first);
-            iter->second.second = std::max(0L, iter->second.second + add_usage_and_size[_key_size].second);
+            iter->second.first = std::max<int64_t>(0, iter->second.first + add_usage_and_size[_key_size].first);
+            iter->second.second = std::max<int64_t>(0, iter->second.second + add_usage_and_size[_key_size].second);
         }
     } else {
         for (int key_size = 1; key_size <= kSliceMaxFixLength; key_size++) {
@@ -3842,8 +3980,8 @@ Status PersistentIndex::_update_usage_and_size_by_key_length(
                 LOG(WARNING) << msg;
                 return Status::InternalError(msg);
             } else {
-                iter->second.first = std::max(0L, iter->second.first + add_usage_and_size[key_size].first);
-                iter->second.second = std::max(0L, iter->second.second + add_usage_and_size[key_size].second);
+                iter->second.first = std::max<int64_t>(0, iter->second.first + add_usage_and_size[key_size].first);
+                iter->second.second = std::max<int64_t>(0, iter->second.second + add_usage_and_size[key_size].second);
             }
         }
 
@@ -3861,14 +3999,14 @@ Status PersistentIndex::_update_usage_and_size_by_key_length(
             LOG(WARNING) << msg;
             return Status::InternalError(msg);
         }
-        iter->second.first = std::max(0L, iter->second.first + slice_usage);
-        iter->second.second = std::max(0L, iter->second.second + slice_size);
+        iter->second.first = std::max<int64_t>(0, iter->second.first + slice_usage);
+        iter->second.second = std::max<int64_t>(0, iter->second.second + slice_size);
     }
     return Status::OK();
 }
 
 Status PersistentIndex::upsert(size_t n, const Slice* keys, const IndexValue* values, IndexValue* old_values,
-                               IOStat* stat) {
+                               IOStat* stat, ParallelPublishContext* ctx) {
     std::map<size_t, KeysInfo> not_founds_by_key_size;
     size_t num_found = 0;
     MonotonicStopWatch watch;
@@ -4657,7 +4795,7 @@ Status PersistentIndex::_minor_compaction(PersistentIndexMetaPB* index_meta) {
     // 3. modify meta
     index_meta->set_size(_size);
     index_meta->set_usage(_usage);
-    index_meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+    index_meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
     _version.to_pb(index_meta->mutable_version());
     _version.to_pb(index_meta->mutable_l1_version());
     MutableIndexMetaPB* l0_meta = index_meta->mutable_l0_meta();
@@ -4953,7 +5091,8 @@ Status PersistentIndex::TEST_major_compaction(PersistentIndexMetaPB& index_meta)
 // 1. load current l2 vec
 // 2. merge l2 files to new l2 file
 // 3. modify PersistentIndexMetaPB and make this step atomic.
-Status PersistentIndex::major_compaction(DataDir* data_dir, int64_t tablet_id, std::shared_timed_mutex* mutex) {
+Status PersistentIndex::major_compaction(DataDir* data_dir, int64_t tablet_id, std::shared_timed_mutex* mutex,
+                                         IOStat* stat) {
     if (_cancel_major_compaction) {
         return Status::InternalError("cancel major compaction");
     }
@@ -4978,7 +5117,7 @@ Status PersistentIndex::major_compaction(DataDir* data_dir, int64_t tablet_id, s
         return Status::OK();
     }
     // 1. load current l2 vec
-    ASSIGN_OR_RETURN(auto fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(auto fs, FileSystemFactory::CreateSharedFromString(_path));
     std::vector<EditVersion> l2_versions;
     std::vector<std::unique_ptr<ImmutableIndex>> l2_vec;
     DCHECK(prev_index_meta.l2_versions_size() == prev_index_meta.l2_version_merged_size());
@@ -5004,7 +5143,12 @@ Status PersistentIndex::major_compaction(DataDir* data_dir, int64_t tablet_id, s
         RETURN_IF_ERROR(modify_l2_versions(l2_versions, new_l2_version, index_meta));
         RETURN_IF_ERROR(TabletMetaManager::write_persistent_index_meta(data_dir, tablet_id, index_meta));
         // reload new l2 versions
-        RETURN_IF_ERROR(_reload(index_meta));
+        auto st = _reload(index_meta);
+        TEST_SYNC_POINT_CALLBACK("persistent_index_major_compaction_reload_fail", &st);
+        if (!st.ok()) {
+            _set_need_rebuild(true);
+            return st;
+        }
         // delete useless files
         const MutableIndexMetaPB& l0_meta = index_meta.l0_meta();
         EditVersion l0_version = l0_meta.snapshot().version();
@@ -5012,6 +5156,9 @@ Status PersistentIndex::major_compaction(DataDir* data_dir, int64_t tablet_id, s
                 l0_version, _l1_version,
                 _l2_versions.size() > 0 ? _l2_versions[0] : EditVersionWithMerge(INT64_MAX, INT64_MAX, true)));
         _calc_memory_usage();
+        if (stat != nullptr) {
+            stat->total_file_size = (_l0 ? _l0->file_size() : 0) + _l1_l2_file_size();
+        }
     }
     (void)_delete_major_compaction_tmp_index_file();
     return Status::OK();
@@ -5075,7 +5222,7 @@ Status PersistentIndex::reset(Tablet* tablet, EditVersion version, PersistentInd
         pk_columns[i] = (ColumnId)i;
     }
     auto pkey_schema = ChunkHelper::convert_schema(tablet_schema_ptr, pk_columns);
-    size_t fix_size = PrimaryKeyEncoder::get_encoded_fixed_size(pkey_schema);
+    size_t fix_size = _get_encoded_fixed_size(pkey_schema);
 
     if (_l0) {
         _l0.reset();
@@ -5100,7 +5247,7 @@ Status PersistentIndex::reset(Tablet* tablet, EditVersion version, PersistentInd
     index_meta->clear_l2_version_merged();
     index_meta->set_key_size(_key_size);
     index_meta->set_size(0);
-    index_meta->set_format_version(PERSISTENT_INDEX_VERSION_6);
+    index_meta->set_format_version(PERSISTENT_INDEX_VERSION_7);
     version.to_pb(index_meta->mutable_version());
     MutableIndexMetaPB* l0_meta = index_meta->mutable_l0_meta();
     l0_meta->clear_wals();
@@ -5214,8 +5361,7 @@ Status PersistentIndex::_load_by_loader(TabletLoader* loader) {
         }
     }
 
-    size_t fix_size = PrimaryKeyEncoder::get_encoded_fixed_size(pkey_schema);
-
+    size_t fix_size = _get_encoded_fixed_size(pkey_schema);
     // Init PersistentIndex
     _key_size = fix_size;
     _size = 0;
@@ -5226,7 +5372,7 @@ Status PersistentIndex::_load_by_loader(TabletLoader* loader) {
         return st.status();
     }
     _l0 = std::move(st).value();
-    ASSIGN_OR_RETURN(_fs, FileSystem::CreateSharedFromString(_path));
+    ASSIGN_OR_RETURN(_fs, FileSystemFactory::CreateSharedFromString(_path));
     // set _dump_snapshot to true
     // In this case, only do flush or dump snapshot, set _dump_snapshot to avoid append wal
     _dump_snapshot = true;
@@ -5269,7 +5415,7 @@ Status PersistentIndex::_load_by_loader(TabletLoader* loader) {
     index_meta.clear_l2_version_merged();
     index_meta.set_key_size(_key_size);
     index_meta.set_size(0);
-    index_meta.set_format_version(PERSISTENT_INDEX_VERSION_6);
+    index_meta.set_format_version(PERSISTENT_INDEX_VERSION_7);
     applied_version.to_pb(index_meta.mutable_version());
     MutableIndexMetaPB* l0_meta = index_meta.mutable_l0_meta();
     l0_meta->clear_wals();
@@ -5281,7 +5427,8 @@ Status PersistentIndex::_load_by_loader(TabletLoader* loader) {
 
     MutableColumnPtr pk_column;
     if (pkey_schema.num_fields() > 1) {
-        RETURN_IF_ERROR(PrimaryKeyEncoder::create_column(pkey_schema, &pk_column));
+        RETURN_IF_ERROR(
+                PrimaryKeyEncoder::create_column(pkey_schema, &pk_column, PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1));
     }
     RETURN_IF_ERROR(_insert_rowsets(loader, pkey_schema, std::move(pk_column)));
     RETURN_IF_ERROR(_build_commit(loader, index_meta));
@@ -5333,6 +5480,16 @@ void PersistentIndex::_calc_memory_usage() {
 
 void PersistentIndex::test_force_dump() {
     _dump_snapshot = true;
+}
+
+size_t PersistentIndex::_get_encoded_fixed_size(const Schema& schema) {
+    size_t fix_size = PrimaryKeyEncoder::get_encoded_fixed_size(schema, PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1);
+    // if fix_key_size is greater than 128, use SliceMutableIndex because FixedMutableIndex does not support key size greater
+    // than 128.
+    if (fix_size > 128) {
+        fix_size = 0;
+    }
+    return fix_size;
 }
 
 } // namespace starrocks

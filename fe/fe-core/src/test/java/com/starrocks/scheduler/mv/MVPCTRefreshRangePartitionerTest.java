@@ -15,20 +15,74 @@
 package com.starrocks.scheduler.mv;
 
 import com.google.common.collect.Maps;
+import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.MaterializedView;
+import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.PartitionInfo;
+import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableProperty;
 import com.starrocks.scheduler.MvTaskRunContext;
-import com.starrocks.sql.common.PCell;
-import org.junit.Assert;
-import org.junit.Test;
+import com.starrocks.scheduler.mv.pct.MVPCTRefreshRangePartitioner;
+import com.starrocks.scheduler.mv.pct.PCTPartitionTopology;
+import com.starrocks.sql.common.PCellNone;
+import com.starrocks.sql.common.PCellSetMapping;
+import com.starrocks.sql.common.PCellSortedSet;
+import com.starrocks.sql.common.PCellWithName;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class MVPCTRefreshRangePartitionerTest {
+
+    @Test
+    public void testGetAdaptivePartitionRefreshNumber() {
+        MvTaskRunContext mvContext = mock(MvTaskRunContext.class);
+        MaterializedView mv = mock(MaterializedView.class);
+        when(mv.getTableProperty()).thenReturn(mock(TableProperty.class));
+        when(mv.getPartitionInfo()).thenReturn(mock(PartitionInfo.class));
+        when(mv.isPartitionedTable()).thenReturn(true);
+
+        OlapTable refTable1 = Mockito.mock(OlapTable.class);
+        Mockito.when(refTable1.isNativeTableOrMaterializedView()).thenReturn(true);
+        PCellWithName pCellWithName1 = PCellWithName.of("partition1", new PCellNone());
+        PCellWithName pCellWithName2 = PCellWithName.of("partition2", new PCellNone());
+        PCellSortedSet refTablePartition1 = PCellSortedSet.of(Set.of(pCellWithName1, pCellWithName2));
+        Map<Table, PCellSortedSet> ref1 = new HashMap<>();
+        ref1.put(refTable1, refTablePartition1);
+
+        IcebergTable refTable2 = Mockito.mock(IcebergTable.class);
+        PCellSortedSet refTablePartition2 = PCellSortedSet.of(Set.of(pCellWithName1, pCellWithName2));
+        Map<Table, PCellSortedSet> ref2 = new HashMap<>();
+        ref2.put(refTable2, refTablePartition2);
+
+        Map<String, Map<Table, PCellSortedSet>> mvToBaseNameRefs = Maps.newHashMap();
+        mvToBaseNameRefs.put("mv_p1", ref1);
+        mvToBaseNameRefs.put("mv_p2", ref2);
+
+        Mockito.when(mvContext.getPartitionTopology()).thenReturn(new PCTPartitionTopology(
+                PCellSortedSet.of(),
+                Maps.newHashMap(),
+                Maps.<Table, PCellSetMapping>newHashMap(),
+                mvToBaseNameRefs));
+        // TODO: make range cells
+        List<PCellWithName> partitions = Arrays.asList(PCellWithName.of("mv_p1", new PCellNone()),
+                PCellWithName.of("mv_p2", new PCellNone()));
+        MVRefreshParams mvRefreshParams = new MVRefreshParams(mv, new HashMap<>());
+        MVPCTRefreshRangePartitioner partitioner = new MVPCTRefreshRangePartitioner(mvContext, null,
+                null, mv, mvRefreshParams);
+        MVAdaptiveRefreshException exception = Assertions.assertThrows(MVAdaptiveRefreshException.class,
+                () -> partitioner.getAdaptivePartitionRefreshNumber(PCellSortedSet.of(partitions)));
+        Assertions.assertTrue(exception.getMessage().contains("Missing too many partition stats"));
+    }
 
     @Test
     public void testFilterPartitionsByTTL() {
@@ -40,15 +94,17 @@ public class MVPCTRefreshRangePartitionerTest {
         when(mv.getPartitionInfo()).thenReturn(mock(PartitionInfo.class));
         when(mv.getTableProperty().getPartitionTTLNumber()).thenReturn(2);
 
-        MVPCTRefreshRangePartitioner partitioner = new MVPCTRefreshRangePartitioner(mvContext, null, null, mv);
+        MVRefreshParams mvRefreshParams = new MVRefreshParams(mv, new HashMap<>());
+        MVPCTRefreshRangePartitioner partitioner = new MVPCTRefreshRangePartitioner(mvContext, null, null, mv,
+                mvRefreshParams);
 
-        Map<String, PCell> toRefreshPartitions = Maps.newHashMap();
-        toRefreshPartitions.put("partition1", mock(PCell.class));
-        toRefreshPartitions.put("partition2", mock(PCell.class));
-        toRefreshPartitions.put("partition3", mock(PCell.class));
+        PCellSortedSet toRefreshPartitions = PCellSortedSet.of();
+        toRefreshPartitions.add(PCellWithName.of("partition1", new PCellNone()));
+        toRefreshPartitions.add(PCellWithName.of("partition2", new PCellNone()));
+        toRefreshPartitions.add(PCellWithName.of("partition3", new PCellNone()));
 
         partitioner.filterPartitionsByTTL(toRefreshPartitions, true);
 
-        Assert.assertEquals(2, toRefreshPartitions.size());
+        Assertions.assertEquals(2, toRefreshPartitions.size());
     }
 }

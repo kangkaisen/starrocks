@@ -15,6 +15,7 @@
 package com.starrocks.transaction;
 
 import com.google.common.collect.Lists;
+import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.LocalTablet;
@@ -52,7 +53,7 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
                 continue;
             }
             List<MaterializedIndex> allIndices =
-                    partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
+                    txnState.getPartitionLoadedIndexesWithoutLock(table.getId(), partition);
             for (MaterializedIndex index : allIndices) {
                 for (Tablet tablet : index.getTablets()) {
                     for (Replica replica : ((LocalTablet) tablet).getImmutableReplicas()) {
@@ -108,7 +109,7 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
             short replicationNum = table.getPartitionInfo().getReplicationNum(partitionId);
             long version = partitionCommitInfo.getVersion();
             List<MaterializedIndex> allIndices =
-                    partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
+                    txnState.getPartitionLoadedIndexesWithoutLock(table.getId(), partition);
             List<String> skipUpdateReplicas = Lists.newArrayList();
             for (MaterializedIndex index : allIndices) {
                 for (Tablet tablet : index.getTablets()) {
@@ -121,7 +122,7 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
                         }
                         long lastFailedVersion = replica.getLastFailedVersion();
                         long newVersion = version;
-                        long lastSucessVersion = replica.getLastSuccessVersion();
+                        long lastSuccessVersion = replica.getLastSuccessVersion();
                         if (txnState.checkReplicaNeedSkip(tablet, replica, partitionCommitInfo)
                                 || errorReplicaIds.contains(replica.getId())) {
                             // There are 2 cases that we can't update version to visible version and need to
@@ -160,19 +161,19 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
                             }
 
                             // success version always move forward
-                            lastSucessVersion = version;
+                            lastSuccessVersion = version;
                         }
-                        replica.updateVersionInfo(newVersion, lastFailedVersion, lastSucessVersion);
+                        replica.updateVersionInfo(newVersion, lastFailedVersion, lastSuccessVersion);
                     } // end for replicas
-                    if (!skipUpdateReplicas.isEmpty()) {
-                        LOG.warn("skip update replicas to visible version(tabletId_BackendId): {}", skipUpdateReplicas);
-                    }
 
                     if (hasFailedVersion && replicationNum == 1) {
                         TabletScheduler.resetDecommStatForSingleReplicaTabletUnlocked(tablet.getId(), replicas);
                     }
                 } // end for tablets
             } // end for indices
+            if (!skipUpdateReplicas.isEmpty()) {
+                LOG.warn("skip update replicas to visible version(tabletId_BackendId): {}", skipUpdateReplicas);
+            }
 
             long versionTime = partitionCommitInfo.getVersionTime();
             if (txnState.isVersionOverwrite()) {
@@ -195,7 +196,7 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
 
             if (!partitionCommitInfo.getInvalidDictCacheColumns().isEmpty()) {
                 for (ColumnId column : partitionCommitInfo.getInvalidDictCacheColumns()) {
-                    IDictManager.getInstance().removeGlobalDict(tableId, column);
+                    IDictManager.getInstance().removeGlobalDict(table, column);
                 }
             }
             if (!partitionCommitInfo.getValidDictCacheColumns().isEmpty()) {
@@ -207,12 +208,21 @@ public class OlapTableTxnLogApplier implements TransactionLogApplier {
             maxPartitionVersionTime = Math.max(maxPartitionVersionTime, versionTime);
         }
 
+        // TODO(murphy) don't invalidate all cache columns, only invalidate the columns that are changed
+        // Invalidate the dict for JSON type
+        List<Column> jsonColumns = table.getColumns().stream()
+                .filter(x -> x.getType().isJsonType())
+                .toList();
+        for (Column column : jsonColumns) {
+            IDictManager.getInstance().removeGlobalDictForJson(tableId, column.getColumnId());
+        }
+
         if (!GlobalStateMgr.isCheckpointThread() && dictCollectedVersions.size() == validDictCacheColumns.size()) {
             for (int i = 0; i < validDictCacheColumns.size(); i++) {
                 ColumnId columnName = validDictCacheColumns.get(i);
                 long collectedVersion = dictCollectedVersions.get(i);
                 IDictManager.getInstance()
-                        .updateGlobalDict(tableId, columnName, collectedVersion, maxPartitionVersionTime);
+                        .updateGlobalDict(table, columnName, collectedVersion, maxPartitionVersionTime);
             }
         }
     }

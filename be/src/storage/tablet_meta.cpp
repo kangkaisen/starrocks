@@ -37,6 +37,9 @@
 #include <memory>
 #include <sstream>
 
+#include "base/format.h"
+#include "base/uid_util.h"
+#include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
 #include "storage/metadata_util.h"
 #include "storage/olap_common.h"
@@ -46,7 +49,6 @@
 #include "storage/tablet_schema_map.h"
 #include "storage/tablet_updates.h"
 #include "storage/utils.h"
-#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -595,7 +597,7 @@ void TabletMeta::remove_delete_predicate_by_version(const Version& version) {
             for (const auto& it : temp.sub_predicates()) {
                 del_cond_str += it + ";";
             }
-            LOG(INFO) << "remove one del_pred. version=" << temp.version() << ", condition=" << del_cond_str;
+            VLOG(3) << "remove one del_pred. version=" << temp.version() << ", condition=" << del_cond_str;
 
             // remove delete condition from PB
             _del_pred_array.SwapElements(ordinal, _del_pred_array.size() - 1);
@@ -693,3 +695,9 @@ bool operator!=(const TabletMeta& a, const TabletMeta& b) {
 }
 
 } // namespace starrocks
+
+auto fmt::formatter<starrocks::TabletState>::format(const starrocks::TabletState value, format_context& ctx) const
+        -> format_context::iterator {
+    return formatter<std::underlying_type_t<starrocks::TabletState>>::format(starrocks::enum_to_underlying_type(value),
+                                                                             ctx);
+}

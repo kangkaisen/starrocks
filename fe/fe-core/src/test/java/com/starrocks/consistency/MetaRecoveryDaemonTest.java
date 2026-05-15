@@ -31,20 +31,24 @@ import com.starrocks.transaction.PartitionCommitInfo;
 import com.starrocks.transaction.TableCommitInfo;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TransactionStatus;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.commons.lang3.reflect.FieldUtils;
+import org.apache.commons.lang3.reflect.MethodUtils;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import java.util.Set;
 
 public class MetaRecoveryDaemonTest {
-    @BeforeClass
+    @BeforeAll
     public static void setUp() throws Exception {
         PseudoCluster.getOrCreateWithRandomPort(true, 7);
         PseudoCluster cluster = PseudoCluster.getInstance();
         cluster.runSql(null, "create database test");
     }
 
-    @AfterClass
+    @AfterAll
     public static void tearDown() throws Exception {
         PseudoCluster.getInstance().shutdown(true);
     }
@@ -74,15 +78,15 @@ public class MetaRecoveryDaemonTest {
                 .getTable(database.getFullName(), "tbl_recover");
         Partition partition = table.getPartition("tbl_recover");
         MaterializedIndex index = partition.getDefaultPhysicalPartition()
-                .getMaterializedIndices(MaterializedIndex.IndexExtState.ALL).get(0);
+                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL).get(0);
         for (Tablet tablet : index.getTablets()) {
             for (Replica replica : tablet.getAllReplicas()) {
-                Assert.assertEquals(2L, replica.getVersion());
+                Assertions.assertEquals(2L, replica.getVersion());
             }
         }
 
-        Assert.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
-        Assert.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
+        Assertions.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assertions.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
 
         // set partition version to a lower value
         partition.getDefaultPhysicalPartition().setVisibleVersion(1L, System.currentTimeMillis());
@@ -108,30 +112,30 @@ public class MetaRecoveryDaemonTest {
         // recover will fail, because there is a committed txn on that partition
         MetaRecoveryDaemon recovery = new MetaRecoveryDaemon();
         recovery.recover();
-        Assert.assertEquals(1L, partition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assertions.assertEquals(1L, partition.getDefaultPhysicalPartition().getVisibleVersion());
         BaseProcResult baseProcResult = new BaseProcResult();
         recovery.fetchProcNodeResult(baseProcResult);
-        Assert.assertEquals(1, baseProcResult.getRows().size());
+        Assertions.assertEquals(1, baseProcResult.getRows().size());
 
         // change the txn state to visible, recover will succeed
         transactionState.setTransactionStatus(TransactionStatus.VISIBLE);
         recovery.recover();
-        Assert.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
-        Assert.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
+        Assertions.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assertions.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
         baseProcResult = new BaseProcResult();
         recovery.fetchProcNodeResult(baseProcResult);
-        Assert.assertEquals(0, baseProcResult.getRows().size());
+        Assertions.assertEquals(0, baseProcResult.getRows().size());
 
         // change replica version
         LocalTablet localTablet = (LocalTablet) partition.getDefaultPhysicalPartition()
-                .getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)
+                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL)
                 .get(0).getTablets().get(0);
         long version = 3;
         for (Replica replica : localTablet.getAllReplicas()) {
             replica.updateForRestore(++version, 10, 10);
         }
         LocalTablet localTablet2 = (LocalTablet) partition.getDefaultPhysicalPartition()
-                .getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)
+                .getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL)
                 .get(0).getTablets().get(0);
         for (Replica replica : localTablet2.getAllReplicas()) {
             replica.updateForRestore(4, 10, 10);
@@ -143,11 +147,11 @@ public class MetaRecoveryDaemonTest {
 
         // recover will fail, because there is no common version on tablets.
         recovery.recover();
-        Assert.assertEquals(1L, partition.getDefaultPhysicalPartition().getVisibleVersion());
-        Assert.assertEquals(2L, partition.getDefaultPhysicalPartition().getNextVersion());
+        Assertions.assertEquals(1L, partition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assertions.assertEquals(2L, partition.getDefaultPhysicalPartition().getNextVersion());
         baseProcResult = new BaseProcResult();
         recovery.fetchProcNodeResult(baseProcResult);
-        Assert.assertEquals(1, baseProcResult.getRows().size());
+        Assertions.assertEquals(1, baseProcResult.getRows().size());
 
         // set replica version back to 2
         for (Replica replica : localTablet.getAllReplicas()) {
@@ -158,17 +162,17 @@ public class MetaRecoveryDaemonTest {
         }
         Replica badReplica = localTablet2.getAllReplicas().get(0);
         badReplica.updateForRestore(5, 10, 10);
-        Assert.assertFalse(badReplica.isBad());
+        Assertions.assertFalse(badReplica.isBad());
 
         // recover will succeed
         recovery.recover();
-        Assert.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
-        Assert.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
+        Assertions.assertEquals(2L, partition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assertions.assertEquals(3L, partition.getDefaultPhysicalPartition().getNextVersion());
         baseProcResult = new BaseProcResult();
         recovery.fetchProcNodeResult(baseProcResult);
-        Assert.assertEquals(0, baseProcResult.getRows().size());
+        Assertions.assertEquals(0, baseProcResult.getRows().size());
         // replica with higher version will be set to bad
-        Assert.assertTrue(badReplica.isBad());
+        Assertions.assertTrue(badReplica.isBad());
     }
 
     @Test
@@ -179,7 +183,26 @@ public class MetaRecoveryDaemonTest {
             backend.getBackendStatus().lastSuccessReportTabletsTime = TimeUtils
                     .longToTimeString(timeMs);
         }
-        Assert.assertFalse(metaRecoveryDaemon.checkTabletReportCacheUp(timeMs + 1000L));
-        Assert.assertTrue(metaRecoveryDaemon.checkTabletReportCacheUp(timeMs - 1000L));
+        Assertions.assertFalse(metaRecoveryDaemon.checkTabletReportCacheUp(timeMs + 1000L));
+        Assertions.assertTrue(metaRecoveryDaemon.checkTabletReportCacheUp(timeMs - 1000L));
+    }
+
+    @Test
+    public void testOnStoppedClearsUnRecoveredPartitions() throws Exception {
+        // unRecoveredPartitions is leader-session diagnostic state surfaced via the proc node;
+        // the next leader rebuilds it from scratch, so it must not survive demotion.
+        MetaRecoveryDaemon recovery = new MetaRecoveryDaemon();
+        @SuppressWarnings("unchecked")
+        Set<MetaRecoveryDaemon.UnRecoveredPartition> partitions =
+                (Set<MetaRecoveryDaemon.UnRecoveredPartition>) FieldUtils.readField(
+                        recovery, "unRecoveredPartitions", true);
+        partitions.add(new MetaRecoveryDaemon.UnRecoveredPartition("d", "t", "p", 1L, "stale"));
+        partitions.add(new MetaRecoveryDaemon.UnRecoveredPartition("d", "t", "p2", 2L, "stale2"));
+        Assertions.assertEquals(2, partitions.size());
+
+        MethodUtils.invokeMethod(recovery, true, "onStopped");
+
+        Assertions.assertTrue(partitions.isEmpty(),
+                "unRecoveredPartitions must be cleared when leader-only daemon stops");
     }
 }

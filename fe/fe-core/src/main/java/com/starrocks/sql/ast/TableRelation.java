@@ -15,12 +15,13 @@
 package com.starrocks.sql.ast;
 
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.TableName;
+import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.sql.analyzer.Field;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.parser.NodePosition;
 
 import java.util.Collections;
@@ -37,13 +38,14 @@ public class TableRelation extends Relation {
         _BINLOG_,
         _SYNC_MV_,
         _USE_PK_INDEX_,
+        _CACHE_STATS_,
     }
 
     private final TableName name;
     private Table table;
     private Map<Field, Column> columns;
     // Support temporary partition
-    private PartitionNames partitionNames;
+    private PartitionRef partitionNames;
     private final List<Long> tabletIds;
     private final List<Long> replicaIds;
     private final Set<TableHint> tableHints = new HashSet<>();
@@ -52,6 +54,8 @@ public class TableRelation extends Relation {
 
     // used for time travel
     private QueryPeriod queryPeriod;
+    // used for tvr incremental read
+    private TvrVersionRange tvrVersionRange;
 
     // TABLE SAMPLE
     private TableSampleClause sampleClause;
@@ -72,11 +76,11 @@ public class TableRelation extends Relation {
         this.replicaIds = Lists.newArrayList();
     }
 
-    public TableRelation(TableName name, PartitionNames partitionNames, List<Long> tabletIds, List<Long> replicaIds) {
+    public TableRelation(TableName name, PartitionRef partitionNames, List<Long> tabletIds, List<Long> replicaIds) {
         this(name, partitionNames, tabletIds, replicaIds, NodePosition.ZERO);
     }
 
-    public TableRelation(TableName name, PartitionNames partitionNames, List<Long> tabletIds, List<Long> replicaIds,
+    public TableRelation(TableName name, PartitionRef partitionNames, List<Long> tabletIds, List<Long> replicaIds,
                          NodePosition pos) {
         super(pos);
         this.name = name;
@@ -97,11 +101,11 @@ public class TableRelation extends Relation {
         this.table = table;
     }
 
-    public PartitionNames getPartitionNames() {
+    public PartitionRef getPartitionNames() {
         return partitionNames;
     }
 
-    public void setPartitionNames(PartitionNames partitionNames) {
+    public void setPartitionNames(PartitionRef partitionNames) {
         this.partitionNames = partitionNames;
     }
 
@@ -196,9 +200,13 @@ public class TableRelation extends Relation {
         return tableHints.contains(TableHint._USE_PK_INDEX_);
     }
 
+    public boolean isCacheStatsQuery() {
+        return tableHints.contains(TableHint._CACHE_STATS_);
+    }
+
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context) {
-        return visitor.visitTable(this, context);
+        return ((AstVisitorExtendInterface<R, C>) visitor).visitTable(this, context);
     }
 
     @Override
@@ -220,6 +228,14 @@ public class TableRelation extends Relation {
 
     public void setQueryPeriod(QueryPeriod queryPeriod) {
         this.queryPeriod = queryPeriod;
+    }
+
+    public void setTvrVersionRange(TvrVersionRange tvrVersionRange) {
+        this.tvrVersionRange = tvrVersionRange;
+    }
+
+    public TvrVersionRange getTvrVersionRange() {
+        return tvrVersionRange;
     }
 
     public TableSampleClause getSampleClause() {

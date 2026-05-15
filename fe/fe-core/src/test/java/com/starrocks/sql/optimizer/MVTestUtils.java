@@ -15,16 +15,17 @@
 package com.starrocks.sql.optimizer;
 
 import com.starrocks.alter.AlterJobV2;
+import com.starrocks.common.util.ThreadUtil;
 import com.starrocks.server.GlobalStateMgr;
-import org.apache.hadoop.util.ThreadUtil;
+import com.starrocks.utframe.StarRocksTestBase;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 
 import java.util.Map;
 import java.util.Optional;
 
-public class MVTestUtils {
+public class MVTestUtils extends StarRocksTestBase {
     private static final Logger LOG = LogManager.getLogger(MVTestUtils.class);
 
     public static void waitingRollupJobV2Finish() {
@@ -37,7 +38,7 @@ public class MVTestUtils {
                 continue;
             }
             while (!alterJobV2.getJobState().isFinalState()) {
-                System.out.println(
+                logSysInfo(
                         "rollup job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
                 ThreadUtil.sleepAtLeastIgnoreInterrupts(1000L);
             }
@@ -55,8 +56,8 @@ public class MVTestUtils {
                         "alter job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
                 ThreadUtil.sleepAtLeastIgnoreInterrupts(100);
             }
-            System.out.println("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
-            Assert.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
+            logSysInfo("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
+            Assertions.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
         }
     }
 
@@ -77,8 +78,8 @@ public class MVTestUtils {
                     "alter job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
             ThreadUtil.sleepAtLeastIgnoreInterrupts(100);
         }
-        System.out.println("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
-        Assert.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
+        logSysInfo("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
+        Assertions.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
         return true;
     }
 }

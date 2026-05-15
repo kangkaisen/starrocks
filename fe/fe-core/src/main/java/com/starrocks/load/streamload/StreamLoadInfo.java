@@ -16,8 +16,8 @@ package com.starrocks.load.streamload;
 
 import com.google.common.collect.Lists;
 import com.google.re2j.Pattern;
-import com.starrocks.analysis.Expr;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.PartitionNames;
 import com.starrocks.common.Config;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.CompressionUtils;
@@ -31,24 +31,27 @@ import com.starrocks.sql.ast.ColumnSeparator;
 import com.starrocks.sql.ast.ImportColumnDesc;
 import com.starrocks.sql.ast.ImportColumnsStmt;
 import com.starrocks.sql.ast.ImportWhereStmt;
-import com.starrocks.sql.ast.PartitionNames;
+import com.starrocks.sql.ast.LoadStmt;
 import com.starrocks.sql.ast.RowDelimiter;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.parser.ParsingException;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TCompressionType;
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
 import com.starrocks.thrift.TPartialUpdateMode;
 import com.starrocks.thrift.TStreamLoadPutRequest;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.warehouse.Warehouse;
+import com.starrocks.warehouse.cngroup.CRAcquireContext;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.parquet.Strings;
 
 import java.util.List;
 import java.util.Optional;
-
-import static com.starrocks.server.WarehouseManager.DEFAULT_WAREHOUSE_NAME;
 
 public class StreamLoadInfo {
 
@@ -62,6 +65,7 @@ public class StreamLoadInfo {
     private boolean stripOuterArray;
     private String jsonPaths;
     private String jsonRoot;
+    private TEnvelopeType envelope = TEnvelopeType.NONE;
 
     // optional
     private List<ImportColumnDesc> columnExprDescs = Lists.newArrayList();
@@ -88,7 +92,7 @@ public class StreamLoadInfo {
     private String confluentSchemaRegistryUrl;
     private long logRejectedRecordNum = 0;
     private TPartialUpdateMode partialUpdateMode = TPartialUpdateMode.ROW_MODE;
-    private long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
+    private ComputeResource computeResource = WarehouseManager.DEFAULT_RESOURCE;
 
     private TCompressionType payloadCompressionType = TCompressionType.NO_COMPRESSION;
 
@@ -233,6 +237,14 @@ public class StreamLoadInfo {
         this.jsonRoot = jsonRoot;
     }
 
+    public TEnvelopeType getEnvelope() {
+        return envelope;
+    }
+
+    public void setEnvelope(TEnvelopeType envelope) {
+        this.envelope = envelope;
+    }
+
     public boolean isPartialUpdate() {
         return partialUpdate;
     }
@@ -265,24 +277,33 @@ public class StreamLoadInfo {
         this.logRejectedRecordNum = logRejectedRecordNum;
     }
 
-    public void setWarehouseId(long warehouseId) {
-        this.warehouseId = warehouseId;
+    public void setComputeResource(ComputeResource computeResource) {
+        this.computeResource = computeResource;
+    }
+
+    public ComputeResource getComputeResource() {
+        return computeResource;
     }
 
     public long getWarehouseId() {
-        return warehouseId;
+        return computeResource.getWarehouseId();
     }
 
     public static StreamLoadInfo fromHttpStreamLoadRequest(
-            TUniqueId id, long txnId, Optional<Integer> timeout, StreamLoadKvParams params)
+            TUniqueId id, long txnId, Optional<Integer> timeout, StreamLoadKvParams params, CRAcquireContext acquireContext)
             throws StarRocksException {
         StreamLoadInfo streamLoadInfo = new StreamLoadInfo(id, txnId,
                 params.getFileType().orElse(TFileType.FILE_STREAM),
                 params.getFileFormatType().orElse(TFileFormatType.FORMAT_CSV_PLAIN), timeout);
         streamLoadInfo.setOptionalFromStreamLoad(params);
-        String warehouseName = params.getWarehouse().orElse(DEFAULT_WAREHOUSE_NAME);
-        Warehouse warehouse = GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouse(warehouseName);
-        streamLoadInfo.setWarehouseId(warehouse.getId());
+
+        // acquire compute resource from warehouse
+        final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+        final ComputeResource computeResource = warehouseManager.acquireComputeResource(acquireContext);
+        streamLoadInfo.setComputeResource(computeResource);
+        LOG.info("Acquired compute resource for stream load, warehouse: {}, resource: {}",
+                acquireContext.getWarehouseId(), computeResource);
+
         return streamLoadInfo;
     }
 
@@ -292,6 +313,7 @@ public class StreamLoadInfo {
         StreamLoadInfo streamLoadInfo = new StreamLoadInfo(request.getLoadId(), request.getTxnId(),
                 streamLoadParams.getFileType().orElse(null), streamLoadParams.getFileFormatType().orElse(null));
         streamLoadInfo.setOptionalFromStreamLoad(streamLoadParams);
+        final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
         long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
         if (request.isSetBackend_id()) {
             SystemInfoService systemInfo = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
@@ -300,10 +322,14 @@ public class StreamLoadInfo {
         } else if (request.getWarehouse() != null && !request.getWarehouse().isEmpty()) {
             // For backward, we keep this else branch. We should prioritize using the method to get the warehouse by backend.
             String warehouseName = request.getWarehouse();
-            Warehouse warehouse = GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouse(warehouseName);
+            Warehouse warehouse = warehouseManager.getWarehouse(warehouseName);
             warehouseId = warehouse.getId();
         }
-        streamLoadInfo.setWarehouseId(warehouseId);
+
+        // acquire compute resource from warehouse
+        final ComputeResource computeResource = warehouseManager.acquireComputeResource(warehouseId);
+        streamLoadInfo.setComputeResource(computeResource);
+
         return streamLoadInfo;
     }
 
@@ -359,6 +385,23 @@ public class StreamLoadInfo {
             params.getStripOuterArray().ifPresent(value -> stripOuterArray = value);
         }
 
+        Optional<TEnvelopeType> envelopeOpt = params.getEnvelope();
+        if (envelopeOpt.isPresent() && envelopeOpt.get() != TEnvelopeType.NONE) {
+            if (formatType != TFileFormatType.FORMAT_JSON) {
+                throw new StarRocksException(
+                        StreamLoadHttpHeader.HTTP_ENVELOPE + " can only be specified when format is json");
+            }
+            if (!Strings.isNullOrEmpty(jsonRoot)) {
+                throw new StarRocksException(
+                        StreamLoadHttpHeader.HTTP_JSONROOT + " cannot be specified when envelope is set");
+            }
+            if (stripOuterArray) {
+                throw new StarRocksException(
+                        StreamLoadHttpHeader.HTTP_STRIP_OUTER_ARRAY + " cannot be specified when envelope is set");
+            }
+            envelope = envelopeOpt.get();
+        }
+
         params.getTransmissionCompressionType().ifPresent(
                 value -> compressionType = CompressionUtils.findTCompressionByName(value));
         params.getLoadDop().ifPresent(value -> loadParallelRequestNum = value);
@@ -390,6 +433,7 @@ public class StreamLoadInfo {
                 TFileType.FILE_STREAM, fileFormatType);
         streamLoadInfo.setOptionalFromRoutineLoadJob(routineLoadJob);
         streamLoadInfo.setLogRejectedRecordNum(routineLoadJob.getLogRejectedRecordNum());
+        streamLoadInfo.setComputeResource(routineLoadJob.getComputeResource());
         return streamLoadInfo;
     }
 
@@ -414,6 +458,9 @@ public class StreamLoadInfo {
             jsonRoot = routineLoadJob.getJsonRoot();
         }
         stripOuterArray = routineLoadJob.isStripOuterArray();
+        if (routineLoadJob.getEnvelope().equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)) {
+            envelope = TEnvelopeType.DEBEZIUM;
+        }
         partialUpdate = routineLoadJob.isPartialUpdate();
         partialUpdateMode = TPartialUpdateMode.ROW_MODE;
         if (routineLoadJob.getSessionVariables().containsKey(SessionVariable.EXEC_MEM_LIMIT)) {
@@ -429,7 +476,7 @@ public class StreamLoadInfo {
         trimSpace = routineLoadJob.isTrimspace();
         enclose = routineLoadJob.getEnclose();
         escape = routineLoadJob.getEscape();
-        warehouseId = routineLoadJob.getWarehouseId();
+        computeResource = routineLoadJob.getComputeResource();
     }
 
     // used for stream load

@@ -2,7 +2,7 @@
 displayed_sidebar: docs
 ---
 
-# Other FAQ
+# その他
 
 このトピックでは、一般的な質問への回答を提供します。
 
@@ -263,5 +263,5 @@ INSERT INTO t (event_time)
 SELECT DATE_ADD(NOW(), INTERVAL d hour)
 FROM table(generate_series(0, 8)) AS g(d);
 
-SHOW PARTITION FROM t;
+SHOW PARTITIONS FROM t;
 ```

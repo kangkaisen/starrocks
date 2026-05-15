@@ -17,10 +17,7 @@ package com.starrocks.planner;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
-import com.starrocks.analysis.SlotDescriptor;
-import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.catalog.KuduTable;
-import com.starrocks.catalog.Type;
 import com.starrocks.connector.CatalogConnector;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.RemoteFileInfo;
@@ -42,7 +39,8 @@ import com.starrocks.thrift.TPlanNodeType;
 import com.starrocks.thrift.TScanRange;
 import com.starrocks.thrift.TScanRangeLocation;
 import com.starrocks.thrift.TScanRangeLocations;
-import com.starrocks.warehouse.Warehouse;
+import com.starrocks.type.Type;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.kudu.client.KuduScanToken;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -150,13 +148,14 @@ public class KuduScanNode extends ScanNode {
         List<Long> allNodes;
         SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
         if (RunMode.isSharedDataMode()) {
-            WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
-            String warehouseName = WarehouseManager.DEFAULT_WAREHOUSE_NAME;
+            ComputeResource computeResource = WarehouseManager.DEFAULT_RESOURCE;
             if (ConnectContext.get() != null) {
-                warehouseName = ConnectContext.get().getCurrentWarehouseName();
+                computeResource = ConnectContext.get().getCurrentComputeResource();
             }
-            Warehouse warehouse = warehouseManager.getWarehouse(warehouseName);
-            allNodes = warehouseManager.getAliveComputeNodes(warehouse.getId()).stream().map(ComputeNode::getId)
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            allNodes = warehouseManager.getAliveComputeNodes(computeResource)
+                    .stream()
+                    .map(ComputeNode::getId)
                     .collect(Collectors.toList());
         } else {
             allNodes = systemInfoService.getAvailableBackendIds();
@@ -177,19 +176,19 @@ public class KuduScanNode extends ScanNode {
         }
         if (!scanNodePredicates.getPartitionConjuncts().isEmpty()) {
             output.append(prefix).append("PARTITION PREDICATES: ").append(
-                    getExplainString(scanNodePredicates.getPartitionConjuncts())).append("\n");
+                    explainExpr(scanNodePredicates.getPartitionConjuncts())).append("\n");
         }
         if (!scanNodePredicates.getNonPartitionConjuncts().isEmpty()) {
             output.append(prefix).append("NON-PARTITION PREDICATES: ").append(
-                    getExplainString(scanNodePredicates.getNonPartitionConjuncts())).append("\n");
+                    explainExpr(scanNodePredicates.getNonPartitionConjuncts())).append("\n");
         }
         if (!scanNodePredicates.getNoEvalPartitionConjuncts().isEmpty()) {
             output.append(prefix).append("NO EVAL-PARTITION PREDICATES: ").append(
-                    getExplainString(scanNodePredicates.getNoEvalPartitionConjuncts())).append("\n");
+                    explainExpr(scanNodePredicates.getNoEvalPartitionConjuncts())).append("\n");
         }
         if (!scanNodePredicates.getMinMaxConjuncts().isEmpty()) {
             output.append(prefix).append("MIN/MAX PREDICATES: ").append(
-                    getExplainString(scanNodePredicates.getMinMaxConjuncts())).append("\n");
+                    explainExpr(scanNodePredicates.getMinMaxConjuncts())).append("\n");
         }
 
         // TODO: support it in verbose
@@ -233,6 +232,8 @@ public class KuduScanNode extends ScanNode {
         HdfsScanNode.setMinMaxConjunctsToThrift(tHdfsScanNode, this, this.getScanNodePredicates());
         HdfsScanNode.setNonEvalPartitionConjunctsToThrift(tHdfsScanNode, this, this.getScanNodePredicates());
         HdfsScanNode.setNonPartitionConjunctsToThrift(msg, this, this.getScanNodePredicates());
+
+        setConnectorCatalogType(msg);
     }
 
     @Override

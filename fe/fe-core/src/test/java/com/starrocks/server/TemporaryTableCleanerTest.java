@@ -20,9 +20,9 @@ import mockit.Mock;
 import mockit.MockUp;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -31,7 +31,7 @@ import java.util.UUID;
 public class TemporaryTableCleanerTest {
     private static final Logger LOG = LogManager.getLogger(TemporaryTableCleanerTest.class);
     private static TemporaryTableCleaner cleaner;
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         FeConstants.temporaryTableCleanerTest = true;
         cleaner = new TemporaryTableCleaner();
@@ -58,9 +58,9 @@ public class TemporaryTableCleanerTest {
                 return result;
             }
         };
-        cleaner.runAfterCatalogReady();
-        Assert.assertTrue(mgr.sessionExists(session1));
-        Assert.assertFalse(mgr.sessionExists(session2));
+        cleaner.runAfterLeaseValid();
+        Assertions.assertTrue(mgr.sessionExists(session1));
+        Assertions.assertFalse(mgr.sessionExists(session2));
     }
 
     @Test
@@ -95,11 +95,11 @@ public class TemporaryTableCleanerTest {
                 }
             }
         };
-        cleaner.runAfterCatalogReady();
-        Assert.assertFalse(mgr.sessionExists(session1));
-        Assert.assertTrue(mgr.sessionExists(session2));
+        cleaner.runAfterLeaseValid();
+        Assertions.assertFalse(mgr.sessionExists(session1));
+        Assertions.assertTrue(mgr.sessionExists(session2));
 
-        cleaner.runAfterCatalogReady();
-        Assert.assertFalse(mgr.sessionExists(session2));
+        cleaner.runAfterLeaseValid();
+        Assertions.assertFalse(mgr.sessionExists(session2));
     }
 }

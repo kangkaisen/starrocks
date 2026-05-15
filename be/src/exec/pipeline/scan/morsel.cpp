@@ -17,6 +17,7 @@
 #include <fmt/compile.h>
 
 #include <memory>
+#include <mutex>
 
 #include "common/statusor.h"
 #include "exec/olap_utils.h"
@@ -76,6 +77,10 @@ void LogicalSplitScanMorsel::init_tablet_reader_params(TabletReaderParams* param
 }
 
 /// MorselQueueFactory.
+
+SharedMorselQueueFactory::SharedMorselQueueFactory(MorselQueuePtr queue, int size)
+        : _queue(std::move(queue)), _size(size) {}
+
 size_t SharedMorselQueueFactory::num_original_morsels() const {
     return _queue->num_original_morsels();
 }
@@ -85,8 +90,12 @@ Status SharedMorselQueueFactory::append_morsels([[maybe_unused]] int driver_seq,
     return Status::OK();
 }
 
-void SharedMorselQueueFactory::set_has_more(bool v) {
-    _queue->set_has_more(v);
+void SharedMorselQueueFactory::set_has_more_scan_ranges(bool v) {
+    _queue->set_has_more_scan_ranges(v);
+}
+
+bool SharedMorselQueueFactory::reach_limit() const {
+    return _queue->reach_limit();
 }
 
 size_t IndividualMorselQueueFactory::num_original_morsels() const {
@@ -101,9 +110,19 @@ Status MorselQueueFactory::append_morsels(int driver_seq, Morsels&& morsels) {
     return Status::NotSupported("MorselQueueFactory::append_morsels not supported");
 }
 
+StatusOr<int> MorselQueueFactory::next_driver_seq() {
+    return Status::NotSupported("MorselQueueFactory::next_driver_seq not supported");
+}
+
+Status MorselQueueFactory::mark_split_source_morsel_finished() {
+    return Status::NotSupported("MorselQueueFactory::mark_split_source_morsel_finished not supported");
+}
+
 IndividualMorselQueueFactory::IndividualMorselQueueFactory(std::map<int, MorselQueuePtr>&& queue_per_driver_seq,
-                                                           bool could_local_shuffle)
-        : _could_local_shuffle(could_local_shuffle) {
+                                                           bool could_local_shuffle,
+                                                           bool enable_random_append_split_morsel)
+        : _could_local_shuffle(could_local_shuffle),
+          _enable_random_append_split_morsel(enable_random_append_split_morsel) {
     if (queue_per_driver_seq.empty()) {
         _queue_per_driver_seq.emplace_back(pipeline::create_empty_morsel_queue());
         return;
@@ -118,6 +137,11 @@ IndividualMorselQueueFactory::IndividualMorselQueueFactory(std::map<int, MorselQ
         } else {
             _queue_per_driver_seq.emplace_back(std::move(it->second));
         }
+    }
+
+    if (_enable_random_append_split_morsel) {
+        int64_t total = static_cast<int64_t>(num_original_morsels());
+        _remaining_split_source_morsels.store(total, std::memory_order_relaxed);
     }
 }
 
@@ -135,14 +159,61 @@ static void ensure_size_of_queue_per_drive_seq(std::vector<MorselQueuePtr>& _que
 
 Status IndividualMorselQueueFactory::append_morsels(int driver_seq, Morsels&& morsels) {
     ensure_size_of_queue_per_drive_seq(_queue_per_driver_seq, driver_seq);
+
+#ifndef NDEBUG
+    // only append splitted morsel
+    if (_enable_random_append_split_morsel) {
+        for (const auto& morsel : morsels) {
+            auto* scan_morsel = down_cast<ScanMorsel*>(morsel.get());
+            DCHECK(scan_morsel != nullptr);
+            DCHECK(scan_morsel->get_split_context() != nullptr);
+        }
+    }
+#endif
+
     RETURN_IF_ERROR(_queue_per_driver_seq[driver_seq]->append_morsels(std::move(morsels)));
     return Status::OK();
 }
 
-void IndividualMorselQueueFactory::set_has_more(bool v) {
-    for (auto& q : _queue_per_driver_seq) {
-        q->set_has_more(v);
+StatusOr<int> IndividualMorselQueueFactory::next_driver_seq() {
+    int size = _queue_per_driver_seq.size();
+    if (size == 0) {
+        return Status::NotSupported("IndividualMorselQueueFactory::next_driver_seq empty");
     }
+    int seq = _random_cursor.fetch_add(1, std::memory_order_relaxed);
+    return seq % size;
+}
+
+void IndividualMorselQueueFactory::set_has_more_scan_ranges(bool v) {
+    for (auto& q : _queue_per_driver_seq) {
+        q->set_has_more_scan_ranges(v);
+    }
+}
+
+Status IndividualMorselQueueFactory::mark_split_source_morsel_finished() {
+    DCHECK(_enable_random_append_split_morsel);
+    int64_t remain = _remaining_split_source_morsels.load(std::memory_order_relaxed);
+    while (remain > 0) {
+        if (_remaining_split_source_morsels.compare_exchange_weak(remain, remain - 1, std::memory_order_relaxed,
+                                                                  std::memory_order_relaxed)) {
+            if (remain == 1) {
+                for (auto& q : _queue_per_driver_seq) {
+                    q->set_has_more_from_split(false);
+                }
+            }
+            return Status::OK();
+        }
+    }
+    return Status::OK();
+}
+
+bool IndividualMorselQueueFactory::reach_limit() const {
+    for (const auto& p : _queue_per_driver_seq) {
+        if (p->reach_limit()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 BucketSequenceMorselQueueFactory::BucketSequenceMorselQueueFactory(std::map<int, MorselQueuePtr>&& queue_per_driver_seq,
@@ -171,9 +242,9 @@ Status BucketSequenceMorselQueueFactory::append_morsels(int driver_seq, Morsels&
     return Status::OK();
 }
 
-void BucketSequenceMorselQueueFactory::set_has_more(bool v) {
+void BucketSequenceMorselQueueFactory::set_has_more_scan_ranges(bool v) {
     for (auto& q : _queue_per_driver_seq) {
-        q->set_has_more(v);
+        q->set_has_more_scan_ranges(v);
     }
 }
 
@@ -241,6 +312,7 @@ bool BucketSequenceMorselQueue::empty() const {
 }
 
 StatusOr<MorselPtr> BucketSequenceMorselQueue::try_get() {
+    std::lock_guard guard(_mutex);
     if (_unget_morsel != nullptr) {
         return std::move(_unget_morsel);
     }
@@ -249,6 +321,9 @@ StatusOr<MorselPtr> BucketSequenceMorselQueue::try_get() {
     }
     ASSIGN_OR_RETURN(auto morsel, _morsel_queue->try_get());
     auto* m = down_cast<ScanMorsel*>(morsel.get());
+    if (m == nullptr) {
+        return nullptr;
+    }
     DCHECK(m->has_owner_id());
     auto owner_id = m->owner_id();
     ASSIGN_OR_RETURN(int64_t next_owner_id, _peek_sequence_id());
@@ -262,6 +337,7 @@ std::string BucketSequenceMorselQueue::name() const {
 }
 
 StatusOr<bool> BucketSequenceMorselQueue::ready_for_next() const {
+    std::lock_guard guard(_mutex);
     if (_current_sequence < 0) {
         return true;
     }
@@ -306,10 +382,10 @@ void PhysicalSplitMorselQueue::set_key_ranges(const std::vector<std::unique_ptr<
     }
 }
 
-void PhysicalSplitMorselQueue::set_key_ranges(TabletReaderParams::RangeStartOperation range_start_op,
-                                              TabletReaderParams::RangeEndOperation range_end_op,
-                                              std::vector<OlapTuple> range_start_key,
-                                              std::vector<OlapTuple> range_end_key) {
+void PhysicalSplitMorselQueue::set_key_ranges(const TabletReaderParams::RangeStartOperation& range_start_op,
+                                              const TabletReaderParams::RangeEndOperation& range_end_op,
+                                              const std::vector<OlapTuple>& range_start_key,
+                                              const std::vector<OlapTuple>& range_end_key) {
     _range_start_op = range_start_op;
     _range_end_op = range_end_op;
     _range_start_key = range_start_key;
@@ -439,11 +515,22 @@ rowid_t PhysicalSplitMorselQueue::_upper_bound_ordinal(Segment* segment, const S
 }
 
 BaseRowset* PhysicalSplitMorselQueue::_cur_rowset() {
+    // Boundary check to prevent out-of-bounds access when tablet has no rowsets
+    if (_tablet_idx >= _tablet_rowsets.size()) {
+        return nullptr;
+    }
+    if (_rowset_idx >= _tablet_rowsets[_tablet_idx].size()) {
+        return nullptr;
+    }
     return _tablet_rowsets[_tablet_idx][_rowset_idx].get();
 }
 
 Segment* PhysicalSplitMorselQueue::_cur_segment() {
-    const auto& segments = _cur_rowset()->get_segments();
+    auto* rowset = _cur_rowset();
+    if (rowset == nullptr) {
+        return nullptr;
+    }
+    const auto& segments = rowset->get_segments();
     return _segment_idx >= segments.size() ? nullptr : segments[_segment_idx].get();
 }
 
@@ -468,7 +555,11 @@ bool PhysicalSplitMorselQueue::_is_last_split_of_current_morsel() {
     }
 
     // Check if reach the last segment of the current rowset.
-    const size_t num_segments = _tablet_rowsets[_tablet_idx][_rowset_idx]->get_segments().size();
+    auto* rowset = _cur_rowset();
+    if (rowset == nullptr) {
+        return true;
+    }
+    const size_t num_segments = rowset->get_segments().size();
     if (_segment_idx + 1 < num_segments) {
         return false;
     }
@@ -482,7 +573,13 @@ bool PhysicalSplitMorselQueue::_next_segment() {
         _has_init_any_segment = true;
     } else {
         // Read the next segment of the current rowset.
-        if (++_segment_idx >= _cur_rowset()->get_segments().size()) {
+        auto* rowset = _cur_rowset();
+        // If current tablet has no rowsets, skip to next tablet
+        if (rowset == nullptr) {
+            _segment_idx = 0;
+            _rowset_idx = 0;
+            ++_tablet_idx;
+        } else if (++_segment_idx >= rowset->get_segments().size()) {
             _segment_idx = 0;
             // Read the next rowset of the current tablet.
             if (++_rowset_idx >= _tablet_rowsets[_tablet_idx].size()) {
@@ -510,13 +607,22 @@ Status PhysicalSplitMorselQueue::_init_segment() {
                                                                _range_start_key, _range_end_key, &_tablet_seek_ranges,
                                                                &_mempool));
             } else {
+#ifndef __APPLE__
                 RETURN_IF_ERROR(lake::TabletReader::parse_seek_range(*_tablet_schema, _range_start_op, _range_end_op,
                                                                      _range_start_key, _range_end_key,
                                                                      &_tablet_seek_ranges, &_mempool));
+#else
+                return Status::RuntimeError("Lake storage is disabled on macOS");
+#endif
             }
         }
         // Read a new rowset.
-        RETURN_IF_ERROR(_cur_rowset()->load());
+        auto* rowset = _cur_rowset();
+        // If current tablet has no rowsets, return early
+        if (rowset == nullptr) {
+            return Status::OK();
+        }
+        RETURN_IF_ERROR(rowset->load());
     }
 
     _num_segment_rest_rows = 0;
@@ -572,10 +678,10 @@ void LogicalSplitMorselQueue::set_key_ranges(const std::vector<std::unique_ptr<O
     }
 }
 
-void LogicalSplitMorselQueue::set_key_ranges(TabletReaderParams::RangeStartOperation range_start_op,
-                                             TabletReaderParams::RangeEndOperation range_end_op,
-                                             std::vector<OlapTuple> range_start_key,
-                                             std::vector<OlapTuple> range_end_key) {
+void LogicalSplitMorselQueue::set_key_ranges(const TabletReaderParams::RangeStartOperation& range_start_op,
+                                             const TabletReaderParams::RangeEndOperation& range_end_op,
+                                             const std::vector<OlapTuple>& range_start_key,
+                                             const std::vector<OlapTuple>& range_end_key) {
     _range_start_op = range_start_op;
     _range_end_op = range_end_op;
     _range_start_key = range_start_key;
@@ -849,9 +955,13 @@ Status LogicalSplitMorselQueue::_init_tablet() {
                                                            _range_start_key, _range_end_key, &_tablet_seek_ranges,
                                                            &_mempool));
         } else {
+#ifndef __APPLE__
             RETURN_IF_ERROR(lake::TabletReader::parse_seek_range(*_tablet_schema, _range_start_op, _range_end_op,
                                                                  _range_start_key, _range_end_key, &_tablet_seek_ranges,
                                                                  &_mempool));
+#else
+            return Status::RuntimeError("Lake storage is disabled on macOS");
+#endif
         }
     }
 

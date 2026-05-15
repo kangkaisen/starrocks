@@ -14,18 +14,22 @@
 
 package com.starrocks.connector.jdbc;
 
-import com.starrocks.analysis.BinaryPredicate;
-import com.starrocks.analysis.BinaryType;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.LargeStringLiteral;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.StringLiteral;
-import com.starrocks.analysis.TableName;
+import com.starrocks.catalog.JDBCResource;
+import com.starrocks.catalog.JDBCTable;
+import com.starrocks.catalog.TableName;
 import com.starrocks.sql.analyzer.AstToStringBuilder;
+import com.starrocks.sql.ast.expression.BinaryPredicate;
+import com.starrocks.sql.ast.expression.BinaryType;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.LargeStringLiteral;
+import com.starrocks.sql.ast.expression.SlotRef;
+import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.parser.NodePosition;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 public class JDBCTableTest {
@@ -34,13 +38,13 @@ public class JDBCTableTest {
     public void testJDBCTableNameClass() {
         try {
             JDBCTableName jdbcTableName = new JDBCTableName("catalog", "db", "tbl");
-            Assert.assertTrue(jdbcTableName.getCatalogName().equals("catalog"));
-            Assert.assertTrue(jdbcTableName.getDatabaseName().equals("db"));
-            Assert.assertTrue(jdbcTableName.getTableName().equals("tbl"));
-            Assert.assertTrue(jdbcTableName.toString().contains("tbl"));
+            Assertions.assertTrue(jdbcTableName.getCatalogName().equals("catalog"));
+            Assertions.assertTrue(jdbcTableName.getDatabaseName().equals("db"));
+            Assertions.assertTrue(jdbcTableName.getTableName().equals("tbl"));
+            Assertions.assertTrue(jdbcTableName.toString().contains("tbl"));
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            Assert.fail();
+            Assertions.fail();
         }
     }
 
@@ -48,14 +52,34 @@ public class JDBCTableTest {
     public void testJDBCPartitionClass() {
         try {
             Partition partition = new Partition("20230810", 1000L);
-            Assert.assertTrue(partition.equals(partition));
-            Assert.assertTrue(partition.hashCode() == Objects.hash("20230810", 1000L));
-            Assert.assertTrue(partition.toString().contains("20230810"));
-            Assert.assertTrue(partition.toJson().toString().contains("20230810"));
+            Assertions.assertTrue(partition.equals(partition));
+            Assertions.assertTrue(partition.hashCode() == Objects.hash("20230810", 1000L));
+            Assertions.assertTrue(partition.toString().contains("20230810"));
+            Assertions.assertTrue(partition.toJson().toString().contains("20230810"));
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            Assert.fail();
+            Assertions.fail();
         }
+    }
+
+    private JDBCTable buildJDBCTable(String uri) throws Exception {
+        Map<String, String> props = new HashMap<>();
+        props.put(JDBCResource.URI, uri);
+        props.put(JDBCResource.USER, "root");
+        props.put(JDBCResource.PASSWORD, "");
+        props.put(JDBCResource.DRIVER_URL, "https://example.com/driver.jar");
+        props.put(JDBCResource.CHECK_SUM, "abc");
+        props.put(JDBCResource.DRIVER_CLASS, "com.mysql.cj.jdbc.Driver");
+        return new JDBCTable(1L, "test", null, props);
+    }
+
+    @Test
+    public void testIsMySQLCompatible() throws Exception {
+        Assertions.assertTrue(buildJDBCTable("jdbc:mysql://host:3306/db").isMySQLCompatible());
+        Assertions.assertTrue(buildJDBCTable("jdbc:mariadb://host:3306/db").isMySQLCompatible());
+        Assertions.assertFalse(buildJDBCTable("jdbc:postgresql://host:5432/db").isMySQLCompatible());
+        Assertions.assertFalse(buildJDBCTable("jdbc:oracle:thin:@host:1521:db").isMySQLCompatible());
+        Assertions.assertFalse(buildJDBCTable("jdbc:sqlserver://host:1433").isMySQLCompatible());
     }
 
     @Test
@@ -66,7 +90,7 @@ public class JDBCTableTest {
                     NodePosition.ZERO);
             Expr expr = new BinaryPredicate(BinaryType.EQ, left, right);
             String str = AstToStringBuilder.toString(expr);
-            Assert.assertEquals(str, "db.tbl.k1 = 'main_interface_of_live#all_module#null#write_real_time_start#0'");
+            Assertions.assertEquals(str, "db.tbl.k1 = 'main_interface_of_live#all_module#null#write_real_time_start#0'");
         }
 
         {
@@ -74,7 +98,7 @@ public class JDBCTableTest {
             Expr right = new StringLiteral("123", NodePosition.ZERO);
             Expr expr = new BinaryPredicate(BinaryType.LE, left, right);
             String str = AstToStringBuilder.toString(expr);
-            Assert.assertEquals(str, "db.tbl.k1 <= '123'");
+            Assertions.assertEquals(str, "db.tbl.k1 <= '123'");
         }
     }
 }

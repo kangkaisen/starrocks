@@ -34,6 +34,10 @@
 
 #include "storage/rowset/scalar_column_iterator.h"
 
+#include "base/bit/bitmap.h"
+#include "common/config_rowset_fwd.h"
+#include "common/config_scan_io_fwd.h"
+#include "common/config_storage_fwd.h"
 #include "common/status.h"
 #include "storage/column_predicate.h"
 #include "storage/rowset/binary_dict_page.h"
@@ -41,8 +45,8 @@
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/dict_page.h"
 #include "storage/rowset/encoding_info.h"
+#include "storage/rowset/page_handle_fwd.h"
 #include "types/logical_type.h"
-#include "util/bitmap.h"
 
 namespace starrocks {
 
@@ -54,9 +58,8 @@ Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
     _opts = opts;
 
     IndexReadOptions index_opts;
-    index_opts.use_page_cache = !opts.temporary_data && opts.use_page_cache &&
-                                (config::enable_ordinal_index_memory_page_cache || !config::disable_storage_page_cache);
-    index_opts.kept_in_memory = !opts.temporary_data && config::enable_ordinal_index_memory_page_cache;
+    index_opts.use_page_cache = !opts.temporary_data && opts.use_page_cache && !config::disable_storage_page_cache &&
+                                config::enable_ordinal_index_memory_page_cache;
     index_opts.lake_io_opts = opts.lake_io_opts;
     index_opts.read_file = _opts.read_file;
     index_opts.stats = _opts.stats;
@@ -230,7 +233,6 @@ Status ScalarColumnIterator::next_batch(size_t* n, Column* dst) {
                 break;
             }
         }
-
         contain_deleted_row = contain_deleted_row || _contains_deleted_row(_page->page_index());
         // number of rows to be read from this page
         size_t nread = remaining;
@@ -270,6 +272,14 @@ Status ScalarColumnIterator::null_count(size_t* count) {
 }
 
 Status ScalarColumnIterator::next_batch(const SparseRange<>& range, Column* dst) {
+    auto read_func = [](ParsedPage* page, Column* column, const SparseRange<>& read_range) -> Status {
+        return page->read(column, read_range);
+    };
+    return _next_batch_template(range, dst, read_func);
+}
+
+template <typename ReadFunc>
+Status ScalarColumnIterator::_next_batch_template(const SparseRange<>& range, Column* dst, ReadFunc&& read_func) {
     size_t prev_bytes = dst->byte_size();
     SparseRangeIterator<> iter = range.new_iterator();
     size_t end_ord = _page->first_ordinal() + _page->num_rows();
@@ -321,7 +331,7 @@ Status ScalarColumnIterator::next_batch(const SparseRange<>& range, Column* dst)
             // current page have been added in read range
             // read current page data first
             contain_deleted_row = contain_deleted_row || _contains_deleted_row(_page->page_index());
-            RETURN_IF_ERROR(_page->read(dst, read_range));
+            RETURN_IF_ERROR(read_func(_page.get(), dst, read_range));
             read_range.clear();
         }
     }
@@ -329,13 +339,33 @@ Status ScalarColumnIterator::next_batch(const SparseRange<>& range, Column* dst)
     if (!read_range.empty()) {
         // read data left if read range is not empty
         contain_deleted_row = contain_deleted_row || _contains_deleted_row(_page->page_index());
-        RETURN_IF_ERROR(_page->read(dst, read_range));
+        RETURN_IF_ERROR(read_func(_page.get(), dst, read_range));
         read_range.clear();
     }
     dst->set_delete_state(contain_deleted_row ? DEL_PARTIAL_SATISFIED : DEL_NOT_SATISFIED);
     _opts.stats->bytes_read += (dst->byte_size() - prev_bytes);
 
     return Status::OK();
+}
+
+Status ScalarColumnIterator::next_batch_with_filter(const SparseRange<>& range, Column* dst,
+                                                    const std::vector<const ColumnPredicate*>& compound_and_predicates,
+                                                    Buffer<uint8_t>* selection, Buffer<uint16_t>* selected_idx,
+                                                    size_t* processed_rows) {
+    size_t cur_col_size = dst->size();
+    uint8_t* cur_sel = selection->data() + cur_col_size;
+    uint16_t* cur_idx = selected_idx->data() + cur_col_size;
+    auto read_func = [&](ParsedPage* page, Column* column, const SparseRange<>& read_range) -> Status {
+        RETURN_IF_ERROR(page->read_with_filter(column, read_range, compound_and_predicates, cur_sel, cur_idx));
+        // Update selection and selected_idx pointers to point to the next position
+        // after processing this page's data
+        size_t total_rows = read_range.span_size();
+        cur_sel += total_rows;
+        cur_idx += total_rows;
+        *processed_rows += total_rows;
+        return Status::OK();
+    };
+    return _next_batch_template(range, dst, read_func);
 }
 
 Status ScalarColumnIterator::_load_next_page(bool* eos) {
@@ -357,8 +387,9 @@ Status ScalarColumnIterator::_load_dict_page() {
     // read dictionary page
     Slice dict_data;
     PageFooterPB dict_footer;
+    PageHandle dict_page_handle;
     RETURN_IF_ERROR(
-            _reader->read_page(_opts, _reader->get_dict_page_pointer(), &_dict_page_handle, &dict_data, &dict_footer));
+            _reader->read_page(_opts, _reader->get_dict_page_pointer(), &dict_page_handle, &dict_data, &dict_footer));
     // ignore dict_footer.dict_page_footer().encoding() due to only
     // PLAIN_ENCODING is supported for dict page right now
     if constexpr (Type == TYPE_CHAR || Type == TYPE_VARCHAR || Type == TYPE_JSON) {
@@ -366,6 +397,7 @@ Status ScalarColumnIterator::_load_dict_page() {
     } else {
         _dict_decoder = std::make_unique<BitShufflePageDecoder<Type>>(dict_data);
     }
+    _dict_decoder->set_page_handle(std::make_shared<PageHandle>(std::move(dict_page_handle)));
     return _dict_decoder->init();
 }
 
@@ -412,7 +444,7 @@ Status ScalarColumnIterator::_read_data_page(const OrdinalPageIndexIterator& ite
 
 Status ScalarColumnIterator::get_row_ranges_by_zone_map(const std::vector<const ColumnPredicate*>& predicates,
                                                         const ColumnPredicate* del_predicate, SparseRange<>* row_ranges,
-                                                        CompoundNodeType pred_relation) {
+                                                        CompoundNodeType pred_relation, const Range<>* src_range) {
     DCHECK(row_ranges->empty());
     if (_reader->has_zone_map()) {
         if (!_delete_partial_satisfied_pages.has_value()) {
@@ -420,14 +452,13 @@ Status ScalarColumnIterator::get_row_ranges_by_zone_map(const std::vector<const 
         }
 
         IndexReadOptions opts;
-        opts.use_page_cache = !_opts.temporary_data && _opts.use_page_cache &&
-                              (config::enable_zonemap_index_memory_page_cache || !config::disable_storage_page_cache);
-        opts.kept_in_memory = !_opts.temporary_data && config::enable_zonemap_index_memory_page_cache;
+        opts.use_page_cache = !_opts.temporary_data && _opts.use_page_cache && !config::disable_storage_page_cache &&
+                              config::enable_zonemap_index_memory_page_cache;
         opts.lake_io_opts = _opts.lake_io_opts;
         opts.read_file = _opts.read_file;
         opts.stats = _opts.stats;
         RETURN_IF_ERROR(_reader->zone_map_filter(predicates, del_predicate, &_delete_partial_satisfied_pages.value(),
-                                                 row_ranges, opts, pred_relation));
+                                                 row_ranges, opts, pred_relation, src_range));
     } else {
         row_ranges->add({0, static_cast<rowid_t>(_reader->num_rows())});
     }
@@ -463,7 +494,6 @@ Status ScalarColumnIterator::get_row_ranges_by_bloom_filter(const std::vector<co
 
     IndexReadOptions opts;
     opts.use_page_cache = !_opts.temporary_data && !config::disable_storage_page_cache && _opts.use_page_cache;
-    opts.kept_in_memory = false;
     opts.lake_io_opts = _opts.lake_io_opts;
     opts.read_file = _opts.read_file;
     opts.stats = _opts.stats;
@@ -623,49 +653,63 @@ Status ScalarColumnIterator::_do_decode_dict_codes(const int32_t* codes, size_t 
     return Status::OK();
 }
 
-template <typename PageParseFunc>
-Status ScalarColumnIterator::_fetch_by_rowid(const rowid_t* rowids, size_t size, Column* values,
-                                             PageParseFunc&& page_parse) {
+template <typename RowidReaderFunc, typename RangeReaderFunc>
+Status ScalarColumnIterator::_fetch_by_rowid_helper(const rowid_t* rowids, size_t size, Column* values,
+                                                    RowidReaderFunc&& rowid_reader, RangeReaderFunc&& range_reader) {
     DCHECK(std::is_sorted(rowids, rowids + size));
     RETURN_IF(size == 0, Status::OK());
     size_t prev_bytes = values->byte_size();
-    const rowid_t* const end = rowids + size;
     bool contain_deleted_row = (values->delete_state() != DEL_NOT_SATISFIED);
-    do {
-        RETURN_IF_ERROR(seek_to_ordinal(*rowids));
+    const rowid_t* cursor = rowids;
+    const rowid_t* const end = rowids + size;
+    while (cursor != end) {
+        RETURN_IF_ERROR(seek_to_ordinal(*cursor));
         contain_deleted_row = contain_deleted_row || _contains_deleted_row(_page->page_index());
         auto last_rowid = implicit_cast<rowid_t>(_page->first_ordinal() + _page->num_rows());
-        const rowid_t* next_page_rowid = std::lower_bound(rowids, end, last_rowid);
-        while (rowids != next_page_rowid) {
-            DCHECK_EQ(_current_ordinal, _page->first_ordinal() + _page->offset());
-            rowid_t curr = *rowids;
-            _current_ordinal = implicit_cast<ordinal_t>(curr);
-            RETURN_IF_ERROR(_page->seek(curr - _page->first_ordinal()));
-            const rowid_t* p = rowids + 1;
-            while ((next_page_rowid != p) && (*p == curr + 1)) {
-                curr = *p++;
+        const rowid_t* next_page_rowid = std::lower_bound(cursor, end, last_rowid);
+        if (_page->supports_read_by_rowids()) {
+            size_t nread = next_page_rowid - cursor;
+            RETURN_IF_ERROR(rowid_reader(_page.get(), values, cursor, &nread));
+            cursor += nread;
+        } else {
+            while (cursor != next_page_rowid) {
+                DCHECK_EQ(_current_ordinal, _page->first_ordinal() + _page->offset());
+                rowid_t curr = *cursor;
+                _current_ordinal = implicit_cast<ordinal_t>(curr);
+                RETURN_IF_ERROR(_page->seek(curr - _page->first_ordinal()));
+                const rowid_t* contiguous = cursor + 1;
+                while ((contiguous != next_page_rowid) && (*contiguous == curr + 1)) {
+                    curr = *contiguous++;
+                }
+                size_t run = contiguous - cursor;
+                RETURN_IF_ERROR(range_reader(_page.get(), values, &run));
+                _current_ordinal += run;
+                cursor = contiguous;
             }
-            size_t nread = p - rowids;
-            RETURN_IF_ERROR(page_parse(values, &nread));
-            _current_ordinal += nread;
-            rowids = p;
+            DCHECK_EQ(_current_ordinal, _page->first_ordinal() + _page->offset());
         }
-        DCHECK_EQ(_current_ordinal, _page->first_ordinal() + _page->offset());
-    } while (rowids != end);
+    }
     values->set_delete_state(contain_deleted_row ? DEL_PARTIAL_SATISFIED : DEL_NOT_SATISFIED);
     _opts.stats->bytes_read += static_cast<int64_t>(values->byte_size() - prev_bytes);
-    DCHECK_EQ(_current_ordinal, _page->first_ordinal() + _page->offset());
     return Status::OK();
 }
 
 Status ScalarColumnIterator::fetch_values_by_rowid(const rowid_t* rowids, size_t size, Column* values) {
-    auto page_parse = [&](Column* column, size_t* count) { return _page->read(column, count); };
-    return _fetch_by_rowid(rowids, size, values, page_parse);
+    auto rowid_reader = [&](ParsedPage* page, Column* column, const rowid_t* rowid_batch, size_t* count) {
+        return page->read_by_rowids(column, rowid_batch, count);
+    };
+    auto range_reader = [&](ParsedPage* page, Column* column, size_t* count) { return page->read(column, count); };
+    return _fetch_by_rowid_helper(rowids, size, values, rowid_reader, range_reader);
 }
 
 Status ScalarColumnIterator::fetch_dict_codes_by_rowid(const rowid_t* rowids, size_t size, Column* values) {
-    auto page_parse = [&](Column* column, size_t* count) { return _page->read_dict_codes(column, count); };
-    return _fetch_by_rowid(rowids, size, values, page_parse);
+    auto rowid_reader = [&](ParsedPage* page, Column* column, const rowid_t* rowid_batch, size_t* count) {
+        return page->read_dict_codes_by_rowids(column, rowid_batch, count);
+    };
+    auto range_reader = [&](ParsedPage* page, Column* column, size_t* count) {
+        return page->read_dict_codes(column, count);
+    };
+    return _fetch_by_rowid_helper(rowids, size, values, rowid_reader, range_reader);
 }
 
 int ScalarColumnIterator::dict_size() {
@@ -715,7 +759,7 @@ StatusOr<std::vector<std::pair<int64_t, int64_t>>> ScalarColumnIterator::get_io_
             // merge page index
             page_index.back().second = iter_end.page_index();
         } else {
-            page_index.emplace_back(std::make_pair(iter_start.page_index(), iter_end.page_index()));
+            page_index.emplace_back(iter_start.page_index(), iter_end.page_index());
         }
 
         prev_page_index = iter_end.page_index();
@@ -732,6 +776,33 @@ StatusOr<std::vector<std::pair<int64_t, int64_t>>> ScalarColumnIterator::get_io_
     }
 
     return res;
+}
+
+bool ScalarColumnIterator::support_push_down_predicate(
+        const std::vector<const ColumnPredicate*>& compound_and_predicates) {
+    // Check if there's a binary column != '' predicate
+    // This predicate cannot be efficiently pushed down
+    for (const auto* pred : compound_and_predicates) {
+        if (pred->type() == PredicateType::kNE && pred->type_info()->type() == TYPE_VARCHAR) {
+            const Datum& value = pred->value();
+            if (!value.is_null()) {
+                const Slice& value_slice = value.get_slice();
+                if (value_slice.empty()) {
+                    // Found binary col <> '' predicate, cannot support push down
+                    return false;
+                }
+            }
+        }
+    }
+
+    // if this column is low cardinality column, do not push down filter
+    if (_reader->has_all_dict_encoded() && _reader->all_dict_encoded()) {
+        return false;
+    }
+
+    // push down filter is this is varchar, since varchar doesn't support zero copy
+    // and copy varchar is a heavy operation
+    return _reader->column_type() == TYPE_VARCHAR;
 }
 
 } // namespace starrocks

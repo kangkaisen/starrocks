@@ -14,20 +14,21 @@
 
 #include <utility>
 
+#include "column/adaptive_nullable_column.h"
 #include "column/array_column.h"
 #include "column/column_helper.h"
 #include "column/column_visitor_adapter.h"
 #include "column/const_column.h"
-#include "column/datum.h"
 #include "column/json_column.h"
 #include "column/map_column.h"
 #include "column/nullable_column.h"
+#include "column/simd_selector.h"
 #include "column/vectorized_fwd.h"
 #include "exec/sorting/sort_helper.h"
 #include "exec/sorting/sort_permute.h"
 #include "exec/sorting/sorting.h"
 #include "glog/logging.h"
-#include "simd/selector.h"
+#include "types/datum.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
@@ -90,7 +91,7 @@ public:
         // Two step compare:
         // 1. Compare null values, store at temporary result
         // 2. Mask notnull values, and compare not-null values
-        const NullData& null_data = column.immutable_null_column_data();
+        const auto null_data = column.immutable_null_column_data();
 
         int nan_direction = _sort_order * _null_first;
 
@@ -157,11 +158,8 @@ public:
 
     Status do_visit(const ArrayColumn& column) {
         // Convert the datum to a array column
-        auto rhs_column = column.elements().clone_empty();
-        auto& datum_array = _rhs_value.get_array();
-        for (auto& x : datum_array) {
-            rhs_column->append_datum(x);
-        }
+        auto rhs_column = column.clone_empty();
+        rhs_column->append_datum(_rhs_value);
         auto cmp = [&](int lhs_index) {
             return column.compare_at(lhs_index, 0, *rhs_column, _null_first) * _sort_order;
         };
@@ -181,13 +179,20 @@ public:
     }
 
     Status do_visit(const StructColumn& column) {
-        //TODO(SmithCruise)
-        return Status::NotSupported("Not support");
+        // Convert the datum to a struct column
+        auto rhs_column = column.clone_empty();
+        rhs_column->append_datum(_rhs_value);
+        auto cmp = [&](int lhs_index) {
+            return column.compare_at(lhs_index, 0, *rhs_column, _null_first) * _sort_order;
+        };
+        _equal_count = compare_column_helper(_cmp_vector, cmp);
+
+        return Status::OK();
     }
 
     template <typename T>
     Status do_visit(const BinaryColumnBase<T>& column) {
-        const auto& lhs_datas = column.get_proxy_data();
+        const auto lhs_datas = column.immutable_data();
         Slice rhs_data = _rhs_value.get<Slice>();
 
         if (_sort_order == 1) {
@@ -204,7 +209,7 @@ public:
     template <typename T>
     Status do_visit(const FixedLengthColumnBase<T>& column) {
         T rhs_data = _rhs_value.get<T>();
-        auto& lhs_data = column.get_data();
+        const auto lhs_data = column.immutable_data();
 
         if (_sort_order == 1) {
             auto cmp = [&](int lhs_row) { return SorterComparator<T>::compare(lhs_data[lhs_row], rhs_data); };
@@ -224,8 +229,13 @@ public:
         return Status::NotSupported("not support object column sort_and_tie");
     }
 
+    Status do_visit(const AdaptiveNullableColumn& column) {
+        // TODO: supported later
+        return Status::NotSupported("not support AdaptiveNullableColumn in ColumnCompare");
+    }
+
     Status do_visit(const JsonColumn& column) {
-        auto& lhs_data = column.get_data();
+        const auto lhs_data = column.immutable_data();
         const JsonValue& rhs_json = *_rhs_value.get_json();
 
         if (_sort_order == 1) {
@@ -266,7 +276,7 @@ public:
         // 1. Compare the null flag
         // 2. Compare the value if both are not null. Since value for null is just default value,
         //    which are equal, so just compare the value directly
-        const NullData& null_data = column.immutable_null_column_data();
+        const auto null_data = column.immutable_null_column_data();
         for (size_t i = 1; i < column.size(); i++) {
             (*_tie)[i] &= (null_data[i - 1] == null_data[i]);
         }
@@ -277,13 +287,13 @@ public:
 
     template <typename T>
     Status do_visit(const BinaryColumnBase<T>& column) {
-        auto& data = column.get_proxy_data();
-        const NullData* null_data = nullptr;
+        auto data = column.immutable_data();
+        ImmutableNullData null_data;
         if (_nullable_column != nullptr) {
-            null_data = &_nullable_column->get_data();
+            null_data = _nullable_column->immutable_data();
         }
         for (size_t i = 1; i < column.size(); i++) {
-            if ((null_data == nullptr) || ((*null_data)[i - 1] != 1 && (*null_data)[i] != 1)) {
+            if ((null_data.empty()) || (null_data[i - 1] != 1 && null_data[i] != 1)) {
                 (*_tie)[i] &= SorterComparator<Slice>::compare(data[i - 1], data[i]) == 0;
             }
         }
@@ -292,13 +302,13 @@ public:
 
     template <typename T>
     Status do_visit(const FixedLengthColumnBase<T>& column) {
-        auto& data = column.get_data();
-        const NullData* null_data = nullptr;
+        const auto data = column.immutable_data();
+        ImmutableNullData null_data;
         if (_nullable_column != nullptr) {
-            null_data = &_nullable_column->get_data();
+            null_data = _nullable_column->immutable_data();
         }
         for (size_t i = 1; i < column.size(); i++) {
-            if ((null_data == nullptr) || ((*null_data)[i - 1] != 1 && (*null_data)[i] != 1)) {
+            if ((null_data.empty()) || (null_data[i - 1] != 1 && null_data[i] != 1)) {
                 (*_tie)[i] &= SorterComparator<T>::compare(data[i - 1], data[i]) == 0;
             }
         }
@@ -309,6 +319,7 @@ public:
     Status do_visit(const ArrayColumn& column) { return Status::NotSupported("Not support"); }
     Status do_visit(const MapColumn& column) { return Status::NotSupported("Not support"); }
     Status do_visit(const StructColumn& column) { return Status::NotSupported("Not support"); }
+
     template <typename T>
     Status do_visit(const ObjectColumn<T>& column) {
         return Status::NotSupported("not support");

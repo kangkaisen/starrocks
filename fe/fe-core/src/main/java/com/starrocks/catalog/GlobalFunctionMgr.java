@@ -14,7 +14,6 @@
 
 package com.starrocks.catalog;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.starrocks.common.StarRocksException;
@@ -32,6 +31,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * global function manager
@@ -75,29 +75,28 @@ public class GlobalFunctionMgr {
         return func;
     }
 
-    private void addFunction(Function function, boolean isReplay, boolean allowExists, boolean createIfNotExists)
+    private boolean checkAddFunction(Function function, boolean allowExists, boolean createIfNotExists)
             throws StarRocksException {
         String functionName = function.getFunctionName().getFunction();
         List<Function> existFuncs = name2Function.getOrDefault(functionName, ImmutableList.of());
         if (allowExists && createIfNotExists) {
-            // In most DB system (like MySQL, Oracle, Snowflake etc.), these two conditions are now allowed to use together
+            // In most DB system (like MySQL, Oracle, Snowflake etc.), these two conditions are not allowed to use together
             throw new StarRocksException(
                     "\"IF NOT EXISTS\" and \"OR REPLACE\" cannot be used together in the same CREATE statement");
         }
-        if (!isReplay) {
-            for (Function existFunc : existFuncs) {
-                if (function.compare(existFunc, Function.CompareMode.IS_IDENTICAL)) {
-                    if (createIfNotExists) {
-                        LOG.info("create function [{}] which already exists", functionName);
-                        return;
-                    } else if (!allowExists) {
-                        throw new StarRocksException("function already exists");
-                    }
+        for (Function existFunc : existFuncs) {
+            if (function.compare(existFunc, Function.CompareMode.IS_IDENTICAL)) {
+                if (createIfNotExists) {
+                    LOG.info("create function [{}] which already exists", functionName);
+                    return false;
+                } else if (!allowExists) {
+                    throw new StarRocksException("function already exists");
                 }
             }
-            assignIdToUserDefinedFunction(function);
         }
-        name2Function.put(functionName, addOrReplaceFunction(function, existFuncs));
+
+        return true;
+
     }
 
     /**
@@ -109,12 +108,27 @@ public class GlobalFunctionMgr {
      * @return a new list of functions with the given function added or replaced.
      */
     public static ImmutableList<Function> addOrReplaceFunction(Function function, List<Function> existFuncs) {
-        return ImmutableList.<Function>builder()
-                .addAll(existFuncs.stream()
-                        .filter(f -> !function.compare(f, Function.CompareMode.IS_IDENTICAL))
-                        .collect(ImmutableList.toImmutableList()))
-                .add(function)
-                .build();
+        List<Function> filteredFuncs = existFuncs.stream()
+                .filter(f -> !function.compare(f, Function.CompareMode.IS_IDENTICAL))
+                .collect(Collectors.toList());
+
+        filteredFuncs.add(function);
+
+        filteredFuncs.sort((f1, f2) -> {
+            if (f1.getArgs().length == 1 && f2.getArgs().length == 1) {
+                boolean f1IsNumeric = f1.getArgs()[0].isNumericType();
+                boolean f2IsNumeric = f2.getArgs()[0].isNumericType();
+
+                if (f1IsNumeric && !f2IsNumeric) {
+                    return -1;
+                } else if (!f1IsNumeric && f2IsNumeric) {
+                    return 1;
+                }
+            }
+            return 0;
+        });
+
+        return ImmutableList.copyOf(filteredFuncs);
     }
 
     /**
@@ -130,27 +144,49 @@ public class GlobalFunctionMgr {
 
     public synchronized void userAddFunction(Function f, boolean allowExists, boolean createIfNotExists) throws
             StarRocksException {
-        addFunction(f, false, allowExists, createIfNotExists);
-        GlobalStateMgr.getCurrentState().getEditLog().logAddFunction(f);
-    }
-
-    public synchronized void replayAddFunction(Function f) {
-        try {
-            addFunction(f, true, false, false);
-        } catch (StarRocksException e) {
-            Preconditions.checkArgument(false);
+        if (checkAddFunction(f, allowExists, createIfNotExists)) {
+            assignIdToUserDefinedFunction(f);
+            GlobalStateMgr.getCurrentState().getEditLog().logAddFunction(f, wal -> replayAddFunction(f));
         }
     }
 
-    private void dropFunction(FunctionSearchDesc function, boolean dropIfExists) throws StarRocksException {
+    public synchronized void replayAddFunction(Function f) {
+        String functionName = f.getFunctionName().getFunction();
+        List<Function> existFuncs = name2Function.getOrDefault(functionName, ImmutableList.of());
+        name2Function.put(functionName, addOrReplaceFunction(f, existFuncs));
+    }
+
+    private boolean checkDropFunction(FunctionSearchDesc function, boolean dropIfExists) throws StarRocksException {
         String functionName = function.getName().getFunction();
         List<Function> existFuncs = name2Function.get(functionName);
         if (existFuncs == null) {
             if (dropIfExists) {
                 LOG.info("drop function [{}] which does not exist", functionName);
-                return;
+                return false;
             }
             throw new StarRocksException("Unknown function, function=" + function.toString());
+        }
+        boolean isFound = false;
+        for (Function existFunc : existFuncs) {
+            if (function.isIdentical(existFunc)) {
+                isFound = true;
+            } 
+        }
+        if (!isFound) {
+            if (dropIfExists) {
+                LOG.info("drop function [{}] which does not exist", functionName);
+                return false;
+            }
+            throw new StarRocksException("Unknown function, function=" + function.toString());
+        }
+        return true;
+    }
+
+    private void dropFunctionInternal(FunctionSearchDesc function) {
+        String functionName = function.getName().getFunction();
+        List<Function> existFuncs = name2Function.get(functionName);
+        if (existFuncs == null) {
+            return;
         }
         boolean isFound = false;
         ImmutableList.Builder<Function> builder = ImmutableList.builder();
@@ -162,11 +198,7 @@ public class GlobalFunctionMgr {
             }
         }
         if (!isFound) {
-            if (dropIfExists) {
-                LOG.info("drop function [{}] which does not exist", functionName);
-                return;
-            }
-            throw new StarRocksException("Unknown function, function=" + function.toString());
+            return;
         }
         ImmutableList<Function> newFunctions = builder.build();
         if (newFunctions.isEmpty()) {
@@ -177,16 +209,13 @@ public class GlobalFunctionMgr {
     }
 
     public synchronized void userDropFunction(FunctionSearchDesc f, boolean dropIfExists) throws StarRocksException {
-        dropFunction(f, dropIfExists);
-        GlobalStateMgr.getCurrentState().getEditLog().logDropFunction(f);
+        if (checkDropFunction(f, dropIfExists)) {
+            GlobalStateMgr.getCurrentState().getEditLog().logDropFunction(f, wal -> dropFunctionInternal(f));
+        }
     }
 
     public synchronized void replayDropFunction(FunctionSearchDesc f) {
-        try {
-            dropFunction(f, false);
-        } catch (StarRocksException e) {
-            Preconditions.checkArgument(false);
-        }
+        dropFunctionInternal(f);
     }
 
     public void save(ImageWriter imageWriter) throws IOException, SRMetaBlockException {

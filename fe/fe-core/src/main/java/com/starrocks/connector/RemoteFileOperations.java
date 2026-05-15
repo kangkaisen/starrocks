@@ -20,11 +20,10 @@ import com.starrocks.catalog.Table;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.connector.exception.StarRocksConnectorException;
-import com.starrocks.connector.hive.HiveWriteUtils;
+import com.starrocks.connector.hive.HiveUtils;
 import com.starrocks.connector.hive.Partition;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
-import jline.internal.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -47,9 +46,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static com.starrocks.connector.hive.HiveWriteUtils.checkedDelete;
-import static com.starrocks.connector.hive.HiveWriteUtils.createDirectory;
-import static com.starrocks.connector.hive.HiveWriteUtils.fileCreatedByQuery;
+import static com.starrocks.connector.hive.HiveUtils.checkedDelete;
+import static com.starrocks.connector.hive.HiveUtils.createDirectory;
+import static com.starrocks.connector.hive.HiveUtils.fileCreatedByQuery;
 
 public class RemoteFileOperations {
     private static final Logger LOG = LogManager.getLogger(RemoteFileOperations.class);
@@ -95,6 +94,11 @@ public class RemoteFileOperations {
     }
 
     public List<RemoteFileInfo> getRemoteFiles(Table table, List<Partition> partitions, GetRemoteFilesParams params) {
+        boolean isRecursive = this.isRecursive;
+        if (params.getIsRecursive().isPresent()) {
+            // override the default recursive option
+            isRecursive = params.getIsRecursive().get();
+        }
         RemoteFileScanContext scanContext = new RemoteFileScanContext(table);
         Map<RemotePathKey, Partition> pathKeyToPartition = Maps.newHashMap();
         for (Partition partition : partitions) {
@@ -102,7 +106,7 @@ public class RemoteFileOperations {
             pathKeyToPartition.put(key, partition);
         }
 
-        int cacheMissSize = partitions.size();
+        int cacheMissSize = pathKeyToPartition.size();
         if (enableCatalogLevelCache && params.isUseCache()) {
             cacheMissSize = cacheMissSize - remoteFileIO.getPresentRemoteFiles(
                     Lists.newArrayList(pathKeyToPartition.keySet())).size();
@@ -229,7 +233,7 @@ public class RemoteFileOperations {
         try {
             fileSystem = FileSystem.get(writePath.toUri(), conf);
         } catch (Exception e) {
-            Log.error("Failed to get fileSystem", e);
+            LOG.error("Failed to get fileSystem", e);
             throw new StarRocksConnectorException("Failed to move data files to target location. " +
                     "Failed to get file system on path %s. msg: %s", writePath, e.getMessage());
         }
@@ -299,11 +303,38 @@ public class RemoteFileOperations {
     }
 
     public boolean pathExists(Path path) {
-        return HiveWriteUtils.pathExists(path, conf);
+        return HiveUtils.pathExists(path, conf);
+    }
+
+    /**
+     * Creates {@code path} as an empty directory (including parents) when it does not exist.
+     * Used when HMS lists a partition but the warehouse path is missing on the filesystem.
+     */
+    public void ensureDirectoryExists(Path path) {
+        if (!pathExists(path)) {
+            createDirectory(path, conf);
+        }
     }
 
     public boolean deleteIfExists(Path path, boolean recursive) {
-        return HiveWriteUtils.deleteIfExists(path, recursive, conf);
+        return HiveUtils.deleteIfExists(path, recursive, conf);
+    }
+
+    public void truncateLocations(List<String> paths) {
+        for (String location : paths) {
+            try {
+                Path path = new Path(location);
+                if (!deleteIfExists(path, true)) {
+                    throw new StarRocksConnectorException("Failed to delete path : %s", location);
+                }
+                HiveUtils.createDirectoryIfNotExists(path, conf);
+                LOG.info("Truncate data in partition location: {}", location);
+            } catch (Exception e) {
+                LOG.error("Failed to truncate data in location: {}", location, e);
+                throw new StarRocksConnectorException("Failed to truncate data in location: %s. msg: %s",
+                        location, e.getMessage());
+            }
+        }
     }
 
     public FileStatus[] listStatus(Path path) {
@@ -323,33 +354,5 @@ public class RemoteFileOperations {
             LOG.error("Failed to get file status for paths: {}", paths, e);
             throw new StarRocksConnectorException("Failed to get file status for paths: %s. msg: %s", paths, e.getMessage());
         }
-    }
-
-    public List<PartitionInfo> getRemotePartitions(List<Partition> partitions) {
-        List<Path> paths = Lists.newArrayList();
-        for (Partition partition : partitions) {
-            Path partitionPath = new Path(partition.getFullPath());
-            paths.add(partitionPath);
-        }
-        FileStatus[] fileStatuses = getFileStatus(paths.toArray(new Path[0]));
-        List<PartitionInfo> result = Lists.newArrayList();
-        for (int i = 0; i < partitions.size(); i++) {
-            Partition partition = partitions.get(i);
-            FileStatus fileStatus = fileStatuses[i];
-            final String fullPath = partition.getFullPath();
-            final long time = fileStatus.getModificationTime();
-            result.add(new PartitionInfo() {
-                @Override
-                public long getModifiedTime() {
-                    return time;
-                }
-
-                @Override
-                public String getFullPath() {
-                    return fullPath;
-                }
-            });
-        }
-        return result;
     }
 }

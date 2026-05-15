@@ -17,6 +17,8 @@
 #include "column/chunk.h"
 #include "exprs/expr.h"
 #include "exprs/in_const_predicate.hpp"
+#include "runtime/descriptors_ext.h"
+#include "runtime/runtime_state.h"
 #include "storage/chunk_helper.h"
 
 namespace starrocks::connector {
@@ -141,7 +143,7 @@ Status MySQLDataSource::open(RuntimeState* state) {
             if (pred->is_not_in()) {                                                          \
                 continue;                                                                     \
             }                                                                                 \
-            auto& field_name = iter->second->col_name();                                      \
+            auto field_name = std::string(iter->second->col_name());                          \
             filters_null_in_set[field_name] = pred->null_in_set();                            \
             std::vector<std::string> vector_values;                                           \
             vector_values.reserve(1024);                                                      \
@@ -176,12 +178,15 @@ Status MySQLDataSource::open(RuntimeState* state) {
             case TYPE_PERCENTILE:
             case TYPE_LARGEINT:
             case TYPE_DECIMAL128:
+            case TYPE_DECIMAL256:
+            case TYPE_INT256:
             case TYPE_DECIMALV2:
             case TYPE_DECIMAL32:
             case TYPE_DECIMAL64:
             case TYPE_DOUBLE:
             case TYPE_FLOAT:
             case TYPE_JSON:
+            case TYPE_VARIANT:
             case TYPE_FUNCTION:
             case TYPE_VARBINARY:
             case TYPE_UNSIGNED_TINYINT:
@@ -281,7 +286,7 @@ Status MySQLDataSource::fill_chunk(ChunkPtr* chunk, char** data, size_t* length)
     int materialized_col_idx = -1;
     for (size_t col_idx = 0; col_idx < _slot_num; ++col_idx) {
         SlotDescriptor* slot_desc = _tuple_desc->slots()[col_idx];
-        ColumnPtr column = (*chunk)->get_column_by_slot_id(slot_desc->id());
+        auto* column = (*chunk)->get_column_raw_ptr_by_slot_id(slot_desc->id());
 
         // because the fe planner filter the non_materialize column
         if (!slot_desc->is_materialized()) {
@@ -299,8 +304,8 @@ Status MySQLDataSource::fill_chunk(ChunkPtr* chunk, char** data, size_t* length)
                 return Status::InternalError(ss.str());
             }
         } else {
-            RETURN_IF_ERROR(append_text_to_column(data[materialized_col_idx], length[materialized_col_idx], slot_desc,
-                                                  column.get()));
+            RETURN_IF_ERROR(
+                    append_text_to_column(data[materialized_col_idx], length[materialized_col_idx], slot_desc, column));
         }
     }
     return Status::OK();
@@ -319,7 +324,7 @@ Status MySQLDataSource::append_text_to_column(const char* data, const int& len, 
     Column* data_column = column;
     if (data_column->is_nullable()) {
         auto* nullable_column = down_cast<NullableColumn*>(data_column);
-        data_column = nullable_column->data_column().get();
+        data_column = nullable_column->data_column_raw_ptr();
     }
 
     bool parse_success = true;
@@ -458,6 +463,20 @@ Status MySQLDataSource::append_text_to_column(const char* data, const int& len, 
             append_value_to_column<TYPE_DECIMAL128>(data_column, value);
         else
             parse_success = false;
+        break;
+    }
+    case TYPE_DECIMAL256: {
+        int256_t value;
+        if (!DecimalV3Cast::from_string<int256_t>(&value, slot_desc->type().precision, slot_desc->type().scale, data,
+                                                  len))
+            append_value_to_column<TYPE_DECIMAL256>(data_column, value);
+        else
+            parse_success = false;
+        break;
+    }
+    case TYPE_INT256: {
+        // INT256 won't be exposed to users
+        parse_success = false;
         break;
     }
     default:

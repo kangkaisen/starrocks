@@ -16,6 +16,7 @@
 
 #include <utility>
 
+#include "common/runtime_profile.h"
 #include "exec/olap_common.h"
 #include "exec/olap_scan_prepare.h"
 #include "exec/olap_utils.h"
@@ -24,12 +25,11 @@
 #include "exprs/expr.h"
 #include "exprs/expr_context.h"
 #include "gen_cpp/InternalService_types.h"
-#include "runtime/runtime_state.h"
+#include "runtime/runtime_state_fwd.h"
 #include "storage/conjunctive_predicates.h"
 #include "storage/predicate_tree/predicate_tree.hpp"
 #include "storage/tablet.h"
 #include "storage/tablet_reader.h"
-#include "util/runtime_profile.h"
 
 namespace starrocks {
 
@@ -56,20 +56,21 @@ private:
     Status _read_chunk(RuntimeState* state, ChunkPtr* chunk) override;
 
     Status _get_tablet(const TInternalScanRange* scan_range);
-    Status _init_reader_params(const std::vector<std::unique_ptr<OlapScanRange>>& key_ranges,
-                               const std::vector<uint32_t>& scanner_columns, std::vector<uint32_t>& reader_columns);
-    Status _init_scanner_columns(std::vector<uint32_t>& scanner_columns);
+    Status _init_reader_params(const std::vector<std::unique_ptr<OlapScanRange>>& key_ranges);
+    Status _init_scanner_columns(std::vector<uint32_t>& scanner_columns, std::vector<uint32_t>& reader_columns);
     Status _init_unused_output_columns(const std::vector<std::string>& unused_output_columns);
     Status _init_olap_reader(RuntimeState* state);
     TCounterMinMaxType::type _get_counter_min_max_type(const std::string& metric_name);
     void _init_counter(RuntimeState* state);
     Status _init_global_dicts(TabletReaderParams* params);
+    Status _init_glm(TabletReaderParams* params);
     Status _read_chunk_from_storage([[maybe_unused]] RuntimeState* state, Chunk* chunk);
     void _update_counter();
     void _update_realtime_counter(Chunk* chunk);
     void _decide_chunk_size(bool has_predicate);
     Status _init_column_access_paths(Schema* schema);
     Status _prune_schema_by_access_paths(Schema* schema);
+    Status _extend_schema_by_access_paths();
 
 private:
     TabletReaderParams _params{};
@@ -119,17 +120,66 @@ private:
     RuntimeProfile::Counter* _bytes_read_counter = nullptr;
     RuntimeProfile::Counter* _rows_read_counter = nullptr;
 
+    // Filters
+
+    // Expression filter (non-pushdown predicates)
     RuntimeProfile::Counter* _expr_filter_timer = nullptr;
+    RuntimeProfile::Counter* _expr_filter_counter = nullptr;
+
+    // Predicate filter (pushdown predicates)
+    RuntimeProfile::Counter* _pred_filter_counter = nullptr;
+    RuntimeProfile::Counter* _pred_filter_timer = nullptr;
+
+    // Runtime filter
+    RuntimeProfile::Counter* _rf_pred_filter_timer = nullptr;
+
+    // Short key filter
+    RuntimeProfile::Counter* _sk_filtered_counter = nullptr;
+
+    // Zone map filter
+    RuntimeProfile::Counter* _zone_map_filter_timer = nullptr;
+    RuntimeProfile::Counter* _zm_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _seg_zm_filtered_counter = nullptr;
+
+    // Segment metadata filter (sort key range filtering for lake tables)
+    RuntimeProfile::Counter* _seg_metadata_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _segs_metadata_filtered_counter = nullptr;
+
+    // Bloom filter
+    RuntimeProfile::Counter* _bf_filter_timer = nullptr;
+    RuntimeProfile::Counter* _bf_filtered_counter = nullptr;
+
+    // Vector index filter
+    RuntimeProfile::Counter* _vector_index_filtered_counter = nullptr;
+
+    // Segment rowid filter
+    RuntimeProfile::Counter* _seg_rt_filtered_counter = nullptr;
+
+    // Bitmap index filter
+    RuntimeProfile::Counter* _bi_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _bi_filter_timer = nullptr;
+
+    // GIN (Generalized Inverted Index) filter
+    RuntimeProfile::Counter* _gin_filtered_timer = nullptr;
+    RuntimeProfile::Counter* _gin_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _gin_prefix_filter_timer = nullptr;
+    RuntimeProfile::Counter* _gin_ngram_dict_filter_timer = nullptr;
+    RuntimeProfile::Counter* _gin_predicate_dict_filter_timer = nullptr;
+    RuntimeProfile::Counter* _gin_dict_counter = nullptr;
+    RuntimeProfile::Counter* _gin_ngram_dict_counter = nullptr;
+    RuntimeProfile::Counter* _gin_ngram_dict_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _gin_predicate_dict_filtered_counter = nullptr;
+
+    // Rows after skip key filter
+    RuntimeProfile::Counter* _rows_after_sk_filtered_counter = nullptr;
+
     RuntimeProfile::Counter* _create_seg_iter_timer = nullptr;
     RuntimeProfile::Counter* _io_timer = nullptr;
     RuntimeProfile::Counter* _read_compressed_counter = nullptr;
     RuntimeProfile::Counter* _decompress_timer = nullptr;
     RuntimeProfile::Counter* _read_uncompressed_counter = nullptr;
     RuntimeProfile::Counter* _raw_rows_counter = nullptr;
-    RuntimeProfile::Counter* _pred_filter_counter = nullptr;
     RuntimeProfile::Counter* _del_vec_filter_counter = nullptr;
-    RuntimeProfile::Counter* _pred_filter_timer = nullptr;
-    RuntimeProfile::Counter* _rf_pred_filter_timer = nullptr;
     RuntimeProfile::Counter* _rf_pred_input_rows = nullptr;
     RuntimeProfile::Counter* _rf_pred_output_rows = nullptr;
     RuntimeProfile::Counter* _chunk_copy_timer = nullptr;
@@ -139,17 +189,8 @@ private:
     RuntimeProfile::Counter* _seg_init_timer = nullptr;
     RuntimeProfile::Counter* _column_iterator_init_timer = nullptr;
     RuntimeProfile::Counter* _bitmap_index_iterator_init_timer = nullptr;
-    RuntimeProfile::Counter* _zone_map_filter_timer = nullptr;
     RuntimeProfile::Counter* _rows_key_range_filter_timer = nullptr;
     RuntimeProfile::Counter* _rows_key_range_counter = nullptr;
-    RuntimeProfile::Counter* _bf_filter_timer = nullptr;
-    RuntimeProfile::Counter* _zm_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _vector_index_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _bf_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _seg_zm_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _seg_rt_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _sk_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _rows_after_sk_filtered_counter = nullptr;
     RuntimeProfile::Counter* _block_seek_timer = nullptr;
     RuntimeProfile::Counter* _block_seek_counter = nullptr;
     RuntimeProfile::Counter* _block_load_timer = nullptr;
@@ -157,10 +198,6 @@ private:
     RuntimeProfile::Counter* _block_fetch_timer = nullptr;
     RuntimeProfile::Counter* _read_pages_num_counter = nullptr;
     RuntimeProfile::Counter* _cached_pages_num_counter = nullptr;
-    RuntimeProfile::Counter* _bi_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _bi_filter_timer = nullptr;
-    RuntimeProfile::Counter* _gin_filtered_counter = nullptr;
-    RuntimeProfile::Counter* _gin_filtered_timer = nullptr;
     RuntimeProfile::Counter* _get_row_ranges_by_vector_index_timer = nullptr;
     RuntimeProfile::Counter* _vector_search_timer = nullptr;
     RuntimeProfile::Counter* _process_vector_distance_and_id_timer = nullptr;
@@ -170,9 +207,9 @@ private:
     RuntimeProfile::Counter* _segments_read_count = nullptr;
     RuntimeProfile::Counter* _total_columns_data_page_count = nullptr;
     RuntimeProfile::Counter* _read_pk_index_timer = nullptr;
+
+    // FlatJSON
     RuntimeProfile::Counter* _pushdown_access_paths_counter = nullptr;
-    RuntimeProfile::Counter* _access_path_hits_counter = nullptr;
-    RuntimeProfile::Counter* _access_path_unhits_counter = nullptr;
 };
 } // namespace pipeline
 } // namespace starrocks

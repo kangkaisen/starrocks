@@ -21,10 +21,11 @@
 #include <string_view>
 #include <utility>
 
+#include "common/util/thrift_util.h"
 #include "formats/parquet/file_reader.h"
 #include "formats/parquet/schema.h"
 #include "formats/parquet/utils.h"
-#include "util/thrift_util.h"
+#include "runtime/current_thread.h"
 
 namespace starrocks::parquet {
 
@@ -433,6 +434,10 @@ bool ApplicationVersion::HasCorrectStatistics(const tparquet::ColumnMetaData& co
     return true;
 }
 
+bool ApplicationVersion::IsAlwaysCompressed() const {
+    return VersionLt(PARQUET_CPP_10353_FIXED_VERSION());
+}
+
 StatusOr<FileMetaDataPtr> FileMetaDataParser::get_file_metadata() {
     // return from split_context directly
     if (_scanner_ctx->split_context != nullptr) {
@@ -448,17 +453,15 @@ StatusOr<FileMetaDataPtr> FileMetaDataParser::get_file_metadata() {
         return file_metadata_ptr;
     }
 
-    ObjectCacheHandle* cache_handle = nullptr;
+    PageCacheHandle cache_handle;
     std::string metacache_key = ParquetUtils::get_file_cache_key(CacheType::META, _file->filename(),
                                                                  _datacache_options->modification_time, _file_size);
     {
         SCOPED_RAW_TIMER(&_scanner_ctx->stats->footer_cache_read_ns);
-        Status st = _cache->lookup(metacache_key, &cache_handle);
-        if (st.ok()) {
-            auto file_metadata = *(static_cast<const FileMetaDataPtr*>(_cache->value(cache_handle)));
+        bool ret = _cache->lookup(metacache_key, &cache_handle);
+        if (ret) {
             _scanner_ctx->stats->footer_cache_read_count += 1;
-            _cache->release(cache_handle);
-            return file_metadata;
+            return *(reinterpret_cast<const FileMetaDataPtr*>(cache_handle.data()));
         }
     }
 
@@ -466,28 +469,25 @@ StatusOr<FileMetaDataPtr> FileMetaDataParser::get_file_metadata() {
     int64_t file_metadata_size = 0;
     RETURN_IF_ERROR(_parse_footer(&file_metadata, &file_metadata_size));
     if (file_metadata_size > 0) {
-        // cache does not understand shared ptr at all.
-        // so we have to new an object to hold this shared ptr.
-        FileMetaDataPtr* capture = new FileMetaDataPtr(file_metadata);
-        Status st = Status::InternalError("write footer cache failed");
-        DeferOp op([&st, this, capture, file_metadata_size, &cache_handle]() {
-            if (st.ok()) {
-                _scanner_ctx->stats->footer_cache_write_bytes += file_metadata_size;
-                _scanner_ctx->stats->footer_cache_write_count += 1;
-                _cache->release(cache_handle);
-            } else {
-                _scanner_ctx->stats->footer_cache_write_fail_count += 1;
-                delete capture;
-            }
-        });
-        auto deleter = [](const CacheKey& key, void* value) { delete (FileMetaDataPtr*)value; };
-        ObjectCacheWriteOptions options;
+        auto deleter = [](const starrocks::CacheKey& key, void* value) { delete (FileMetaDataPtr*)value; };
+        MemCacheWriteOptions options;
         options.evict_probability = _datacache_options->datacache_evict_probability;
-        st = _cache->insert(metacache_key, capture, file_metadata_size, deleter, &cache_handle, &options);
+        auto capture = std::make_unique<FileMetaDataPtr>(file_metadata);
+        Status st = _cache->insert(metacache_key, (void*)(capture.get()), file_metadata_size, deleter, options,
+                                   &cache_handle);
+        if (st.ok()) {
+            _scanner_ctx->stats->footer_cache_write_bytes += file_metadata_size;
+            _scanner_ctx->stats->footer_cache_write_count += 1;
+            capture.release();
+            return file_metadata;
+        } else {
+            _scanner_ctx->stats->footer_cache_write_fail_count += 1;
+            return file_metadata;
+        }
     } else {
-        LOG(ERROR) << "Parsing unexpected parquet file metadata size";
+        return Status::InternalError(
+                fmt::format("Parsing unexpected parquet file metadata size {}", file_metadata_size));
     }
-    return file_metadata;
 }
 
 Status FileMetaDataParser::_parse_footer(FileMetaDataPtr* file_metadata_ptr, int64_t* file_metadata_size) {
@@ -530,7 +530,7 @@ Status FileMetaDataParser::_parse_footer(FileMetaDataPtr* file_metadata_ptr, int
         RETURN_IF_ERROR(file_metadata->init(t_metadata, _scanner_ctx->case_sensitive));
         *file_metadata_size = CurrentThread::current().get_consumed_bytes() - before_bytes;
     }
-#ifdef BE_TEST
+#if defined(BE_TEST) || defined(__SANITIZE_ADDRESS__) || defined(ADDRESS_SANITIZER)
     *file_metadata_size = sizeof(FileMetaData);
 #endif
     return Status::OK();

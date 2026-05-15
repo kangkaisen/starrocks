@@ -18,15 +18,17 @@
 
 #include <vector>
 
+#include "base/time/time.h"
 #include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
 #include "exec/pipeline/pipeline_driver.h"
+#include "runtime/runtime_state.h"
+#include "runtime/service_contexts.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/rowset/base_rowset.h"
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
-#include "util/time.h"
 
 namespace starrocks::query_cache {
 enum PerLaneBufferState {
@@ -169,6 +171,13 @@ static inline Chunks remap_chunks(const Chunks& chunks, const SlotRemapping& slo
 }
 Status CacheOperator::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(Operator::prepare(state));
+    if (_cache_param.is_lake) {
+        const auto* query_execution_services = state->query_execution_services();
+        _lake_tablet_manager = query_execution_services != nullptr && query_execution_services->lake != nullptr
+                                       ? query_execution_services->lake->lake_tablet_manager
+                                       : nullptr;
+        RETURN_IF(_lake_tablet_manager == nullptr, Status::InternalError("lake tablet manager is not initialized"));
+    }
     _push_chunk_num_counter = ADD_COUNTER(_unique_metrics, "PushChunkNum", TUnit::UNIT);
     _cache_probe_timer = ADD_TIMER(_unique_metrics, "CacheProbeTime");
     _cache_probe_chunks_counter = ADD_COUNTER(_unique_metrics, "CacheProbeChunkNum", TUnit::UNIT);
@@ -199,9 +208,9 @@ void CacheOperator::close(RuntimeState* state) {
         }
     }
 
-    _cache_populate_tablets_counter->update(_populate_tablets.size());
-    _cache_probe_tablets_counter->update(_probe_tablets.size());
-    _cache_passthrough_tablets_counter->update(passthrough_tablets.size());
+    COUNTER_UPDATE(_cache_populate_tablets_counter, _populate_tablets.size());
+    COUNTER_UPDATE(_cache_probe_tablets_counter, _probe_tablets.size());
+    COUNTER_UPDATE(_cache_passthrough_tablets_counter, passthrough_tablets.size());
 
     Operator::close(state);
 }
@@ -259,8 +268,8 @@ void CacheOperator::_handle_stale_cache_value_for_non_pk(int64_t tablet_id, Cach
         rowsets_acq_rel = std::move(acq_rel);
 
     } else {
-        auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
-                tablet_id, cache_value.version + 1, version);
+        DCHECK(_lake_tablet_manager != nullptr);
+        auto status = _lake_tablet_manager->capture_tablet_and_rowsets(tablet_id, cache_value.version + 1, version);
         // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
         if (!status.ok()) {
             buffer->state = PLBS_MISS;
@@ -353,8 +362,8 @@ void CacheOperator::_handle_stale_cache_value_for_pk(int64_t tablet_id, starrock
         }
 
     } else {
-        auto status = ExecEnv::GetInstance()->lake_tablet_manager()->capture_tablet_and_rowsets(
-                tablet_id, cache_value.version + 1, version);
+        DCHECK(_lake_tablet_manager != nullptr);
+        auto status = _lake_tablet_manager->capture_tablet_and_rowsets(tablet_id, cache_value.version + 1, version);
         // Cache MISS if delta versions are not captured, because aggressive cumulative compactions.
         if (!status.ok()) {
             buffer->state = PLBS_MISS;
@@ -385,9 +394,9 @@ void CacheOperator::_update_probe_metrics(int64_t tablet_id, const std::vector<C
         num_bytes += chunk->bytes_usage();
         num_rows += chunk->num_rows();
     }
-    _cache_probe_bytes_counter->update(num_bytes);
-    _cache_probe_chunks_counter->update(chunks.size());
-    _cache_probe_rows_counter->update(num_rows);
+    COUNTER_UPDATE(_cache_probe_bytes_counter, num_bytes);
+    COUNTER_UPDATE(_cache_probe_chunks_counter, chunks.size());
+    COUNTER_UPDATE(_cache_probe_rows_counter, num_rows);
     _probe_tablets.insert(tablet_id);
 }
 
@@ -466,9 +475,9 @@ void CacheOperator::populate_cache(int64_t tablet_id) {
     CacheValue cache_value(current, buffer->required_version, std::move(chunks));
     // If the cache implementation is global, populate method must be asynchronous and try its best to
     // update the cache.
-    _cache_populate_bytes_counter->update(buffer->num_bytes);
-    _cache_populate_chunks_counter->update(buffer->chunks.size());
-    _cache_populate_rows_counter->update(buffer->num_rows);
+    COUNTER_UPDATE(_cache_populate_bytes_counter, buffer->num_bytes);
+    COUNTER_UPDATE(_cache_populate_chunks_counter, buffer->chunks.size());
+    COUNTER_UPDATE(_cache_populate_rows_counter, buffer->num_rows);
     _populate_tablets.insert(tablet_id);
     _cache_mgr->populate(cache_key, cache_value);
     buffer->state = PLBS_POPULATE;
@@ -625,9 +634,9 @@ StatusOr<ChunkPtr> CacheOperator::pull_chunk(RuntimeState* state) {
         if (!passthrough_mode || chunk == nullptr) {
             return;
         }
-        _cache_passthrough_bytes_counter->update(chunk->bytes_usage());
-        _cache_passthrough_chunks_counter->update(1);
-        _cache_passthrough_rows_counter->update(chunk->num_rows());
+        COUNTER_UPDATE(_cache_passthrough_bytes_counter, chunk->bytes_usage());
+        COUNTER_UPDATE(_cache_passthrough_chunks_counter, 1);
+        COUNTER_UPDATE(_cache_passthrough_rows_counter, chunk->num_rows());
     };
     auto opt_lane = _lane_arbiter->preferred_lane();
     if (opt_lane.has_value()) {

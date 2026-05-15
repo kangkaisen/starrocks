@@ -60,6 +60,8 @@ public class Frontend extends JsonWriter {
     private int editLogPort;
     @SerializedName(value = "fid")
     private int fid = 0;
+    @SerializedName("macAddress")
+    private String macAddress;
 
     private int queryPort;
     private int rpcPort;
@@ -75,6 +77,7 @@ public class Frontend extends JsonWriter {
     private int heartbeatRetryTimes = 0;
 
     private float heapUsedPercent;
+    private int cpuCores;
 
     public Frontend() {
     }
@@ -146,9 +149,8 @@ public class Frontend extends JsonWriter {
         return heapUsedPercent;
     }
 
-    public void updateHostAndEditLogPort(String host, int editLogPort) {
+    public void updateHost(String host) {
         this.host = host;
-        this.editLogPort = editLogPort;
     }
 
     @VisibleForTesting
@@ -169,6 +171,14 @@ public class Frontend extends JsonWriter {
         this.fid = fid;
     }
 
+    public String getMacAddress() {
+        return macAddress;
+    }
+
+    public int getCpuCores() {
+        return cpuCores;
+    }
+
     /**
      * handle Frontend's heartbeat response.
      */
@@ -186,6 +196,8 @@ public class Frontend extends JsonWriter {
             heartbeatErrMsg = "";
             heartbeatRetryTimes = 0;
             heapUsedPercent = hbResponse.getHeapUsedPercent();
+            cpuCores = hbResponse.getCpuCores();
+            macAddress = hbResponse.getMacAddress();
         } else {
             if (this.heartbeatRetryTimes < Config.heartbeat_retry_times) {
                 this.heartbeatRetryTimes++;
@@ -227,7 +239,7 @@ public class Frontend extends JsonWriter {
     private void changeToAlive(boolean isReplay) {
         if (!isReplay && GlobalStateMgr.getCurrentState().getHaProtocol() instanceof BDBHA) {
             BDBHA ha = (BDBHA) GlobalStateMgr.getCurrentState().getHaProtocol();
-            ha.removeUnstableNode(host, GlobalStateMgr.getCurrentState().getNodeMgr().getFollowerCnt());
+            ha.removeUnstableNode(nodeName, GlobalStateMgr.getCurrentState().getNodeMgr().getFollowerCnt());
         }
     }
 
@@ -264,6 +276,11 @@ public class Frontend extends JsonWriter {
                 StarMgrServer.getCurrentState().getCheckpointController().workerRestarted(nodeName, startTime);
             }
         }
+    }
+
+    // Only for test
+    public void setHeapUsedPercent(float heapUsedPercent) {
+        this.heapUsedPercent = heapUsedPercent;
     }
 
     @Override

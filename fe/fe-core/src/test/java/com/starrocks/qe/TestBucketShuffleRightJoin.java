@@ -21,9 +21,9 @@ import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.statistic.StatsConstants;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 
@@ -33,7 +33,7 @@ public class TestBucketShuffleRightJoin {
 
     private static StarRocksAssert starRocksAssert;
 
-    @BeforeClass
+    @BeforeAll
     public static void setUp() {
         UtFrameUtils.createMinStarRocksCluster();
         ConnectContext ctx = UtFrameUtils.createDefaultCtx();
@@ -78,11 +78,11 @@ public class TestBucketShuffleRightJoin {
         String plan = explainAndExecPlan.first;
         ExecPlan execPlan = explainAndExecPlan.second;
         DefaultCoordinator coord = new DefaultCoordinator.Factory().createQueryScheduler(
-                ctx, execPlan.getFragments(), execPlan.getScanNodes(), execPlan.getDescTbl().toThrift());
+                ctx, execPlan.getFragments(), execPlan.getScanNodes(), execPlan.getDescTbl().toThrift(), execPlan);
         coord.prepareExec();
 
         boolean bucketShuffleRightJoinPresent = coord.getExecutionDAG().getFragmentsInPreorder()
                 .stream().anyMatch(ExecutionFragment::isRightOrFullBucketShuffle);
-        Assert.assertTrue(plan, bucketShuffleRightJoinPresent);
+        Assertions.assertTrue(bucketShuffleRightJoinPresent, plan);
     }
 }

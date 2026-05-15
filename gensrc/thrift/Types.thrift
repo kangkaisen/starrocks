@@ -35,12 +35,14 @@
 namespace cpp starrocks
 namespace java com.starrocks.thrift
 
+include "CloudConfiguration.thrift"
 
 typedef i64 TTimestamp
 typedef i32 TPlanNodeId
 typedef i32 TTupleId
 typedef i32 TSlotId
 typedef i64 TTableId
+typedef i64 TDatabaseId
 typedef i64 TTabletId
 typedef i64 TVersion
 typedef i64 TVersionHash
@@ -100,7 +102,10 @@ enum TPrimitiveType {
   DECIMAL128,
   JSON,
   FUNCTION,
-  VARBINARY
+  VARBINARY,
+  DECIMAL256,
+  INT256,
+  VARIANT
 }
 
 enum TTypeNodeType {
@@ -214,6 +219,7 @@ enum TTaskType {
     REPLICATE_SNAPSHOT,
     UPDATE_SCHEMA,
     COMPACTION_CONTROL,
+    EXTERNAL_CLUSTER_SNAPSHOT,
     NUM_TASK_TYPE
 }
 
@@ -387,6 +393,7 @@ struct TFunction {
   34: optional bool isolated
   35: optional string input_type
   36: optional string content
+  37: optional CloudConfiguration.TCloudConfiguration cloud_configuration
 }
 
 enum TLoadJobState {
@@ -429,7 +436,9 @@ enum TTableType {
     ICEBERG_SNAPSHOTS_TABLE,
     ICEBERG_MANIFESTS_TABLE,
     ICEBERG_FILES_TABLE,
-    ICEBERG_PARTITIONS_TABLE
+    ICEBERG_PARTITIONS_TABLE,
+    BENCHMARK_TABLE,
+    ICEBERG_PROPERTIES_TABLE
 }
 
 enum TKeysType {
@@ -437,6 +446,12 @@ enum TKeysType {
     DUP_KEYS,
     UNIQUE_KEYS,
     AGG_KEYS
+}
+
+enum TPrimaryKeyEncodingType {
+    PK_ENCODING_TYPE_NONE = 0,
+    PK_ENCODING_TYPE_V1 = 1,
+    PK_ENCODING_TYPE_V2 = 2
 }
 
 enum TPriority {
@@ -573,6 +588,12 @@ struct TIcebergColumnStats {
     6: optional map<i32, binary> upper_bounds;
 }
 
+enum TIcebergFileContent {
+    DATA,
+    POSITION_DELETES,
+    EQUALITY_DELETES,
+}
+
 struct TIcebergDataFile {
     1: optional string path
     2: optional string format
@@ -581,6 +602,9 @@ struct TIcebergDataFile {
     5: optional string partition_path;
     6: optional list<i64> split_offsets;
     7: optional TIcebergColumnStats column_stats;
+    8: optional string partition_null_fingerprint;
+    9: optional TIcebergFileContent file_content;
+    10: optional string referenced_data_file;
 }
 
 struct THiveFileInfo {
@@ -597,6 +621,7 @@ struct TSinkCommitInfo {
 
     100: optional bool is_overwrite;
     101: optional string staging_dir
+    102: optional bool is_rewrite;
 }
 
 struct TSnapshotInfo {
@@ -613,4 +638,37 @@ enum TTxnType {
 enum TNodeType {
     Backend = 0,
     Compute = 1
+}
+
+struct TParquetOptions {
+    // parquet row group max size in bytes
+    1: optional i64 parquet_max_group_bytes
+    2: optional TCompressionType compression_type
+    3: optional bool use_dict
+    // for files table function
+    4: optional string version
+}
+
+enum TVariantType {
+    NORMAL_VALUE = 0,
+    NULL_VALUE = 1,
+    MINIMUM = 2,
+    MAXIMUM = 3,
+}
+
+struct TVariant {
+    1: optional TTypeDesc type
+    2: optional string value
+    3: optional TVariantType variant_type
+}
+
+struct TTuple {
+    1: optional list<TVariant> values
+}
+
+struct TTabletRange {
+    1: optional TTuple lower_bound
+    2: optional TTuple upper_bound
+    3: optional bool lower_bound_included
+    4: optional bool upper_bound_included
 }

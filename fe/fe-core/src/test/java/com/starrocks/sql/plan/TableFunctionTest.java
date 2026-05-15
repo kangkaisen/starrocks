@@ -17,8 +17,8 @@ package com.starrocks.sql.plan;
 import com.google.common.collect.ImmutableList;
 import com.starrocks.planner.TableFunctionNode;
 import com.starrocks.sql.analyzer.SemanticException;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -263,14 +263,14 @@ public class TableFunctionTest extends PlanTestBase {
         plan = getFragmentPlan(sql);
         assertContains(plan, "TableValueFunction");
 
-        Exception e = Assert.assertThrows(SemanticException.class, () -> {
+        Exception e = Assertions.assertThrows(SemanticException.class, () -> {
             String sql1 = "select table_function_unnest.*, unnest.v1, unnest.v2 from " +
                     "(select * from test_all_type join t0_not_null) " +
                     "table_function_unnest, unnest(split(t1a, ','))";
             getFragmentPlan(sql1);
         });
 
-        Assert.assertTrue(e.getMessage().contains("Not unique table/alias: 'table_function_unnest'"));
+        Assertions.assertTrue(e.getMessage().contains("Not unique table/alias: 'table_function_unnest'"));
     }
 
     @Test
@@ -289,10 +289,13 @@ public class TableFunctionTest extends PlanTestBase {
                 "\t r2 as (select sub_bitmap(b1, 0, 10) as b2 from test_agg),\n" +
                 "\t r3 as (select bitmap_and(t0.b2, t1.b2) as b2 from r1 t0 join r2 t1)\n" +
                 "select unnest as r1 from r3, unnest(bitmap_to_array(b2)) order by r1;";
-        String plan = getFragmentPlan(sql);
-        PlanTestBase.assertContains(plan, "5:Project\n" +
-                "  |  <slot 28> : bitmap_and(10: b1, 25: sub_bitmap)");
+        String plan = getCostExplain(sql);
+        PlanTestBase.assertContains(plan, "5:Project\n" + "  |  output columns:\n" +
+                "  |  28 <-> bitmap_and[([10: b1, BITMAP, true], [25: sub_bitmap, BITMAP, true]);");
         PlanTestBase.assertContains(plan, "tableFunctionName: unnest_bitmap");
+        PlanTestBase.assertContains(plan, "2:Project\n" + "  |  output columns:\n" +
+                "  |  25 <-> sub_bitmap[([22: b1, BITMAP, true], 0, 10); args: BITMAP,BIGINT,BIGINT; result: BITMAP; " +
+                "args nullable: true; result nullable: true]");
         PlanTestBase.assertNotContains(plan, "bitmap_to_array");
     }
 
@@ -325,8 +328,8 @@ public class TableFunctionTest extends PlanTestBase {
                     .filter(planNode -> planNode instanceof TableFunctionNode)
                     .map(planNode -> (TableFunctionNode) planNode)
                     .findFirst();
-            Assert.assertTrue(optTableFuncNode.isPresent());
-            Assert.assertEquals(optTableFuncNode.get().isFnResultRequired(), isRequired);
+            Assertions.assertTrue(optTableFuncNode.isPresent());
+            Assertions.assertEquals(optTableFuncNode.get().isFnResultRequired(), isRequired);
         }
     }
 
@@ -358,8 +361,8 @@ public class TableFunctionTest extends PlanTestBase {
                 .filter(planNode -> planNode instanceof TableFunctionNode)
                 .map(planNode -> (TableFunctionNode) planNode)
                 .findFirst();
-        Assert.assertTrue(optTableFuncNode.isPresent());
-        Assert.assertEquals(optTableFuncNode.get().isFnResultRequired(), true);
+        Assertions.assertTrue(optTableFuncNode.isPresent());
+        Assertions.assertEquals(optTableFuncNode.get().isFnResultRequired(), true);
     }
 
     @Test
@@ -410,17 +413,17 @@ public class TableFunctionTest extends PlanTestBase {
                 "ON l2.q_id = l1.id;";
 
         String plan1 = getFragmentPlan(sql);
-        Assert.assertTrue(plan1, plan1.contains("  4:Project\n" +
+        Assertions.assertTrue(plan1.contains("  4:Project\n" +
                 "  |  <slot 18> : coalesce(11: key, '0')\n" +
                 "  |  <slot 28> : get_json_string(parse_json(CAST(12: value AS VARCHAR)), concat('$.', 15: key))\n" +
                 "  |  \n" +
-                "  3:TableValueFunction"));
+                "  3:TableValueFunction"), plan1);
         ExecPlan plan = getExecPlan(sql);
         List<TableFunctionNode> tableFunctionNodes = plan.getFragments().stream()
                 .flatMap(fragment -> fragment.collectNodes().stream())
                 .filter(planNode -> planNode instanceof TableFunctionNode)
                 .map(planNode -> (TableFunctionNode) planNode)
                 .collect(Collectors.toList());
-        Assert.assertTrue(tableFunctionNodes.get(0).getOuterSlots().containsAll(ImmutableList.of(11, 12)));
+        Assertions.assertTrue(tableFunctionNodes.get(0).getOuterSlots().containsAll(ImmutableList.of(11, 12)));
     }
 }

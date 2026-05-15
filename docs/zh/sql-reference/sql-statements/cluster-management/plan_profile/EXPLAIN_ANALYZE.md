@@ -6,7 +6,7 @@ displayed_sidebar: docs
 
 ## 功能
 
-执行指定 SQL，并显示相应的 Query Profile 文件。更多信息，参考 [Query Profile 概述](../../../../administration/query_profile_overview.md)。
+执行指定 SQL，并显示相应的 Query Profile 文件。更多信息，参考 [Query Profile 概述](../../../../best_practices/query_tuning/query_profile_overview.md)。
 
 此功能自 v3.1 起支持。
 
@@ -22,7 +22,7 @@ EXPLAIN ANALYZE <statement>
 
 ## 参数说明
 
-`statement`：需要查询 Query Profile 的 SQL 语句。支持 [SELECT](../../table_bucket_part_index/SELECT.md) 和 [INSERT INTO](../../loading_unloading/INSERT.md)。
+`statement`：需要查询 Query Profile 的 SQL 语句。支持 [SELECT](../../table_bucket_part_index/SELECT/SELECT.md) 和 [INSERT INTO](../../loading_unloading/INSERT.md)。
 
 ## 使用说明
 

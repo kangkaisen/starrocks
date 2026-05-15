@@ -14,7 +14,9 @@
 
 #include "exprs/string_functions.h"
 
-#include "util/defer_op.h"
+#include "base/utility/defer_op.h"
+#include "column/bytes.h"
+#include "function_context.h"
 
 #ifdef __x86_64__
 #include <immintrin.h>
@@ -22,8 +24,10 @@
 #endif
 
 #include <unicode/ucasemap.h>
+#include <unicode/uchar.h>
 #include <unicode/unistr.h>
 #include <unicode/urename.h>
+#include <unicode/utf8.h>
 #include <unicode/utypes.h>
 
 #include <algorithm>
@@ -34,6 +38,10 @@
 #include <stdexcept>
 #include <string>
 
+#include "base/container/raw_container.h"
+#include "base/crypto/sm3.h"
+#include "base/string/utf8.h"
+#include "base/types/int128.h"
 #include "column/array_column.h"
 #include "column/binary_column.h"
 #include "column/column_builder.h"
@@ -50,22 +58,21 @@
 #include "gutil/strings/fastmem.h"
 #include "gutil/strings/strip.h"
 #include "gutil/strings/substitute.h"
+#include "runtime/exception.h"
 #include "runtime/runtime_state.h"
 #include "storage/olap_define.h"
-#include "types/large_int_value.h"
-#include "util/raw_container.h"
-#include "util/sm3.h"
-#include "util/utf8.h"
 #include "util/utf8_encoding.h"
 
 namespace starrocks {
 // A regex to match any regex pattern is equivalent to a substring search.
 static const RE2 SUBSTRING_RE(R"((?:\.\*)*([^\.\^\{\[\(\|\)\]\}\+\*\?\$\\]+)(?:\.\*)*)", re2::RE2::Quiet);
+// A strict fixed literal regex contains only normal characters without any regex special characters.
+static const RE2 FIXED_LITERAL_RE(R"(^[^\.\^\{\[\(\|\)\]\}\+\*\?\$\\]+$)", re2::RE2::Quiet);
 
-#define THROW_RUNTIME_ERROR_IF_EXCEED_LIMIT(col, func_name)                          \
-    if (UNLIKELY(!col->capacity_limit_reached().ok())) {                             \
-        col->reset_column();                                                         \
-        throw std::runtime_error("binary column exceed 4G in function " #func_name); \
+#define THROW_RUNTIME_ERROR_IF_EXCEED_LIMIT(col, func_name)                        \
+    if (UNLIKELY(!col->capacity_limit_reached().ok())) {                           \
+        col->as_mutable_raw_ptr()->reset_column();                                 \
+        throw RuntimeException("binary column exceed 4G in function " #func_name); \
     }
 
 #define RETURN_COLUMN(stmt, func_name)                                    \
@@ -414,7 +421,7 @@ static inline void column_builder_non_empty_op(uint8_t* begin, uint8_t* end, Nul
 }
 
 ColumnPtr substr_const_not_null(const Columns& columns, const BinaryColumn* src, SubstrState* state) {
-    MutableColumnPtr result = BinaryColumn::create();
+    auto result = BinaryColumn::create();
     auto* binary = down_cast<BinaryColumn*>(result.get());
     Bytes& bytes = binary->get_bytes();
     Offsets& offsets = binary->get_offset();
@@ -430,7 +437,7 @@ ColumnPtr substr_const_not_null(const Columns& columns, const BinaryColumn* src,
 
     if (len > 0) {
         // the size of substr result never exceeds the counterpart of the source column.
-        size_t reserved = src->get_bytes().size();
+        size_t reserved = src->get_immutable_bytes().size();
         // when start pos is negative, the result of substr take last abs(pos) chars,
         // thus length of the result is less than abs(pos) and len.
         int min_len = len;
@@ -447,7 +454,7 @@ ColumnPtr substr_const_not_null(const Columns& columns, const BinaryColumn* src,
     raw::make_room(&offsets, size + 1);
     offsets[0] = 0;
 
-    auto& src_bytes = src->get_bytes();
+    auto src_bytes = src->get_immutable_bytes();
     auto is_ascii = validate_ascii_fast((const char*)src_bytes.data(), src_bytes.size());
     if (is_ascii) {
         if (off > 0) {
@@ -471,7 +478,7 @@ ColumnPtr substr_const_not_null(const Columns& columns, const BinaryColumn* src,
 }
 
 ColumnPtr right_const_not_null(const Columns& columns, const BinaryColumn* src, SubstrState* state) {
-    MutableColumnPtr result = BinaryColumn::create();
+    auto result = BinaryColumn::create();
     auto* binary = down_cast<BinaryColumn*>(result.get());
     Bytes& bytes = binary->get_bytes();
     Offsets& offsets = binary->get_offset();
@@ -484,7 +491,7 @@ ColumnPtr right_const_not_null(const Columns& columns, const BinaryColumn* src, 
         return result;
     }
 
-    auto& src_bytes = src->get_bytes();
+    auto src_bytes = src->get_immutable_bytes();
     const size_t src_bytes_size = src_bytes.size();
     auto reserved = src_bytes_size;
     if (INT_MAX / size > len) {
@@ -513,7 +520,7 @@ ColumnPtr string_func_const(StringConstFuncType func, const Columns& columns, Ar
         if (src_nullable->has_null()) {
             auto* src_binary = down_cast<const BinaryColumn*>(src_nullable->data_column().get());
             ColumnPtr binary = func(columns, src_binary, std::forward<Args>(args)...);
-            NullColumn::MutablePtr src_null = NullColumn::create(*(src_nullable->null_column()));
+            NullColumn::MutablePtr src_null = NullColumn::static_pointer_cast(src_nullable->null_column()->clone());
 
             // - if binary is null ConstColumn, just return it.
             // - if binary is non-null ConstColumn, unfold it and wrap with src_null.
@@ -523,12 +530,13 @@ ColumnPtr string_func_const(StringConstFuncType func, const Columns& columns, Ar
                 return binary;
             }
             if (binary->is_constant()) {
-                auto* dst_const = down_cast<ConstColumn*>(binary.get());
-                dst_const->data_column()->assign(dst_const->size(), 0);
-                return NullableColumn::create(dst_const->data_column(), std::move(src_null));
+                auto* dst_const = down_cast<ConstColumn*>(binary->as_mutable_raw_ptr());
+                auto data_mut = std::move(*(dst_const->data_column())).mutate();
+                data_mut->assign(dst_const->size(), 0);
+                return NullableColumn::create(std::move(data_mut), std::move(src_null));
             }
             if (binary->is_nullable()) {
-                auto* binary_nullable = down_cast<NullableColumn*>(binary.get());
+                auto* binary_nullable = down_cast<NullableColumn*>(binary->as_mutable_raw_ptr());
                 if (binary_nullable->has_null()) {
                     // case 2: some rows are nulls and some rows are non-nulls, merge the column
                     // inside original result and the null column inside the columns[0].
@@ -541,7 +549,7 @@ ColumnPtr string_func_const(StringConstFuncType func, const Columns& columns, Ar
                     return NullableColumn::create(binary_nullable->data_column(), std::move(src_null));
                 }
             } else {
-                return NullableColumn::create(std::move(binary), std::move(src_null));
+                return NullableColumn::create(binary, std::move(src_null));
             }
         } else {
             auto* src = down_cast<const BinaryColumn*>(src_nullable->data_column().get());
@@ -684,7 +692,7 @@ static inline ColumnPtr substr_not_const(FunctionContext* context, const starroc
     NullableBinaryColumnBuilder result;
     result.resize(rows_num, src->byte_size());
 
-    const Bytes& src_bytes = src->get_bytes();
+    auto src_bytes = src->get_immutable_bytes();
     auto is_ascii = validate_ascii_fast((const char*)src_bytes.data(), src_bytes.size());
     if (is_ascii) {
         ascii_substr_not_const(rows_num, &str_viewer, &off_viewer, &len_viewer, &result);
@@ -704,7 +712,7 @@ static inline ColumnPtr right_not_const(FunctionContext* context, const starrock
 
     NullableBinaryColumnBuilder result;
 
-    const Bytes& src_bytes = src->get_bytes();
+    auto src_bytes = src->get_immutable_bytes();
     auto is_ascii = validate_ascii_fast((const char*)src_bytes.data(), src_bytes.size());
     result.resize(rows_num, src->byte_size());
 
@@ -784,11 +792,11 @@ public:
     template <LogicalType Type, LogicalType ResultType>
     static ColumnPtr evaluate(const ColumnPtr& v1) {
         const auto* len_column = down_cast<const Int32Column*>(v1.get());
-        auto& len_array = len_column->get_data();
+        const auto len_array = len_column->immutable_data();
         const auto num_rows = len_column->size();
         NullableBinaryColumnBuilder builder;
-        auto& dst_bytes = builder.data_column()->get_bytes();
-        auto& dst_offsets = builder.data_column()->get_offset();
+        auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
+        auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
         auto& nulls = builder.get_null_data();
 
         raw::make_room(&dst_offsets, num_rows + 1);
@@ -875,13 +883,13 @@ void fast_repeat(uint8_t* dst, const uint8_t* src, size_t src_size, int32_t repe
 static inline ColumnPtr repeat_const_not_null(const Columns& columns, const BinaryColumn* src) {
     auto times = ColumnHelper::get_const_value<TYPE_INT>(columns[1]);
 
-    auto& src_offsets = src->get_offset();
+    const auto& src_offsets = src->get_offset();
     const auto num_rows = src->size();
 
     NullableBinaryColumnBuilder builder;
     auto& dst_nulls = builder.get_null_data();
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
 
     dst_nulls.resize(num_rows);
     bool has_null = false;
@@ -944,8 +952,8 @@ static inline ColumnPtr repeat_not_const(const Columns& columns) {
     const size_t num_rows = columns[0]->size();
     NullableBinaryColumnBuilder builder;
     auto& dst_nulls = builder.get_null_data();
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
     dst_nulls.resize(num_rows);
     raw::make_room(&dst_offsets, num_rows + 1);
     dst_offsets[0] = 0;
@@ -1239,8 +1247,8 @@ static inline ColumnPtr translate_with_utf8_const_nonnull_from_and_to(const Colu
     DCHECK(!state->is_ascii_map);
 
     NullableBinaryColumnBuilder builder;
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
     auto& dst_nulls = builder.get_null_data();
 
     const size_t num_rows = src->size();
@@ -1308,8 +1316,8 @@ ColumnPtr translate_with_non_const_from_or_to(const Columns& columns, const Tran
     ColumnViewer<TYPE_VARCHAR> to_viewer(columns[TranslateState::TO_STR_INDEX]);
 
     NullableBinaryColumnBuilder builder;
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
     auto& dst_nulls = builder.get_null_data();
 
     const size_t num_rows = columns[TranslateState::SRC_STR_INDEX]->size();
@@ -1498,7 +1506,7 @@ static inline ColumnPtr pad_utf8_const(Columns const& columns, const BinaryColum
     const auto num_rows = src->size();
     NullableBinaryColumnBuilder builder;
 
-    auto& dst_offsets = builder.data_column()->get_offset();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
     auto& dst_nulls = builder.get_null_data();
 
     raw::make_room(&dst_offsets, num_rows + 1);
@@ -1576,7 +1584,7 @@ static inline ColumnPtr pad_utf8_const(Columns const& columns, const BinaryColum
         dst_offsets[i + 1] = dst_off;
     }
     dst_bytes.resize(dst_off);
-    builder.data_column()->get_bytes().swap(reinterpret_cast<Bytes&>(dst_bytes));
+    builder.data_column_raw_ptr()->get_bytes().swap(reinterpret_cast<Bytes&>(dst_bytes));
     builder.set_has_null(has_null);
     return builder.build(ColumnHelper::is_all_const(columns));
 }
@@ -1599,7 +1607,7 @@ static inline ColumnPtr pad_const_not_null(const Columns& columns, const BinaryC
         SubstrState state = {.is_const = true, .pos = 1, .len = len};
         return substr_const_not_null(columns, src, &state);
     }
-    auto& src_bytes = src->get_bytes();
+    auto src_bytes = src->get_immutable_bytes();
     auto src_is_utf8 = !validate_ascii_fast((const char*)src_bytes.data(), src_bytes.size());
     if (src_is_utf8 && pad_state->fill_is_utf8) {
         return pad_utf8_const<true, true, pad_type>(columns, src, (uint8_t*)fill.data, fill.size, len,
@@ -1642,7 +1650,7 @@ ColumnPtr pad_not_const(const Columns& columns, [[maybe_unused]] const PadState*
     const auto num_rows = columns[0]->size();
     NullableBinaryColumnBuilder builder;
     builder.resize(num_rows, 0);
-    auto& dst_offsets = builder.data_column()->get_offset();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
     auto& dst_nulls = builder.get_null_data();
     Bytes dst_bytes;
     dst_bytes.reserve(16ULL << 20);
@@ -1749,7 +1757,7 @@ ColumnPtr pad_not_const(const Columns& columns, [[maybe_unused]] const PadState*
         dst_offsets[i + 1] = dst_off;
     }
     DCHECK(dst_bytes.size() == dst_off);
-    builder.data_column()->get_bytes().swap(reinterpret_cast<Bytes&>(dst_bytes));
+    builder.data_column_raw_ptr()->get_bytes().swap(reinterpret_cast<Bytes&>(dst_bytes));
     builder.set_has_null(has_null);
     return builder.build(ColumnHelper::is_all_const(columns));
 }
@@ -1757,7 +1765,7 @@ ColumnPtr pad_not_const(const Columns& columns, [[maybe_unused]] const PadState*
 template <bool pad_is_const, PadType pad_type>
 ColumnPtr pad_not_const_check_ascii(const Columns& columns, [[maybe_unused]] const PadState* state) {
     auto src = ColumnHelper::get_binary_column(columns[0].get());
-    auto& bytes = src->get_bytes();
+    auto bytes = src->get_immutable_bytes();
     auto is_ascii = validate_ascii_fast((const char*)bytes.data(), bytes.size());
     if (is_ascii) {
         return pad_not_const<true, pad_is_const, pad_type>(columns, state);
@@ -1828,22 +1836,23 @@ StatusOr<ColumnPtr> StringFunctions::append_trailing_char_if_absent(FunctionCont
             return ColumnHelper::create_const_null_column(columns[0]->size());
         }
 
-        BinaryColumn* src = nullptr;
-        ColumnPtr dst = nullptr;
+        const BinaryColumn* src = nullptr;
+        MutableColumnPtr dst = nullptr;
         BinaryColumn* binary_dst = nullptr;
         if (columns[0]->is_nullable()) {
             auto* src_null = ColumnHelper::as_raw_column<NullableColumn>(columns[0]);
             src = ColumnHelper::as_raw_column<BinaryColumn>(src_null->data_column());
 
-            ColumnPtr data = RunTimeColumnType<TYPE_VARCHAR>::create();
-            dst = NullableColumn::create(data, src_null->null_column());
-            binary_dst = ColumnHelper::as_raw_column<BinaryColumn>(data);
+            MutableColumnPtr data = RunTimeColumnType<TYPE_VARCHAR>::create();
+            binary_dst = ColumnHelper::as_raw_column<BinaryColumn>(data.get());
+            dst = NullableColumn::create(std::move(data), Column::mutate(src_null->null_column()));
         } else {
             src = ColumnHelper::as_raw_column<BinaryColumn>(columns[0]);
-            dst = RunTimeColumnType<TYPE_VARCHAR>::create();
-            binary_dst = ColumnHelper::as_raw_column<BinaryColumn>(dst);
+            MutableColumnPtr data = RunTimeColumnType<TYPE_VARCHAR>::create();
+            binary_dst = ColumnHelper::as_raw_column<BinaryColumn>(data.get());
+            dst = std::move(data);
         }
-        const auto& src_data = src->get_bytes();
+        auto src_data = src->get_immutable_bytes();
         const auto& src_offsets = src->get_offset();
 
         auto& dst_data = binary_dst->get_bytes();
@@ -1878,7 +1887,7 @@ StatusOr<ColumnPtr> StringFunctions::append_trailing_char_if_absent(FunctionCont
             dst_data.resize(dst_offsets.back());
         }
 
-        RETURN_COLUMN(dst, "append_trailing_char_if_absent");
+        RETURN_COLUMN(std::move(dst), "append_trailing_char_if_absent");
     } else {
         ColumnViewer<TYPE_VARCHAR> src_viewer(columns[0]);
         ColumnViewer<TYPE_VARCHAR> tailing_viewer(columns[1]);
@@ -1926,8 +1935,8 @@ StatusOr<ColumnPtr> StringFunctions::utf8_length(FunctionContext* context, const
 }
 
 template <char CA, char CZ>
-static inline void vectorized_toggle_case(const Bytes* src, Bytes* dst) {
-    const size_t size = src->size();
+static inline void vectorized_toggle_case(const ImmBytes src, Bytes* dst) {
+    const size_t size = src.size();
     // resize of raw::RawVectorPad16 is faster than std::vector because of
     // no initialization
     static_assert(sizeof(Bytes::value_type) == 1, "Underlying element type must be 8-bit width");
@@ -1936,7 +1945,7 @@ static inline void vectorized_toggle_case(const Bytes* src, Bytes* dst) {
     Bytes buffer;
     buffer.resize(size);
     uint8_t* dst_ptr = buffer.data();
-    char* begin = (char*)(src->data());
+    char* begin = (char*)(src.data());
     char* end = (char*)(begin + size);
     char* src_ptr = begin;
 #if defined(__SSE2__)
@@ -1963,11 +1972,11 @@ static inline void vectorized_toggle_case(const Bytes* src, Bytes* dst) {
         *dst_ptr = *src_ptr ^ (((CA <= *src_ptr) & (*src_ptr <= CZ)) << 5);
     }
     // move semantics
-    dst->swap(reinterpret_cast<Bytes&>(buffer));
+    *dst = std::move(buffer);
 }
 
 template <bool to_upper>
-void utf8_case_toggle(const Bytes& src_bytes, const Offsets& src_offsets, Bytes* dst_bytes, Offsets* dst_offsets) {
+void utf8_case_toggle(ImmBytes src_bytes, const Offsets& src_offsets, Bytes* dst_bytes, Offsets* dst_offsets) {
     UErrorCode err_code = U_ZERO_ERROR;
     UCaseMap* case_map = ucasemap_open("", U_FOLD_CASE_DEFAULT, &err_code);
     if (U_FAILURE(err_code)) {
@@ -2023,16 +2032,16 @@ template <bool to_upper>
 template <LogicalType Type, LogicalType ResultType>
 ColumnPtr StringCaseToggleFunction<to_upper>::evaluate(const ColumnPtr& v1) {
     const auto* src = down_cast<const BinaryColumn*>(v1.get());
-    const Bytes& src_bytes = src->get_bytes();
-    const Offsets& src_offsets = src->get_offset();
+    auto src_bytes = src->get_immutable_bytes();
+    const auto& src_offsets = src->get_offset();
     auto dst = RunTimeColumnType<TYPE_VARCHAR>::create();
     auto& dst_offsets = dst->get_offset();
     auto& dst_bytes = dst->get_bytes();
     dst_offsets.assign(src_offsets.begin(), src_offsets.end());
     if constexpr (to_upper) {
-        vectorized_toggle_case<'a', 'z'>(&src_bytes, &dst_bytes);
+        vectorized_toggle_case<'a', 'z'>(src_bytes, &dst_bytes);
     } else {
-        vectorized_toggle_case<'A', 'Z'>(&src_bytes, &dst_bytes);
+        vectorized_toggle_case<'A', 'Z'>(src_bytes, &dst_bytes);
     }
     return dst;
 }
@@ -2049,8 +2058,8 @@ public:
     template <LogicalType Type, LogicalType ResultType>
     static ColumnPtr evaluate(const ColumnPtr& v1) {
         const auto* src = down_cast<const BinaryColumn*>(v1.get());
-        const Bytes& src_bytes = src->get_bytes();
-        const Offsets& src_offsets = src->get_offset();
+        auto src_bytes = src->get_immutable_bytes();
+        const auto& src_offsets = src->get_offset();
         auto dst = RunTimeColumnType<TYPE_VARCHAR>::create();
         auto& dst_offsets = dst->get_offset();
         auto& dst_bytes = dst->get_bytes();
@@ -2058,9 +2067,9 @@ public:
             dst_offsets.assign(src_offsets.begin(), src_offsets.end());
             // if all characters are ascii, we process them with the fast path
             if constexpr (to_upper) {
-                vectorized_toggle_case<'a', 'z'>(&src_bytes, &dst_bytes);
+                vectorized_toggle_case<'a', 'z'>(src_bytes, &dst_bytes);
             } else {
-                vectorized_toggle_case<'A', 'Z'>(&src_bytes, &dst_bytes);
+                vectorized_toggle_case<'A', 'Z'>(src_bytes, &dst_bytes);
             }
         } else {
             dst_bytes.resize(src_offsets.back());
@@ -2192,7 +2201,7 @@ struct ReverseFunction {
     template <LogicalType Type, LogicalType ResultType>
     static inline ColumnPtr evaluate(const ColumnPtr& column) {
         const auto* src = down_cast<const BinaryColumn*>(column.get());
-        const auto& src_bytes = src->get_bytes();
+        auto src_bytes = src->get_immutable_bytes();
         const auto& src_offsets = src->get_offset();
 
         auto result = BinaryColumn::create();
@@ -2265,6 +2274,11 @@ static const char* skip_trailing_spaces(const char* begin, const char* end, cons
                                         const std::vector<size_t>& utf8_index) {
     if (UNLIKELY(begin == nullptr)) {
         return begin;
+    }
+    // Nothing to trim when the slice is empty. Avoids walking backwards from
+    // end - 1, which would underflow when begin == end.
+    if (begin == end) {
+        return end;
     }
     auto p = end;
 #if defined(__SSE2__)
@@ -2366,7 +2380,7 @@ struct AdaptiveTrimFunction {
         const auto num_rows = src->size();
         raw::make_room(&dst_offsets, num_rows + 1);
         dst_offsets[0] = 0;
-        dst_bytes.reserve(dst_bytes.size());
+        dst_bytes.reserve(src->get_immutable_bytes().size());
 
         size_t i = 0;
         const auto sample_num = std::min(num_rows, 100ul);
@@ -2788,10 +2802,100 @@ StatusOr<ColumnPtr> StringFunctions::strcmp(FunctionContext* context, const Colu
     return VectorizedStrictBinaryFunction<strcmpImpl>::evaluate<TYPE_VARCHAR, TYPE_INT>(columns[0], columns[1]);
 }
 
+// strpos without instance parameter
+StatusOr<ColumnPtr> StringFunctions::strpos(FunctionContext* context, const Columns& columns) {
+    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+
+    const ColumnPtr& haystack = columns[0];
+    const ColumnPtr& needle = columns[1];
+    ColumnPtr instance = ColumnHelper::create_const_column<TYPE_INT>(1, columns[0]->size());
+    return strpos_instance(context, {haystack, needle, instance});
+}
+
+// strpos with instance parameter
+StatusOr<ColumnPtr> StringFunctions::strpos_instance(FunctionContext* context, const Columns& columns) {
+    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+
+    const ColumnPtr& haystack = columns[0];
+    const ColumnPtr& needle = columns[1];
+    const ColumnPtr& instance = columns[2];
+
+    ColumnViewer<TYPE_VARCHAR> haystack_viewer(haystack);
+    ColumnViewer<TYPE_VARCHAR> needle_viewer(needle);
+    ColumnViewer<TYPE_INT> instance_viewer(instance);
+
+    size_t size = haystack->size();
+    ColumnBuilder<TYPE_BIGINT> builder(size);
+
+    for (size_t i = 0; i < size; ++i) {
+        if (haystack_viewer.is_null(i) || needle_viewer.is_null(i) || instance_viewer.is_null(i)) {
+            builder.append_null();
+            continue;
+        }
+
+        const Slice& haystack_slice = haystack_viewer.value(i);
+        const Slice& needle_slice = needle_viewer.value(i);
+        int32_t instance_value = instance_viewer.value(i);
+
+        // instance is 0, return 0
+        if (instance_value == 0) {
+            builder.append(0);
+            continue;
+        }
+
+        // needle is empty, return 1
+        if (needle_slice.size == 0) {
+            builder.append(1);
+            continue;
+        }
+
+        if (instance_value > 0) {
+            int pos = -1;
+            int count = 0;
+            int from_index = 0;
+
+            while (count < instance_value) {
+                pos = StringFunctions::index_of(haystack_slice.data, haystack_slice.size, needle_slice.data,
+                                                needle_slice.size, from_index);
+                if (pos == -1) {
+                    break;
+                }
+                count++;
+                from_index = pos + 1;
+            }
+            builder.append(count == instance_value ? pos + 1 : 0);
+        } else {
+            // instance is negative, search from end
+            std::vector<int> positions;
+            int pos = -1;
+            int from_index = 0;
+
+            while (true) {
+                pos = StringFunctions::index_of(haystack_slice.data, haystack_slice.size, needle_slice.data,
+                                                needle_slice.size, from_index);
+                if (pos == -1) {
+                    break;
+                }
+                positions.push_back(pos);
+                from_index = pos + 1;
+            }
+
+            int abs_instance = std::abs(instance_value);
+            if (abs_instance <= static_cast<int>(positions.size())) {
+                builder.append(positions[positions.size() - abs_instance] + 1);
+            } else {
+                builder.append(0);
+            }
+        }
+    }
+
+    return builder.build(ColumnHelper::is_all_const({haystack, needle, instance}));
+}
+
 static inline ColumnPtr concat_const_not_null(Columns const& columns, const BinaryColumn* src,
                                               const ConcatState* state) {
     NullableBinaryColumnBuilder builder;
-    auto* binary = down_cast<BinaryColumn*>(builder.data_column().get());
+    auto* binary = down_cast<BinaryColumn*>(builder.data_column_raw_ptr());
     auto& nulls = builder.get_null_data();
     auto& dst_offsets = binary->get_offset();
     auto& dst_bytes = binary->get_bytes();
@@ -2848,8 +2952,8 @@ static inline ColumnPtr concat_not_const_small(std::vector<ColumnViewer<TYPE_VAR
                                                const bool is_const) {
     NullableBinaryColumnBuilder builder;
     auto& dst_nulls = builder.get_null_data();
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
     dst_nulls.resize(num_rows);
     raw::make_room(&dst_offsets, num_rows + 1);
     dst_offsets[0] = 0;
@@ -2955,7 +3059,7 @@ static inline ColumnPtr concat_not_const(Columns const& columns) {
  */
 StatusOr<ColumnPtr> StringFunctions::concat(FunctionContext* context, const Columns& columns) {
     if (columns.size() == 1) {
-        return columns[0]->clone();
+        return std::move(*columns[0]).mutate();
     }
 
     RETURN_IF_COLUMNS_ONLY_NULL(columns);
@@ -2975,8 +3079,8 @@ ColumnPtr concat_ws_small(ColumnViewer<TYPE_VARCHAR>& sep_viewer, std::vector<Co
                           const size_t num_rows, const size_t dst_bytes_max_size, const bool is_const) {
     NullableBinaryColumnBuilder builder;
     auto& dst_nulls = builder.get_null_data();
-    auto& dst_offsets = builder.data_column()->get_offset();
-    auto& dst_bytes = builder.data_column()->get_bytes();
+    auto& dst_offsets = builder.data_column_raw_ptr()->get_offset();
+    auto& dst_bytes = builder.data_column_raw_ptr()->get_bytes();
     dst_nulls.resize(num_rows);
     raw::make_room(&dst_offsets, num_rows + 1);
     dst_offsets[0] = 0;
@@ -3041,7 +3145,7 @@ StatusOr<ColumnPtr> StringFunctions::concat_ws(FunctionContext* context, const C
     }
 
     if (columns.size() == 2) {
-        return columns[1];
+        return std::move(*columns[1]).mutate();
     }
 
     const auto sep_size = ColumnHelper::compute_bytes_size(columns.begin(), columns.begin() + 1);
@@ -3245,8 +3349,10 @@ Status StringFunctions::regexp_replace_prepare(FunctionContext* context, Functio
     state->pattern = pattern_str;
 
     std::string search_string;
+
     if (pattern_str.size() && RE2::FullMatch(pattern_str, SUBSTRING_RE, &search_string)) {
         state->use_hyperscan = true;
+        state->use_hyperscan_vec = RE2::FullMatch(pattern_str, FIXED_LITERAL_RE, &search_string);
         state->size_of_pattern = pattern.size;
         std::string re_pattern(pattern.data, pattern.size);
         RETURN_IF_ERROR(hs_compile_and_alloc_scratch(re_pattern, state, context, pattern));
@@ -3262,6 +3368,12 @@ Status StringFunctions::regexp_replace_prepare(FunctionContext* context, Functio
         }
     }
 
+    state->global_mode = pattern_str.empty() || (!pattern_str.starts_with("^") && !pattern_str.ends_with("$"));
+    if (context->is_notnull_constant_column(2)) {
+        const auto rpl_column = context->get_constant_column(2);
+        const auto rpl_slice = ColumnHelper::get_const_value<TYPE_VARCHAR>(rpl_column);
+        state->opt_const_rpl = rpl_slice.to_string();
+    }
     return Status::OK();
 }
 
@@ -3376,6 +3488,76 @@ StatusOr<ColumnPtr> StringFunctions::regexp_extract(FunctionContext* context, co
     return regexp_extract_general(context, options, columns);
 }
 
+// Helper function to extract whole match (group 0) using RE2::Match
+// This is shared by both overloaded extract_regex_matches functions
+template <typename IndexType>
+static void extract_whole_matches(const re2::StringPiece& str_sp, const re2::RE2& regex, BinaryColumn* str_col,
+                                  IndexType& index, int max_matches) {
+    re2::StringPiece input = str_sp;
+    std::vector<re2::StringPiece> matches(max_matches);
+    size_t pos = 0;
+
+    while (pos <= input.size()) {
+        re2::StringPiece remaining = input.substr(pos);
+        if (regex.Match(remaining, 0, remaining.size(), RE2::UNANCHORED, &matches[0], max_matches)) {
+            // matches[0] contains the whole match (group 0)
+            str_col->append(Slice(matches[0].data(), matches[0].size()));
+            index += 1;
+            // Move past this match
+            pos = matches[0].data() - input.data() + matches[0].size();
+            if (matches[0].size() == 0) {
+                pos++; // Avoid infinite loop on zero-length matches
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+// Helper function to extract regex matches and append to column
+// This reduces code duplication across regexp_extract_all_* functions
+static void extract_regex_matches(const Slice& str_value, const re2::RE2& regex, int group, BinaryColumn* str_col,
+                                  uint32_t& index, int max_matches) {
+    re2::StringPiece str_sp(str_value.get_data(), str_value.get_size());
+
+    if (group == 0) {
+        // Extract the whole match (group 0)
+        extract_whole_matches(str_sp, regex, str_col, index, max_matches);
+    } else {
+        // Extract specific capture group
+        re2::StringPiece find[group];
+        const RE2::Arg* args[group];
+        RE2::Arg argv[group];
+
+        for (size_t i = 0; i < group; i++) {
+            argv[i] = &find[i];
+            args[i] = &argv[i];
+        }
+        while (re2::RE2::FindAndConsumeN(&str_sp, regex, args, group)) {
+            str_col->append(Slice(find[group - 1].data(), find[group - 1].size()));
+            index += 1;
+        }
+    }
+}
+
+// Overloaded version for pre-allocated arrays (used by regexp_extract_all_const)
+static void extract_regex_matches(const Slice& str_value, const re2::RE2& regex, int group, BinaryColumn* str_col,
+                                  uint64_t& index, const std::unique_ptr<re2::StringPiece[]>& find,
+                                  const std::unique_ptr<const RE2::Arg*[]>& args, int max_matches) {
+    re2::StringPiece str_sp(str_value.get_data(), str_value.get_size());
+
+    if (group == 0) {
+        // Extract the whole match (group 0) - reuse common logic
+        extract_whole_matches(str_sp, regex, str_col, index, max_matches);
+    } else {
+        // Extract specific capture group using pre-allocated arrays
+        while (re2::RE2::FindAndConsumeN(&str_sp, regex, args.get(), group)) {
+            str_col->append(Slice(find[group - 1].data(), find[group - 1].size()));
+            index += 1;
+        }
+    }
+}
+
 static ColumnPtr regexp_extract_all_general(FunctionContext* context, re2::RE2::Options* options,
                                             const Columns& columns) {
     auto content_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
@@ -3391,7 +3573,7 @@ static ColumnPtr regexp_extract_all_general(FunctionContext* context, re2::RE2::
     uint32_t index = 0;
 
     for (int row = 0; row < size; ++row) {
-        if (content_viewer.is_null(row) || ptn_viewer.is_null(row)) {
+        if (content_viewer.is_null(row) || ptn_viewer.is_null(row) || group_viewer.is_null(row)) {
             offset_col->append(index);
             nl_col->append(1);
             continue;
@@ -3408,7 +3590,7 @@ static ColumnPtr regexp_extract_all_general(FunctionContext* context, re2::RE2::
 
         nl_col->append(0);
         auto group = group_viewer.value(row);
-        if (group <= 0) {
+        if (group < 0) {
             offset_col->append(index);
             continue;
         }
@@ -3419,21 +3601,7 @@ static ColumnPtr regexp_extract_all_general(FunctionContext* context, re2::RE2::
             continue;
         }
 
-        auto str_value = content_viewer.value(row);
-        re2::StringPiece str_sp(str_value.get_data(), str_value.get_size());
-
-        re2::StringPiece find[group];
-        const RE2::Arg* args[group];
-        RE2::Arg argv[group];
-
-        for (size_t i = 0; i < group; i++) {
-            argv[i] = &find[i];
-            args[i] = &argv[i];
-        }
-        while (re2::RE2::FindAndConsumeN(&str_sp, local_re, args, group)) {
-            str_col->append(Slice(find[group - 1].data(), find[group - 1].size()));
-            index += 1;
-        }
+        extract_regex_matches(content_viewer.value(row), local_re, group, str_col.get(), index, max_matches);
         offset_col->append(index);
     }
 
@@ -3455,7 +3623,7 @@ static ColumnPtr regexp_extract_all_const_pattern(re2::RE2* const_re, const Colu
     uint32_t index = 0;
 
     for (int row = 0; row < size; ++row) {
-        if (content_viewer.is_null(row)) {
+        if (content_viewer.is_null(row) || group_viewer.is_null(row)) {
             offset_col->append(index);
             nl_col->append(1);
             continue;
@@ -3463,7 +3631,7 @@ static ColumnPtr regexp_extract_all_const_pattern(re2::RE2* const_re, const Colu
 
         nl_col->append(0);
         auto group = group_viewer.value(row);
-        if (group <= 0) {
+        if (group < 0) {
             offset_col->append(index);
             continue;
         }
@@ -3474,21 +3642,7 @@ static ColumnPtr regexp_extract_all_const_pattern(re2::RE2* const_re, const Colu
             continue;
         }
 
-        auto str_value = content_viewer.value(row);
-        re2::StringPiece str_sp(str_value.get_data(), str_value.get_size());
-
-        re2::StringPiece find[group];
-        const RE2::Arg* args[group];
-        RE2::Arg argv[group];
-
-        for (size_t i = 0; i < group; i++) {
-            argv[i] = &find[i];
-            args[i] = &argv[i];
-        }
-        while (re2::RE2::FindAndConsumeN(&str_sp, *const_re, args, group)) {
-            str_col->append(Slice(find[group - 1].data(), find[group - 1].size()));
-            index += 1;
-        }
+        extract_regex_matches(content_viewer.value(row), *const_re, group, str_col.get(), index, max_matches);
         offset_col->append(index);
     }
 
@@ -3513,14 +3667,14 @@ static ColumnPtr regexp_extract_all_const(re2::RE2* const_re, const Columns& col
     NullColumn::MutablePtr nl_col;
     if (columns[0]->is_nullable()) {
         auto x = down_cast<const NullableColumn*>(columns[0].get())->null_column();
-        nl_col = NullColumn::static_pointer_cast(x->clone());
+        nl_col = NullColumn::static_pointer_cast(std::move(*x).mutate());
     } else {
         nl_col = NullColumn::create(size, 0);
     }
 
     uint64_t index = 0;
     int max_matches = 1 + const_re->NumberOfCapturingGroups();
-    if (group <= 0 || group >= max_matches) {
+    if (group < 0 || group >= max_matches) {
         offset_col->append_value_multiple_times(&index, size);
         auto array = ArrayColumn::create(NullableColumn::create(std::move(str_col), NullColumn::create(0, 0)),
                                          std::move(offset_col));
@@ -3531,26 +3685,27 @@ static ColumnPtr regexp_extract_all_const(re2::RE2* const_re, const Columns& col
         return NullableColumn::create(std::move(array), std::move(nl_col));
     }
 
-    re2::StringPiece find[group];
-    const RE2::Arg* args[group];
-    RE2::Arg argv[group];
+    // Prepare arguments for FindAndConsumeN (only needed when group > 0)
+    std::unique_ptr<re2::StringPiece[]> find;
+    std::unique_ptr<const RE2::Arg*[]> args;
+    std::unique_ptr<RE2::Arg[]> argv;
 
-    for (size_t i = 0; i < group; i++) {
-        argv[i] = &find[i];
-        args[i] = &argv[i];
-    }
-    for (int row = 0; row < size; ++row) {
-        if (content_viewer.is_null(row)) {
-            offset_col->append(index);
-            continue;
+    if (group > 0) {
+        find = std::make_unique<re2::StringPiece[]>(group);
+        args = std::make_unique<const RE2::Arg*[]>(group);
+        argv = std::make_unique<RE2::Arg[]>(group);
+
+        for (size_t i = 0; i < group; i++) {
+            argv[i] = &find[i];
+            args[i] = &argv[i];
         }
+    }
 
-        auto str_value = content_viewer.value(row);
-        re2::StringPiece str_sp(str_value.get_data(), str_value.get_size());
-        while (re2::RE2::FindAndConsumeN(&str_sp, *const_re, args, group)) {
-            str_col->append(Slice(find[group - 1].data(), find[group - 1].size()));
-
-            index += 1;
+    // focuses only on iteration and offset management
+    for (int row = 0; row < size; ++row) {
+        if (!content_viewer.is_null(row)) {
+            extract_regex_matches(content_viewer.value(row), *const_re, group, str_col.get(), index, find, args,
+                                  max_matches);
         }
         offset_col->append(index);
     }
@@ -3613,6 +3768,47 @@ static ColumnPtr regexp_replace_general(FunctionContext* context, re2::RE2::Opti
     return result.build(ColumnHelper::is_all_const(columns));
 }
 
+template <bool global_mode>
+static ColumnPtr regexp_replace_const_pattern_and_rpl(re2::RE2* const_re, const Columns& columns,
+                                                      const std::string& rpl) {
+    auto str_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
+    re2::StringPiece rpl_str = re2::StringPiece(rpl);
+    auto size = columns[0]->size();
+    ColumnBuilder<TYPE_VARCHAR> result(size);
+    std::string result_str;
+    for (int row = 0; row < size; ++row) {
+        if (str_viewer.is_null(row)) {
+            result.append_null();
+            continue;
+        }
+
+        auto str_value = str_viewer.value(row);
+        re2::StringPiece str_str = re2::StringPiece(str_value.get_data(), str_value.get_size());
+        result_str.clear();
+#ifdef __APPLE__
+        // macOS RE2 API only supports 3-parameter GlobalReplace
+        result_str = std::string(str_str.data(), str_str.size());
+        if constexpr (global_mode) {
+            re2::RE2::GlobalReplace(&result_str, *const_re, rpl_str);
+        } else {
+            re2::RE2::Replace(&result_str, *const_re, rpl_str);
+        }
+#else
+        // Linux RE2 API supports 4-parameter GlobalReplace
+        if constexpr (global_mode) {
+            re2::RE2::GlobalReplace(str_str, *const_re, rpl_str, result_str);
+        } else {
+            result_str = std::string(str_str.data(), str_str.size());
+            re2::RE2::Replace(&result_str, *const_re, rpl_str);
+        }
+#endif
+        result.append(Slice(result_str.data(), result_str.size()));
+    }
+
+    return result.build(ColumnHelper::is_all_const(columns));
+}
+
+template <bool global_mode>
 static ColumnPtr regexp_replace_const(re2::RE2* const_re, const Columns& columns) {
     auto str_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
     auto rpl_viewer = ColumnViewer<TYPE_VARCHAR>(columns[2]);
@@ -3631,7 +3827,23 @@ static ColumnPtr regexp_replace_const(re2::RE2* const_re, const Columns& columns
         auto str_value = str_viewer.value(row);
         re2::StringPiece str_str = re2::StringPiece(str_value.get_data(), str_value.get_size());
         result_str.clear();
-        re2::RE2::GlobalReplace(str_str, *const_re, rpl_str, result_str);
+#ifdef __APPLE__
+        // macOS RE2 API only supports 3-parameter GlobalReplace
+        result_str = std::string(str_str.data(), str_str.size());
+        if constexpr (global_mode) {
+            re2::RE2::GlobalReplace(&result_str, *const_re, rpl_str);
+        } else {
+            re2::RE2::Replace(&result_str, *const_re, rpl_str);
+        }
+#else
+        // Linux RE2 API supports 4-parameter GlobalReplace
+        if constexpr (global_mode) {
+            re2::RE2::GlobalReplace(str_str, *const_re, rpl_str, result_str);
+        } else {
+            result_str = std::string(str_str.data(), str_str.size());
+            re2::RE2::Replace(&result_str, *const_re, rpl_str);
+        }
+#endif
         result.append(Slice(result_str.data(), result_str.size()));
     }
 
@@ -3658,8 +3870,9 @@ static StatusOr<ColumnPtr> hyperscan_vec_evaluate(const BinaryColumn* src, Strin
     MatchInfoChain match_info_chain;
     match_info_chain.info_chain.reserve(src->size());
 
-    auto src_value_size = src->get_bytes().size();
-    const char* data = (src_value_size) ? reinterpret_cast<const char*>(src->get_bytes().data())
+    auto src_bytes = src->get_immutable_bytes();
+    auto src_value_size = src_bytes.size();
+    const char* data = (src_value_size) ? reinterpret_cast<const char*>(src_bytes.data())
                                         : &StringFunctions::_DUMMY_STRING_FOR_EMPTY_PATTERN;
 
     auto st = hs_scan(
@@ -3718,35 +3931,36 @@ static StatusOr<ColumnPtr> hyperscan_vec_evaluate(const BinaryColumn* src, Strin
     raw::make_room(&dst_offsets, num_rows + 1);
     dst_bytes.reserve(data_count());
 
-    // copy data
+    // copy data row by row with replacements applied
     char* cursor = reinterpret_cast<char*>(dst_bytes.data());
-    size_t last_to = 0;
-    for (const auto& info : match_info_chain_in_one_row.info_chain) {
-        strings::memcpy_inlined(cursor, data + last_to, info.from - last_to);
-        cursor += info.from - last_to;
-        strings::memcpy_inlined(cursor, rpl_value.data(), rpl_value.size());
-        cursor += rpl_value.size();
-        last_to = info.to;
-    }
-    strings::memcpy_inlined(cursor, data + last_to, src_value_size - last_to);
-
-    // split offset
     size_t match_index = 0;
-    dst_offsets[0] = 0;
     size_t match_size = match_info_chain_in_one_row.info_chain.size();
+    dst_offsets[0] = 0;
+
     for (size_t i = 0; i < num_rows; i++) {
-        size_t from = src_offsets[i];
-        size_t to = src_offsets[i + 1];
-        size_t dis = to - from;
-        DCHECK(match_index == match_size || match_info_chain_in_one_row.info_chain[match_index].to > from);
-        while (match_index < match_size && match_info_chain_in_one_row.info_chain[match_index].from >= from &&
-               match_info_chain_in_one_row.info_chain[match_index].to <= to) {
-            dis -= match_info_chain_in_one_row.info_chain[match_index].to -
-                   match_info_chain_in_one_row.info_chain[match_index].from;
-            dis += rpl_value.size();
+        size_t row_start = src_offsets[i];
+        size_t row_end = src_offsets[i + 1];
+        size_t last_to = row_start;
+
+        // Process all matches in this row
+        while (match_index < match_size && match_info_chain_in_one_row.info_chain[match_index].from >= row_start &&
+               match_info_chain_in_one_row.info_chain[match_index].to <= row_end) {
+            const auto& info = match_info_chain_in_one_row.info_chain[match_index];
+            // Copy data before the match
+            strings::memcpy_inlined(cursor, data + last_to, info.from - last_to);
+            cursor += info.from - last_to;
+            // Copy replacement
+            strings::memcpy_inlined(cursor, rpl_value.data(), rpl_value.size());
+            cursor += rpl_value.size();
+            last_to = info.to;
             match_index++;
         }
-        dst_offsets[i + 1] = dst_offsets[i] + dis;
+        // Copy remaining data in this row
+        strings::memcpy_inlined(cursor, data + last_to, row_end - last_to);
+        cursor += row_end - last_to;
+
+        // Calculate offset for this row
+        dst_offsets[i + 1] = cursor - reinterpret_cast<char*>(dst_bytes.data());
     }
     DCHECK(match_index == match_size);
     DCHECK(dst_offsets.back() == data_count());
@@ -3769,8 +3983,8 @@ StatusOr<ColumnPtr> StringFunctions::regexp_replace_use_hyperscan_vec(StringFunc
     ASSIGN_OR_RETURN(auto res, hyperscan_vec_evaluate(binary, state, rpl_value));
     if (columns[0]->is_nullable()) {
         return NullableColumn::create(
-                std::move(res), NullColumn::static_pointer_cast(
-                                        down_cast<const NullableColumn*>(columns[0].get())->null_column()->clone()));
+                res, NullColumn::static_pointer_cast(
+                             std::move(*down_cast<const NullableColumn*>(columns[0].get())->null_column()).mutate()));
     } else if (columns[0]->is_constant()) {
         return ConstColumn::create(std::move(res), columns[0]->size());
     }
@@ -3855,14 +4069,26 @@ StatusOr<ColumnPtr> StringFunctions::regexp_replace(FunctionContext* context, co
 
     if (state->const_pattern) {
         if (state->use_hyperscan) {
-            if (columns[2]->is_constant() && context->state()->enable_hyperscan_vec()) {
+            if (columns[2]->is_constant() && context->state()->enable_hyperscan_vec() && state->use_hyperscan_vec) {
                 return regexp_replace_use_hyperscan_vec(state, columns);
             } else {
                 return regexp_replace_use_hyperscan(state, columns);
             }
         } else {
             re2::RE2* const_re = state->get_or_prepare_regex();
-            return regexp_replace_const(const_re, columns);
+            if (state->opt_const_rpl.has_value()) {
+                if (state->global_mode) {
+                    return regexp_replace_const_pattern_and_rpl<true>(const_re, columns, state->opt_const_rpl.value());
+                } else {
+                    return regexp_replace_const_pattern_and_rpl<false>(const_re, columns, state->opt_const_rpl.value());
+                }
+            } else {
+                if (state->global_mode) {
+                    return regexp_replace_const<true>(const_re, columns);
+                } else {
+                    return regexp_replace_const<false>(const_re, columns);
+                }
+            }
         }
     }
 
@@ -3882,7 +4108,7 @@ static StatusOr<ColumnPtr> regexp_split_const(re2::RE2* const_re, const Columns&
     NullColumn::MutablePtr nl_col;
     if (columns[0]->is_nullable()) {
         auto x = down_cast<const NullableColumn*>(columns[0].get())->null_column();
-        nl_col = NullColumn::static_pointer_cast(x->clone());
+        nl_col = NullColumn::static_pointer_cast((std::move(*x)).mutate());
     } else {
         nl_col = NullColumn::create(size, 0);
     }
@@ -3940,7 +4166,7 @@ static StatusOr<ColumnPtr> regexp_split_const_pattern(re2::RE2* const_re, const 
     NullColumn::MutablePtr nl_col;
     if (columns[0]->is_nullable()) {
         auto x = down_cast<const NullableColumn*>(columns[0].get())->null_column();
-        nl_col = NullColumn::static_pointer_cast(x->clone());
+        nl_col = NullColumn::static_pointer_cast(std::move(*x).mutate());
     } else {
         nl_col = NullColumn::create(size, 0);
     }
@@ -4225,6 +4451,207 @@ StatusOr<ColumnPtr> StringFunctions::regexp_count(FunctionContext* context, cons
     }
 }
 
+Status StringFunctions::regexp_position_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope) {
+    if (scope != FunctionContext::FRAGMENT_LOCAL) {
+        return Status::OK();
+    }
+
+    auto* state = new StringFunctionsState();
+    context->set_function_state(scope, state);
+
+    if (!context->is_constant_column(1)) {
+        return Status::OK();
+    }
+
+    const auto pattern_col = context->get_constant_column(1);
+    if (!pattern_col->only_null()) {
+        Slice pattern = ColumnHelper::get_const_value<TYPE_VARCHAR>(pattern_col);
+        state->pattern = std::string(pattern.data, pattern.size);
+        state->const_pattern = true;
+
+        state->options = std::make_unique<re2::RE2::Options>();
+        state->options->set_log_errors(false);
+
+        state->regex = std::make_unique<re2::RE2>(state->pattern, *state->options);
+        if (!state->regex->ok()) {
+            std::stringstream error;
+            error << "Invalid regex expression: " << state->pattern;
+            context->set_error(error.str().c_str());
+            return Status::InvalidArgument(error.str());
+        }
+    }
+
+    return Status::OK();
+}
+
+Status StringFunctions::regexp_position_close(FunctionContext* context, FunctionContext::FunctionStateScope scope) {
+    if (scope == FunctionContext::FRAGMENT_LOCAL) {
+        auto* state =
+                reinterpret_cast<StringFunctionsState*>(context->get_function_state(FunctionContext::FRAGMENT_LOCAL));
+        delete state;
+    }
+    return Status::OK();
+}
+
+static ColumnPtr regexp_position_const_pattern(re2::RE2* const_re, const Columns& columns) {
+    auto str_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
+    auto start_viewer = ColumnViewer<TYPE_INT>(columns[2]);
+    auto occurrence_viewer = ColumnViewer<TYPE_INT>(columns[3]);
+
+    auto size = columns[0]->size();
+    ColumnBuilder<TYPE_INT> result(size);
+
+    for (int row = 0; row < size; ++row) {
+        if (str_viewer.is_null(row) || start_viewer.is_null(row) || occurrence_viewer.is_null(row)) {
+            result.append_null();
+            continue;
+        }
+
+        int start_pos = start_viewer.value(row);
+        int occurrence = occurrence_viewer.value(row);
+
+        if (start_pos < 1 || occurrence < 1) {
+            result.append(-1);
+            continue;
+        }
+
+        auto str_value = str_viewer.value(row);
+        // get the number of code points in the string
+        int utf8_length = utf8_len(str_value.data, str_value.data + str_value.size);
+
+        if (start_pos > utf8_length) {
+            result.append(-1);
+            continue;
+        }
+
+        const char* search_start = skip_leading_utf8(str_value.data, str_value.data + str_value.size, start_pos - 1);
+        int byte_offset = search_start - str_value.data;
+
+        int count = 0;
+        re2::StringPiece str_sp(str_value.data, str_value.size);
+        re2::StringPiece match;
+
+        bool found = false;
+        while (byte_offset <= str_value.size) {
+            if (const_re->Match(str_sp, byte_offset, str_value.size, re2::RE2::UNANCHORED, &match, 1)) {
+                count++;
+                if (count == occurrence) {
+                    // convert back to one-based index
+                    int code_point_pos = utf8_len(str_value.data, match.data()) + 1;
+                    result.append(code_point_pos);
+                    found = true;
+                    break;
+                }
+
+                byte_offset = match.data() - str_value.data + match.size();
+                if (match.size() == 0) {
+                    byte_offset++;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if (!found) {
+            result.append(-1);
+        }
+    }
+
+    return result.build(ColumnHelper::is_all_const(columns));
+}
+
+static StatusOr<ColumnPtr> regexp_position_general(FunctionContext* context, re2::RE2::Options* options,
+                                                   const Columns& columns) {
+    auto str_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
+    auto pattern_viewer = ColumnViewer<TYPE_VARCHAR>(columns[1]);
+    auto start_viewer = ColumnViewer<TYPE_INT>(columns[2]);
+    auto occurrence_viewer = ColumnViewer<TYPE_INT>(columns[3]);
+
+    auto size = columns[0]->size();
+    ColumnBuilder<TYPE_INT> result(size);
+
+    for (int row = 0; row < size; ++row) {
+        if (str_viewer.is_null(row) || pattern_viewer.is_null(row) || start_viewer.is_null(row) ||
+            occurrence_viewer.is_null(row)) {
+            result.append_null();
+            continue;
+        }
+
+        int start_pos = start_viewer.value(row);
+        int occurrence = occurrence_viewer.value(row);
+
+        if (start_pos < 1 || occurrence < 1) {
+            result.append(-1);
+            continue;
+        }
+
+        auto str_value = str_viewer.value(row);
+        auto pattern_value = pattern_viewer.value(row);
+
+        std::string pattern_str = pattern_value.to_string();
+        // compile the pattern for each new row, keep in stack memory
+        re2::RE2 local_re(pattern_str, *options);
+        if (!local_re.ok()) {
+            return Status::InvalidArgument(strings::Substitute("Invalid regex expression: $0", pattern_str));
+        }
+
+        int utf8_length = utf8_len(str_value.data, str_value.data + str_value.size);
+
+        if (start_pos > utf8_length) {
+            result.append(-1);
+            continue;
+        }
+
+        const char* search_start = skip_leading_utf8(str_value.data, str_value.data + str_value.size, start_pos - 1);
+        int byte_offset = search_start - str_value.data;
+
+        int count = 0;
+        re2::StringPiece str_sp(str_value.data, str_value.size);
+        re2::StringPiece match;
+
+        bool found = false;
+        while (byte_offset <= str_value.size) {
+            if (local_re.Match(str_sp, byte_offset, str_value.size, re2::RE2::UNANCHORED, &match, 1)) {
+                count++;
+                if (count == occurrence) {
+                    int code_point_pos = utf8_len(str_value.data, match.data()) + 1;
+                    result.append(code_point_pos);
+                    found = true;
+                    break;
+                }
+
+                byte_offset = match.data() - str_value.data + match.size();
+                if (match.size() == 0) {
+                    byte_offset++;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if (!found) {
+            result.append(-1);
+        }
+    }
+
+    return result.build(ColumnHelper::is_all_const(columns));
+}
+
+StatusOr<ColumnPtr> StringFunctions::regexp_position(FunctionContext* context, const Columns& columns) {
+    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+
+    auto* state = reinterpret_cast<StringFunctionsState*>(context->get_function_state(FunctionContext::FRAGMENT_LOCAL));
+
+    if (state && state->const_pattern && state->regex) {
+        // Const col
+        return regexp_position_const_pattern(state->get_or_prepare_regex(), columns);
+    } else {
+        re2::RE2::Options options;
+        options.set_log_errors(false);
+        return regexp_position_general(context, &options, columns);
+    }
+}
+
 struct ReplaceState {
     bool only_null{false};
 
@@ -4442,7 +4869,7 @@ Status StringFunctions::parse_url_prepare(FunctionContext* context, FunctionCont
     auto column = context->get_constant_column(1);
     auto part = ColumnHelper::get_const_value<TYPE_VARCHAR>(column);
     state->url_part = std::make_unique<UrlParser::UrlPart>();
-    *(state->url_part) = UrlParser::get_url_part(StringValue::from_slice(part));
+    *(state->url_part) = UrlParser::get_url_part(part);
 
     if (*(state->url_part) == UrlParser::INVALID) {
         std::stringstream error;
@@ -4477,7 +4904,7 @@ StatusOr<ColumnPtr> StringFunctions::parse_url_general(FunctionContext* context,
         }
 
         auto part = part_viewer.value(row);
-        UrlParser::UrlPart url_part = UrlParser::get_url_part(StringValue::from_slice(part));
+        UrlParser::UrlPart url_part = UrlParser::get_url_part(part);
 
         if (url_part == UrlParser::INVALID) {
             std::stringstream ss;
@@ -4487,15 +4914,20 @@ StatusOr<ColumnPtr> StringFunctions::parse_url_general(FunctionContext* context,
             continue;
         }
         auto str_value = str_viewer.value(row);
-        StringValue value;
-        if (!UrlParser::parse_url(StringValue::from_slice(str_value), url_part, &value)) {
+        Slice value;
+        auto status = UrlParser::parse_url(str_value, url_part, &value);
+        if (status == UrlParser::ParseStatus::INVALID) {
             std::stringstream ss;
             ss << "Could not parse URL: " << str_value.to_string();
             context->add_warning(ss.str().c_str());
             result.append_null();
             continue;
         }
-        result.append(Slice(value.ptr, value.len));
+        if (status == UrlParser::ParseStatus::NOT_FOUND) {
+            result.append_null();
+            continue;
+        }
+        result.append(value);
     }
 
     return result.build(ColumnHelper::is_all_const(columns));
@@ -4514,16 +4946,21 @@ StatusOr<ColumnPtr> StringFunctions::parse_const_urlpart(UrlParser::UrlPart* url
         }
 
         auto str_value = str_viewer.value(row);
-        StringValue value;
-        if (!UrlParser::parse_url(StringValue::from_slice(str_value), *url_part, &value)) {
+        Slice value;
+        auto status = UrlParser::parse_url(str_value, *url_part, &value);
+        if (status == UrlParser::ParseStatus::INVALID) {
             std::stringstream ss;
             ss << "Could not parse URL: " << str_value.to_string();
             context->add_warning(ss.str().c_str());
             result.append_null();
             continue;
         }
+        if (status == UrlParser::ParseStatus::NOT_FOUND) {
+            result.append_null();
+            continue;
+        }
 
-        result.append(Slice(value.ptr, value.len));
+        result.append(value);
     }
 
     return result.build(ColumnHelper::is_all_const(columns));
@@ -4547,14 +4984,14 @@ StatusOr<ColumnPtr> StringFunctions::url_extract_host(FunctionContext* context, 
     return parse_const_urlpart(url_part, context, columns);
 }
 
-static bool seek_param_key_in_query_params(const StringValue& query_params, const StringValue& param_key,
+static bool seek_param_key_in_query_params(const Slice& query_params, const Slice& param_key,
                                            std::string* param_value) {
     const StringSearch param_search(&param_key);
-    auto pos = param_search.search(&query_params);
-    auto* begin = query_params.ptr;
-    auto* end = query_params.ptr + query_params.len;
+    auto pos = param_search.search(query_params);
+    auto* begin = query_params.data;
+    auto* end = query_params.data + query_params.size;
     auto* p_prev_char = begin + pos - 1;
-    auto* p_next_char = begin + pos + param_key.len;
+    auto* p_next_char = begin + pos + param_key.size;
     // NOT FOUND
     // case 1: just not found
     // case 2: suffix found, seek "k1" in "abck1=2", prev char must be '&' if it exists
@@ -4578,11 +5015,12 @@ static bool seek_param_key_in_query_params(const StringValue& query_params, cons
 }
 
 static bool seek_param_key_in_url(const Slice& url, const Slice& param_key, std::string* param_value) {
-    StringValue query_params;
-    if (!UrlParser::parse_url(StringValue::from_slice(url), UrlParser::UrlPart::QUERY, &query_params)) {
+    Slice query_params;
+    auto status = UrlParser::parse_url(url, UrlParser::UrlPart::QUERY, &query_params);
+    if (status != UrlParser::ParseStatus::OK) {
         return false;
     }
-    return seek_param_key_in_query_params(query_params, StringValue::from_slice(param_key), param_value);
+    return seek_param_key_in_query_params(query_params, param_key, param_value);
 }
 
 static StatusOr<ColumnPtr> url_extract_parameter_const_param_key(const starrocks::Columns& columns,
@@ -4621,7 +5059,8 @@ static StatusOr<ColumnPtr> url_extract_parameter_general(const starrocks::Column
         }
         auto url = url_viewer.value(i);
         auto param_key = param_key_viewer.value(i);
-        bool ill_formed = param_key.size == 0 || std::any_of(param_key.data, param_key.data + param_key.size, isspace);
+        bool ill_formed = param_key.size == 0 || std::any_of(param_key.data, param_key.data + param_key.size,
+                                                             [](int c) { return std::isspace(c); });
         if (ill_formed) {
             result.append_null();
             continue;
@@ -4640,7 +5079,7 @@ static StatusOr<ColumnPtr> url_extract_parameter_const_query_params(const starro
                                                                     const std::string& query_params) {
     auto param_key_viewer = ColumnViewer<TYPE_VARCHAR>(columns[1]);
     auto num_rows = columns[1]->size();
-    StringValue query_params_str(query_params);
+    Slice query_params_str(query_params);
     ColumnBuilder<TYPE_VARCHAR> result(num_rows);
     std::string param_value;
     for (auto i = 0; i < num_rows; ++i) {
@@ -4649,12 +5088,13 @@ static StatusOr<ColumnPtr> url_extract_parameter_const_query_params(const starro
             continue;
         }
         auto param_key = param_key_viewer.value(i);
-        bool ill_formed = param_key.size == 0 || std::any_of(param_key.data, param_key.data + param_key.size, isspace);
+        bool ill_formed = param_key.size == 0 || std::any_of(param_key.data, param_key.data + param_key.size,
+                                                             [](int c) { return std::isspace(c); });
         if (ill_formed) {
             result.append_null();
             continue;
         }
-        auto found = seek_param_key_in_query_params(query_params_str, StringValue::from_slice(param_key), &param_value);
+        auto found = seek_param_key_in_query_params(query_params_str, param_key, &param_value);
         if (!found) {
             result.append_null();
         } else {
@@ -4692,17 +5132,17 @@ Status StringFunctions::url_extract_parameter_prepare(starrocks::FunctionContext
         auto param_key_column = context->get_constant_column(1);
         auto param_key = ColumnHelper::get_const_value<TYPE_VARCHAR>(param_key_column);
         state->opt_const_param_key = param_key.to_string();
-        ill_formed |= param_key.empty() || std::any_of(param_key.data, param_key.data + param_key.size, isspace);
+        ill_formed |= param_key.empty() || std::any_of(param_key.data, param_key.data + param_key.size,
+                                                       [](int c) { return std::isspace(c); });
     }
 
     if (url_is_const) {
         auto url_column = context->get_constant_column(0);
         auto url = ColumnHelper::get_const_value<TYPE_VARCHAR>(url_column);
-        StringValue query_params;
-        auto parse_success =
-                UrlParser::parse_url(StringValue::from_slice(url), UrlParser::UrlPart::QUERY, &query_params);
+        Slice query_params;
+        auto status = UrlParser::parse_url(url, UrlParser::UrlPart::QUERY, &query_params);
         state->opt_const_query_params = query_params.to_string();
-        ill_formed |= !parse_success || query_params.len == 0;
+        ill_formed |= status != UrlParser::ParseStatus::OK || query_params.size == 0;
     }
 
     // result is const null is either url or param_key is ill-formed
@@ -4713,8 +5153,8 @@ Status StringFunctions::url_extract_parameter_prepare(starrocks::FunctionContext
     }
 
     if (state->opt_const_query_params.has_value() && state->opt_const_param_key.has_value()) {
-        StringValue query_params(state->opt_const_query_params.value());
-        StringValue param_key(state->opt_const_param_key.value());
+        Slice query_params(state->opt_const_query_params.value());
+        Slice param_key(state->opt_const_param_key.value());
         std::string result;
         state->result_is_null = !seek_param_key_in_query_params(query_params, param_key, &result);
         state->opt_const_result = std::move(result);
@@ -4759,4 +5199,184 @@ DEFINE_UNARY_FN_WITH_IMPL(crc32Impl, str) {
 StatusOr<ColumnPtr> StringFunctions::crc32(FunctionContext* context, const Columns& columns) {
     return VectorizedStrictUnaryFunction<crc32Impl>::evaluate<TYPE_VARCHAR, TYPE_BIGINT>(columns[0]);
 }
+
+// format_bytes
+StatusOr<ColumnPtr> StringFunctions::format_bytes(FunctionContext* context, const Columns& columns) {
+    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+
+    auto num_rows = columns[0]->size();
+    ColumnBuilder<TYPE_VARCHAR> result(num_rows);
+    ColumnViewer<TYPE_BIGINT> bytes_viewer(columns[0]);
+
+    // Unit constants (1024-based)
+    static const int64_t KB = 1024L;
+    static const int64_t MB = KB * 1024L;
+    static const int64_t GB = MB * 1024L;
+    static const int64_t TB = GB * 1024L;
+    static const int64_t PB = TB * 1024L;
+    static const int64_t EB = PB * 1024L;
+
+    static const char* units[] = {"B", "KB", "MB", "GB", "TB", "PB", "EB"};
+    static const int64_t thresholds[] = {1, KB, MB, GB, TB, PB, EB};
+
+    for (int row = 0; row < num_rows; ++row) {
+        if (bytes_viewer.is_null(row)) {
+            result.append_null();
+            continue;
+        }
+
+        int64_t bytes = bytes_viewer.value(row);
+
+        // Handle edge cases
+        if (bytes < 0) {
+            result.append_null();
+            continue;
+        }
+
+        if (bytes == 0) {
+            result.append("0 B");
+            continue;
+        }
+
+        // Find appropriate unit
+        int unit_index = 0;
+        for (int i = 6; i >= 0; --i) {
+            if (bytes >= thresholds[i]) {
+                unit_index = i;
+                break;
+            }
+        }
+
+        std::string formatted;
+        if (unit_index == 0) {
+            // Bytes - no decimal places
+            formatted = std::to_string(bytes) + " B";
+        } else {
+            // Higher units - 2 decimal places
+            double value = static_cast<double>(bytes) / thresholds[unit_index];
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(2) << value << " " << units[unit_index];
+            formatted = oss.str();
+        }
+
+        result.append(Slice(formatted.data(), formatted.size()));
+    }
+
+    return result.build(ColumnHelper::is_all_const(columns));
+}
+
+// raise_error
+StatusOr<ColumnPtr> StringFunctions::raise_error(FunctionContext* context, const Columns& columns) {
+    ColumnViewer<TYPE_VARCHAR> viewer(columns[0]);
+    auto size = columns[0]->size();
+    for (int row = 0; row < size; ++row) {
+        if (viewer.is_null(row)) {
+            continue;
+        }
+        auto msg = viewer.value(row);
+        throw RuntimeException(std::string(msg.data, msg.size));
+    }
+    return ColumnHelper::create_const_null_column(size);
+}
+
+static Status initcap_impl(const Slice& str, std::string* result) {
+    if (str.empty()) {
+        return Status::OK();
+    }
+
+    if (validate_ascii_fast(str.data, str.size)) {
+        result->resize(str.size);
+        const char* src = str.data;
+        char* dst = result->data();
+        bool word_start = true;
+
+        for (size_t i = 0; i < str.size; ++i) {
+            unsigned char c = static_cast<unsigned char>(src[i]);
+            if (std::isalnum(c)) {
+                if (word_start) {
+                    dst[i] = std::toupper(c);
+                    word_start = false;
+                } else {
+                    dst[i] = std::tolower(c);
+                }
+            } else {
+                dst[i] = c;
+                word_start = true;
+            }
+        }
+        return Status::OK();
+    }
+
+    result->reserve(str.size);
+    int32_t len = static_cast<int32_t>(str.size);
+    int32_t i = 0;
+    bool word_start = true;
+
+    while (i < len) {
+        UChar32 c;
+        int32_t old_i = i;
+        U8_NEXT(str.data, i, len, c);
+
+        if (c < 0) {
+            unsigned char bad_byte = static_cast<unsigned char>(str.data[old_i]);
+            std::stringstream ss;
+            ss << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(bad_byte);
+            return Status::InvalidArgument(
+                    strings::Substitute("Invalid UTF-8 sequence at index $0, byte: $1", old_i, ss.str()));
+        }
+
+        if (u_isalnum(c)) {
+            if (word_start) {
+                c = u_toupper(c);
+                word_start = false;
+            } else {
+                c = u_tolower(c);
+            }
+        } else {
+            word_start = true;
+        }
+
+        char temp[4];
+        int32_t offset = 0;
+        UBool is_error = false;
+        U8_APPEND(temp, offset, 4, c, is_error);
+
+        if (is_error) {
+            return Status::InvalidArgument("Invalid UTF-8 sequence during encoding");
+        }
+        result->append(temp, offset);
+    }
+    return Status::OK();
+}
+
+StatusOr<ColumnPtr> StringFunctions::initcap(FunctionContext* context, const Columns& columns) {
+    ColumnViewer<TYPE_VARCHAR> viewer(columns[0]);
+    size_t num_rows = columns[0]->size();
+
+    ColumnBuilder<TYPE_VARCHAR> builder(num_rows);
+
+    std::string result_buffer;
+
+    for (size_t i = 0; i < num_rows; ++i) {
+        if (viewer.is_null(i)) {
+            builder.append_null();
+            continue;
+        }
+
+        Slice str = viewer.value(i);
+        result_buffer.clear();
+
+        Status st = initcap_impl(str, &result_buffer);
+
+        if (!st.ok()) {
+            return st;
+        }
+
+        builder.append(Slice(result_buffer));
+    }
+
+    return builder.build(ColumnHelper::is_all_const(columns));
+}
 } // namespace starrocks
+
+#include "gen_cpp/opcode/StringFunctions.inc"

@@ -19,14 +19,15 @@ import com.starrocks.ha.FrontendNodeType;
 import com.starrocks.journal.bdbje.BDBJEJournal;
 import com.starrocks.leader.CheckpointController;
 import com.starrocks.persist.EditLog;
+import com.starrocks.persist.WALApplier;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.NodeMgr;
 import com.starrocks.system.Frontend;
 import com.starrocks.utframe.MockJournal;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class GlobalConnectionIdTest {
     @Test
@@ -40,11 +41,9 @@ public class GlobalConnectionIdTest {
 
         ConnectScheduler scheduler = new ConnectScheduler(10);
         int threshold = 1 << 24;
-        for (int i = 1; i < threshold; i++) {
-            scheduler.getNextConnectionId();
-        }
+        scheduler.setNextConnectionId(threshold);
 
-        Assert.assertEquals(0, scheduler.getNextConnectionId());
+        Assertions.assertEquals(0, scheduler.getNextConnectionId());
 
         new MockUp<NodeMgr>() {
             @Mock
@@ -52,14 +51,15 @@ public class GlobalConnectionIdTest {
                 return new Frontend(1, FrontendNodeType.LEADER, "", "", 0);
             }
         };
-        Assert.assertEquals(threshold + 1, scheduler.getNextConnectionId());
+        Assertions.assertEquals(threshold + 1, scheduler.getNextConnectionId());
     }
 
     @Test
     public void testFrontendId() throws DdlException {
         new MockUp<EditLog>() {
             @Mock
-            public void logJsonObject(short op, Object obj) {
+            public void logJsonObject(short op, Object obj, WALApplier walApplier) {
+                walApplier.apply(obj);
             }
         };
 
@@ -71,9 +71,9 @@ public class GlobalConnectionIdTest {
         nodeMgr.addFrontend(FrontendNodeType.FOLLOWER, "192.168.0.1", 9010);
         nodeMgr.addFrontend(FrontendNodeType.FOLLOWER, "192.168.0.2", 9010);
 
-        Assert.assertNotNull(nodeMgr.getFrontend(1));
-        Assert.assertNotNull(nodeMgr.getFrontend(2));
-        Assert.assertNull(nodeMgr.getFrontend(3));
+        Assertions.assertNotNull(nodeMgr.getFrontend(1));
+        Assertions.assertNotNull(nodeMgr.getFrontend(2));
+        Assertions.assertNull(nodeMgr.getFrontend(3));
         nodeMgr.setMySelf(nodeMgr.getFrontend(1));
 
         for (int i = 3; i < 256; i++) {
@@ -81,9 +81,9 @@ public class GlobalConnectionIdTest {
         }
 
         Frontend frontend = nodeMgr.checkFeExist("192.168.0.255", 9010);
-        Assert.assertEquals(255, frontend.getFid());
+        Assertions.assertEquals(255, frontend.getFid());
 
-        Assert.assertThrows(DdlException.class, () -> nodeMgr.addFrontend(FrontendNodeType.FOLLOWER, "192.168.1.20", 9010));
+        Assertions.assertThrows(DdlException.class, () -> nodeMgr.addFrontend(FrontendNodeType.FOLLOWER, "192.168.1.20", 9010));
 
         nodeMgr.dropFrontend(FrontendNodeType.FOLLOWER, "192.168.0.20", 9010);
         nodeMgr.dropFrontend(FrontendNodeType.FOLLOWER, "192.168.0.50", 9010);
@@ -91,6 +91,6 @@ public class GlobalConnectionIdTest {
 
         nodeMgr.addFrontend(FrontendNodeType.FOLLOWER, "192.168.1.20", 9010);
         frontend = nodeMgr.checkFeExist("192.168.1.20", 9010);
-        Assert.assertEquals(20, frontend.getFid());
+        Assertions.assertEquals(20, frontend.getFid());
     }
 }

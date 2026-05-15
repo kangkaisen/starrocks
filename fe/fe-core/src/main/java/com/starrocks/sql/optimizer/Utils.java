@@ -18,19 +18,19 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.starrocks.analysis.JoinOperator;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.OlapTable;
-import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
+import com.starrocks.common.FeConstants;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.JoinOperator;
+import com.starrocks.sql.ast.KeysType;
+import com.starrocks.sql.common.TypeManager;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.LogicalProperty;
 import com.starrocks.sql.optimizer.operator.Operator;
@@ -60,6 +60,9 @@ import com.starrocks.sql.optimizer.rewrite.ReplaceColumnRefRewriter;
 import com.starrocks.sql.optimizer.rewrite.ScalarOperatorRewriter;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.optimizer.statistics.StatisticsCalculator;
+import com.starrocks.type.FloatType;
+import com.starrocks.type.ScalarType;
+import com.starrocks.type.Type;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.collections4.SetUtils;
@@ -179,6 +182,14 @@ public class Utils {
         return count;
     }
 
+    public static int countOptExpressionNodes(OptExpression node) {
+        int count = 1;
+        for (OptExpression child : node.getInputs()) {
+            count += countOptExpressionNodes(child);
+        }
+        return count;
+    }
+
     public static void extractOlapScanOperator(GroupExpression groupExpression, List<LogicalOlapScanOperator> list) {
         extractOperator(groupExpression, list, p -> OperatorType.LOGICAL_OLAP_SCAN.equals(p.getOpType()));
     }
@@ -189,11 +200,13 @@ public class Utils {
         return list;
     }
 
+    /**
+     * Extract all operators satisfied the predicate
+     */
     public static <E extends Operator> void extractOperator(OptExpression root, List<E> list,
                                                             Predicate<Operator> lambda) {
         if (lambda.test(root.getOp())) {
             list.add((E) root.getOp());
-            return;
         }
 
         List<OptExpression> inputs = root.getInputs();
@@ -202,11 +215,13 @@ public class Utils {
         }
     }
 
+    /**
+     * Extract all operators satisfied the predicate
+     */
     private static <E extends Operator> void extractOperator(GroupExpression root, List<E> list,
                                                              Predicate<Operator> lambda) {
         if (lambda.test(root.getOp())) {
             list.add((E) root.getOp());
-            return;
         }
 
         List<Group> groups = root.getInputs();
@@ -260,7 +275,7 @@ public class Utils {
         return createCompound(CompoundPredicateOperator.CompoundType.OR, Arrays.asList(nodes));
     }
 
-    public static ScalarOperator compoundAnd(Collection<ScalarOperator> nodes) {
+    public static ScalarOperator compoundAnd(Collection<? extends ScalarOperator> nodes) {
         return createCompound(CompoundPredicateOperator.CompoundType.AND, nodes);
     }
 
@@ -295,7 +310,7 @@ public class Utils {
     //  /\   /\
     // a  b c  d
     public static ScalarOperator createCompound(CompoundPredicateOperator.CompoundType type,
-                                                Collection<ScalarOperator> nodes) {
+                                                Collection<? extends ScalarOperator> nodes) {
         LinkedList<ScalarOperator> link =
                 nodes.stream().filter(Objects::nonNull).collect(Collectors.toCollection(Lists::newLinkedList));
 
@@ -303,6 +318,15 @@ public class Utils {
             return null;
         }
 
+        // for and predicate, filter redundant true
+        if (type == CompoundPredicateOperator.CompoundType.AND) {
+            link = link.stream()
+                    .filter(so -> !ConstantOperator.TRUE.equals(so))
+                    .collect(Collectors.toCollection(Lists::newLinkedList));
+            if (link.isEmpty()) {
+                return ConstantOperator.TRUE;
+            }
+        }
         if (link.size() == 1) {
             return link.get(0);
         }
@@ -503,8 +527,8 @@ public class Utils {
      */
     public static Optional<ScalarOperator> tryCastConstant(ScalarOperator op, Type descType) {
         // Forbidden cast float, because behavior isn't same with before
-        if (!op.isConstantRef() || op.getType().matchesType(descType) || Type.FLOAT.equals(op.getType())
-                || descType.equals(Type.FLOAT)) {
+        if (!op.isConstantRef() || op.getType().matchesType(descType) || FloatType.FLOAT.equals(op.getType())
+                || descType.equals(FloatType.FLOAT)) {
             return Optional.empty();
         }
 
@@ -548,7 +572,7 @@ public class Utils {
         }
         // Guarantee that both childType casting to lhsType and rhsType casting to childType are
         // lossless
-        if (!Type.isAssignable2Decimal((ScalarType) lhsType, (ScalarType) childType)) {
+        if (!TypeManager.isAssignable2Decimal((ScalarType) lhsType, (ScalarType) childType)) {
             return Optional.empty();
         }
 
@@ -560,7 +584,7 @@ public class Utils {
         if (result.isEmpty()) {
             return Optional.empty();
         }
-        if (Type.isAssignable2Decimal((ScalarType) childType, (ScalarType) rhsType)) {
+        if (TypeManager.isAssignable2Decimal((ScalarType) childType, (ScalarType) rhsType)) {
             return Optional.of(result.get());
         } else if (result.get().toString().equalsIgnoreCase(rhs.toString())) {
             // check lossless
@@ -801,8 +825,15 @@ public class Utils {
         if (distinctFuncs.size() <= 1) {
             return false;
         }
+
+        // If all distinct functions are constant-only expressions, do not treat them as
+        // "sharing the same distinct columns".
+        if (distinctFuncs.stream().allMatch(call -> call.getUsedColumns().isEmpty())) {
+            return false;
+        }
+
         Set<ColumnRefOperator> distinctChildren = Sets.newHashSet();
-        for (CallOperator callOperator : aggCallOperators) {
+        for (CallOperator callOperator : distinctFuncs) {
             if (distinctChildren.isEmpty()) {
                 distinctChildren = Sets.newHashSet(callOperator.getColumnRefs());
             } else {
@@ -817,20 +848,40 @@ public class Utils {
     }
 
     public static boolean hasNonDeterministicFunc(ScalarOperator operator) {
-        for (ScalarOperator child : operator.getChildren()) {
-            if (child instanceof CallOperator) {
-                CallOperator call = (CallOperator) child;
-                String fnName = call.getFnName();
-                if (FunctionSet.nonDeterministicFunctions.contains(fnName)) {
-                    return true;
-                }
-            }
+        if (hasNonDeterministicFuncImpl(operator)) {
+            return true;
+        }
 
+        for (ScalarOperator child : operator.getChildren()) {
             if (hasNonDeterministicFunc(child)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean hasNonDeterministicFuncImpl(ScalarOperator operator) {
+        if (operator instanceof CallOperator) {
+            CallOperator call = (CallOperator) operator;
+            String fnName = call.getFnName();
+            if (FunctionSet.nonDeterministicFunctions.contains(fnName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Ensure the operator is predicate's min granularity.
+     */
+    public static boolean canPushDownPredicate(ScalarOperator operator) {
+        if (operator == null) {
+            return false;
+        }
+        if (hasNonDeterministicFunc(operator)) {
+            return false;
+        }
+        return true;
     }
 
     public static void calculateStatistics(OptExpression expr, OptimizerContext context) {
@@ -867,20 +918,43 @@ public class Utils {
         if (newProjectionMap == null || newProjectionMap.isEmpty()) {
             return input;
         }
-        Operator newOp = input.getOp();
-        if (newOp.getProjection() == null || newOp.getProjection().getColumnRefMap().isEmpty()) {
-            newOp.setProjection(new Projection(newProjectionMap));
-        } else {
-            // merge two projections
-            ReplaceColumnRefRewriter rewriter = new ReplaceColumnRefRewriter(newOp.getProjection().getColumnRefMap());
-            Map<ColumnRefOperator, ScalarOperator> resultMap = Maps.newHashMap();
-            for (Map.Entry<ColumnRefOperator, ScalarOperator> entry : newProjectionMap.entrySet()) {
-                ScalarOperator result = rewriter.rewrite(entry.getValue());
-                resultMap.put(entry.getKey(), result);
-            }
-            newOp.setProjection(new Projection(resultMap));
-        }
+        Operator inputOp = input.getOp();
+        // merge two projections
+        Projection newProjection = new Projection(mergeWithProject(newProjectionMap, inputOp.getProjection()));
+        inputOp.setProjection(newProjection);
         return input;
+    }
+
+    /**
+     * Merge projection1 -> projection2, use projection1's output as the final output.
+     */
+    public static Projection mergeWithProject(Projection projection1,
+                                              Projection projection2) {
+
+        if (projection1 == null || projection1.getColumnRefMap() == null) {
+            return projection1;
+        }
+        return new Projection(mergeWithProject(projection1.getColumnRefMap(), projection2));
+    }
+
+    /**
+     * Merge input mapping with projection's mapping, return a new mapping based on the existed projection.
+     */
+    public static Map<ColumnRefOperator, ScalarOperator> mergeWithProject(Map<ColumnRefOperator, ScalarOperator> input,
+                                                                          Projection projection) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+        if (projection == null || projection.getColumnRefMap() == null) {
+            return input;
+        }
+        ReplaceColumnRefRewriter rewriter = new ReplaceColumnRefRewriter(projection.getColumnRefMap());
+        Map<ColumnRefOperator, ScalarOperator> resultMap = Maps.newHashMap();
+        for (Map.Entry<ColumnRefOperator, ScalarOperator> entry : input.entrySet()) {
+            ScalarOperator result = rewriter.rewrite(entry.getValue());
+            resultMap.put(entry.getKey(), result);
+        }
+        return resultMap;
     }
 
     /**
@@ -1029,5 +1103,19 @@ public class Utils {
         }
 
         return new Pair<>(columnConstMap, otherPredicates);
+    }
+
+    /**
+     * If there's only one BE node, splitting into multi-phase has no benefit but only overhead
+     */
+    public static boolean isSingleNodeExecution(ConnectContext context) {
+        return context.getAliveExecutionNodesNumber() == 1;
+    }
+
+    /**
+     * Check whether the FE is running in unit test mode
+     */
+    public static boolean isRunningInUnitTest() {
+        return FeConstants.runningUnitTest;
     }
 }

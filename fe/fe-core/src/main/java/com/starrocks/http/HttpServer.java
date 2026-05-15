@@ -36,10 +36,13 @@ package com.starrocks.http;
 
 import com.starrocks.common.Config;
 import com.starrocks.common.Log4jConfig;
+import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.http.action.BackendAction;
 import com.starrocks.http.action.HaAction;
 import com.starrocks.http.action.IndexAction;
 import com.starrocks.http.action.LogAction;
+import com.starrocks.http.action.ProcProfileAction;
+import com.starrocks.http.action.ProcProfileFileAction;
 import com.starrocks.http.action.QueryAction;
 import com.starrocks.http.action.QueryProfileAction;
 import com.starrocks.http.action.SessionAction;
@@ -57,9 +60,10 @@ import com.starrocks.http.meta.MetaService.InfoAction;
 import com.starrocks.http.meta.MetaService.JournalIdAction;
 import com.starrocks.http.meta.MetaService.PutAction;
 import com.starrocks.http.meta.MetaService.RoleAction;
+import com.starrocks.http.meta.MetaService.ServiceIdAction;
 import com.starrocks.http.meta.MetaService.VersionAction;
 import com.starrocks.http.rest.BootstrapFinishAction;
-import com.starrocks.http.rest.CancelStreamLoad;
+import com.starrocks.http.rest.CancelStreamLoadAction;
 import com.starrocks.http.rest.CheckDecommissionAction;
 import com.starrocks.http.rest.ConnectionAction;
 import com.starrocks.http.rest.ExecuteSqlAction;
@@ -71,8 +75,10 @@ import com.starrocks.http.rest.GetLogFileAction;
 import com.starrocks.http.rest.GetSmallFileAction;
 import com.starrocks.http.rest.GetStreamLoadState;
 import com.starrocks.http.rest.HealthAction;
+import com.starrocks.http.rest.HttpSSLContextLoader;
 import com.starrocks.http.rest.IdleAction;
 import com.starrocks.http.rest.LoadAction;
+import com.starrocks.http.rest.MemoryUsageAction;
 import com.starrocks.http.rest.MetaReplayerCheckAction;
 import com.starrocks.http.rest.MetricsAction;
 import com.starrocks.http.rest.MigrationAction;
@@ -96,15 +102,22 @@ import com.starrocks.http.rest.TableRowCountAction;
 import com.starrocks.http.rest.TableSchemaAction;
 import com.starrocks.http.rest.TransactionLoadAction;
 import com.starrocks.http.rest.TriggerAction;
+import com.starrocks.http.rest.v2.BackendActionV2;
+import com.starrocks.http.rest.v2.ClusterSummaryActionV2;
+import com.starrocks.http.rest.v2.ComputeNodeActionV2;
+import com.starrocks.http.rest.v2.ProfileActionV2;
+import com.starrocks.http.rest.v2.QueryDetailActionV2;
 import com.starrocks.http.rest.v2.TablePartitionAction;
 import com.starrocks.metric.GaugeMetric;
 import com.starrocks.metric.GaugeMetricImpl;
 import com.starrocks.metric.Metric;
+import com.starrocks.server.GlobalStateMgr;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoop;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -114,13 +127,17 @@ import io.netty.handler.codec.http.HttpContentCompressor;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.util.concurrent.EventExecutor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -129,20 +146,45 @@ import static com.starrocks.http.HttpMetricRegistry.HTTP_WORKER_PENDING_TASKS_NU
 
 public class HttpServer {
     private static final Logger LOG = LogManager.getLogger(HttpServer.class);
-    private int port;
+    private volatile int port;
     private ActionController controller;
 
     private Thread serverThread;
 
     private AtomicBoolean isStarted = new AtomicBoolean(false);
+    // The executor to handle http requests asynchronously
+    private final ThreadPoolExecutor asyncExecutor;
+    private boolean enableHttps;
 
     public HttpServer(int port) {
+        this(port, false);
+    }
+
+    public HttpServer(int port, boolean enableHttps) {
         this.port = port;
         controller = new ActionController();
+        this.asyncExecutor = ThreadPoolManager.newDaemonCacheThreadPool(
+                Config.http_async_threads_num, "starrocks-http-pool", true);
+        this.enableHttps = enableHttps;
+    }
+
+    public int getPort() {
+        return port;
     }
 
     public void setup() throws IllegalArgException {
         registerActions();
+        GlobalStateMgr.getCurrentState().getConfigRefreshDaemon().registerListener(() ->
+                ThreadPoolManager.setCacheThreadPoolSize(asyncExecutor, Config.http_async_threads_num));
+        try {
+            if (enableHttps) {
+                HttpSSLContextLoader.getSslContext();
+            }
+        } catch (Exception e) {
+            throw new IllegalArgException("Failed to create SSL context. Please check your " +
+                    "SSL configuration including ssl_keystore_location, ssl_keystore_password, " +
+                    "and ssl_key_password: " + e.getMessage(), e);
+        }
     }
 
     public ActionController getController() {
@@ -159,7 +201,7 @@ public class HttpServer {
         GetDdlStmtAction.registerAction(controller);
         MigrationAction.registerAction(controller);
         StorageTypeCheckAction.registerAction(controller);
-        CancelStreamLoad.registerAction(controller);
+        CancelStreamLoadAction.registerAction(controller);
         GetStreamLoadState.registerAction(controller);
 
         // add web action
@@ -182,6 +224,7 @@ public class HttpServer {
         ShowMetaInfoAction.registerAction(controller);
         ShowProcAction.registerAction(controller);
         ShowRuntimeInfoAction.registerAction(controller);
+        MemoryUsageAction.registerAction(controller);
         GetLogFileAction.registerAction(controller);
         TriggerAction.registerAction(controller);
         GetSmallFileAction.registerAction(controller);
@@ -195,16 +238,25 @@ public class HttpServer {
         ColocateMetaService.UpdateGroupAction.registerAction(controller);
         GlobalDictMetaService.ForbitTableAction.registerAction(controller);
         ProfileAction.registerAction(controller);
+        ProfileActionV2.registerAction(controller);
         QueryProgressAction.registerAction(controller);
         QueryDetailAction.registerAction(controller);
+        QueryDetailActionV2.registerAction(controller);
         ConnectionAction.registerAction(controller);
         ShowDataAction.registerAction(controller);
         QueryDumpAction.registerAction(controller);
         SyncCloudTableMetaAction.registerAction(controller);
         IdleAction.registerAction(controller);
+        ClusterSummaryActionV2.registerAction(controller);
         // for stop FE
         StopFeAction.registerAction(controller);
         ExecuteSqlAction.registerAction(controller);
+        BackendActionV2.registerAction(controller);
+        ComputeNodeActionV2.registerAction(controller);
+
+        // proc profile actions
+        ProcProfileAction.registerAction(controller);
+        ProcProfileFileAction.registerAction(controller);
 
         // meta service action
         ImageAction.registerAction(controller);
@@ -215,6 +267,7 @@ public class HttpServer {
         CheckAction.registerAction(controller);
         DumpAction.registerAction(controller);
         DumpStarMgrAction.registerAction(controller);
+        ServiceIdAction.registerAction(controller);
         RoleAction.registerAction(controller);
 
         // external usage
@@ -235,9 +288,19 @@ public class HttpServer {
     }
 
     protected class StarrocksHttpServerInitializer extends ChannelInitializer<SocketChannel> {
+        private final Optional<SslContext> sslContext;
+
+        public StarrocksHttpServerInitializer(SslContext sslContext) {
+            this.sslContext = Optional.ofNullable(sslContext);
+        }
+
         @Override
         protected void initChannel(SocketChannel ch) throws Exception {
-            ch.pipeline().addLast(new HttpServerCodec(
+            ChannelPipeline pipeline = ch.pipeline();
+            if (enableHttps) {
+                sslContext.ifPresent(context -> pipeline.addLast(context.newHandler(ch.alloc())));
+            }
+            pipeline.addLast(new HttpServerCodec(
                             Config.http_max_initial_line_length,
                             Config.http_max_header_size,
                             Config.http_max_chunk_size,
@@ -246,7 +309,7 @@ public class HttpServer {
                     .addLast(new ChunkedWriteHandler())
                     // add content compressor
                     .addLast(new CustomHttpContentCompressor())
-                    .addLast(new HttpServerHandler(controller));
+                    .addLast(new HttpServerHandler(controller, asyncExecutor));
         }
     }
 
@@ -286,18 +349,26 @@ public class HttpServer {
                 // reused address and port to avoid bind already exception
                 serverBootstrap.option(ChannelOption.SO_REUSEADDR, true);
                 serverBootstrap.childOption(ChannelOption.SO_REUSEADDR, true);
+                SslContext sslContext = null;
+                if (enableHttps) {
+                    sslContext = HttpSSLContextLoader.getSslContext();
+                }
                 serverBootstrap.group(bossGroup, workerGroup)
                         .channel(NioServerSocketChannel.class)
-                        .childHandler(new StarrocksHttpServerInitializer());
+                        .childHandler(new StarrocksHttpServerInitializer(sslContext));
                 Channel ch = serverBootstrap.bind(port).sync().channel();
+
+                if (port == 0 && ch.localAddress() instanceof InetSocketAddress) {
+                    port = ((InetSocketAddress) ch.localAddress()).getPort();
+                }
 
                 isStarted.set(true);
                 registerMetrics(workerGroup);
-                LOG.info("HttpServer started with port {}", port);
+                LOG.info("HttpServer/HttpsServer started with port {}", port);
                 // block until server is closed
                 ch.closeFuture().sync();
             } catch (Exception e) {
-                LOG.error("Fail to start FE query http server[port: " + port + "] ", e);
+                LOG.error("Fail to start FE query http(s) server[port: " + port + "] ", e);
                 System.exit(-1);
             } finally {
                 bossGroup.shutdownGracefully();
@@ -311,7 +382,7 @@ public class HttpServer {
 
         GaugeMetricImpl<Long> httpWorkersNum = new GaugeMetricImpl<>(
                 HTTP_WORKERS_NUM, Metric.MetricUnit.NOUNIT, "the number of http workers");
-        httpWorkersNum.setValue(0L);
+        httpWorkersNum.setValue((long) workerGroup.executorCount());
         httpMetricRegistry.registerGauge(httpWorkersNum);
 
         GaugeMetric<Long> pendingTasks = new GaugeMetric<>(HTTP_WORKER_PENDING_TASKS_NUM, Metric.MetricUnit.NOUNIT,

@@ -56,7 +56,7 @@ public:
                                     const std::shared_ptr<arrow::Schema>& arrow_schema, arrow::MemoryPool* pool)
             : RecordBatchToChunkConverter(sr_schema, arrow_schema, pool) {}
 
-    arrow::Result<std::unique_ptr<Chunk>> convert(const std::shared_ptr<arrow::RecordBatch> recordBatch) override {
+    arrow::Result<ChunkUniquePtr> convert(const std::shared_ptr<arrow::RecordBatch> recordBatch) override {
         if (!recordBatch) {
             return nullptr;
         }
@@ -69,7 +69,8 @@ public:
 
         auto chunk = ChunkHelper::new_chunk(*_sr_schema, recordBatch->num_rows());
         for (size_t idx = 0; idx < column_size; ++idx) {
-            ARROW_RETURN_NOT_OK(_converters[idx]->toSrColumn(recordBatch->column(idx), chunk->columns()[idx]));
+            auto mutable_column = chunk->columns()[idx]->as_mutable_ptr();
+            ARROW_RETURN_NOT_OK(_converters[idx]->toSrColumn(recordBatch->column(idx), mutable_column));
         }
 
         return chunk;

@@ -16,10 +16,9 @@
 
 #include <utility>
 
-#include "exec/aggregator.h"
+#include "exec/aggregator_fwd.h"
 #include "exec/pipeline/aggregate/aggregate_blocking_source_operator.h"
-#include "exec/sorted_streaming_aggregator.h"
-#include "runtime/runtime_state.h"
+#include "runtime/runtime_state_fwd.h"
 #include "storage/chunk_helper.h"
 
 namespace starrocks::pipeline {

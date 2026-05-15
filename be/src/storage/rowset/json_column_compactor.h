@@ -21,7 +21,7 @@ namespace starrocks {
 class FlatJsonColumnCompactor final : public FlatJsonColumnWriter {
 public:
     FlatJsonColumnCompactor(const ColumnWriterOptions& opts, TypeInfoPtr type_info, WritableFile* wfile,
-                            std::unique_ptr<ScalarColumnWriter> json_writer)
+                            std::unique_ptr<ObjectColumnWriter> json_writer)
             : FlatJsonColumnWriter(opts, std::move(type_info), wfile, std::move(json_writer)) {}
 
     Status append(const Column& column) override;
@@ -29,17 +29,17 @@ public:
     Status finish() override;
 
 private:
-    Status _compact_columns(Columns& json_datas);
+    Status _compact_columns(MutableColumns& json_datas);
 
-    Status _merge_columns(Columns& json_datas);
+    Status _merge_columns(MutableColumns& json_datas);
 
-    Status _flatten_columns(Columns& json_datas);
+    Status _flatten_columns(MutableColumns& json_datas);
 };
 
 class JsonColumnCompactor final : public ColumnWriter {
 public:
     JsonColumnCompactor(const ColumnWriterOptions& opts, TypeInfoPtr type_info, WritableFile* wfile,
-                        std::unique_ptr<ScalarColumnWriter> json_writer)
+                        std::unique_ptr<ObjectColumnWriter> json_writer)
             : ColumnWriter(std::move(type_info), opts.meta->length(), opts.meta->is_nullable()),
               _json_meta(opts.meta),
               _json_writer(std::move(json_writer)) {}
@@ -64,11 +64,11 @@ public:
     ordinal_t get_next_rowid() const override { return _json_writer->get_next_rowid(); }
     uint64_t total_mem_footprint() const override { return _json_writer->total_mem_footprint(); }
 
-private:
-    void _flat_column(Columns& json_datas);
+    bool is_global_dict_valid() override { return _is_global_dict_valid; }
 
 private:
     ColumnMetaPB* _json_meta;
-    std::unique_ptr<ScalarColumnWriter> _json_writer;
+    std::unique_ptr<ObjectColumnWriter> _json_writer;
+    bool _is_global_dict_valid = true;
 };
 } // namespace starrocks

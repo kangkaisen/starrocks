@@ -51,21 +51,20 @@
 #include <utility>
 #include <vector>
 
-#include "agent/status.h"
+#include "base/concurrency/countdown_latch.h"
+#include "base/container/lru_cache.h"
+#include "base/time/time.h"
 #include "common/status.h"
+#include "common/thread/threadpool.h"
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/BackendService_types.h"
 #include "gen_cpp/MasterService_types.h"
 #include "storage/kv_store.h"
 #include "storage/olap_common.h"
 #include "storage/olap_define.h"
-#include "storage/options.h"
 #include "storage/rowset/rowset.h"
 #include "storage/rowset/rowset_meta.h"
 #include "storage/tablet.h"
-#include "util/countdown_latch.h"
-#include "util/lru_cache.h"
-#include "util/time.h"
 
 namespace starrocks {
 
@@ -76,9 +75,13 @@ struct TabletTxnInfo {
     RowsetSharedPtr rowset;
     int64_t creation_time{0};
     int64_t commit_time{0};
+    bool is_shadow{false};
 
-    TabletTxnInfo(PUniqueId load_id, RowsetSharedPtr rowset)
-            : load_id(std::move(load_id)), rowset(std::move(rowset)), creation_time(UnixSeconds()) {}
+    TabletTxnInfo(PUniqueId load_id, RowsetSharedPtr rowset, bool is_shadow)
+            : load_id(std::move(load_id)),
+              rowset(std::move(rowset)),
+              creation_time(UnixSeconds()),
+              is_shadow(is_shadow) {}
 
     TabletTxnInfo() = default;
 };
@@ -86,6 +89,9 @@ struct TabletTxnInfo {
 // txn manager is used to manage mapping between tablet and txns
 class TxnManager {
 public:
+    TxnManager(const TxnManager&) = delete;
+    const TxnManager& operator=(const TxnManager&) = delete;
+
     TxnManager(int32_t txn_map_shard_size, int32_t txn_shard_size, uint32_t store_num);
 
     ~TxnManager() = default;
@@ -94,7 +100,7 @@ public:
                        const PUniqueId& load_id);
 
     Status commit_txn(TPartitionId partition_id, const TabletSharedPtr& tablet, TTransactionId transaction_id,
-                      const PUniqueId& load_id, const RowsetSharedPtr& rowset_ptr, bool is_recovery);
+                      const PUniqueId& load_id, const RowsetSharedPtr& rowset_ptr, bool is_recovery, bool is_shadow);
 
     Status publish_txn(TPartitionId partition_id, const TabletSharedPtr& tablet, TTransactionId transaction_id,
                        int64_t version, const RowsetSharedPtr& rowset, uint32_t wait_time = 0,
@@ -121,9 +127,8 @@ public:
     Status prepare_txn(TPartitionId partition_id, TTransactionId transaction_id, TTabletId tablet_id,
                        SchemaHash schema_hash, const TabletUid& tablet_uid, const PUniqueId& load_id);
 
-    Status commit_txn(KVStore* meta, TPartitionId partition_id, TTransactionId transaction_id, TTabletId tablet_id,
-                      SchemaHash schema_hash, const TabletUid& tablet_uid, const PUniqueId& load_id,
-                      const RowsetSharedPtr& rowset_ptr, bool is_recovery);
+    Status commit_txn(const TabletSharedPtr& tablet, TPartitionId partition_id, TTransactionId transaction_id,
+                      const PUniqueId& load_id, const RowsetSharedPtr& rowset_ptr, bool is_recovery, bool is_shadow);
 
     // delete the txn from manager if it is not committed(not have a valid rowset)
     Status rollback_txn(TPartitionId partition_id, TTransactionId transaction_id, TTabletId tablet_id,
@@ -139,7 +144,7 @@ public:
                                  int64_t* partition_id, std::set<int64_t>* transaction_ids);
 
     void get_txn_related_tablets(const TTransactionId transaction_id, TPartitionId partition_ids,
-                                 std::map<TabletInfo, RowsetSharedPtr>* tablet_infos);
+                                 std::map<TabletInfo, std::pair<RowsetSharedPtr, bool>>* tablet_infos);
 
     void get_all_related_tablets(std::set<TabletInfo>* tablet_infos);
 
@@ -209,9 +214,6 @@ private:
 
     // Dynamic thread pool used to concurrently flush WAL to disk
     std::unique_ptr<ThreadPool> _flush_thread_pool;
-
-    TxnManager(const TxnManager&) = delete;
-    const TxnManager& operator=(const TxnManager&) = delete;
 }; // TxnManager
 
 inline std::shared_mutex& TxnManager::_get_txn_map_lock(TTransactionId transactionId) {

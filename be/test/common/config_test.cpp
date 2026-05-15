@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#define __IN_CONFIGBASE_CPP__
-#include "common/configbase.h"
-#undef __IN_CONFIGBASE_CPP__
+// clang-format off
+#include "common/configbase_impl.h"
+// clang-format on
 
 #include <gmock/gmock.h> // EXPECT_THAT, ElementsAre
 #include <gtest/gtest.h>
@@ -27,6 +27,7 @@
 #include <streambuf>
 #include <thread>
 
+#include "common/config_update_registry.h"
 #include "common/status.h"
 #include "gutil/strings/join.h"
 
@@ -51,6 +52,9 @@ private:
 
 class ConfigTest : public testing::Test {
     void SetUp() override { config::TEST_clear_configs(); }
+
+protected:
+    void find_conf_and_check_value(const std::string& name, int64_t count, const std::string& value);
 };
 
 TEST_F(ConfigTest, test_init) {
@@ -420,6 +424,82 @@ TEST_F(ConfigTest, test_set_config) {
     ASSERT_EQ(cfg_std_string, "starrocks_config_test_string");
 }
 
+TEST_F(ConfigTest, test_config_update_registry_not_ready) {
+    CONF_mInt32(config_update_registry_not_ready, "10");
+    ASSERT_TRUE(config::init(nullptr));
+
+    auto* registry = ConfigUpdateRegistry::instance();
+    registry->TEST_reset();
+    ASSERT_TRUE(registry->update_config("config_update_registry_not_ready", "20").ok());
+    ASSERT_EQ(10, config_update_registry_not_ready);
+}
+
+TEST_F(ConfigTest, test_config_update_registry_set_config) {
+    CONF_mInt32(config_update_registry_set_config, "10");
+    ASSERT_TRUE(config::init(nullptr));
+
+    auto* registry = ConfigUpdateRegistry::instance();
+    registry->TEST_reset();
+    registry->set_ready();
+    ASSERT_TRUE(registry->update_config("config_update_registry_set_config", "20").ok());
+    ASSERT_EQ(20, config_update_registry_set_config);
+}
+
+TEST_F(ConfigTest, test_config_update_registry_callback) {
+    CONF_mInt32(config_update_registry_callback, "10");
+    ASSERT_TRUE(config::init(nullptr));
+
+    auto* registry = ConfigUpdateRegistry::instance();
+    registry->TEST_reset();
+    bool called = false;
+    registry->register_callback("config_update_registry_callback", [&]() {
+        called = true;
+        return Status::OK();
+    });
+    registry->set_ready();
+
+    ASSERT_TRUE(registry->update_config("config_update_registry_callback", "20").ok());
+    ASSERT_TRUE(called);
+    ASSERT_EQ(20, config_update_registry_callback);
+}
+
+TEST_F(ConfigTest, test_config_update_registry_callback_failure_rolls_back) {
+    CONF_mInt32(config_update_registry_rollback, "10");
+    ASSERT_TRUE(config::init(nullptr));
+
+    auto* registry = ConfigUpdateRegistry::instance();
+    registry->TEST_reset();
+    registry->register_callback("config_update_registry_rollback",
+                                [&]() { return Status::InternalError("callback failed"); });
+    registry->set_ready();
+
+    auto st = registry->update_config("config_update_registry_rollback", "20");
+    ASSERT_TRUE(st.is_internal_error()) << st;
+    ASSERT_EQ(10, config_update_registry_rollback);
+}
+
+TEST_F(ConfigTest, test_config_update_registry_duplicate_callback_first_wins) {
+    CONF_mInt32(config_update_registry_duplicate, "10");
+    ASSERT_TRUE(config::init(nullptr));
+
+    auto* registry = ConfigUpdateRegistry::instance();
+    registry->TEST_reset();
+    int called = 0;
+    registry->register_callback("config_update_registry_duplicate", [&]() {
+        called = 1;
+        return Status::OK();
+    });
+    registry->register_callback("config_update_registry_duplicate", [&]() {
+        called = 2;
+        return Status::OK();
+    });
+    registry->set_ready();
+
+    ASSERT_TRUE(registry->update_config("config_update_registry_duplicate", "20").ok());
+    ASSERT_EQ(1, called);
+    ASSERT_EQ(20, config_update_registry_duplicate);
+}
+
 TEST_F(ConfigTest, test_read_write_mutable_string_concurrently) {
     CONF_mString(config_test_mstring, "default");
 
@@ -495,6 +575,22 @@ TEST_F(ConfigTest, test_alias03) {
 
     EXPECT_TRUE(config::init(ss));
     EXPECT_EQ(8090, cfg_int32);
+
+    find_conf_and_check_value("cfg_int32", 1, "8090");
+    find_conf_and_check_value("cfg_int32_alias1", 1, "8090");
+    find_conf_and_check_value("cfg_int32_alias2", 1, "8090");
+}
+
+void ConfigTest::find_conf_and_check_value(const std::string& name, int64_t count, const std::string& value) {
+    auto configs = config::list_configs();
+    int64_t find_count = 0;
+    for (const auto& config : configs) {
+        if (config.name == name) {
+            ASSERT_EQ(config.value, value);
+            find_count++;
+        }
+    }
+    ASSERT_EQ(count, find_count);
 }
 
 TEST_F(ConfigTest, test_alias04) {

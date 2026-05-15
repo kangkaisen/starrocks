@@ -36,6 +36,7 @@ public class AuditStatisticsUtil {
         pb.cpuCostNs = tb.getCpu_cost_ns();
         pb.memCostBytes = tb.getMem_cost_bytes();
         pb.spillBytes = tb.getSpill_bytes();
+        pb.transmittedBytes = tb.getTransmitted_bytes();
         if (tb.isSetStats_items()) {
             pb.statsItems = Lists.newArrayList();
             for (TAuditStatisticsItem tItem : tb.getStats_items()) {
@@ -46,6 +47,8 @@ public class AuditStatisticsUtil {
                 pb.statsItems.add(pItem);
             }
         }
+        pb.readLocalCnt = tb.getRead_local_cnt();
+        pb.readRemoteCnt = tb.getRead_remote_cnt();
         return pb;
     }
 
@@ -89,6 +92,12 @@ public class AuditStatisticsUtil {
             }
             to.spillBytes += from.spillBytes;
         }
+        if (from.transmittedBytes != null) {
+            if (to.transmittedBytes == null) {
+                to.transmittedBytes = 0L;
+            }
+            to.transmittedBytes += from.transmittedBytes;
+        }
         if (CollectionUtils.isNotEmpty(from.statsItems)) {
             if (to.statsItems == null) {
                 to.statsItems = Lists.newArrayList();
@@ -119,6 +128,18 @@ public class AuditStatisticsUtil {
                 }
             }
         }
+        if (from.readLocalCnt != null) {
+            if (to.readLocalCnt == null) {
+                to.readLocalCnt = 0L;
+            }
+            to.readLocalCnt += from.readLocalCnt;
+        }
+        if (from.readRemoteCnt != null) {
+            if (to.readRemoteCnt == null) {
+                to.readRemoteCnt = 0L;
+            }
+            to.readRemoteCnt += from.readRemoteCnt;
+        }
     }
 
     public static TAuditStatistics toThrift(PQueryStatistics pb) {
@@ -144,6 +165,9 @@ public class AuditStatisticsUtil {
         if (pb.spillBytes != null) {
             tb.setSpill_bytes(pb.spillBytes);
         }
+        if (pb.transmittedBytes != null) {
+            tb.setTransmitted_bytes(pb.transmittedBytes);
+        }
         if (CollectionUtils.isNotEmpty(pb.statsItems)) {
             for (QueryStatisticsItemPB pItem : pb.statsItems) {
                 TAuditStatisticsItem tItem = new TAuditStatisticsItem();
@@ -158,6 +182,12 @@ public class AuditStatisticsUtil {
                 }
                 tb.addToStats_items(tItem);
             }
+        }
+        if (pb.readLocalCnt != null) {
+            tb.setRead_local_cnt(pb.readLocalCnt);
+        }
+        if (pb.readRemoteCnt != null) {
+            tb.setRead_remote_cnt(pb.readRemoteCnt);
         }
         return tb;
     }

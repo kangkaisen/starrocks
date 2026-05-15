@@ -16,11 +16,10 @@ package com.starrocks.lake.compaction;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.common.Config;
-import com.starrocks.common.Pair;
 import com.starrocks.memory.MemoryTrackable;
+import com.starrocks.memory.estimate.Estimator;
 import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
@@ -105,9 +104,9 @@ public class CompactionMgr implements MemoryTrackable {
         if (compactionScheduler == null) {
             compactionScheduler = new CompactionScheduler(this, GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo(),
                     GlobalStateMgr.getCurrentState().getGlobalTransactionMgr(), GlobalStateMgr.getCurrentState(),
-                    Config.lake_compaction_disable_tables);
+                    Config.lake_compaction_disable_ids);
             GlobalStateMgr.getCurrentState().getConfigRefreshDaemon().registerListener(() -> {
-                compactionScheduler.disableTables(Config.lake_compaction_disable_tables);
+                compactionScheduler.disableTableOrPartitionId(Config.lake_compaction_disable_ids);
             });
             compactionScheduler.start();
         }
@@ -128,7 +127,7 @@ public class CompactionMgr implements MemoryTrackable {
         }
     }
 
-    protected void removeFromStartupActiveCompactionTransactionMap(long txnId) {
+    public void removeFromStartupActiveCompactionTransactionMap(long txnId) {
         if (remainedActiveCompactionTxnWhenStart.isEmpty()) {
             return;
         }
@@ -155,8 +154,7 @@ public class CompactionMgr implements MemoryTrackable {
     }
 
     public void handleCompactionFinished(PartitionIdentifier partition, long version, long versionTime,
-                                         Quantiles compactionScore, long txnId) {
-        removeFromStartupActiveCompactionTransactionMap(txnId);
+                                         Quantiles compactionScore, long txnId, boolean isPartialSuccess) {
         PartitionVersion compactionVersion = new PartitionVersion(version, versionTime);
         PartitionStatistics statistics = partitionStatisticsHashMap.compute(partition, (k, v) -> {
             if (v == null) {
@@ -164,7 +162,7 @@ public class CompactionMgr implements MemoryTrackable {
             }
             v.setCurrentVersion(compactionVersion);
             v.setCompactionVersion(compactionVersion);
-            v.setCompactionScoreAndAdjustPunishFactor(compactionScore);
+            v.setCompactionScoreAndAdjustPunishFactor(compactionScore, isPartialSuccess);
             return v;
         });
         if (LOG.isDebugEnabled()) {
@@ -174,19 +172,19 @@ public class CompactionMgr implements MemoryTrackable {
 
     @NotNull
     List<PartitionStatisticsSnapshot> choosePartitionsToCompact(@NotNull Set<PartitionIdentifier> excludes,
-                                                                @NotNull Set<Long> excludeTables) {
-        Set<Long> copiedExcludeTables = new HashSet<>(excludeTables);
-        copiedExcludeTables.addAll(remainedActiveCompactionTxnWhenStart.values());
-        return choosePartitionsToCompact(copiedExcludeTables)
+                                                                @NotNull Set<Long> excludeIds) {
+        Set<Long> excludeTableOrPartition = new HashSet<>(excludeIds);
+        excludeTableOrPartition.addAll(remainedActiveCompactionTxnWhenStart.values());
+        return choosePartitionsToCompact(excludeTableOrPartition)
                 .stream()
                 .filter(p -> !excludes.contains(p.getPartition()))
                 .collect(Collectors.toList());
     }
 
     @NotNull
-    List<PartitionStatisticsSnapshot> choosePartitionsToCompact(Set<Long> excludeTables) {
+    List<PartitionStatisticsSnapshot> choosePartitionsToCompact(Set<Long> excludeTableOrPartition) {
         List<PartitionStatisticsSnapshot> selection = sorter.sort(
-                selector.select(partitionStatisticsHashMap.values(), excludeTables));
+                selector.select(partitionStatisticsHashMap.values(), excludeTableOrPartition));
         return selection;
     }
 
@@ -206,8 +204,8 @@ public class CompactionMgr implements MemoryTrackable {
     }
 
     public double getMaxCompactionScore() {
-        return partitionStatisticsHashMap.values().stream().mapToDouble(stat -> stat.getCompactionScore().getMax())
-                .max().orElse(0);
+        return partitionStatisticsHashMap.values().stream().filter(stat -> stat.getCompactionScore() != null)
+                .mapToDouble(stat -> stat.getCompactionScore().getMax()).max().orElse(0);
     }
 
     void enableCompactionAfter(PartitionIdentifier partition, long delayMs) {
@@ -290,11 +288,7 @@ public class CompactionMgr implements MemoryTrackable {
     }
 
     @Override
-    public List<Pair<List<Object>, Long>> getSamples() {
-        List<Object> samples = partitionStatisticsHashMap.values()
-                .stream()
-                .limit(1)
-                .collect(Collectors.toList());
-        return Lists.newArrayList(Pair.create(samples, (long) partitionStatisticsHashMap.size()));
+    public long estimateSize() {
+        return Estimator.estimate(partitionStatisticsHashMap);
     }
 }

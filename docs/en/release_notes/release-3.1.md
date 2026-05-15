@@ -455,7 +455,13 @@ Fixed the following issues:
 - From v3.1.4 onwards, persistent indexing is enabled by default for Primary Key tables created in new StarRocks clusters (this does not apply to existing StarRocks clusters whose versions are upgraded to v3.1.4 from an earlier version). [#33374](https://github.com/StarRocks/starrocks/pull/33374)
 - A new FE parameter `enable_sync_publish` which is set to `true` by default is added. When this parameter is set to `true`, the Publish phase of a data load into a Primary Key table returns the execution result only after the Apply task finishes. As such, the data loaded can be queried immediately after the load job returns a success message. However, setting this parameter to `true` may cause data loads into Primary Key tables to take a longer time. (Before this parameter is added, the Apply task is asynchronous with the Publish phase.) [#27055](https://github.com/StarRocks/starrocks/pull/27055)
 
-## 3.1.3
+## 3.1.3 (Yanked)
+
+:::tip
+
+This version has been taken offline.
+
+:::
 
 Release date: September 25, 2023
 
@@ -549,8 +555,8 @@ Release date: August 7, 2023
 #### Shared-data cluster
 
 - Added support for Primary Key tables, on which persistent indexes cannot be enabled.
-- Supports the [AUTO_INCREMENT](https://docs.starrocks.io/docs/sql-reference/sql-statements/auto_increment/) column attribute, which enables a globally unique ID for each data row and thus simplifies data management.
-- Supports [automatically creating partitions during loading and using partitioning expressions to define partitioning rules](https://docs.starrocks.io/docs/table_design/expression_partitioning/), thereby making partition creation easier to use and more flexible.
+- Supports the [AUTO_INCREMENT](https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/auto_increment/) column attribute, which enables a globally unique ID for each data row and thus simplifies data management.
+- Supports [automatically creating partitions during loading and using partitioning expressions to define partitioning rules](https://docs.starrocks.io/docs/table_design/data_distribution/expression_partitioning/), thereby making partition creation easier to use and more flexible.
 - Supports [abstraction of storage volumes](https://docs.starrocks.io/docs/deployment/shared_data/s3#use-your-shared-data-starrocks-cluster), in which users can configure storage location and authentication information, in shared-data StarRocks clusters. Users can directly reference an existing storage volume when creating a database or table, making authentication configuration easier.
 
 #### Data Lake analytics

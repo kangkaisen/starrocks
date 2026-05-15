@@ -29,6 +29,7 @@ AggStateDesc AggStateDesc::from_thrift(const TAggStateDesc& desc) {
     auto return_type = TypeDescriptor::from_thrift(desc.ret_type);
     // arg types
     std::vector<TypeDescriptor> arg_types;
+    arg_types.reserve(desc.arg_types.size());
     for (auto& arg_type : desc.arg_types) {
         arg_types.emplace_back(TypeDescriptor::from_thrift(arg_type));
     }
@@ -110,7 +111,7 @@ std::string AggStateDesc::debug_string() const {
     return ss.str();
 }
 
-const AggregateFunction* AggStateDesc::get_agg_state_func(AggStateDesc* agg_state_desc) {
+const AggregateFunction* AggStateDesc::get_agg_state_func(const AggStateDesc* agg_state_desc) {
     DCHECK(agg_state_desc);
     auto* agg_function = get_aggregate_function(agg_state_desc->get_func_name(), agg_state_desc->get_return_type(),
                                                 agg_state_desc->get_arg_types(), agg_state_desc->is_result_nullable(),

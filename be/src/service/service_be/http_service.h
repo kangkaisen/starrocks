@@ -36,21 +36,23 @@
 
 #include <memory>
 
+#include "base/concurrency/concurrent_limiter.h"
 #include "common/status.h"
-#include "util/concurrent_limiter.h"
 
 namespace starrocks {
 
 class ExecEnv;
-class CacheEnv;
+class DataCache;
 class EvHttpServer;
 class HttpHandler;
+class ProcessMetricsRegistry;
 class WebPageHandler;
 
 // HTTP service for StarRocks BE
 class HttpServiceBE {
 public:
-    HttpServiceBE(CacheEnv* cache_env, ExecEnv* env, int port, int num_threads);
+    HttpServiceBE(DataCache* cache_env, ExecEnv* env, ProcessMetricsRegistry* process_metrics_registry, int port,
+                  int num_threads);
     ~HttpServiceBE();
 
     Status start();
@@ -58,8 +60,9 @@ public:
     void join();
 
 private:
-    CacheEnv* _cache_env;
+    [[maybe_unused]] DataCache* _cache_env;
     ExecEnv* _env;
+    ProcessMetricsRegistry* _process_metrics_registry;
 
     std::unique_ptr<EvHttpServer> _ev_http_server;
     std::unique_ptr<WebPageHandler> _web_page_handler;

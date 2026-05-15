@@ -39,8 +39,8 @@ import com.starrocks.common.Config;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.plan.PlanTestBase;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
@@ -50,7 +50,7 @@ public class QueryDetailQueueTest extends PlanTestBase {
         QueryDetail startQueryDetail = new QueryDetail("219a2d5443c542d4-8fc938db37c892e3", false, 1, "127.0.0.1",
                 System.currentTimeMillis(), -1, -1, QueryDetail.QueryMemState.RUNNING,
                 "testDb", "select * from table1 limit 1",
-                "root", "", "default_catalog");
+                "root", "", "default_catalog", "MySQL.Query", null);
         startQueryDetail.setScanRows(100);
         startQueryDetail.setScanBytes(10001);
         startQueryDetail.setReturnRows(1);
@@ -59,11 +59,12 @@ public class QueryDetailQueueTest extends PlanTestBase {
         QueryDetailQueue.addQueryDetail(startQueryDetail);
 
         List<QueryDetail> queryDetails = QueryDetailQueue.getQueryDetailsAfterTime(startQueryDetail.getEventTime() - 1);
-        Assert.assertEquals(1, queryDetails.size());
+        Assertions.assertEquals(1, queryDetails.size());
 
         Gson gson = new Gson();
         String jsonString = gson.toJson(queryDetails);
-        String queryDetailString = "[{\"eventTime\":" + startQueryDetail.getEventTime() + "," +
+        String queryDetailString = "[{\"querySource\":\"EXTERNAL\"," +
+                "\"eventTime\":" + startQueryDetail.getEventTime() + "," +
                 "\"queryId\":\"219a2d5443c542d4-8fc938db37c892e3\"," +
                 "\"isQuery\":false," +
                 "\"remoteIP\":\"127.0.0.1\"," +
@@ -84,13 +85,15 @@ public class QueryDetailQueueTest extends PlanTestBase {
                 "\"cpuCostNs\":1002," +
                 "\"memCostBytes\":100003," +
                 "\"spillBytes\":-1," +
+                "\"cacheMissRatio\":0.0," +
                 "\"warehouse\":\"default_warehouse\"," +
                 "\"catalog\":\"default_catalog\"," +
+                "\"command\":\"MySQL.Query\"," +
                 "\"queryFeMemory\":0}]";
-        Assert.assertEquals(jsonString, queryDetailString);
+        Assertions.assertEquals(queryDetailString, jsonString);
 
         queryDetails = QueryDetailQueue.getQueryDetailsAfterTime(startQueryDetail.getEventTime());
-        Assert.assertEquals(0, queryDetails.size());
+        Assertions.assertEquals(0, queryDetails.size());
 
         QueryDetail endQueryDetail = startQueryDetail.copy();
         endQueryDetail.setLatency(1);
@@ -98,7 +101,7 @@ public class QueryDetailQueueTest extends PlanTestBase {
         QueryDetailQueue.addQueryDetail(endQueryDetail);
 
         queryDetails = QueryDetailQueue.getQueryDetailsAfterTime(startQueryDetail.getEventTime() - 1);
-        Assert.assertEquals(2, queryDetails.size());
+        Assertions.assertEquals(2, queryDetails.size());
     }
 
     @Test
@@ -113,6 +116,7 @@ public class QueryDetailQueueTest extends PlanTestBase {
         String sql = "select * from test_running_detail";
         QueryStatement parsedStmt = (QueryStatement) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
         StmtExecutor executor = new StmtExecutor(connectContext, parsedStmt);
+        connectContext.setMultiStmt(false);
         long startTime = System.currentTimeMillis();
         executor.addRunningQueryDetail(parsedStmt);
         executor.execute();
@@ -121,13 +125,13 @@ public class QueryDetailQueueTest extends PlanTestBase {
         List<QueryDetail> queryDetails = QueryDetailQueue.getQueryDetailsAfterTime(startTime);
 
         QueryDetail runningDetail = queryDetails.get(0);
-        Assert.assertEquals(QueryDetail.QueryMemState.RUNNING, runningDetail.getState());
-        Assert.assertEquals(sql, runningDetail.getSql());
+        Assertions.assertEquals(QueryDetail.QueryMemState.RUNNING, runningDetail.getState());
+        Assertions.assertEquals(sql, runningDetail.getSql());
 
         QueryDetail finishedDetail = queryDetails.get(1);
-        Assert.assertEquals(QueryDetail.QueryMemState.FINISHED, finishedDetail.getState());
-        Assert.assertEquals(sql, finishedDetail.getSql());
-        Assert.assertTrue(finishedDetail.getQueryFeMemory() > 0);
+        Assertions.assertEquals(QueryDetail.QueryMemState.FINISHED, finishedDetail.getState());
+        Assertions.assertEquals(sql, finishedDetail.getSql());
+        Assertions.assertTrue(finishedDetail.getQueryFeMemory() > 0);
 
         Config.enable_collect_query_detail_info = old;
     }

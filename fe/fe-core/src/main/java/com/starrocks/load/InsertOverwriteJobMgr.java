@@ -12,22 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 package com.starrocks.load;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.common.Pair;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
 import com.starrocks.memory.MemoryTrackable;
+import com.starrocks.memory.estimate.Estimator;
 import com.starrocks.persist.CreateInsertOverwriteJobLog;
 import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.InsertOverwriteStateChangeInfo;
 import com.starrocks.persist.gson.GsonPostProcessable;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
@@ -40,7 +37,6 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataInput;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -48,11 +44,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.stream.Collectors;
 
 public class InsertOverwriteJobMgr implements Writable, GsonPostProcessable, MemoryTrackable {
     private static final Logger LOG = LogManager.getLogger(InsertOverwriteJobMgr.class);
-    private static final int MEMORY_JOB_SAMPLES = 10;
 
     @SerializedName(value = "overwriteJobMap")
     private Map<Long, InsertOverwriteJob> overwriteJobMap;
@@ -230,14 +224,6 @@ public class InsertOverwriteJobMgr implements Writable, GsonPostProcessable, Mem
         }
     }
 
-
-
-    public static InsertOverwriteJobMgr read(DataInput in) throws IOException {
-        String json = Text.readString(in);
-        InsertOverwriteJobMgr jobManager = GsonUtils.GSON.fromJson(json, InsertOverwriteJobMgr.class);
-        return jobManager;
-    }
-
     @Override
     public void gsonPostProcess() {
         if (!GlobalStateMgr.isCheckpointThread()) {
@@ -273,11 +259,7 @@ public class InsertOverwriteJobMgr implements Writable, GsonPostProcessable, Mem
     }
 
     @Override
-    public List<Pair<List<Object>, Long>> getSamples() {
-        List<Object> samples = overwriteJobMap.values()
-                .stream()
-                .limit(MEMORY_JOB_SAMPLES)
-                .collect(Collectors.toList());
-        return Lists.newArrayList(Pair.create(samples, (long) overwriteJobMap.size()));
+    public long estimateSize() {
+        return Estimator.estimate(overwriteJobMap, 10);
     }
 }

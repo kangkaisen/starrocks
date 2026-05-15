@@ -41,10 +41,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "base/hash/hash_std.hpp"
+#include "base/uid_util.h"
 #include "common/status.h"
 #include "gen_cpp/Types_types.h"
-#include "util/hash_util.hpp"
-#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -52,11 +52,12 @@ class TFetchDataResult;
 class BufferControlBlock;
 struct GetResultBatchCtx;
 class PUniqueId;
+class MetricRegistry;
 
 // manage all result buffer control block in one backend
 class ResultBufferMgr {
 public:
-    ResultBufferMgr();
+    explicit ResultBufferMgr(MetricRegistry* metrics = nullptr);
     ~ResultBufferMgr() = default;
     // init Result Buffer Mgr, start cancel thread
     Status init();

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "common/statusor.h"
 #include "exec/exec_node.h"
 #include "exec/pipeline/set/union_passthrough_operator.h"
 #include "pipeline/exchange/local_exchange.h"
@@ -32,7 +33,7 @@ public:
     Status get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) override;
     void close(RuntimeState* state) override;
 
-    pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
+    StatusOr<pipeline::OpFactories> decompose_to_pipeline(pipeline::PipelineBuilderContext* context) override;
 
 private:
     void _convert_pass_through_slot_map(const std::map<SlotId, SlotId>& slot_map);
@@ -63,6 +64,7 @@ private:
 
     std::vector<std::vector<ExprContext*>> _const_expr_lists;
     std::vector<std::vector<ExprContext*>> _child_expr_lists;
+    std::vector<std::vector<ExprContext*>> _local_partition_by_exprs;
 
     // the map from slot id of output chunk to slot id of child chunk
     // There may be multiple DestSlotId mapped to the same SrcSlotId,

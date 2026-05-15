@@ -17,14 +17,19 @@ set(LIBRARY_OUTPUT_PATH "${BUILD_DIR}/src/io")
 # where to put generated binaries
 set(EXECUTABLE_OUTPUT_PATH "${BUILD_DIR}/src/io")
 
-add_library(IO STATIC
-        array_input_stream.cpp
+ADD_BE_LIB(IOCore
+        core/array_input_stream.cpp
+        core/fd_input_stream.cpp
+        core/fd_output_stream.cpp
+        core/input_stream.cpp
+        core/io_profiler.cpp
+        core/io_profiler_metrics.cpp
+        core/readable.cpp
+        core/seekable_input_stream.cpp
+)
+
+ADD_BE_LIB(IO
         compressed_input_stream.cpp
-        fd_output_stream.cpp
-        fd_input_stream.cpp
-        io_profiler.cpp
-        seekable_input_stream.cpp
-        readable.cpp
         s3_input_stream.cpp
         s3_output_stream.cpp
         cache_input_stream.cpp
@@ -32,4 +37,7 @@ add_library(IO STATIC
         shared_buffered_input_stream.cpp
         async_flush_output_stream.cpp
         direct_s3_output_stream.cpp
-        )
+        formatted_output_stream_file.cpp
+)
+
+target_link_libraries(IO PUBLIC IOCore)

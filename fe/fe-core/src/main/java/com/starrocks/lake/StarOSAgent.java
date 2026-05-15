@@ -21,6 +21,7 @@ import com.google.common.collect.Maps;
 import com.staros.client.StarClient;
 import com.staros.client.StarClientException;
 import com.staros.manager.StarManagerServer;
+import com.staros.proto.CacheEnableState;
 import com.staros.proto.CreateMetaGroupInfo;
 import com.staros.proto.CreateShardGroupInfo;
 import com.staros.proto.CreateShardInfo;
@@ -40,23 +41,28 @@ import com.staros.proto.ShardGroupInfo;
 import com.staros.proto.ShardInfo;
 import com.staros.proto.StatusCode;
 import com.staros.proto.UpdateMetaGroupInfo;
+import com.staros.proto.UpdateShardGroupInfo;
 import com.staros.proto.WarmupLevel;
 import com.staros.proto.WorkerGroupDetailInfo;
 import com.staros.proto.WorkerGroupSpec;
 import com.staros.proto.WorkerInfo;
 import com.staros.util.LockCloseable;
+import com.starrocks.catalog.Partition;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.InternalErrorCode;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.ComputeNode;
+import com.starrocks.warehouse.cngroup.ComputeResource;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +83,8 @@ public class StarOSAgent {
 
     public static final String SERVICE_NAME = "starrocks";
 
+    // warehouse -> worker_group
+    //  index -> worker_group_id
     public static final long DEFAULT_WORKER_GROUP_ID = 0L;
 
     protected StarClient client;
@@ -85,6 +93,12 @@ public class StarOSAgent {
     // The value of this map is the id of backends or compute nodes
     protected Map<Long, Long> workerToNode;
     protected ReentrantReadWriteLock rwLock;
+
+    // NOTE: a simple record to return shard group infos and next shard group id when listing shard groups.
+    // This is used to avoid the difficulty of mocking an interface with returned type of `Pair`, throwing
+    // java.util.Map$Entry is not mockable.
+    public record ListShardGroupResult(List<ShardGroupInfo> shardGroupInfos, long nextShardGroupId) {
+    }
 
     public StarOSAgent() {
         serviceId = "";
@@ -104,10 +118,10 @@ public class StarOSAgent {
         return true;
     }
 
-    public boolean initForTest() {
+    public StarClient initForTest() {
         client = new StarClient(null);
         client.connectServer(String.format("127.0.0.1:%d", Config.cloud_native_meta_port));
-        return true;
+        return client;
     }
 
     protected void prepare() {
@@ -133,7 +147,7 @@ public class StarOSAgent {
             ServiceInfo serviceInfo = client.getServiceInfoByName(SERVICE_NAME);
             serviceId = serviceInfo.getServiceId();
         } catch (StarClientException e) {
-            LOG.warn("Failed to get serviceId from starMgr. Error:", e);
+            LOG.warn("Failed to get serviceId from starMgr. Error: {}", e.getMessage());
             return;
         }
         LOG.info("get serviceId {} from starMgr", serviceId);
@@ -244,12 +258,42 @@ public class StarOSAgent {
         }
     }
 
+    /**
+     * Currently this method is used for cluster migration, where we need to build source cluster's file path with
+     * their service id
+     * @param otherServiceId the source cluster's service id
+     * @throws DdlException
+     */
+    public FilePathInfo allocateFilePathFromOtherService(String storageVolumeId, long dbId,
+                                                         long tableId, String otherServiceId) throws DdlException {
+        prepare();
+        try {
+            String suffix = constructTablePath(dbId, tableId);
+            FilePathInfo pathInfo = client.allocateFilePath(serviceId, storageVolumeId, suffix, otherServiceId);
+            LOG.debug("Allocate file path from starmgr: {}", pathInfo);
+            return pathInfo;
+        } catch (StarClientException e) {
+            throw new DdlException("Failed to allocate file path from StarMgr, error: " + e.getMessage());
+        }
+    }
+
     public FilePathInfo allocateFilePath(String storageVolumeId, long dbId, long tableId) throws DdlException {
         prepare();
         try {
             String suffix = constructTablePath(dbId, tableId);
             FilePathInfo pathInfo = client.allocateFilePath(serviceId, storageVolumeId, suffix);
             LOG.debug("Allocate file path from starmgr: {}", pathInfo);
+            return pathInfo;
+        } catch (StarClientException e) {
+            throw new DdlException("Failed to allocate file path from StarMgr, error: " + e.getMessage());
+        }
+    }
+
+    public FilePathInfo allocateFilePath(String storageVolumeId, String rootDir) throws DdlException {
+        prepare();
+        try {
+            FilePathInfo pathInfo = client.allocateFilePath(serviceId, storageVolumeId, "", rootDir);
+            LOG.info("Allocate file path from starmgr: {}", pathInfo);
             return pathInfo;
         } catch (StarClientException e) {
             throw new DdlException("Failed to allocate file path from StarMgr, error: " + e.getMessage());
@@ -350,7 +394,7 @@ public class StarOSAgent {
                 workerId = client.addWorker(serviceId, workerIpPort, workerGroupId);
             } catch (StarClientException e) {
                 if (e.getCode() != StatusCode.ALREADY_EXIST) {
-                    LOG.warn("Failed to addWorker. Error: {}", e);
+                    LOG.warn("Failed to addWorker. Error: {}", e.getMessage());
                     return;
                 } else {
                     // get workerId from starMgr
@@ -358,7 +402,7 @@ public class StarOSAgent {
                         WorkerInfo workerInfo = client.getWorkerInfo(serviceId, workerIpPort);
                         workerId = workerInfo.getWorkerId();
                     } catch (StarClientException e2) {
-                        LOG.warn("Failed to get getWorkerInfo. Error: {}", e2);
+                        LOG.warn("Failed to get getWorkerInfo. Error: {}", e2.getMessage());
                         return;
                     }
                     LOG.info("worker {} already added in starMgr", workerId);
@@ -449,12 +493,17 @@ public class StarOSAgent {
     }
 
     public long createShardGroup(long dbId, long tableId, long partitionId, long indexId) throws DdlException {
+        return createShardGroup(dbId, tableId, partitionId, indexId, PlacementPolicy.SPREAD);
+    }
+
+    public long createShardGroup(long dbId, long tableId, long partitionId, long indexId,
+                                  PlacementPolicy placementPolicy) throws DdlException {
         prepare();
         List<ShardGroupInfo> shardGroupInfos = null;
         try {
             List<CreateShardGroupInfo> createShardGroupInfos = new ArrayList<>();
             createShardGroupInfos.add(CreateShardGroupInfo.newBuilder()
-                    .setPolicy(PlacementPolicy.SPREAD)
+                    .setPolicy(placementPolicy)
                     .putLabels("dbId", String.valueOf(dbId))
                     .putLabels("tableId", String.valueOf(tableId))
                     .putLabels("partitionId", String.valueOf(partitionId))
@@ -467,7 +516,25 @@ public class StarOSAgent {
         } catch (StarClientException e) {
             throw new DdlException("Failed to create shard group. error: " + e.getMessage());
         }
-        return shardGroupInfos.stream().map(ShardGroupInfo::getGroupId).collect(Collectors.toList()).get(0);
+        return shardGroupInfos.get(0).getGroupId();
+    }
+
+    // Used only for shared-data cluster replication
+    public long createShardGroupForVirtualTablet() throws DdlException {
+        prepare();
+        List<ShardGroupInfo> shardGroupInfos;
+        try {
+            List<CreateShardGroupInfo> createShardGroupInfos = new ArrayList<>();
+            createShardGroupInfos.add(CreateShardGroupInfo.newBuilder()
+                    .setPolicy(PlacementPolicy.SPREAD)
+                    .putProperties("createTime", String.valueOf(System.currentTimeMillis()))
+                    .build());
+            shardGroupInfos = client.createShardGroup(serviceId, createShardGroupInfos);
+            Preconditions.checkState(shardGroupInfos.size() == 1);
+        } catch (StarClientException e) {
+            throw new DdlException("Failed to create shard group. error: " + e.getMessage());
+        }
+        return shardGroupInfos.get(0).getGroupId();
     }
 
     public void deleteShardGroup(List<Long> groupIds) {
@@ -479,23 +546,48 @@ public class StarOSAgent {
         }
     }
 
-    public List<ShardGroupInfo> listShardGroup() {
+    public List<ShardGroupInfo> listShardGroup() throws DdlException {
         prepare();
         try {
             return client.listShardGroup(serviceId);
         } catch (StarClientException e) {
-            LOG.info("list shard group failed. Error: {}", e.getMessage());
-            return new ArrayList<>();
+            throw new DdlException("list shard group failed. Error: " + e.getMessage());
         }
     }
 
+    public ListShardGroupResult listShardGroup(long startGroupId) throws DdlException {
+        prepare();
+        try {
+            Pair<List<ShardGroupInfo>, Long> result = client.listShardGroup(serviceId, startGroupId);
+            return new ListShardGroupResult(result.getKey(), result.getValue());
+        } catch (StarClientException e) {
+            throw new DdlException("Failed to list shard group. Error: " + e.getMessage());
+        }
+    }
+
+    // ATTN
+    // (https://github.com/StarRocks/starrocks/pull/60073)
+    // The partitionId in pathInfo of LakeRollup may be different in different version.
+    // The partitionId should be physical partitionId but LakeRollup use logical partitionId before this pr.
     public List<Long> createShards(int numShards, FilePathInfo pathInfo, FileCacheInfo cacheInfo, long groupId,
                                    @Nullable List<Long> matchShardIds, @NotNull Map<String, String> properties,
-                                   long workerGroupId)
+                                   ComputeResource computeResource)
         throws DdlException {
+        return createShards(numShards, pathInfo, cacheInfo, List.of(groupId), matchShardIds, properties,
+                computeResource);
+    }
+
+    public List<Long> createShards(int numShards, FilePathInfo pathInfo, FileCacheInfo cacheInfo,
+                                   List<Long> groupIds, @Nullable List<Long> matchShardIds,
+                                   @NotNull Map<String, String> properties,
+                                   ComputeResource computeResource)
+        throws DdlException {
+        Preconditions.checkArgument(groupIds != null && !groupIds.isEmpty(),
+                "groupIds must not be null or empty");
         if (matchShardIds != null) {
             Preconditions.checkState(numShards == matchShardIds.size());
         }
+        long workerGroupId = computeResource.getWorkerGroupId();
         prepare();
         List<ShardInfo> shardInfos = null;
         try {
@@ -503,7 +595,7 @@ public class StarOSAgent {
 
             CreateShardInfo.Builder builder = CreateShardInfo.newBuilder();
             builder.setReplicaCount(1)
-                    .addGroupIds(groupId)
+                    .addAllGroupIds(groupIds)
                     .setPathInfo(pathInfo)
                     .setCacheInfo(cacheInfo)
                     .putAllShardProperties(properties)
@@ -530,6 +622,205 @@ public class StarOSAgent {
 
         Preconditions.checkState(shardInfos.size() == numShards);
         return shardInfos.stream().map(ShardInfo::getShardId).collect(Collectors.toList());
+    }
+
+    /**
+     * Create shards for a tablet split.
+     *
+     * <p>{@code oldShardIdToGroupIds} carries one entry per old tablet, mapping that old tablet's
+     * id to the list of group ids each new shard spawned from it should join. For non-colocate
+     * range tables this is a single-element list with the SPREAD shard group; for range-colocate
+     * tables it is {@code [SPREAD, <old-tablet's PACK shard group>]} per old tablet, and the PACK
+     * group differs per old tablet once the colocate group has multiple ranges.
+     */
+    public void createShardsForSplit(Map<Long, List<Long>> oldShardIdToGroupIds,
+                                     Map<Long, List<Long>> oldToNewShardIds,
+                                     FilePathInfo pathInfo,
+                                     FileCacheInfo cacheInfo,
+                                     @NotNull Map<String, String> properties,
+                                     ComputeResource computeResource) throws DdlException {
+        long workerGroupId = computeResource.getWorkerGroupId();
+        prepare();
+        List<ShardInfo> shardInfos = null;
+        try {
+            CreateShardInfo.Builder builder = CreateShardInfo.newBuilder();
+            builder.setReplicaCount(1)
+                    .setPathInfo(pathInfo)
+                    .setCacheInfo(cacheInfo)
+                    .putAllShardProperties(properties)
+                    .setScheduleToWorkerGroup(workerGroupId);
+
+            List<CreateShardInfo> createShardInfoList = new ArrayList<>(oldToNewShardIds.size() * 2);
+            for (Map.Entry<Long, List<Long>> entry : oldToNewShardIds.entrySet()) {
+                builder.clearPlacementPreferences();
+                builder.clearGroupIds();
+                List<Long> groupIds = oldShardIdToGroupIds.get(entry.getKey());
+                Preconditions.checkArgument(groupIds != null && !groupIds.isEmpty(),
+                        "Missing group ids for old shard " + entry.getKey());
+                builder.addAllGroupIds(groupIds);
+                PlacementPreference preference = PlacementPreference.newBuilder()
+                        .setPlacementPolicy(PlacementPolicy.PACK)
+                        .setPlacementRelationship(PlacementRelationship.WITH_SHARD)
+                        .setRelationshipTargetId(entry.getKey())
+                        .build();
+                builder.addPlacementPreferences(preference);
+                for (Long newShardId : entry.getValue()) {
+                    builder.setShardId(newShardId);
+                    createShardInfoList.add(builder.build());
+                }
+            }
+            shardInfos = client.createShard(serviceId, createShardInfoList);
+            Preconditions.checkState(shardInfos.size() == createShardInfoList.size());
+            LOG.debug("Create shards success. shard infos: {}", shardInfos);
+        } catch (Exception e) {
+            throw new DdlException("Failed to create shards. error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Per-new-shard variant of {@link #createShardsForSplit} used by the colocate checker.
+     * Each new shard joins its own list of group ids (PACK group per
+     * colocate range), while still pinning placement to its old shard via
+     * {@code PlacementRelationship.WITH_SHARD}.
+     *
+     * <p>{@code newToOldShardId} maps each new shard id to its parent old shard id.
+     * {@code newShardIdToGroupIds} maps each new shard id to its target group ids
+     * (typically {@code [SPREAD, PACK-for-this-shard's-ColocateRange]}). Both maps must
+     * have the same key set; the call fails if a new shard has no group assignment.
+     */
+    public void createShardsForSplitPerNewShard(Map<Long, Long> newToOldShardId,
+                                                 Map<Long, List<Long>> newShardIdToGroupIds,
+                                                 FilePathInfo pathInfo,
+                                                 FileCacheInfo cacheInfo,
+                                                 @NotNull Map<String, String> properties,
+                                                 ComputeResource computeResource) throws DdlException {
+        long workerGroupId = computeResource.getWorkerGroupId();
+        prepare();
+        try {
+            CreateShardInfo.Builder builder = CreateShardInfo.newBuilder();
+            builder.setReplicaCount(1)
+                    .setPathInfo(pathInfo)
+                    .setCacheInfo(cacheInfo)
+                    .putAllShardProperties(properties)
+                    .setScheduleToWorkerGroup(workerGroupId);
+            List<CreateShardInfo> createShardInfoList = new ArrayList<>(newToOldShardId.size());
+            for (Map.Entry<Long, Long> entry : newToOldShardId.entrySet()) {
+                long newShardId = entry.getKey();
+                long oldShardId = entry.getValue();
+                List<Long> groupIds = newShardIdToGroupIds.get(newShardId);
+                Preconditions.checkArgument(groupIds != null && !groupIds.isEmpty(),
+                        "Missing group ids for new shard " + newShardId);
+                builder.clearPlacementPreferences();
+                builder.clearGroupIds();
+                builder.addAllGroupIds(groupIds);
+                builder.addPlacementPreferences(PlacementPreference.newBuilder()
+                        .setPlacementPolicy(PlacementPolicy.PACK)
+                        .setPlacementRelationship(PlacementRelationship.WITH_SHARD)
+                        .setRelationshipTargetId(oldShardId)
+                        .build());
+                builder.setShardId(newShardId);
+                createShardInfoList.add(builder.build());
+            }
+            List<ShardInfo> shardInfos = client.createShard(serviceId, createShardInfoList);
+            Preconditions.checkState(shardInfos.size() == createShardInfoList.size());
+            LOG.debug("Create per-new-shard split shards success. shard infos: {}", shardInfos);
+        } catch (Exception e) {
+            throw new DdlException("Failed to create per-new-shard split shards. error: " + e.getMessage());
+        }
+    }
+
+    public void createShardsForMerge(Map<Long, List<Long>> newToOldShardIds, FilePathInfo pathInfo,
+            FileCacheInfo cacheInfo, long groupId, @NotNull Map<String, String> properties,
+            ComputeResource computeResource) throws DdlException {
+        long workerGroupId = computeResource.getWorkerGroupId();
+        prepare();
+        List<ShardInfo> shardInfos = null;
+        try {
+            CreateShardInfo.Builder builder = CreateShardInfo.newBuilder();
+            builder.setReplicaCount(1)
+                    .addGroupIds(groupId)
+                    .setPathInfo(pathInfo)
+                    .setCacheInfo(cacheInfo)
+                    .putAllShardProperties(properties)
+                    .setScheduleToWorkerGroup(workerGroupId);
+
+            List<CreateShardInfo> createShardInfoList = new ArrayList<>(newToOldShardIds.size());
+            for (Map.Entry<Long, List<Long>> entry : newToOldShardIds.entrySet()) {
+                long newShardId = entry.getKey();
+                List<Long> oldShardIds = entry.getValue();
+                Preconditions.checkState(oldShardIds != null && !oldShardIds.isEmpty(),
+                        "Empty old shard ids for new shard " + newShardId);
+
+                builder.clearPlacementPreferences();
+                for (Long oldShardId : oldShardIds) {
+                    PlacementPreference preference = PlacementPreference.newBuilder()
+                            .setPlacementPolicy(PlacementPolicy.PACK)
+                            .setPlacementRelationship(PlacementRelationship.WITH_SHARD)
+                            .setRelationshipTargetId(oldShardId)
+                            .build();
+                    builder.addPlacementPreferences(preference);
+                }
+
+                builder.setShardId(newShardId);
+                createShardInfoList.add(builder.build());
+            }
+            shardInfos = client.createShard(serviceId, createShardInfoList);
+            Preconditions.checkState(shardInfos.size() == createShardInfoList.size());
+            LOG.debug("Create shards success. shard infos: {}", shardInfos);
+        } catch (Exception e) {
+            throw new DdlException("Failed to create shards. error: " + e.getMessage());
+        }
+    }
+
+    // Used only for shared-data cluster replication
+    public void createShardWithVirtualTabletId(FilePathInfo pathInfo, FileCacheInfo cacheInfo, long groupId,
+                                      @NotNull Map<String, String> properties, long vTabletId,
+                                      ComputeResource computeResource) throws DdlException {
+        Preconditions.checkState(vTabletId != 0);
+        long workerGroupId = computeResource.getWorkerGroupId();
+        prepare();
+        List<ShardInfo> shardInfos = null;
+        try {
+            List<CreateShardInfo> createShardInfoList = new ArrayList<>(1);
+
+            CreateShardInfo.Builder builder = CreateShardInfo.newBuilder();
+            builder.setReplicaCount(1)
+                    .addGroupIds(groupId)
+                    .setPathInfo(pathInfo)
+                    .setCacheInfo(cacheInfo)
+                    .putAllShardProperties(properties)
+                    .setScheduleToWorkerGroup(workerGroupId);
+
+            builder.setShardId(vTabletId);
+            createShardInfoList.add(builder.build());
+            shardInfos = client.createShard(serviceId, createShardInfoList);
+            Preconditions.checkState(shardInfos != null && shardInfos.size() == 1);
+            LOG.debug("Create virtual shards success. shard infos: {}", shardInfos);
+        } catch (Exception e) {
+            throw new DdlException("Failed to create virtual shard. error: " + e.getMessage());
+        }
+    }
+
+    public void updateShardGroup(List<Partition> partitionsList, boolean enableCache) throws DdlException {
+        try {
+            prepare();
+            List<UpdateShardGroupInfo> updateShardGroupInfoList = new ArrayList<>(partitionsList.size());
+            for (Partition partition : partitionsList) {
+                updateShardGroupInfoList.add(
+                        UpdateShardGroupInfo.newBuilder()
+                                .setGroupId(partition.getDefaultPhysicalPartition().getShardGroupId())
+                                .setEnableCache(enableCache ? CacheEnableState.ENABLED : CacheEnableState.DISABLED)
+                                .build());
+            }
+            client.updateShardGroup(serviceId, updateShardGroupInfoList);
+        } catch (StarClientException e) {
+            StringBuilder partitionNamesBuilder = new StringBuilder();
+            for (Partition partition : partitionsList) {
+                partitionNamesBuilder.append(partition.getName()).append(" ");
+            }
+            throw new DdlException("Failed to alter partition shardGroups, PartitionNames: " +
+                    partitionNamesBuilder.toString().trim() + ", error: " + e.getMessage());
+        }
     }
 
     public List<Long> listShard(long groupId) throws DdlException {
@@ -659,6 +950,21 @@ public class StarOSAgent {
         }
     }
 
+    public Map<Long, List<Long>> getAllNodeIdsByShards(List<Long> shardIds, long workerGroupId)
+            throws StarRocksException {
+        try {
+            List<ShardInfo> shardInfos = getShardInfo(shardIds, workerGroupId);
+            Map<Long, List<Long>> result = new HashMap<>();
+            for (ShardInfo shardInfo : shardInfos) {
+                List<Long> nodeIds = getAllNodeIdsByShard(shardInfo);
+                result.put(shardInfo.getShardId(), nodeIds);
+            }
+            return result;
+        } catch (StarClientException e) {
+            throw new StarRocksException(e);
+        }
+    }
+
     private List<Long> getAllNodeIdsByShard(ShardInfo shardInfo) {
         List<ReplicaInfo> replicas = shardInfo.getReplicaInfoList();
         List<Long> nodeIds = new ArrayList<>();
@@ -685,6 +991,10 @@ public class StarOSAgent {
     }
 
     public void updateMetaGroup(long metaGroupId, List<Long> shardGroupIds, boolean isJoin) throws DdlException {
+        if (shardGroupIds == null || shardGroupIds.isEmpty()) {
+            return;
+        }
+
         prepare();
 
         try {
@@ -764,6 +1074,10 @@ public class StarOSAgent {
                 long nodeId = entry.getValue();
                 long workerId = entry.getKey();
                 ComputeNode node = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(nodeId);
+                if (node == null) {
+                    iterator.remove();
+                    continue;
+                }
                 if (node.getWorkerGroupId() == workerGroupId) {
                     iterator.remove();
                     workerToId.entrySet().removeIf(e -> e.getValue() == workerId);
@@ -787,6 +1101,11 @@ public class StarOSAgent {
     public long createWorkerGroup(String size, int replicaNumber, ReplicationType replicationType,
                                   WarmupLevel warmupLevel)
             throws DdlException {
+        return createWorkerGroup(size, replicaNumber, replicationType, warmupLevel, Collections.emptyMap());
+    }
+
+    public long createWorkerGroup(String size, int replicaNumber, ReplicationType replicationType,
+                                  WarmupLevel warmupLevel, Map<String, String> properties) throws DdlException {
         prepare();
 
         // size should be x0, x1, x2, x4...
@@ -795,8 +1114,8 @@ public class StarOSAgent {
         String owner = "Starrocks";
         WorkerGroupDetailInfo result = null;
         try {
-            result = client.createWorkerGroup(serviceId, owner, spec, Collections.emptyMap(),
-                    Collections.emptyMap(), replicaNumber, replicationType, warmupLevel);
+            result = client.createWorkerGroup(serviceId, owner, spec, Collections.emptyMap(), properties, replicaNumber,
+                    replicationType, warmupLevel);
         } catch (StarClientException e) {
             LOG.warn("Failed to create worker group. error: {}", e.getMessage());
             throw new DdlException("Failed to create worker group. error: " + e.getMessage());
@@ -813,6 +1132,17 @@ public class StarOSAgent {
         updateWorkerGroup(workerGroupId, replicaNumber, replicationType, WarmupLevel.WARMUP_NOT_SET);
     }
 
+    public void updateWorkerGroup(long workerGroupId, Map<String, String> properties) throws DdlException {
+        prepare();
+        try {
+            client.updateWorkerGroup(serviceId, workerGroupId, null, properties, 0, ReplicationType.NO_SET,
+                    WarmupLevel.WARMUP_NOT_SET);
+        } catch (StarClientException e) {
+            LOG.warn("Failed to update worker group properties. error: {}", e.getMessage());
+            throw new DdlException("Failed to update worker group. error: " + e.getMessage());
+        }
+    }
+
     public void updateWorkerGroup(long workerGroupId, int replicaNumber, ReplicationType replicationType,
                                   WarmupLevel warmupLevel) throws DdlException {
         prepare();
@@ -821,6 +1151,19 @@ public class StarOSAgent {
         } catch (StarClientException e) {
             LOG.warn("Failed to update worker group. error: {}", e.getMessage());
             throw new DdlException("Failed to update worker group. error: " + e.getMessage());
+        }
+    }
+
+    public WorkerGroupDetailInfo getWorkerGroupInfo(long workerGroupId) throws DdlException {
+        prepare();
+        try {
+            List<WorkerGroupDetailInfo> info =
+                    client.listWorkerGroup(serviceId, Lists.newArrayList(workerGroupId), false);
+            return info.get(0);
+        } catch (StarClientException e) {
+            String errMsg = "Failed to get worker group info (id=" + workerGroupId + "). error: " + e.getMessage();
+            LOG.warn(errMsg);
+            throw new DdlException(errMsg);
         }
     }
 
@@ -853,6 +1196,13 @@ public class StarOSAgent {
         List<ShardInfo> shardInfos = client.getShardInfo(serviceId, Lists.newArrayList(shardId), workerGroupId);
         Preconditions.checkState(shardInfos.size() == 1);
         return shardInfos.get(0);
+    }
+
+    @NotNull
+    public List<ShardInfo> getShardInfo(List<Long> shardIds, long workerGroupId) throws StarClientException {
+        prepare();
+        List<ShardInfo> shardInfos = client.getShardInfo(serviceId, shardIds, workerGroupId);
+        return shardInfos;
     }
 
     public static FilePathInfo allocatePartitionFilePathInfo(FilePathInfo tableFilePathInfo, long physicalPartitionId) {

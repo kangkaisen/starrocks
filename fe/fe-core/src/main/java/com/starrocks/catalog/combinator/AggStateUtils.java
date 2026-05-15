@@ -17,17 +17,20 @@ package com.starrocks.catalog.combinator;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.FunctionParams;
 import com.starrocks.catalog.AggregateFunction;
-import com.starrocks.catalog.ArrayType;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.Type;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.analyzer.FunctionAnalyzer;
 import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.expression.FunctionParams;
 import com.starrocks.sql.parser.NodePosition;
+import com.starrocks.type.AggStateDesc;
+import com.starrocks.type.ArrayType;
+import com.starrocks.type.Type;
+import com.starrocks.type.VarcharType;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -57,13 +60,15 @@ public class AggStateUtils {
                     .add(FunctionSet.SUM)
                     .add(FunctionSet.AVG)
                     .build();
+
     /**
      * TODO: Refactor this function to unify the same check policy with FunctionAnalyzer#analyze
      * Check if the aggregate function is supported in the combinator.
+     *
      * @param aggFunc the aggregate function to check
      * @return true if the aggregate function is supported in the combinator
      */
-    public static boolean isSupportedAggStateFunction(AggregateFunction aggFunc) {
+    public static boolean isSupportedAggStateFunction(AggregateFunction aggFunc, boolean isAggIf) {
         if (aggFunc == null) {
             return false;
         }
@@ -78,10 +83,6 @@ public class AggStateUtils {
             return false;
         }
         String fnName = aggFunc.functionName();
-        // count only support count(col)
-        if (FunctionSet.COUNT.equalsIgnoreCase(fnName) && aggFunc.getArgs().length == 0) {
-            return false;
-        }
         if (ONLY_NUMERIC_ARGUMENT_FUNCTIONS_L1.contains(fnName) &&
                 Stream.of(aggFunc.getArgs()).anyMatch(t -> !t.canApplyToNumeric())) {
             return false;
@@ -106,24 +107,41 @@ public class AggStateUtils {
                 return false;
             }
         }
+
+        // array_agg_distinct with complex type will rewrite into array_agg(distinct)
+        // right now agg_if doesn't support distinct
+        if (isAggIf && FunctionSet.ARRAY_AGG_DISTINCT.equalsIgnoreCase(fnName) &&
+                Stream.of(aggFunc.getArgs()).anyMatch(t -> t.isComplexType())) {
+            return false;
+        }
         // bitmap_union_int
         if (FunctionSet.BITMAP_UNION_INT.equalsIgnoreCase(fnName) && !aggFunc.getArgs()[0].isIntegerType()) {
             return false;
         }
+
         return true;
     }
 
     /**
      * Get the aggregate function name of the combinator function.
+     *
      * @param fnName combinator function name
      */
     public static String getAggFuncNameOfCombinator(String fnName) {
-        if (fnName.endsWith(FunctionSet.AGG_STATE_SUFFIX)) {
-            return fnName.substring(0, fnName.length() - FunctionSet.AGG_STATE_SUFFIX.length());
+        if (fnName.endsWith(FunctionSet.STATE_SUFFIX)) {
+            return fnName.substring(0, fnName.length() - FunctionSet.STATE_SUFFIX.length());
+        } else if (fnName.endsWith(FunctionSet.STATE_MERGE_SUFFIX)) {
+            return fnName.substring(0, fnName.length() - FunctionSet.STATE_MERGE_SUFFIX.length());
+        } else if (fnName.endsWith(FunctionSet.STATE_UNION_SUFFIX)) {
+            return fnName.substring(0, fnName.length() - FunctionSet.STATE_UNION_SUFFIX.length());
         } else if (fnName.endsWith(FunctionSet.AGG_STATE_UNION_SUFFIX)) {
             return fnName.substring(0, fnName.length() - FunctionSet.AGG_STATE_UNION_SUFFIX.length());
         } else if (fnName.endsWith(FunctionSet.AGG_STATE_MERGE_SUFFIX)) {
             return fnName.substring(0, fnName.length() - FunctionSet.AGG_STATE_MERGE_SUFFIX.length());
+        } else if (fnName.endsWith(FunctionSet.AGG_STATE_COMBINE_SUFFIX)) {
+            return fnName.substring(0, fnName.length() - FunctionSet.AGG_STATE_COMBINE_SUFFIX.length());
+        } else if (fnName.endsWith(FunctionSet.AGG_STATE_IF_SUFFIX)) {
+            return fnName.substring(0, fnName.length() - FunctionSet.AGG_STATE_IF_SUFFIX.length());
         } else {
             return fnName;
         }
@@ -131,22 +149,23 @@ public class AggStateUtils {
 
     /**
      * Analyze the combinator function and return the correct aggregate function for type correction.
-     * @param session connect context
-     * @param func combinator function
-     * @param params function parameters
-     * @param argumentTypes argument types
+     *
+     * @param session             connect context
+     * @param func                combinator function
+     * @param params              function parameters
+     * @param argumentTypes       argument types
      * @param argumentIsConstants argument is constant or not
-     * @param pos node position
+     * @param pos                 node position
      * @return the correct aggregate function for type correction
      */
     public static Function getAnalyzedCombinatorFunction(ConnectContext session,
-                                                          Function func,
-                                                          FunctionParams params,
-                                                          Type[] argumentTypes,
-                                                          Boolean[] argumentIsConstants,
-                                                          NodePosition pos) {
+                                                         Function func,
+                                                         FunctionParams params,
+                                                         Type[] argumentTypes,
+                                                         Boolean[] argumentIsConstants,
+                                                         NodePosition pos) {
         Optional<? extends Function> result = Optional.empty();
-        if (func instanceof AggStateCombinator) {
+        if (func instanceof StateFunctionCombinator) {
             // correct aggregate function for type correction
             // `_state`'s input types are the same with inputs' types.
             String aggFuncName = AggStateUtils.getAggFuncNameOfCombinator(func.functionName());
@@ -155,18 +174,50 @@ public class AggStateUtils {
             if (argFn == null) {
                 return null;
             }
-            if (!(argFn instanceof AggregateFunction)) {
+            if (!(argFn instanceof AggregateFunction aggFunc)) {
                 return null;
             }
-            AggregateFunction aggFunc = (AggregateFunction) argFn;
             if (aggFunc.getNumArgs() == 1) {
                 // only copy argument if it's a decimal type
                 AggregateFunction argFnCopy = (AggregateFunction) aggFunc.copy();
                 argFnCopy.setArgsType(argumentTypes);
-                result = AggStateCombinator.of(argFnCopy);
+                result = StateFunctionCombinator.of(argFnCopy);
             } else {
-                result = AggStateCombinator.of(aggFunc);
+                result = StateFunctionCombinator.of(aggFunc);
             }
+        } else if (func instanceof AggStateCombineCombinator) {
+            // correct aggregate function for type correction
+            // `_state`'s input types are the same with inputs' types.
+            String aggFuncName = AggStateUtils.getAggFuncNameOfCombinator(func.functionName());
+            Function argFn = FunctionAnalyzer.getAnalyzedAggregateFunction(session, aggFuncName,
+                    params, argumentTypes, argumentIsConstants, pos);
+            if (argFn == null) {
+                return null;
+            }
+            if (!(argFn instanceof AggregateFunction aggFunc)) {
+                return null;
+            }
+            if (aggFunc.getNumArgs() == 1) {
+                // only copy argument if it's a decimal type
+                AggregateFunction argFnCopy = (AggregateFunction) aggFunc.copy();
+                argFnCopy.setArgsType(argumentTypes);
+                result = AggStateCombineCombinator.of(argFnCopy);
+            } else {
+                result = AggStateCombineCombinator.of(aggFunc);
+            }
+        } else if (func instanceof StateMergeCombinator) {
+            AggregateFunction argFn = getAggStateFunction(session, func, argumentTypes, pos);
+            if (argFn == null) {
+                return null;
+            }
+            result = StateMergeCombinator.of(argFn);
+        } else if (func instanceof StateUnionCombinator) {
+            // TODO: how to deduce the argument types of state_union combinator?
+            AggregateFunction argFn = getAggStateFunction(session, func, argumentTypes, pos);
+            if (argFn == null) {
+                return null;
+            }
+            result = StateUnionCombinator.of(argFn);
         } else if (func instanceof AggStateUnionCombinator) {
             AggregateFunction argFn = getAggStateFunction(session, func, argumentTypes, pos);
             if (argFn == null) {
@@ -179,6 +230,34 @@ public class AggStateUtils {
                 return null;
             }
             result = AggStateMergeCombinator.of(argFn);
+        } else if (func instanceof AggStateIf) {
+            // correct aggregate function for type correction for deicaml
+            // `_if`'s input types are original input types + boolean
+            String aggFuncNameWithoutIf = AggStateUtils.getAggFuncNameOfCombinator(func.functionName());
+
+            Type[] argumentTypesWithoutIf = Arrays.copyOfRange(argumentTypes, 0, argumentTypes.length - 1);
+
+            FunctionParams functionParamsWithoutIf =
+                    new FunctionParams(params.isStar(),
+                            params.exprs() == null ? null : params.exprs().subList(0, params.exprs().size() - 1),
+                            params.getExprsNames() == null ? null :
+                                    params.getExprsNames().subList(0, params.getExprsNames().size() - 1),
+                            params.isDistinct(), params.getOrderByElements() == null ? null :
+                            params.getOrderByElements().subList(0, params.getOrderByElements().size() - 1));
+
+            Boolean[] argumentIsConstantsWithoutIf =
+                    Arrays.copyOfRange(argumentIsConstants, 0, argumentIsConstants.length - 1);
+            // find the function without if, then rebuild the agg_if using argFnWithoutIf
+            // the different bwtween input agg_if and new agg_if is decimal's precision and scale will be added
+            Function argFnWithoutIf = FunctionAnalyzer.getAnalyzedAggregateFunction(session, aggFuncNameWithoutIf,
+                    functionParamsWithoutIf, argumentTypesWithoutIf, argumentIsConstantsWithoutIf, pos);
+            if (argFnWithoutIf == null) {
+                return null;
+            }
+            if (!(argFnWithoutIf instanceof AggregateFunction aggFunc)) {
+                return null;
+            }
+            result = AggStateIf.of(aggFunc);
         }
 
         if (result.isEmpty()) {
@@ -191,10 +270,23 @@ public class AggStateUtils {
                                                          Function inputFunc,
                                                          Type[] argumentTypes,
                                                          NodePosition pos) {
-        Preconditions.checkArgument(argumentTypes.length == 1,
-                "AggState's AggFunc should have only one argument");
+        Preconditions.checkArgument(argumentTypes.length >= 1,
+                "AggState's AggFunc should have at least one argument");
         Type arg0Type = argumentTypes[0];
         if (arg0Type.getAggStateDesc() == null) {
+            String functionName = inputFunc.functionName();
+            if (functionName.startsWith(FunctionSet.DS_HLL_COUNT_DISTINCT)
+                    && (functionName.endsWith(FunctionSet.AGG_STATE_MERGE_SUFFIX)
+                    || functionName.endsWith(FunctionSet.AGG_STATE_UNION_SUFFIX))) {
+                // ds_hll_count_distinct is a special case, it has no AggStateDesc
+                // but we can still get the agg state function from its name
+                Function dsHllCountDistinctAgg = FunctionAnalyzer.getAnalyzedAggregateFunction(session,
+                        FunctionSet.DS_HLL_COUNT_DISTINCT, new FunctionParams(false, Lists.newArrayList()),
+                        new Type[] {VarcharType.VARCHAR}, new Boolean[] {false}, pos);
+                if (dsHllCountDistinctAgg != null && dsHllCountDistinctAgg instanceof AggregateFunction) {
+                    return (AggregateFunction) dsHllCountDistinctAgg.copy();
+                }
+            }
             throw new SemanticException(String.format("AggState's AggFunc should have AggStateDesc: %s",
                     inputFunc), pos);
         }
@@ -229,5 +321,50 @@ public class AggStateUtils {
             newArgumentTypes = origArgTypes;
         }
         return newArgumentTypes;
+    }
+
+    public static String aggStateFunctionName(String aggFuncName) {
+        return aggFuncName  + FunctionSet.STATE_SUFFIX;
+    }
+
+    public static String aggStateUnionFunctionName(String aggFuncName) {
+        return aggFuncName  + FunctionSet.AGG_STATE_UNION_SUFFIX;
+    }
+
+    public static String aggStateMergeFunctionName(String aggFuncName) {
+        return aggFuncName + FunctionSet.AGG_STATE_MERGE_SUFFIX;
+    }
+
+    public static String stateUnionFunctionName(String aggFuncName) {
+        return aggFuncName + FunctionSet.STATE_UNION_SUFFIX;
+    }
+
+    public static String stateMergeFunctionName(String aggFuncName) {
+        return aggFuncName + FunctionSet.STATE_MERGE_SUFFIX;
+    }
+
+    public static String aggStateCombineFunctionName(String aggFuncName) {
+        return aggFuncName  + FunctionSet.AGG_STATE_COMBINE_SUFFIX;
+    }
+
+    public static boolean isAggStateCombinator(Function function) {
+        return function instanceof AggStateIf ||
+                function instanceof AggStateUnionCombinator ||
+                function instanceof AggStateMergeCombinator ||
+                function instanceof AggStateCombineCombinator ||
+                // scalar functions
+                function instanceof StateFunctionCombinator ||
+                function instanceof StateMergeCombinator ||
+                function instanceof StateUnionCombinator;
+    }
+
+    public static boolean isAggStateCombinator(String functionName) {
+        return functionName.endsWith(FunctionSet.STATE_SUFFIX) ||
+                functionName.endsWith(FunctionSet.AGG_STATE_UNION_SUFFIX) ||
+                functionName.endsWith(FunctionSet.AGG_STATE_MERGE_SUFFIX) ||
+                functionName.endsWith(FunctionSet.AGG_STATE_COMBINE_SUFFIX) ||
+                functionName.endsWith(FunctionSet.AGG_STATE_IF_SUFFIX) ||
+                functionName.endsWith(FunctionSet.STATE_UNION_SUFFIX) ||
+                functionName.endsWith(FunctionSet.STATE_MERGE_SUFFIX);
     }
 }

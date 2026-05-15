@@ -50,8 +50,6 @@
 #include <utility>
 #include <vector>
 
-#include "agent/status.h"
-#include "column/chunk.h"
 #include "common/status.h"
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/BackendService_types.h"
@@ -71,7 +69,6 @@ class Executor;
 
 namespace starrocks::lake {
 class LocalPkIndexManager;
-class LoadSpillBlockMergeExecutor;
 } // namespace starrocks::lake
 
 namespace starrocks {
@@ -81,10 +78,13 @@ class EngineTask;
 class MemTableFlushExecutor;
 class Tablet;
 class ReplicationTxnManager;
+class TAllocateAutoIncrementIdParam;
+class TAllocateAutoIncrementIdResult;
 class UpdateManager;
 class CompactionManager;
 class PublishVersionManager;
 class DictionaryCacheManager;
+class LoadSpillBlockMergeExecutor;
 class SegmentFlushExecutor;
 class SegmentReplicateExecutor;
 
@@ -236,9 +236,7 @@ public:
 
     bthread::Executor* async_delta_writer_executor() { return _async_delta_writer_executor.get(); }
 
-    lake::LoadSpillBlockMergeExecutor* load_spill_block_merge_executor() {
-        return _load_spill_block_merge_executor.get();
-    }
+    LoadSpillBlockMergeExecutor* load_spill_block_merge_executor() { return _load_spill_block_merge_executor.get(); }
 
     MemTableFlushExecutor* memtable_flush_executor() { return _memtable_flush_executor.get(); }
 
@@ -328,7 +326,7 @@ protected:
 
     static StorageEngine* _p_instance;
 
-    int32_t _effective_cluster_id;
+    int32_t _effective_cluster_id{-1};
 
 private:
     // Instance should be inited from `static open()`
@@ -424,8 +422,8 @@ private:
     EngineOptions _options;
     std::mutex _store_lock;
     std::map<std::string, std::unique_ptr<DataDir>> _store_map;
-    uint32_t _available_storage_medium_type_count;
-    bool _is_all_cluster_id_exist;
+    uint32_t _available_storage_medium_type_count{0};
+    bool _is_all_cluster_id_exist{true};
 
     std::mutex _gc_mutex;
     // map<rowset_id(str), RowsetSharedPtr>, if we use RowsetId as the key, we need custom hash func
@@ -463,7 +461,6 @@ private:
 
     // threads to clean all file descriptor not actively in use
     std::thread _fd_cache_clean_thread;
-    std::thread _adjust_cache_thread;
     std::vector<std::thread> _path_gc_threads;
     // threads to scan disk paths
     std::vector<std::thread> _path_scan_threads;
@@ -497,7 +494,7 @@ private:
 
     std::unique_ptr<bthread::Executor> _async_delta_writer_executor;
 
-    std::unique_ptr<lake::LoadSpillBlockMergeExecutor> _load_spill_block_merge_executor;
+    std::unique_ptr<LoadSpillBlockMergeExecutor> _load_spill_block_merge_executor;
 
     std::unique_ptr<MemTableFlushExecutor> _memtable_flush_executor;
 

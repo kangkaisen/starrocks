@@ -21,13 +21,14 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ColumnAccessPath;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AnalysisException;
-import com.starrocks.connector.TableVersionRange;
+import com.starrocks.common.tvr.TvrTableSnapshot;
+import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.planner.PartitionColumnFilter;
 import com.starrocks.sql.optimizer.ExpressionContext;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
 import com.starrocks.sql.optimizer.RowOutputInfo;
-import com.starrocks.sql.optimizer.ScanOptimzeOption;
+import com.starrocks.sql.optimizer.ScanOptimizeOption;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.ColumnFilterConverter;
@@ -63,8 +64,8 @@ public abstract class LogicalScanOperator extends LogicalOperator {
     protected ImmutableMap<String, PartitionColumnFilter> columnFilters;
     protected Set<String> partitionColumns = Sets.newHashSet();
     protected ImmutableList<ColumnAccessPath> columnAccessPaths;
-    protected ScanOptimzeOption scanOptimzeOption;
-    protected TableVersionRange tableVersionRange;
+    protected ScanOptimizeOption scanOptimizeOption;
+    protected TvrVersionRange tvrVersionRange;
 
     public LogicalScanOperator(
             OperatorType type,
@@ -74,7 +75,8 @@ public abstract class LogicalScanOperator extends LogicalOperator {
             long limit,
             ScalarOperator predicate,
             Projection projection) {
-        this(type, table, colRefToColumnMetaMap, columnMetaToColRefMap, limit, predicate, projection, TableVersionRange.empty());
+        this(type, table, colRefToColumnMetaMap, columnMetaToColRefMap, limit, predicate,
+                projection, TvrTableSnapshot.empty());
     }
 
     public LogicalScanOperator(
@@ -85,14 +87,14 @@ public abstract class LogicalScanOperator extends LogicalOperator {
             long limit,
             ScalarOperator predicate,
             Projection projection,
-            TableVersionRange tableVersionRange) {
+            TvrVersionRange tvrVersionRange) {
         super(type, limit, predicate, projection);
         this.table = Objects.requireNonNull(table, "table is null");
         this.colRefToColumnMetaMap = ImmutableMap.copyOf(colRefToColumnMetaMap);
         this.columnMetaToColRefMap = ImmutableMap.copyOf(columnMetaToColRefMap);
         this.columnAccessPaths = ImmutableList.of();
-        this.scanOptimzeOption = new ScanOptimzeOption();
-        this.tableVersionRange = tableVersionRange;
+        this.scanOptimizeOption = new ScanOptimizeOption();
+        this.tvrVersionRange = tvrVersionRange;
         buildColumnFilters(predicate);
     }
 
@@ -101,12 +103,16 @@ public abstract class LogicalScanOperator extends LogicalOperator {
         this.colRefToColumnMetaMap = ImmutableMap.of();
         this.columnMetaToColRefMap = ImmutableMap.of();
         this.columnAccessPaths = ImmutableList.of();
-        this.scanOptimzeOption = new ScanOptimzeOption();
-        this.tableVersionRange = TableVersionRange.empty();
+        this.scanOptimizeOption = new ScanOptimizeOption();
+        this.tvrVersionRange = TvrTableSnapshot.empty();
     }
 
     public Table getTable() {
         return table;
+    }
+
+    public void setTable(Table table) {
+        this.table = table;
     }
 
     public Map<ColumnRefOperator, Column> getColRefToColumnMetaMap() {
@@ -133,16 +139,20 @@ public abstract class LogicalScanOperator extends LogicalOperator {
         return columnRefOperatorMap;
     }
 
-    public ScanOptimzeOption getScanOptimzeOption() {
-        return scanOptimzeOption;
+    public ScanOptimizeOption getScanOptimizeOption() {
+        return scanOptimizeOption;
     }
 
-    public TableVersionRange getTableVersionRange() {
-        return tableVersionRange;
+    public void setScanOptimizeOption(ScanOptimizeOption scanOptimizeOption) {
+        this.scanOptimizeOption = scanOptimizeOption;
     }
 
-    public void setTableVersionRange(TableVersionRange tableVersionRange) {
-        this.tableVersionRange = tableVersionRange;
+    public TvrVersionRange getTvrVersionRange() {
+        return tvrVersionRange;
+    }
+
+    public void setTvrVersionRange(TvrVersionRange tvrVersionRange) {
+        this.tvrVersionRange = tvrVersionRange;
     }
 
     // for mark empty partitions/empty tablet
@@ -249,9 +259,9 @@ public abstract class LogicalScanOperator extends LogicalOperator {
             builder.columnMetaToColRefMap = scanOperator.columnMetaToColRefMap;
             builder.columnFilters = scanOperator.columnFilters;
             builder.columnAccessPaths = scanOperator.columnAccessPaths;
-            builder.scanOptimzeOption = scanOperator.scanOptimzeOption;
+            builder.scanOptimizeOption = scanOperator.scanOptimizeOption;
             builder.partitionColumns = scanOperator.partitionColumns;
-            builder.tableVersionRange = scanOperator.tableVersionRange;
+            builder.tvrVersionRange = scanOperator.tvrVersionRange;
             return (B) this;
         }
 
@@ -278,13 +288,21 @@ public abstract class LogicalScanOperator extends LogicalOperator {
             return (B) this;
         }
 
+        public B addColumnAccessPaths(List<ColumnAccessPath> paths) {
+            builder.columnAccessPaths = ImmutableList.<ColumnAccessPath>builder()
+                    .addAll(paths)
+                    .addAll(builder.columnAccessPaths)
+                    .build();
+            return (B) this;
+        }
+
         public B setTable(Table table) {
             builder.table = table;
             return (B) this;
         }
 
-        public B setTableVersionRange(TableVersionRange tableVersionRange) {
-            builder.tableVersionRange = tableVersionRange;
+        public B setTableVersionRange(TvrVersionRange tableVersionRange) {
+            builder.tvrVersionRange = tableVersionRange;
             return (B) this;
         }
     }

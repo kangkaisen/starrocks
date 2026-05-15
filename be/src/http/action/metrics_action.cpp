@@ -26,12 +26,13 @@
 
 #include <string>
 
-#include "common/config.h"
+#include "base/metrics.h"
+#include "common/config_metrics_fwd.h"
+#include "common/metrics/process_metrics_registry.h"
 #include "common/tracer.h"
 #include "http/http_channel.h"
 #include "http/http_headers.h"
 #include "http/http_request.h"
-#include "util/metrics.h"
 
 #ifdef USE_STAROS
 #include "metrics/metrics.h"
@@ -117,7 +118,6 @@ const std::string SimpleCoreMetricsVisitor::MAX_DISK_IO_UTIL_PERCENT = "max_disk
 const std::string SimpleCoreMetricsVisitor::MAX_NETWORK_SEND_BYTES_RATE = "max_network_send_bytes_rate";
 const std::string SimpleCoreMetricsVisitor::MAX_NETWORK_RECEIVE_BYTES_RATE = "max_network_receive_bytes_rate";
 
-const std::string TableMetricsPrefix = "table_";
 void PrometheusMetricsVisitor::visit(const std::string& prefix, const std::string& name, MetricCollector* collector) {
     if (collector->empty() || name.empty()) {
         return;
@@ -128,9 +128,7 @@ void PrometheusMetricsVisitor::visit(const std::string& prefix, const std::strin
     } else {
         metric_name = prefix + "_" + name;
     }
-    if (!config::enable_collect_table_metrics && name.starts_with(TableMetricsPrefix)) {
-        return;
-    }
+
     // Output metric type
     _ss << "# TYPE " << metric_name << " " << collector->type() << "\n";
     switch (collector->type()) {
@@ -294,10 +292,6 @@ void JsonMetricsVisitor::visit(const std::string& prefix, const std::string& nam
     if (collector->empty() || name.empty()) {
         return;
     }
-    if (!config::enable_collect_table_metrics && name.starts_with(TableMetricsPrefix)) {
-        return;
-    }
-
     rapidjson::Document::AllocatorType& allocator = doc.GetAllocator();
     switch (collector->type()) {
     case MetricType::COUNTER:
@@ -333,18 +327,21 @@ void MetricsAction::handle(HttpRequest* req) {
     std::string str;
     if (type == "core") {
         SimpleCoreMetricsVisitor visitor;
-        _metrics->collect(&visitor);
+        _process_metrics_registry->collect_root(&visitor);
         str.assign(visitor.to_string());
     } else if (type == "json") {
         JsonMetricsVisitor visitor;
-        _metrics->collect(&visitor);
+        _process_metrics_registry->collect_root(&visitor);
+        _collect_table_metrics(&visitor);
         str.assign(visitor.to_string());
     } else {
         PrometheusMetricsVisitor visitor;
-        _metrics->collect(&visitor);
+        _process_metrics_registry->collect_root(&visitor);
+        _collect_table_metrics(&visitor);
         if (config::dump_metrics_with_bvar) {
             bvar::Variable::dump_exposed(&visitor, &_options);
         }
+
 #ifdef USE_STAROS
 #ifdef BE_TEST
         if (!sDisableStarOSMetrics) {
@@ -362,6 +359,12 @@ void MetricsAction::handle(HttpRequest* req) {
         HttpChannel::send_reply(req, str);
     } else {
         (*_mock_func)(str);
+    }
+}
+
+void MetricsAction::_collect_table_metrics(starrocks::MetricsVisitor* visitor) {
+    if (config::enable_collect_table_metrics) {
+        _process_metrics_registry->collect_table(visitor);
     }
 }
 

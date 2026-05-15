@@ -4,9 +4,16 @@ displayed_sidebar: docs
 
 # SHOW PROC
 
-## Description
+SHOW PROC shows certain indicators of the StarRocks cluster.
 
-Shows certain indicators of the StarRocks cluster.
+SHOW PROC is equivalent to the the `/proc` filesystem in Linux. Similar to the paths in `/proc`, the parameters in SHOW PROC have a tree-like hierarchical structure, and each layer displays different information. Take `SHOW PROC '/dbs'` as an example:
+- `SHOW PROC '/dbs'` will return the information of all databases in the cluster.
+- `SHOW PROC '/dbs/<db_name>'` will return the information of the specified database.
+- `SHOW PROC '/dbs/<db_name>/tables'` will return the information of all tables in the specified database.
+- `SHOW PROC '/dbs/<db_name>/<table_name>'` will return the information of the specified table.
+- `SHOW PROC '/dbs/<db_name>/<table_name>/partitions'` will return the information of all partitions in the specified table.
+
+It can be specified all the way to the leaf node.
 
 :::tip
 
@@ -31,7 +38,7 @@ SHOW PROC { '/backends' | '/compute_nodes' | '/dbs' | '/jobs'
 | ---------------------------- | ------------------------------------------------------------ |
 | '/backends'                  | Shows the information of BE nodes in the cluster.            |
 | '/compute_nodes'             | Shows the information of CN nodes in the cluster.            |
-| '/dbs'                       | Shows the information of databases in the cluster.           |
+| '/dbs'                       | Shows the information of databases, tables, partitions, and tablets in the cluster.           |
 | '/jobs'                      | Shows the information of jobs in the cluster.                |
 | '/statistic'                 | Shows the statistics of each database in the cluster.        |
 | '/tasks'                     | Shows the total number of all generic tasks and the failed tasks in the cluster. |
@@ -117,17 +124,32 @@ ClusterDecommissioned: false
 Example 2: Shows the information of databases in the cluster.
 
 ```Plain
-mysql> SHOW PROC '/dbs';
-+---------+------------------------+----------+----------------+--------------------------+---------------------+
-| DbId    | DbName                 | TableNum | Quota          | LastConsistencyCheckTime | ReplicaQuota        |
-+---------+------------------------+----------+----------------+--------------------------+---------------------+
-| 1       | information_schema     | 22       | 8388608.000 TB | NULL                     | 9223372036854775807 |
-| 840997  | tpcds_100g             | 25       | 1024.000 GB    | NULL                     | 1073741824          |
-| 1275196 | _statistics_           | 3        | 8388608.000 TB | 2022-09-06 23:00:58      | 9223372036854775807 |
-| 1286207 | tpcds_n                | 24       | 8388608.000 TB | NULL                     | 9223372036854775807 |
-| 1381289 | test                   | 6        | 8388608.000 TB | 2022-01-14 23:10:18      | 9223372036854775807 |
-| 6186781 | test_stddev            | 1        | 8388608.000 TB | 2022-09-06 23:00:58      | 9223372036854775807 |
-+---------+------------------------+----------+----------------+--------------------------+---------------------+
+mysql> show proc "/dbs";
++-------+--------------------+----------+----------------+--------------------------+---------------------+
+| DbId  | DbName             | TableNum | Quota          | LastConsistencyCheckTime | ReplicaQuota        |
++-------+--------------------+----------+----------------+--------------------------+---------------------+
+| 1     | information_schema | 54       | 8388608.000 TB | NULL                     | 9223372036854775807 |
+| 100   | sys                | 6        | 8388608.000 TB | NULL                     | 9223372036854775807 |
+| 10001 | _statistics_       | 12       | 8388608.000 TB | NULL                     | 9223372036854775807 |
+| 10015 | test               | 1        | 8388608.000 TB | NULL                     | 9223372036854775807 |
++-------+--------------------+----------+----------------+--------------------------+---------------------+
+4 rows in set (0.00 sec)
+mysql> show proc "/dbs/test";
++---------+------------------+----------+---------------------+--------------+--------+--------------+--------------------------+--------------+---------------+--------------------------------------------------------------------------------------------------------+
+| TableId | TableName        | IndexNum | PartitionColumnName | PartitionNum | State  | Type         | LastConsistencyCheckTime | ReplicaCount | PartitionType | StoragePath                                                                                            |
++---------+------------------+----------+---------------------+--------------+--------+--------------+--------------------------+--------------+---------------+--------------------------------------------------------------------------------------------------------+
+| 10207   | source_wiki_edit | 1        | event_time          | 4            | NORMAL | CLOUD_NATIVE | NULL                     | 8            | RANGE         | s3://test/xxx                                                                                          |
++---------+------------------+----------+---------------------+--------------+--------+--------------+--------------------------+--------------+---------------+--------------------------------------------------------------------------------------------------------+
+1 row in set (0.00 sec)
+mysql> show proc "/dbs/test/source_wiki_edit";
++-----------------+
+| Nodes           |
++-----------------+
+| partitions      |
+| temp_partitions |
+| index_schema    |
++-----------------+
+3 rows in set (0.00 sec)
 ```
 
 | **Return**               | **Description**                                   |
@@ -138,6 +160,19 @@ mysql> SHOW PROC '/dbs';
 | Quota                    | Storage quota of the database.                    |
 | LastConsistencyCheckTime | The last time when consistency check is executed. |
 | ReplicaQuota             | Data replica quota of the database.               |
+| TableId                  | Table ID.                                         |
+| TableName                | Table name.                                       |
+| PartitionColumnName      | Partition column name.                            |
+| PartitionNum             | Number of partitions in the table.                |
+| State                    | State of the table.                               |
+| Type                     | Type of the table.                                |
+| LastConsistencyCheckTime | The time when the last consistency check was performed. |
+| ReplicaCount             | Number of replicas for the table.                 |
+| PartitionType            | Type of the partitions in the table.              |
+| StoragePath              | Storage path of the table.                       |
+| partitions               | Partitions in the table.                          |
+| temp_partitions          | Temporary partitions in the table.                |
+| index_schema             | Synchronous materialized view in the table.       |
 
 Example 3: Shows the information of jobs in the cluster.
 
@@ -382,6 +417,7 @@ mysql> SHOW PROC '/cluster_balance';
 +-------------------+--------+
 | Item              | Number |
 +-------------------+--------+
+| balance_stat      | 1      |
 | cluster_load_stat | 1      |
 | working_slots     | 3      |
 | sched_stat        | 1      |
@@ -394,8 +430,30 @@ mysql> SHOW PROC '/cluster_balance';
 
 | **Return** | **Description**                                  |
 | ---------- | ------------------------------------------------ |
-| Item       | Sub-command item in `cluster_balance`. <ul><li>cluster_load_stat: The current load status of the cluster.</li><li>working_slots: The number of currently available working slots.</li><li>sched_stat: The current status of the scheduler.</li><li>priority_repair: The number of Tablet repair tasks that are prioritized.</li><li>pending_tablets: The number of Tablets waiting to be processed.</li><li>running_tablets: The number of Tablets currently being repaired.</li><li>history_tablets: The total number of Tablets repaired historically.</li></ul>         |
+| Item       | Sub-command item in `cluster_balance`. <ul><li>balance_stat: The current balance status of the cluster.</li><li>cluster_load_stat: The current load status of the cluster.</li><li>working_slots: The number of currently available working slots.</li><li>sched_stat: The current status of the scheduler.</li><li>priority_repair: The number of Tablet repair tasks that are prioritized.</li><li>pending_tablets: The number of Tablets waiting to be processed.</li><li>running_tablets: The number of Tablets currently being repaired.</li><li>history_tablets: The total number of Tablets repaired historically.</li></ul>         |
 | Number     | Number of each sub-command in `cluster_balance`. |
+
+```Plain
+mysql> SHOW PROC '/cluster_balance/balance_stat';
++---------------+--------------------------------+----------+----------------+----------------+
+| StorageMedium | BalanceType                    | Balanced | PendingTablets | RunningTablets |
++---------------+--------------------------------+----------+----------------+----------------+
+| HDD           | inter-node disk usage          | true     | 0              | 0              |
+| HDD           | inter-node tablet distribution | true     | 0              | 0              |
+| HDD           | intra-node disk usage          | true     | 0              | 0              |
+| HDD           | intra-node tablet distribution | true     | 0              | 0              |
+| HDD           | colocation group               | true     | 0              | 0              |
+| HDD           | label-aware location           | true     | 0              | 0              |
++---------------+--------------------------------+----------+----------------+----------------+
+```
+
+| **Return**     | **Description**                             |
+| -------------- | ------------------------------------------- |
+| StorageMedium  | Storage medium.                             |
+| BalanceType    | Type of balance.                            |
+| Balanced       | Whether the balanced state is achieved.     |
+| PendingTablets | Number of tablets with task status Pending. | 
+| RunningTablets | Number of tablets with task status Running. |
 
 Example 12: Shows the information of Colocate Join groups in the cluster.
 
@@ -478,21 +536,40 @@ mysql> SHOW PROC '/replications';
 
 ```sql
 MySQL > show proc '/current_queries';
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-------------------+---------------+---------------+
-| StartTime           | feIp          | QueryId                              | ConnectionId | Database | User | ScanBytes  | ScanRows     | MemoryUsage | DiskSpillSize | CPUTime  | ExecTime | Warehouse         | CustomQueryId | ResourceGroup |
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-------------------+---------------+---------------+
-| 2025-03-07 02:00:19 | 172.26.92.227 | ddbd69b9-fab4-11ef-8063-461f20abc3f0 | 11           | tpcds_2  | root | 120.573 MB | 5859503 rows | 296.432 MB  | 0.000 B       | 27.888 s | 3.153 s  | default_warehouse |               | rg1           |
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-------------------+---------------+---------------+
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-----------+-------------------+---------------+---------------+
+| StartTime           | feIp          | QueryId                              | ConnectionId | Database | User | ScanBytes  | ScanRows     | MemoryUsage | DiskSpillSize | CPUTime  | ExecTime | ExecState | Warehouse         | CustomQueryId | ResourceGroup |
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-----------+-------------------+---------------+---------------+
+| 2025-03-07 02:00:19 | 172.26.92.227 | ddbd69b9-fab4-11ef-8063-461f20abc3f0 | 11           | tpcds_2  | root | 120.573 MB | 5859503 rows | 296.432 MB  | 0.000 B       | 27.888 s | 3.153 s  | RUNNING   | default_warehouse |               | rg1           |
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+----------+----------+-----------+-------------------+---------------+---------------+
 ```
 
 **Example 16: Shows the information of running queries on all FE nodes in the cluster.**
 
 ```sql
 MySQL > show proc '/global_current_queries';
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-------------------+---------------+---------------+
-| StartTime           | feIp          | QueryId                              | ConnectionId | Database | User | ScanBytes  | ScanRows     | MemoryUsage | DiskSpillSize | CPUTime | ExecTime | Warehouse         | CustomQueryId | ResourceGroup |
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-------------------+---------------+---------------+
-| 2025-03-07 02:02:47 | 172.26.92.227 | 3603d566-fab5-11ef-8063-461f20abc3f0 | 12           | tpcds_2  | root | 100.886 MB | 4899036 rows | 114.491 MB  | 0.000 B       | 5.700 s | 0.713 s  | default_warehouse |               | rg1           |
-+---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-------------------+---------------+---------------+
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-----------+-------------------+---------------+---------------+
+| StartTime           | feIp          | QueryId                              | ConnectionId | Database | User | ScanBytes  | ScanRows     | MemoryUsage | DiskSpillSize | CPUTime | ExecTime | ExecState | Warehouse         | CustomQueryId | ResourceGroup |
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-----------+-------------------+---------------+---------------+
+| 2025-03-07 02:02:47 | 172.26.92.227 | 3603d566-fab5-11ef-8063-461f20abc3f0 | 12           | tpcds_2  | root | 100.886 MB | 4899036 rows | 114.491 MB  | 0.000 B       | 5.700 s | 0.713 s  | RUNNING   | default_warehouse |               | rg1           |
++---------------------+---------------+--------------------------------------+--------------+----------+------+------------+--------------+-------------+---------------+---------+----------+-----------+-------------------+---------------+---------------+
+
+| **Return**   | **Description**                                                     |
+| ------------ | ------------------------------------------------------------------- |
+| StartTime    | The time when the query started execution.                          |
+| feIp         | The IP address of the FE node processing the query.                 |
+| QueryId      | The unique identifier for the query.                                |
+| ConnectionId | The connection ID associated with the query.                        |
+| Database     | The database where the query is executed.                           |
+| User         | The user who submitted the query.                                   |
+| ScanBytes    | The amount of data scanned by the query.                            |
+| ScanRows     | The number of rows scanned by the query.                            |
+| MemoryUsage  | The current memory usage of the query.                              |
+| DiskSpillSize| The amount of data spilled to disk during query execution.          |
+| CPUTime      | The total CPU time consumed by the query.                           |
+| ExecTime     | The total execution time of the query.                              |
+| ExecState    | The execution state of the query. Valid values: `RUNNING`, `PENDING`. |
+| Warehouse    | The compute warehouse processing the query.                          |
+| CustomQueryId| Custom query identifier if specified.                               |
+| ResourceGroup| The resource group assigned to the query.                           |
 
 ```

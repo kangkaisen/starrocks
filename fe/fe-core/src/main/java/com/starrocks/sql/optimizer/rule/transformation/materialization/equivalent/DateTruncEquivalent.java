@@ -14,8 +14,8 @@
 package com.starrocks.sql.optimizer.rule.transformation.materialization.equivalent;
 
 import com.google.common.collect.ImmutableSet;
-import com.starrocks.analysis.BinaryType;
 import com.starrocks.catalog.FunctionSet;
+import com.starrocks.sql.ast.expression.BinaryType;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -110,10 +110,16 @@ public class DateTruncEquivalent extends IPredicateRewriteEquivalent {
             if (!right.isConstantRef() || !left.equals(eqContext.getEquivalent())) {
                 return null;
             }
+            BinaryPredicateOperator predicate = (BinaryPredicateOperator) newInput.clone();
+            // ds >= '2020-01-01' and ds <= '2020-01-31' => ds >= '2020-01-01' and ds < '2020-02-01'
+            if (left.getType().isDate() && predicate.getBinaryType() == BinaryType.LE && right.getType().isDate()) {
+                predicate.setBinaryType(BinaryType.LT);
+                right = ScalarOperatorFunctions.daysAdd((ConstantOperator) right, ConstantOperator.createInt(1));
+                predicate.setChild(1, right);
+            }
             if (!isEquivalent(eqContext.getInput(), (ConstantOperator) right)) {
                 return null;
             }
-            BinaryPredicateOperator predicate = (BinaryPredicateOperator) newInput.clone();
             if (!isSupportedBinaryType(predicate.getBinaryType())) {
                 return null;
             }

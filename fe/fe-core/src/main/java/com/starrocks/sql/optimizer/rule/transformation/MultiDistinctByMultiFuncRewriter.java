@@ -15,11 +15,9 @@
 package com.starrocks.sql.optimizer.rule.transformation;
 
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.FunctionName;
 import com.starrocks.catalog.Function;
+import com.starrocks.catalog.FunctionName;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.ScalarType;
-import com.starrocks.catalog.Type;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.DecimalV3FunctionAnalyzer;
 import com.starrocks.sql.optimizer.OptExpression;
@@ -35,6 +33,9 @@ import com.starrocks.sql.optimizer.rewrite.ReplaceColumnRefRewriter;
 import com.starrocks.sql.optimizer.rewrite.ScalarOperatorRewriter;
 import com.starrocks.sql.optimizer.rewrite.scalar.ImplicitCastRule;
 import com.starrocks.sql.optimizer.rewrite.scalar.ScalarOperatorRewriteRule;
+import com.starrocks.type.InvalidType;
+import com.starrocks.type.ScalarType;
+import com.starrocks.type.TypeFactory;
 
 import java.util.HashMap;
 import java.util.List;
@@ -52,6 +53,7 @@ public class MultiDistinctByMultiFuncRewriter {
     public List<OptExpression> transformImpl(OptExpression input, OptimizerContext context) {
         LogicalAggregationOperator aggregationOperator = (LogicalAggregationOperator) input.getOp();
 
+        boolean changed = false;
         Map<ColumnRefOperator, CallOperator> newAggMap = new HashMap<>();
         for (Map.Entry<ColumnRefOperator, CallOperator> aggregation : aggregationOperator.getAggregations()
                 .entrySet()) {
@@ -61,12 +63,15 @@ public class MultiDistinctByMultiFuncRewriter {
 
                 if (oldFunctionCall.getFnName().equalsIgnoreCase(FunctionSet.COUNT)) {
                     newAggOperator = buildMultiCountDistinct(oldFunctionCall);
+                    changed = true;
                 } else if (oldFunctionCall.getFnName().equalsIgnoreCase(FunctionSet.SUM)) {
                     newAggOperator = buildMultiSumDistinct(oldFunctionCall);
+                    changed = true;
                 } else if (oldFunctionCall.getFnName().equals(FunctionSet.ARRAY_AGG)) {
                     if (oldFunctionCall.getColumnRefs().size() == 1 &&
                             !oldFunctionCall.getColumnRefs().get(0).getType().isDecimalOfAnyVersion()) {
                         newAggOperator = buildArrayAggDistinct(oldFunctionCall);
+                        changed = true;
                     } else {
                         newAggOperator = oldFunctionCall;
                     }
@@ -91,6 +96,7 @@ public class MultiDistinctByMultiFuncRewriter {
             CallOperator oldFunctionCall = aggMap.getValue();
             if (oldFunctionCall.isDistinct() && oldFunctionCall.getFnName().equals(FunctionSet.AVG)) {
                 hasAvg = true;
+                changed = true;
                 CallOperator count = buildMultiCountDistinct(oldFunctionCall);
                 ColumnRefOperator countColRef = null;
                 for (Map.Entry<ColumnRefOperator, CallOperator> entry : newAggMap.entrySet()) {
@@ -118,10 +124,16 @@ public class MultiDistinctByMultiFuncRewriter {
                         Lists.newArrayList(sumColRef, countColRef));
                 if (multiAvg.getType().isDecimalV3()) {
                     // There is not need to apply ImplicitCastRule to divide operator of decimal types.
-                    // but we should cast BIGINT-typed countColRef into DECIMAL(38,0).
-                    ScalarType decimal128p38s0 = ScalarType.createDecimalV3NarrowestType(38, 0);
+                    // but we should cast BIGINT-typed countColRef into DECIMAL(38,0) or DECIMAL(76,0).
+                    // TODO(stephen): support auto scale up decimal precision
+                    ScalarType decimalType;
+                    if (multiAvg.getType().isDecimal256()) {
+                        decimalType = TypeFactory.createDecimalV3NarrowestType(76, 0);
+                    } else {
+                        decimalType = TypeFactory.createDecimalV3NarrowestType(38, 0);
+                    }
                     multiAvg.getChildren().set(
-                            1, new CastOperator(decimal128p38s0, multiAvg.getChild(1), true));
+                            1, new CastOperator(decimalType, multiAvg.getChild(1), true));
                 } else {
                     multiAvg = (CallOperator) scalarRewriter.rewrite(multiAvg,
                             Lists.newArrayList(new ImplicitCastRule()));
@@ -131,6 +143,10 @@ public class MultiDistinctByMultiFuncRewriter {
                 projections.put(aggMap.getKey(), aggMap.getKey());
                 newAggMapWithAvg.put(aggMap.getKey(), aggMap.getValue());
             }
+        }
+
+        if (!changed) {
+            return Lists.newArrayList();
         }
 
         OptExpression result;
@@ -164,7 +180,7 @@ public class MultiDistinctByMultiFuncRewriter {
 
     private CallOperator buildMultiCountDistinct(CallOperator oldFunctionCall) {
         Function searchDesc = new Function(new FunctionName(FunctionSet.MULTI_DISTINCT_COUNT),
-                oldFunctionCall.getFunction().getArgs(), Type.INVALID, false);
+                oldFunctionCall.getFunction().getArgs(), InvalidType.INVALID, false);
         Function fn = GlobalStateMgr.getCurrentState().getFunction(searchDesc, IS_NONSTRICT_SUPERTYPE_OF);
 
         return (CallOperator) scalarRewriter.rewrite(
@@ -175,7 +191,7 @@ public class MultiDistinctByMultiFuncRewriter {
 
     private CallOperator buildArrayAggDistinct(CallOperator oldFunctionCall) {
         Function searchDesc = new Function(new FunctionName(FunctionSet.ARRAY_AGG_DISTINCT),
-                oldFunctionCall.getFunction().getArgs(), Type.INVALID, false);
+                oldFunctionCall.getFunction().getArgs(), InvalidType.INVALID, false);
         Function fn = GlobalStateMgr.getCurrentState().getFunction(searchDesc, IS_NONSTRICT_SUPERTYPE_OF);
 
         return (CallOperator) scalarRewriter.rewrite(

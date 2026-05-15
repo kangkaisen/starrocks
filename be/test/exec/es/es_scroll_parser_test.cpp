@@ -17,13 +17,19 @@
 #include <gtest/gtest.h>
 
 #include "column/column_helper.h"
+#include "common/config_exec_fwd.h"
 #include "runtime/descriptor_helper.h"
+#include "runtime/descriptors.h"
 #include "runtime/runtime_state.h"
 
+#ifndef __clang__
 DIAGNOSTIC_PUSH
 DIAGNOSTIC_IGNORE("-Wclass-memaccess")
+#endif
 #include <rapidjson/document.h>
+#ifndef __clang__
 DIAGNOSTIC_POP
+#endif
 
 namespace starrocks {
 
@@ -54,7 +60,8 @@ void ScrollParserTest::_create_runtime_state(const std::string& timezone) {
     if (timezone != "") {
         query_globals.__set_time_zone(timezone);
     }
-    _runtime_state = _pool.add(new RuntimeState(fragment_id, query_options, query_globals, nullptr));
+    _runtime_state =
+            _pool.add(new RuntimeState(fragment_id, query_options, query_globals, static_cast<ExecEnv*>(nullptr)));
     _runtime_state->init_instance_mem_tracker();
 }
 

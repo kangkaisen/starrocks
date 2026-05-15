@@ -20,7 +20,7 @@ StarRocks migration tool（简称 SMT）是 StarRocks 提供的数据迁移工�
 | ClickHouse  | 支持       | 支持     | 不支持   |
 | SQL Server  | 支持       | 支持     | 支持     |
 | TiDB       | 支持       | 支持     | 支持     |
-<!--pending clickhosue-->
+
 下载链接：https://cdn-thirdparty.starrocks.com/smt.tar.gz?r=2
 
 ## SMT 使用步骤
@@ -111,9 +111,16 @@ StarRocks migration tool（简称 SMT）是 StarRocks 提供的数据迁移工�
 
 ### 操作步骤
 
+| 依赖                       | 安装包名                                       | 下载链接                                                            |
+| ------------------------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| Flink                     | flink-x.x.x-bin-scala_2.12.tgz                | [点此下载](https://flink.apache.org/downloads.html)             |
+| Flink CDC connector       | flink-sql-connector-mysql-cdc-x.x.x.jar       | [点此下载](https://github.com/apache/flink-cdc/releases)        |
+| Flink-connector-starrocks | flink-connector-starrocks-x.x.x_flink-x.x.jar | [点此下载](https://github.com/StarRocks/starrocks-connector-for-apache-flink/releases) |
+| SMT                       | smt.tar.gz                                    | [点此下载](https://cdn-thirdparty.starrocks.com/smt.tar.gz?r=2) |
+
 1. 下载 [Flink](https://flink.apache.org/downloads.html)，最低支持版本 1.11。
 2. 下载 [Flink CDC connector](https://github.com/ververica/flink-cdc-connectors/releases)，请注意下载对应 Flink 版本的 flink-sql-connector-mysql-cdc-xxx.jar。
-3. 下载 [Flink StarRocks connector](https://github.com/StarRocks/flink-connector-starrocks).
+3. 下载 [Flink StarRocks connector](https://github.com/StarRocks/starrocks-connector-for-apache-flink/releases).
 4. 复制 `flink-sql-connector-mysql-cdc-xxx.jar`, `flink-connector-starrocks-xxx.jar` 到 `flink-xxx/lib/`
 5. 下载 [smt.tar.gz](https://cdn-thirdparty.starrocks.com/smt.tar.gz?r=2)
 6. 解压并修改配置文件。
@@ -770,7 +777,7 @@ SMT 可以根据 TiDB 和 StarRocks 的集群信息和表结构自动生成 sour
 
 Tidb v4.0.0 之前的版本需要额外配置 flink.cdc.pd-addresses。
 
-```Bash
+```Plain
 ############################################
 ### flink-cdc configuration for `tidb`
 ############################################

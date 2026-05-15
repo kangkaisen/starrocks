@@ -15,28 +15,33 @@
 package com.starrocks.qe.scheduler.slot;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.qe.GlobalVariable;
 import com.starrocks.server.WarehouseManager;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SlotTrackerTest {
-    @BeforeClass
+    private static SlotManager slotManager;
+
+    @BeforeAll
     public static void beforeClass() {
         MetricRepo.init();
+        ResourceUsageMonitor resourceUsageMonitor = new ResourceUsageMonitor();
+        slotManager = new SlotManager(resourceUsageMonitor);
     }
 
     @Test
     public void testRequireSlot() {
-        SlotTracker slotTracker = new SlotTracker(ImmutableList.of());
+        SlotTracker slotTracker = new SlotTracker(slotManager, ImmutableList.of());
 
         LogicalSlot slot1 = generateSlot(1);
         assertThat(slotTracker.requireSlot(slot1)).isTrue();
@@ -48,7 +53,7 @@ public class SlotTrackerTest {
 
     @Test
     public void tesAllocateSlot() {
-        SlotTracker slotTracker = new SlotTracker(ImmutableList.of());
+        SlotTracker slotTracker = new SlotTracker(slotManager, ImmutableList.of());
 
         LogicalSlot slot1 = generateSlot(1);
 
@@ -68,7 +73,7 @@ public class SlotTrackerTest {
 
     @Test
     public void tesReleaseSlot() {
-        SlotTracker slotTracker = new SlotTracker(ImmutableList.of());
+        SlotTracker slotTracker = new SlotTracker(slotManager, ImmutableList.of());
 
         LogicalSlot slot1 = generateSlot(1);
 
@@ -108,7 +113,7 @@ public class SlotTrackerTest {
 
     @Test
     public void testSlotTrackerMetrics() {
-        SlotTracker slotTracker = new SlotTracker(ImmutableList.of());
+        SlotTracker slotTracker = new SlotTracker(slotManager, ImmutableList.of());
         assertThat(slotTracker.getWarehouseId()).isEqualTo(WarehouseManager.DEFAULT_WAREHOUSE_ID);
         assertThat(slotTracker.getWarehouseName().equals(""));
         assertThat(slotTracker.getQueuePendingLength()).isEqualTo(0);
@@ -180,5 +185,22 @@ public class SlotTrackerTest {
         assertTrue(json.equals("{\"Concurrency\":1,\"QueryQueueOption\":{\"NumWorkers\":300,\"NumRowsPerSlot\":1," +
                 "\"TotalSlots\":307200,\"MemBytesPerSlot\":0," +
                 "\"CpuCostsPerSlot\":1,\"TotalSmallSlots\":1}}"));
+    }
+
+    @Test
+    public void testGetEarliestQueryWaitTimeSecond() {
+        SlotTracker slotTracker = new SlotTracker(slotManager, ImmutableList.of());
+        LogicalSlot slot1 = generateSlot(1);
+        slotTracker.requireSlot(slot1);
+        Uninterruptibles.sleepUninterruptibly(1000, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+        // wait time is greater than 1 second before slot allocation
+        double waitTime = slotTracker.getEarliestQueryWaitTimeSecond();
+        assertThat(waitTime).isGreaterThanOrEqualTo(1.0);
+
+        // wait time is zero after slot allocation
+        slotTracker.allocateSlot(slot1);
+        waitTime = slotTracker.getEarliestQueryWaitTimeSecond();
+        assertThat(waitTime).isEqualTo(0.0);
     }
 }

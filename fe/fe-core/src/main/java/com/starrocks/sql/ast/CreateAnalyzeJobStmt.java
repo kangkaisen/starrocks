@@ -16,12 +16,11 @@
 package com.starrocks.sql.ast;
 
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.InternalCatalog;
-import com.starrocks.catalog.Type;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.statistic.StatsConstants;
+import com.starrocks.type.Type;
 
 import java.util.List;
 import java.util.Map;
@@ -31,9 +30,12 @@ public class CreateAnalyzeJobStmt extends DdlStmt {
     private String catalogName;
     private long dbId;
     private long tableId;
-    private final TableName tbl;
+    private TableRef tableRef;
+    private String dbName;
+    private String tableName;
     private final StatsConstants.AnalyzeType analyzeType;
     private final AnalyzeTypeDesc analyzeTypeDesc;
+    private final boolean ifNotExists;
 
     private List<Expr> columns;
     private List<String> columnNames = Lists.newArrayList();
@@ -41,27 +43,33 @@ public class CreateAnalyzeJobStmt extends DdlStmt {
     private Map<String, String> properties;
 
     public CreateAnalyzeJobStmt(boolean isSample, Map<String, String> properties, NodePosition pos) {
-        this(null, Lists.newArrayList(), isSample, properties,
+        this(null, Lists.newArrayList(), false, isSample, properties,
                 isSample ? StatsConstants.AnalyzeType.SAMPLE : StatsConstants.AnalyzeType.FULL,
                 null,
                 pos);
     }
 
     public CreateAnalyzeJobStmt(String db, boolean isSample, Map<String, String> properties, NodePosition pos) {
-        this(new TableName(db, null), Lists.newArrayList(), isSample, properties,
+        this(null, Lists.newArrayList(), false, isSample, properties,
                 isSample ? StatsConstants.AnalyzeType.SAMPLE : StatsConstants.AnalyzeType.FULL, null, pos);
+        this.dbName = db;
     }
 
-    public CreateAnalyzeJobStmt(TableName tbl, List<Expr> columns, boolean isSample,
+    public CreateAnalyzeJobStmt(TableRef tableRef, List<Expr> columns, boolean ifNotExists, boolean isSample,
                                 Map<String, String> properties, StatsConstants.AnalyzeType analyzeType,
                                 AnalyzeTypeDesc analyzeTypeDesc,
                                 NodePosition pos) {
         super(pos);
         this.catalogName = InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME;
-        this.tbl = tbl;
+        this.tableRef = tableRef;
+        if (tableRef != null) {
+            this.dbName = tableRef.getDbName();
+            this.tableName = tableRef.getTableName();
+        }
         this.dbId = StatsConstants.DEFAULT_ALL_ID;
         this.tableId = StatsConstants.DEFAULT_ALL_ID;
         this.columns = columns;
+        this.ifNotExists = ifNotExists;
         this.isSample = isSample;
         this.properties = properties;
         this.analyzeType = analyzeType;
@@ -84,8 +92,37 @@ public class CreateAnalyzeJobStmt extends DdlStmt {
         return tableId;
     }
 
-    public TableName getTableName() {
-        return tbl;
+    public TableRef getTableRef() {
+        return tableRef;
+    }
+
+    public void setTableRef(TableRef tableRef) {
+        this.tableRef = tableRef;
+        if (tableRef != null) {
+            this.dbName = tableRef.getDbName();
+            this.tableName = tableRef.getTableName();
+        }
+    }
+
+    public String getCatalogName() {
+        if (tableRef != null && tableRef.getCatalogName() != null) {
+            return tableRef.getCatalogName();
+        }
+        return catalogName;
+    }
+
+    public String getDbName() {
+        if (tableRef != null && tableRef.getDbName() != null) {
+            return tableRef.getDbName();
+        }
+        return dbName;
+    }
+
+    public String getTableName() {
+        if (tableRef != null && tableRef.getTableName() != null) {
+            return tableRef.getTableName();
+        }
+        return tableName;
     }
 
     public List<String> getColumnNames() {
@@ -104,6 +141,9 @@ public class CreateAnalyzeJobStmt extends DdlStmt {
         return columns.stream().map(Expr::getType).collect(Collectors.toList());
     }
 
+    public boolean isSetIfNotExists() {
+        return ifNotExists;
+    }
 
     public boolean isSample() {
         return isSample;
@@ -135,6 +175,6 @@ public class CreateAnalyzeJobStmt extends DdlStmt {
 
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context) {
-        return visitor.visitCreateAnalyzeJobStatement(this, context);
+        return ((AstVisitorExtendInterface<R, C>) visitor).visitCreateAnalyzeJobStatement(this, context);
     }
 }

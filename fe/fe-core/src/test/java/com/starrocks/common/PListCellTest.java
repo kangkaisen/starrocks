@@ -14,11 +14,12 @@
 
 package com.starrocks.common;
 
+import com.google.api.client.util.Lists;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.starrocks.sql.common.PListCell;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
@@ -29,17 +30,15 @@ public class PListCellTest {
         {
             PListCell s1 = new PListCell(ImmutableList.of(ImmutableList.of("2024-01-01")));
             String ser = s1.serialize();
-            System.out.println(ser);
             PListCell s2 = PListCell.deserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
         // one value with multi partition columns
         {
             PListCell s1 = new PListCell(ImmutableList.of(ImmutableList.of("beijing", "2024-01-01")));
             String ser = s1.serialize();
-            System.out.println(ser);
             PListCell s2 = PListCell.deserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
         // multi values with multi partition columns
         {
@@ -48,9 +47,8 @@ public class PListCellTest {
                     ImmutableList.of("shanghai", "2024-01-02")
             ));
             String ser = s1.serialize();
-            System.out.println(ser);
             PListCell s2 = PListCell.deserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
     }
 
@@ -64,9 +62,8 @@ public class PListCellTest {
                             new PListCell(ImmutableList.of(ImmutableList.of("2024-01-02")))
                     );
             String ser = PListCell.batchSerialize(s1);
-            System.out.println(ser);
             Set<PListCell> s2 = PListCell.batchDeserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
         // one value with multi partition columns
         {
@@ -76,9 +73,8 @@ public class PListCellTest {
                             new PListCell(ImmutableList.of(ImmutableList.of("beijing", "2024-01-02")))
                     );
             String ser = PListCell.batchSerialize(s1);
-            System.out.println(ser);
             Set<PListCell> s2 = PListCell.batchDeserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
         // multi values with multi partition columns
         {
@@ -87,9 +83,8 @@ public class PListCellTest {
                     ImmutableList.of("shanghai", "2024-01-02")
             ));
             String ser = s1.serialize();
-            System.out.println(ser);
             PListCell s2 = PListCell.deserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
         {
             Set<PListCell> s1 =
@@ -104,9 +99,8 @@ public class PListCellTest {
                             ))
                     );
             String ser = PListCell.batchSerialize(s1);
-            System.out.println(ser);
             Set<PListCell> s2 = PListCell.batchDeserialize(ser);
-            Assert.assertEquals(s1, s2);
+            Assertions.assertEquals(s1, s2);
         }
     }
 
@@ -115,12 +109,12 @@ public class PListCellTest {
         {
             PListCell c1 = new PListCell(ImmutableList.of(ImmutableList.of("2024-01-01")));
             PListCell c2 = new PListCell(ImmutableList.of(ImmutableList.of("2024-01-01")));
-            Assert.assertEquals(0, c1.compareTo(c2));
+            Assertions.assertEquals(0, c1.compareTo(c2));
         }
         {
             PListCell c1 = new PListCell(ImmutableList.of(ImmutableList.of("2024-01-01")));
             PListCell c2 = new PListCell(ImmutableList.of(ImmutableList.of("2024-01-02")));
-            Assert.assertEquals(-1, c1.compareTo(c2));
+            Assertions.assertEquals(-1, c1.compareTo(c2));
         }
         {
             PListCell c1 = new PListCell(ImmutableList.of(
@@ -131,7 +125,7 @@ public class PListCellTest {
                     ImmutableList.of("beijing", "2024-01-01"),
                     ImmutableList.of("shanghai", "2024-01-02")
             ));
-            Assert.assertEquals(0, c1.compareTo(c2));
+            Assertions.assertEquals(0, c1.compareTo(c2));
         }
         {
             PListCell c1 = new PListCell(ImmutableList.of(
@@ -142,7 +136,44 @@ public class PListCellTest {
                     ImmutableList.of("beijing", "2024-01-03"),
                     ImmutableList.of("shanghai", "2024-01-04")
             ));
-            Assert.assertEquals(-2, c1.compareTo(c2));
+            Assertions.assertEquals(-2, c1.compareTo(c2));
         }
+    }
+
+    @Test
+    public void toStringReturnsEmptyStringForEmptyPartitionItems() {
+        PListCell cell = new PListCell(ImmutableList.of());
+        Assertions.assertEquals("", cell.toString());
+    }
+
+    @Test
+    public void toStringHandlesPartitionItemsWithinMaxLength() {
+        Config.max_mv_task_run_meta_message_values_length = 5;
+        PListCell cell = new PListCell(ImmutableList.of(
+                ImmutableList.of("item1"),
+                ImmutableList.of("item2"),
+                ImmutableList.of("item3")
+        ));
+        Assertions.assertEquals("(item1),(item2),(item3)", cell.toString());
+    }
+
+    @Test
+    public void toStringHandlesPartitionItemsExceedingMaxLength() {
+        Config.max_mv_task_run_meta_message_values_length = 4;
+        PListCell cell = new PListCell(ImmutableList.of(
+                ImmutableList.of("item1"),
+                ImmutableList.of("item2"),
+                ImmutableList.of("item3"),
+                ImmutableList.of("item4"),
+                ImmutableList.of("item5")
+        ));
+        Assertions.assertEquals("(item1),(item2),...,(item4),(item5)", cell.toString());
+        Config.max_mv_task_run_meta_message_values_length = 8;
+    }
+
+    @Test
+    public void toStringHandlesNullPartitionItemsGracefully() {
+        PListCell cell = new PListCell(Lists.newArrayList());
+        Assertions.assertEquals("", cell.toString());
     }
 }

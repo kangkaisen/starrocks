@@ -97,10 +97,10 @@ OPENSSL_SOURCE=openssl-OpenSSL_1_1_1m
 OPENSSL_MD5SUM="710c2368d28f1a25ab92e25b5b9b11ec"
 
 # thrift
-THRIFT_DOWNLOAD="http://archive.apache.org/dist/thrift/0.20.0/thrift-0.20.0.tar.gz"
-THRIFT_NAME=thrift-0.20.0.tar.gz
-THRIFT_SOURCE=thrift-0.20.0
-THRIFT_MD5SUM="aadebde599e1f5235acd3c730721b873"
+THRIFT_DOWNLOAD="https://archive.apache.org/dist/thrift/0.22.0/thrift-0.22.0.tar.gz"
+THRIFT_NAME=thrift-0.22.0.tar.gz
+THRIFT_SOURCE=thrift-0.22.0
+THRIFT_MD5SUM="29f4ef82e6ebc336c69ef4f26fb4d2a1"
 
 # protobuf
 PROTOBUF_DOWNLOAD="https://github.com/google/protobuf/archive/v3.14.0.tar.gz"
@@ -145,10 +145,10 @@ ZLIB_SOURCE=zlib-1.2.11
 ZLIB_MD5SUM="0095d2d2d1f3442ce1318336637b695f"
 
 # lz4
-LZ4_DOWNLOAD="https://github.com/lz4/lz4/archive/v1.9.4.tar.gz"
-LZ4_NAME=lz4-1.9.4.tar.gz
-LZ4_SOURCE=lz4-1.9.4
-LZ4_MD5SUM="e9286adb64040071c5e23498bf753261"
+LZ4_DOWNLOAD="https://github.com/lz4/lz4/archive/v1.10.0.tar.gz"
+LZ4_NAME=lz4-1.10.0.tar.gz
+LZ4_SOURCE=lz4-1.10.0
+LZ4_MD5SUM="dead9f5f1966d9ae56e1e32761e4e675"
 
 # bzip
 BZIP_DOWNLOAD="https://fossies.org/linux/misc/bzip2-1.0.8.tar.gz"
@@ -217,10 +217,10 @@ KRB5_SOURCE=krb5-1.19.4
 KRB5_MD5SUM="ef76083e58f8c49066180642d7c2814a"
 
 # librdkafka
-LIBRDKAFKA_DOWNLOAD="https://github.com/confluentinc/librdkafka/archive/refs/tags/v2.0.2.tar.gz"
-LIBRDKAFKA_NAME=librdkafka-2.0.2.tar.gz
-LIBRDKAFKA_SOURCE=librdkafka-2.0.2
-LIBRDKAFKA_MD5SUM="c0120dc32acc129bfb4656fe17568da1"
+LIBRDKAFKA_DOWNLOAD="https://github.com/confluentinc/librdkafka/archive/refs/tags/v2.11.0.tar.gz"
+LIBRDKAFKA_NAME=librdkafka-2.11.0.tar.gz
+LIBRDKAFKA_SOURCE=librdkafka-2.11.0
+LIBRDKAFKA_MD5SUM="bc611d0340e269abaa8886d42ff9c558"
 
 # pulsar
 PULSAR_DOWNLOAD="https://github.com/apache/pulsar-client-cpp/archive/refs/tags/v3.3.0.tar.gz"
@@ -229,10 +229,10 @@ PULSAR_SOURCE=pulsar-client-cpp-3.3.0
 PULSAR_MD5SUM="348b7e5ec39e50547668520d13a417a1"
 
 # zstd
-ZSTD_DOWNLOAD="https://github.com/facebook/zstd/archive/v1.5.0.tar.gz"
-ZSTD_NAME=zstd-1.5.0.tar.gz
-ZSTD_SOURCE=zstd-1.5.0
-ZSTD_MD5SUM="d5ac89d5df9e81243ce40d0c6a66691d"
+ZSTD_DOWNLOAD="https://github.com/facebook/zstd/archive/v1.5.7.tar.gz"
+ZSTD_NAME=zstd-1.5.7.tar.gz
+ZSTD_SOURCE=zstd-1.5.7
+ZSTD_MD5SUM="619a019adbbc4536e7fb93cdbb01af3e"
 
 # brotli
 BROTLI_DOWNLOAD="https://github.com/google/brotli/archive/v1.0.9.tar.gz"
@@ -247,10 +247,10 @@ FLATBUFFERS_SOURCE=flatbuffers-1.10.0
 FLATBUFFERS_MD5SUM="f7d19a3f021d93422b0bc287d7148cd2"
 
 # arrow
-ARROW_DOWNLOAD="https://github.com/apache/arrow/archive/refs/tags/apache-arrow-16.1.0.tar.gz"
-ARROW_NAME="arrow-apache-arrow-16.1.0.tar.gz"
-ARROW_SOURCE="arrow-apache-arrow-16.1.0"
-ARROW_MD5SUM="d9d019aaef586bd1a7493416d78954b9"
+ARROW_DOWNLOAD="https://github.com/apache/arrow/archive/refs/tags/apache-arrow-19.0.1.tar.gz"
+ARROW_NAME="arrow-apache-arrow-19.0.1.tar.gz"
+ARROW_SOURCE="arrow-apache-arrow-19.0.1"
+ARROW_MD5SUM="8c5091da0f8fb41a47d7f4dad7b712df"
 
 # S2
 S2_DOWNLOAD="https://github.com/google/s2geometry/archive/v0.9.0.tar.gz"
@@ -295,10 +295,10 @@ RYU_SOURCE="ryu-aa31ca9361d21b1a00ee054aac49c87d07e74abc"
 RYU_MD5SUM="cb82b6da904d919470fe3f5a01ca30ff"
 
 # breakpad
-BREAK_PAD_DOWNLOAD="https://github.com/google/breakpad/archive/refs/tags/v2022.07.12.tar.gz"
-BREAK_PAD_NAME="breakpad-2022.07.12.tar.gz"
-BREAK_PAD_SOURCE="breakpad-2022.07.12"
-BREAK_PAD_MD5SUM="d5bcfd3f7b361ef5bda96123c3abdd0a"
+BREAK_PAD_DOWNLOAD="https://github.com/google/breakpad/archive/refs/tags/v2024.02.16.tar.gz"
+BREAK_PAD_NAME="breakpad-2024.02.16.tar.gz"
+BREAK_PAD_SOURCE="breakpad-2024.02.16"
+BREAK_PAD_MD5SUM="ae8c55b23c157771922b5ddca3803055"
 
 # RAGEL
 # ragel-6.9+ is used by hyperscan, so we build it first
@@ -344,10 +344,10 @@ OPENTELEMETRY_SOURCE=opentelemetry-cpp-1.2.0
 OPENTELEMETRY_MD5SUM="c084abc742c6b3cd4c9c3684e559d4e1"
 
 # benchmark
-BENCHMARK_DOWNLOAD="https://github.com/google/benchmark/archive/refs/tags/v1.5.5.tar.gz"
-BENCHMARK_NAME=google_benchmark-1.5.5.tar.gz
-BENCHMARK_SOURCE=benchmark-1.5.5
-BENCHMARK_MD5SUM="6f852815d48db788f5bb87e2e561dc5e"
+BENCHMARK_DOWNLOAD="https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz"
+BENCHMARK_NAME=google_benchmark-1.9.5.tar.gz
+BENCHMARK_SOURCE=benchmark-1.9.5
+BENCHMARK_MD5SUM="12c6c0c228fc07106c62634222bd2541"
 
 # fast-float
 FAST_FLOAT_DOWNLOAD="https://github.com/fastfloat/fast_float/archive/refs/tags/v3.5.1.tar.gz"
@@ -410,10 +410,10 @@ LLVM_SOURCE="llvm-project-16.0.6.src"
 LLVM_MD5SUM="dc13938a604f70379d3b38d09031de98"
 
 #clucene
-CLUCENE_DOWNLOAD="https://github.com/StarRocks/clucene/archive/refs/tags/starrocks-2024.06.03.tar.gz"
-CLUCENE_NAME="starrocks-clucene-2024.06.03.tar.gz"
-CLUCENE_SOURCE="starrocks-clucene-2024.06.03"
-CLUCENE_MD5SUM="c218eb0fbbfe7f295e81ab1c8a9317cb"
+CLUCENE_DOWNLOAD="https://github.com/StarRocks/clucene/archive/refs/tags/starrocks-2026.04.09.tar.gz"
+CLUCENE_NAME="starrocks-clucene-2026.04.09.tar.gz"
+CLUCENE_SOURCE="starrocks-clucene-2026.04.09"
+CLUCENE_MD5SUM="a06ce32908dad5b2b834b19a8879a2c8"
 
 
 #absl
@@ -440,12 +440,6 @@ SIMDUTF_NAME="simdutf-5.2.8.tar.gz"
 SIMDUTF_SOURCE="simdutf-5.2.8"
 SIMDUTF_MD5SUM="731c78ab5a10c6073942dc93d5c4b04c"
 
-# tenann
-TENANN_DOWNLOAD="https://github.com/StarRocks/tenann/releases/download/v0.4.2-RELEASE/tenann-v0.4.2-RELEASE.tar.gz"
-TENANN_NAME="tenann-v0.4.2-RELEASE.tar.gz"
-TENANN_SOURCE="tenann-v0.4.2-RELEASE"
-TENANN_MD5SUM="40a00643d953982845901ae60766aad4"
-
 # icu
 ICU_DOWNLOAD="https://github.com/unicode-org/icu/releases/download/release-76-1/icu4c-76_1-src.zip"
 ICU_NAME="icu4c-76_1-src.zip"
@@ -458,9 +452,55 @@ XSIMD_NAME="xsimd-13.2.0.tar.gz"
 XSIMD_SOURCE="xsimd-13.2.0"
 XSIMD_MD5SUM="f451a1c57d2a4fdc0ba663be438dced4"
 
+# libxml2
+LIBXML2_DOWNLOAD="https://github.com/GNOME/libxml2/archive/refs/tags/v2.11.7.tar.gz"
+LIBXML2_NAME="libxml2-2.11.7.tar.gz"
+LIBXML2_SOURCE="libxml2-2.11.7"
+LIBXML2_MD5SUM="929dade129bbe7072e65c3121fbf12c2"
+
+# azure
+AZURE_DOWNLOAD="https://github.com/Azure/azure-sdk-for-cpp/archive/refs/tags/azure-storage-files-shares_12.12.0.tar.gz"
+AZURE_NAME="azure-storage-files-shares_12.12.0.tar.gz"
+AZURE_SOURCE="azure-storage-files-shares_12.12.0"
+AZURE_MD5SUM="cb38786198aa103295d4d670604a9a60"
+
+# libdivide
+LIBDIVIDE_DOWNLOAD="https://github.com/ridiculousfish/libdivide/archive/refs/tags/v5.2.0.tar.gz"
+LIBDIVIDE_NAME="libdivide-v5.2.0.tar.gz"
+LIBDIVIDE_SOURCE="libdivide-v5.2.0"
+LIBDIVIDE_MD5SUM="4ba77777192c295d6de2b86d88f3239a"
+
+# flamegraph
+FLAMEGRAPH_DOWNLOAD="https://github.com/murphyatwork/FlameGraph/archive/refs/tags/20251015.tar.gz"
+FLAMEGRAPH_NAME="FlameGraph-20251015.tar.gz"
+FLAMEGRAPH_SOURCE="FlameGraph"
+FLAMEGRAPH_MD5SUM="bddefda5f1271a3dd5324b02ad61d4a5"
+
+HADOOPSRC_DOWNLOAD="https://archive.apache.org/dist/hadoop/common/hadoop-3.4.3/hadoop-3.4.3-src.tar.gz"
+HADOOPSRC_NAME="hadoop-3.4.3-src.tar.gz"
+HADOOPSRC_SOURCE="hadoop-3.4.3-src"
+HADOOPSRC_MD5SUM="c5ac53ca70cc667189ec824c6048914a"
+
+# xxhash
+XXHASH_DOWNLOAD="https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz"
+XXHASH_NAME=xxHash-0.8.3.tar.gz
+XXHASH_SOURCE=xxHash-0.8.3
+XXHASH_MD5SUM="599804eb9555e51c05f1b821f9212a07"
+
+# benchgen
+BENCHGEN_DOWNLOAD="https://github.com/StarRocks/benchgen/archive/refs/tags/v26.03.11.tar.gz"
+BENCHGEN_NAME=benchgen-26.03.11.tar.gz
+BENCHGEN_SOURCE=benchgen-26.03.11
+BENCHGEN_MD5SUM="fd97eb82eb4c629d7916b6d012c7e81d"
+
 # all thirdparties which need to be downloaded is set in array TP_ARCHIVES
 TP_ARCHIVES="CLUCENE LIBEVENT OPENSSL THRIFT PROTOBUF GFLAGS GLOG GTEST RAPIDJSON SIMDJSON SNAPPY GPERFTOOLS ZLIB LZ4 BZIP CURL \
             RE2 BOOST LEVELDB BRPC ROCKSDB KRB5 SASL LIBRDKAFKA PULSAR FLATBUFFERS ARROW BROTLI ZSTD S2 BITSHUFFLE CROARINGBITMAP \
-            JEMALLOC CCTZ FMT RYU BREAK_PAD HADOOP JDK RAGEL HYPERSCAN MARIADB JINDOSDK AWS_SDK_CPP VPACK OPENTELEMETRY \
+            JEMALLOC CCTZ FMT RYU BREAK_PAD HADOOPSRC JDK RAGEL HYPERSCAN MARIADB JINDOSDK AWS_SDK_CPP VPACK OPENTELEMETRY \
             BENCHMARK FAST_FLOAT STARCACHE STREAMVBYTE JANSSON AVRO SERDES GCS_CONNECTOR LZO2 DATASKETCHES \
-            ASYNC_PROFILER FIU LIBDEFLATE LLVM ABSL CARES GRPC SIMDUTF TENANN POCO ICU XSIMD"
+            FIU LIBDEFLATE LLVM ABSL CARES GRPC SIMDUTF TENANN POCO ICU XSIMD LIBXML2 AZURE LIBDIVIDE PPROF FLAMEGRAPH XXHASH \
+            BENCHGEN"
+
+if [[ -n "${STARROCKS_TP_VARS_OVERRIDE:-}" ]]; then
+    . "${STARROCKS_TP_VARS_OVERRIDE}"
+fi

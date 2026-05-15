@@ -16,8 +16,6 @@ package com.starrocks.load;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Range;
-import com.starrocks.analysis.DateLiteral;
-import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.MaterializedIndex;
@@ -40,8 +38,11 @@ import com.starrocks.persist.RangePartitionPersistInfo;
 import com.starrocks.persist.SinglePartitionPersistInfo;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.DistributionDesc;
+import com.starrocks.sql.ast.expression.DateLiteral;
+import com.starrocks.sql.ast.expression.LiteralExpr;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -59,12 +60,12 @@ public class PartitionUtils {
                                                           String postfix, List<Long> sourcePartitionIds,
                                                           List<Long> tmpPartitionIds,
                                                           DistributionDesc distributionDesc,
-                                                          long warehouseId) throws DdlException {
+                                                          ComputeResource computeResource) throws DdlException {
         List<Partition> newTempPartitions = GlobalStateMgr.getCurrentState().getLocalMetastore()
                 .createTempPartitionsFromPartitions(db, targetTable, postfix, sourcePartitionIds,
-                        tmpPartitionIds, distributionDesc, warehouseId);
+                        tmpPartitionIds, distributionDesc, computeResource);
         Locker locker = new Locker();
-        if (!locker.lockDatabaseAndCheckExist(db, LockType.WRITE)) {
+        if (!locker.lockTableAndCheckDbExist(db, targetTable.getId(), LockType.WRITE)) {
             throw new DdlException("create and add partition failed. database:{}" + db.getFullName() + " not exist");
         }
         boolean success = false;
@@ -78,60 +79,35 @@ public class PartitionUtils {
                 throw new DdlException("create partition failed because src partitions changed");
             }
             List<Partition> sourcePartitions = sourcePartitionIds.stream()
-                    .map(id -> targetTable.getPartition(id)).collect(Collectors.toList());
+                    .map(targetTable::getPartition).toList();
             PartitionInfo partitionInfo = targetTable.getPartitionInfo();
             List<PartitionPersistInfoV2> partitionInfoV2List = Lists.newArrayListWithCapacity(newTempPartitions.size());
             for (int i = 0; i < newTempPartitions.size(); i++) {
-                targetTable.addTempPartition(newTempPartitions.get(i));
                 long sourcePartitionId = sourcePartitions.get(i).getId();
-                partitionInfo.addPartition(newTempPartitions.get(i).getId(),
-                        partitionInfo.getDataProperty(sourcePartitionId),
-                        partitionInfo.getReplicationNum(sourcePartitionId),
-                        partitionInfo.getIsInMemory(sourcePartitionId),
-                        partitionInfo.getDataCacheInfo(sourcePartitionId));
                 Partition partition = newTempPartitions.get(i);
 
                 PartitionPersistInfoV2 info;
                 if (partitionInfo.isRangePartition()) {
                     RangePartitionInfo rangePartitionInfo = (RangePartitionInfo) partitionInfo;
-                    rangePartitionInfo.setRange(partition.getId(), true,
-                            rangePartitionInfo.getRange(sourcePartitionId));
-                    Range<PartitionKey> range = rangePartitionInfo.getRange(partition.getId());
+                    Range<PartitionKey> range = rangePartitionInfo.getRange(sourcePartitionId);
 
                     info = new RangePartitionPersistInfo(db.getId(), targetTable.getId(),
-                            partition, partitionInfo.getDataProperty(partition.getId()),
-                            partitionInfo.getReplicationNum(partition.getId()),
-                            partitionInfo.getIsInMemory(partition.getId()), true,
-                            range, partitionInfo.getDataCacheInfo(partition.getId()));
+                            partition, partitionInfo.getDataProperty(sourcePartitionId),
+                            partitionInfo.getReplicationNum(sourcePartitionId),
+                            true, range, partitionInfo.getDataCacheInfo(sourcePartitionId));
                 } else if (partitionInfo.isUnPartitioned()) {
                     info = new SinglePartitionPersistInfo(db.getId(), targetTable.getId(),
-                            partition, partitionInfo.getDataProperty(partition.getId()),
-                            partitionInfo.getReplicationNum(partition.getId()),
-                            partitionInfo.getIsInMemory(partition.getId()), true,
-                            partitionInfo.getDataCacheInfo(partition.getId()));
+                            partition, partitionInfo.getDataProperty(sourcePartitionId),
+                            partitionInfo.getReplicationNum(sourcePartitionId),
+                            true, partitionInfo.getDataCacheInfo(sourcePartitionId));
                 } else if (partitionInfo.isListPartition()) {
                     ListPartitionInfo listPartitionInfo = (ListPartitionInfo) partitionInfo;
-
-                    listPartitionInfo.setIdToIsTempPartition(partition.getId(), true);
                     List<String> values = listPartitionInfo.getIdToValues().get(sourcePartitionId);
-                    if (values != null) {
-                        listPartitionInfo.setValues(partition.getId(), values);
-                        List<LiteralExpr> literalExprs = listPartitionInfo.getLiteralExprValues().get(sourcePartitionId);
-                        listPartitionInfo.setDirectLiteralExprValues(partition.getId(), literalExprs);
-                    }
-
                     List<List<String>> multiValues = listPartitionInfo.getIdToMultiValues().get(sourcePartitionId);
-                    if (multiValues != null) {
-                        listPartitionInfo.setMultiValues(partition.getId(), multiValues);
-                        List<List<LiteralExpr>> multiLiteralExprs =
-                                listPartitionInfo.getMultiLiteralExprValues().get(sourcePartitionId);
-                        listPartitionInfo.setDirectMultiLiteralExprValues(partition.getId(), multiLiteralExprs);
-                    }
                     info = new ListPartitionPersistInfo(db.getId(), targetTable.getId(),
-                            partition, partitionInfo.getDataProperty(partition.getId()),
-                            partitionInfo.getReplicationNum(partition.getId()),
-                            partitionInfo.getIsInMemory(partition.getId()), true,
-                            values, multiValues, partitionInfo.getDataCacheInfo(partition.getId()));
+                            partition, partitionInfo.getDataProperty(sourcePartitionId),
+                            partitionInfo.getReplicationNum(sourcePartitionId),
+                            true, values, multiValues, partitionInfo.getDataCacheInfo(sourcePartitionId));
                 } else {
                     throw new DdlException("Unsupported partition persist info.");
                 }
@@ -139,7 +115,41 @@ public class PartitionUtils {
             }
 
             AddPartitionsInfoV2 infos = new AddPartitionsInfoV2(partitionInfoV2List);
-            GlobalStateMgr.getCurrentState().getEditLog().logAddPartitions(infos);
+            GlobalStateMgr.getCurrentState().getEditLog().logAddPartitions(infos, wal -> {
+                for (int i = 0; i < newTempPartitions.size(); i++) {
+                    Partition partition = newTempPartitions.get(i);
+                    long sourcePartitionId = sourcePartitions.get(i).getId();
+                    targetTable.addTempPartition(partition);
+                    partitionInfo.addPartition(partition.getId(),
+                            partitionInfo.getDataProperty(sourcePartitionId),
+                            partitionInfo.getReplicationNum(sourcePartitionId),
+                            partitionInfo.getDataCacheInfo(sourcePartitionId));
+
+                    if (partitionInfo.isRangePartition()) {
+                        RangePartitionInfo rangePartitionInfo = (RangePartitionInfo) partitionInfo;
+                        rangePartitionInfo.setRange(partition.getId(), true,
+                                rangePartitionInfo.getRange(sourcePartitionId));
+                    } else if (partitionInfo.isListPartition()) {
+                        ListPartitionInfo listPartitionInfo = (ListPartitionInfo) partitionInfo;
+                        listPartitionInfo.setIdToIsTempPartition(partition.getId(), true);
+                        List<String> values = listPartitionInfo.getIdToValues().get(sourcePartitionId);
+                        if (values != null) {
+                            listPartitionInfo.setValues(partition.getId(), values);
+                            List<LiteralExpr> literalExprs =
+                                    listPartitionInfo.getLiteralExprValues().get(sourcePartitionId);
+                            listPartitionInfo.setDirectLiteralExprValues(partition.getId(), literalExprs);
+                        }
+
+                        List<List<String>> multiValues = listPartitionInfo.getIdToMultiValues().get(sourcePartitionId);
+                        if (multiValues != null) {
+                            listPartitionInfo.setMultiValues(partition.getId(), multiValues);
+                            List<List<LiteralExpr>> multiLiteralExprs =
+                                    listPartitionInfo.getMultiLiteralExprValues().get(sourcePartitionId);
+                            listPartitionInfo.setDirectMultiLiteralExprValues(partition.getId(), multiLiteralExprs);
+                        }
+                    }
+                }
+            });
 
             success = true;
         } finally {
@@ -150,7 +160,7 @@ public class PartitionUtils {
                     LOG.warn("clear tablets from inverted index failed", t);
                 }
             }
-            locker.unLockDatabase(db.getId(), LockType.WRITE);
+            locker.unLockTableWithIntensiveDbLock(db.getId(), targetTable.getId(), LockType.WRITE);
         }
     }
 
@@ -158,7 +168,7 @@ public class PartitionUtils {
         TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentState().getTabletInvertedIndex();
         for (Partition partition : partitions) {
             for (PhysicalPartition subPartition : partition.getSubPartitions()) {
-                for (MaterializedIndex materializedIndex : subPartition.getMaterializedIndices(
+                for (MaterializedIndex materializedIndex : subPartition.getAllMaterializedIndices(
                             MaterializedIndex.IndexExtState.ALL)) {
                     for (Tablet tablet : materializedIndex.getTablets()) {
                         invertedIndex.deleteTablet(tablet.getId());

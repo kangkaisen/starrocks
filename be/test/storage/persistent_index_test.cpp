@@ -18,6 +18,17 @@
 
 #include <cstdlib>
 
+#include "base/coding.h"
+#include "base/failpoint/fail_point.h"
+#include "base/string/faststring.h"
+#include "base/testutil/assert.h"
+#include "base/testutil/parallel_test.h"
+#include "base/utility/defer_op.h"
+#include "column/column_helper.h"
+#include "column/raw_data_visitor.h"
+#include "common/config_primary_key_fwd.h"
+#include "common/config_storage_fwd.h"
+#include "fs/fs_factory.h"
 #include "fs/fs_memory.h"
 #include "fs/fs_util.h"
 #include "storage/chunk_helper.h"
@@ -30,11 +41,6 @@
 #include "storage/storage_engine.h"
 #include "storage/tablet_manager.h"
 #include "storage/update_manager.h"
-#include "testutil/assert.h"
-#include "testutil/parallel_test.h"
-#include "util/coding.h"
-#include "util/failpoint/fail_point.h"
-#include "util/faststring.h"
 
 namespace starrocks {
 
@@ -203,6 +209,69 @@ TEST_P(PersistentIndexTest, test_dump_snapshot_fail) {
         ASSERT_FALSE(index.commit(&index_meta).ok());
         ASSERT_OK(index.on_commited());
         ASSERT_TRUE(index_meta.l0_meta().wals().empty());
+    }
+
+    ASSERT_TRUE(fs::remove_all(kPersistentIndexDir).ok());
+}
+
+TEST_P(PersistentIndexTest, test_load_snapshot_fail) {
+    FileSystem* fs = FileSystem::Default();
+    const std::string kPersistentIndexDir = "./PersistentIndexTest_test_load_snapshot_fail";
+    const std::string kIndexFile = "./PersistentIndexTest_test_load_snapshot_fail/index.l0.0.0";
+    bool created;
+    ASSERT_OK(fs->create_dir_if_missing(kPersistentIndexDir, &created));
+
+    using Key = uint64_t;
+    PersistentIndexMetaPB index_meta;
+    const int N = 100;
+    vector<Key> keys;
+    vector<Slice> key_slices;
+    vector<IndexValue> values;
+    keys.reserve(N);
+    key_slices.reserve(N);
+    for (int i = 0; i < N; i++) {
+        keys.emplace_back(i);
+        values.emplace_back(i * 2);
+        key_slices.emplace_back((uint8_t*)(&keys[i]), sizeof(Key));
+    }
+
+    {
+        ASSIGN_OR_ABORT(auto wfile, FileSystem::Default()->new_writable_file(kIndexFile));
+        ASSERT_OK(wfile->close());
+    }
+
+    EditVersion version(0, 0);
+    index_meta.set_key_size(sizeof(Key));
+    index_meta.set_size(0);
+    version.to_pb(index_meta.mutable_version());
+    MutableIndexMetaPB* l0_meta = index_meta.mutable_l0_meta();
+    l0_meta->set_format_version(PERSISTENT_INDEX_VERSION_5);
+    IndexSnapshotMetaPB* snapshot_meta = l0_meta->mutable_snapshot();
+    version.to_pb(snapshot_meta->mutable_version());
+
+    std::vector<IndexValue> old_values(N, IndexValue(NullIndexValue));
+    PersistentIndex index(kPersistentIndexDir);
+    ASSERT_OK(index.load(index_meta));
+    {
+        // dump snapshot
+        index.test_force_dump();
+        ASSERT_OK(index.prepare(EditVersion(1, 0), N));
+        ASSERT_OK(index.upsert(N, key_slices.data(), values.data(), old_values.data()));
+        ASSERT_OK(index.commit(&index_meta));
+        ASSERT_OK(index.on_commited());
+    }
+    {
+        // load snapshot fail
+        SyncPoint::GetInstance()->SetCallBack("BinaryInputArchive::load::1", [](void* arg) { *(bool*)arg = false; });
+        SyncPoint::GetInstance()->SetCallBack("BinaryInputArchive::load::2", [](void* arg) { *(bool*)arg = false; });
+        SyncPoint::GetInstance()->EnableProcessing();
+        DeferOp defer([]() {
+            SyncPoint::GetInstance()->ClearCallBack("BinaryInputArchive::load::1");
+            SyncPoint::GetInstance()->ClearCallBack("BinaryInputArchive::load::2");
+            SyncPoint::GetInstance()->DisableProcessing();
+        });
+        PersistentIndex index2(kPersistentIndexDir);
+        ASSERT_FALSE(index2.load(index_meta).ok());
     }
 
     ASSERT_TRUE(fs::remove_all(kPersistentIndexDir).ok());
@@ -1259,7 +1328,7 @@ TEST_P(PersistentIndexTest, test_flush_fixlen_to_immutable) {
     ASSERT_TRUE(idx->flush_to_immutable_index(writer, nshard, npage_hint, page_size, nbucket, true).ok());
     writer->finish();
 
-    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString("posix://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString("posix://"));
     ASSIGN_OR_ABORT(auto rf, fs->new_random_access_file("./index.l1.1.1"));
     auto st_load = ImmutableIndex::load(std::move(rf), true);
     if (!st_load.ok()) {
@@ -1298,7 +1367,7 @@ TEST_P(PersistentIndexTest, test_flush_fixlen_to_immutable) {
 
 TEST_P(PersistentIndexTest, test_flush_varlen_to_immutable) {
     const std::string kPersistentIndexDir = "./PersistentIndexTest_test_flush_varlen_to_immutable";
-    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString("posix://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString("posix://"));
     bool created;
     ASSERT_OK(fs->create_dir_if_missing(kPersistentIndexDir, &created));
     PersistentIndex index(kPersistentIndexDir);
@@ -1409,7 +1478,7 @@ RowsetSharedPtr create_rowset(const TabletSharedPtr& tablet, const vector<int64_
     size_t size = (tablet->tablet_schema()->column(0).type() == TYPE_VARCHAR) ? varlen_keys.size() : keys.size();
     LOG(INFO) << "key column type: " << tablet->tablet_schema()->column(0).type() << ", size: " << size;
     auto chunk = ChunkHelper::new_chunk(schema, size);
-    auto& cols = chunk->columns();
+    auto cols = chunk->mutable_columns();
     if (tablet->tablet_schema()->column(0).type() == TYPE_VARCHAR) {
         for (size_t i = 0; i < size; i++) {
             cols[0]->append_datum(Datum(varlen_keys[i]));
@@ -1479,7 +1548,7 @@ void build_persistent_index_from_tablet(size_t N) {
         LOG(WARNING) << "failed to load rowset update state: " << st.to_string();
         ASSERT_TRUE(false);
     }
-    const std::vector<MutableColumnPtr>& upserts = state.upserts();
+    const MutableColumns& upserts = state.upserts();
 
     PersistentIndex persistent_index(kPersistentIndexDir);
     ASSERT_TRUE(persistent_index.load_from_tablet(tablet.get()).ok());
@@ -1492,19 +1561,23 @@ void build_persistent_index_from_tablet(size_t N) {
         std::vector<uint64_t> persistent_results;
         primary_results.resize(pks.size());
         persistent_results.resize(pks.size());
-        primary_index.get(pks, &primary_results);
+        ASSERT_OK(primary_index.get(pks, &primary_results));
         if (pks.is_binary()) {
-            persistent_index.get(pks.size(), reinterpret_cast<const Slice*>(pks.raw_data()),
-                                 reinterpret_cast<IndexValue*>(persistent_results.data()));
+            Buffer<Slice> slices;
+            ColumnHelper::build_slices(&pks, slices);
+            ASSERT_OK(persistent_index.get(pks.size(), slices.data(),
+                                           reinterpret_cast<IndexValue*>(persistent_results.data())));
         } else {
             size_t key_size = primary_index.key_size();
             ASSERT_TRUE(key_size == sizeof(uint64_t));
+            RawDataVisitor visitor;
+            ASSERT_OK(pks.accept(&visitor));
             std::vector<Slice> col_key_slices;
-            for (size_t i = 0; i < pks.size(); ++i) {
-                col_key_slices.emplace_back(pks.raw_data() + i * key_size, key_size);
+            for (size_t j = 0; j < pks.size(); ++j) {
+                col_key_slices.emplace_back(visitor.result() + j * key_size, key_size);
             }
-            persistent_index.get(pks.size(), col_key_slices.data(),
-                                 reinterpret_cast<IndexValue*>(persistent_results.data()));
+            ASSERT_OK(persistent_index.get(pks.size(), col_key_slices.data(),
+                                           reinterpret_cast<IndexValue*>(persistent_results.data())));
         }
 
         ASSERT_EQ(primary_results.size(), persistent_results.size());
@@ -1529,18 +1602,22 @@ void build_persistent_index_from_tablet(size_t N) {
             std::vector<uint64_t> persistent_results;
             primary_results.resize(pks.size());
             persistent_results.resize(pks.size());
-            primary_index.get(pks, &primary_results);
+            ASSERT_OK(primary_index.get(pks, &primary_results));
             if (pks.is_binary()) {
-                persistent_index.get(pks.size(), reinterpret_cast<const Slice*>(pks.raw_data()),
-                                     reinterpret_cast<IndexValue*>(persistent_results.data()));
+                Buffer<Slice> slices;
+                ColumnHelper::build_slices(&pks, slices);
+                ASSERT_OK(persistent_index.get(pks.size(), slices.data(),
+                                               reinterpret_cast<IndexValue*>(persistent_results.data())));
             } else {
                 size_t key_size = primary_index.key_size();
+                RawDataVisitor visitor;
+                ASSERT_OK(pks.accept(&visitor));
                 std::vector<Slice> col_key_slices;
-                for (size_t i = 0; i < pks.size(); ++i) {
-                    col_key_slices.emplace_back(pks.raw_data() + i * key_size, key_size);
+                for (size_t j = 0; j < pks.size(); ++j) {
+                    col_key_slices.emplace_back(visitor.result() + j * key_size, key_size);
                 }
-                persistent_index.get(pks.size(), col_key_slices.data(),
-                                     reinterpret_cast<IndexValue*>(persistent_results.data()));
+                ASSERT_OK(persistent_index.get(pks.size(), col_key_slices.data(),
+                                               reinterpret_cast<IndexValue*>(persistent_results.data())));
             }
             ASSERT_EQ(primary_results.size(), persistent_results.size());
             for (size_t j = 0; j < primary_results.size(); ++j) {
@@ -1970,7 +2047,7 @@ TEST_P(PersistentIndexTest, test_flush_l1_advance) {
 
 TEST_P(PersistentIndexTest, test_bloom_filter_for_pindex) {
     const std::string kPersistentIndexDir = "./PersistentIndexTest_test_bloom_filter_for_pindex";
-    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString("posix://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString("posix://"));
     bool created;
     ASSERT_OK(fs->create_dir_if_missing(kPersistentIndexDir, &created));
     config::l0_max_mem_usage = 10240;
@@ -2120,7 +2197,7 @@ TEST_P(PersistentIndexTest, test_bloom_filter_for_pindex) {
 TEST_P(PersistentIndexTest, test_bloom_filter_working) {
     write_pindex_bf = true;
     const std::string kPersistentIndexDir = "./PersistentIndexTest_test_bloom_filter_working";
-    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString("posix://"));
+    ASSIGN_OR_ABORT(auto fs, FileSystemFactory::CreateSharedFromString("posix://"));
     bool created;
     ASSERT_OK(fs->create_dir_if_missing(kPersistentIndexDir, &created));
     const int64_t old_l0_max_mem_usage = config::l0_max_mem_usage;
@@ -3192,6 +3269,14 @@ TEST_P(PersistentIndexTest, pindex_compaction_schedule_with_migration) {
     });
     sleep(2);
     ASSERT_FALSE(mgr.is_running(tablet->tablet_id()));
+}
+
+TEST_P(PersistentIndexTest, pindex_compaction_stop_is_idempotent) {
+    PersistentIndexCompactionManager mgr;
+    ASSERT_OK(mgr.init());
+    mgr.stop();
+    // stop() should be safe to call multiple times.
+    mgr.stop();
 }
 
 TEST_P(PersistentIndexTest, test_multi_l2_not_tmp_l1_update) {

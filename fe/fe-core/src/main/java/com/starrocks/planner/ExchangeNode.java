@@ -36,16 +36,13 @@ package com.starrocks.planner;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.MoreObjects.ToStringHelper;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.Analyzer;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.SortInfo;
-import com.starrocks.analysis.TupleId;
-import com.starrocks.common.StarRocksException;
+import com.starrocks.planner.expression.ExprToThrift;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.ExprUtils;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.optimizer.base.DistributionSpec;
 import com.starrocks.sql.optimizer.operator.TopNType;
 import com.starrocks.thrift.TExchangeNode;
@@ -94,6 +91,7 @@ public class ExchangeNode extends PlanNode {
     // Specify the columns which need to send, work on CTE, and keep empty in other sense
     private List<Integer> receiveColumns;
 
+    private boolean useParallelMerge = true;
     /**
      * Create ExchangeNode that consumes output of inputNode.
      * An ExchangeNode doesn't have an input node as a child, which is why we
@@ -115,7 +113,7 @@ public class ExchangeNode extends PlanNode {
             if (inputNode instanceof SortNode) {
                 SortNode sortNode = (SortNode) inputNode;
                 if (Objects.equals(TopNType.ROW_NUMBER, sortNode.getTopNType()) &&
-                        CollectionUtils.isEmpty(sortNode.getSortInfo().getPartitionExprs())) {
+                        CollectionUtils.isEmpty(sortNode.getSortInfo().getPartitionExprs()) && !sortNode.isPerPipeline()) {
                     limit = inputNode.limit;
                 } else {
                     unsetLimit();
@@ -163,17 +161,27 @@ public class ExchangeNode extends PlanNode {
         return receiveColumns;
     }
 
+    public void setUseParallelMerge(boolean useParallelMerge) {
+        this.useParallelMerge = useParallelMerge;
+    }
+
+    public boolean isUseParallelMerge() {
+        return useParallelMerge;
+    }
+
+    @Override
+    public final void setLimit(long limit) {
+        if (limit != -1) {
+            super.setLimit(limit);
+            cardinality = Math.min(limit, cardinality);
+        }
+    }
+
     @Override
     public final void computeTupleIds() {
         clearTupleIds();
         tupleIds.addAll(getChild(0).getTupleIds());
         nullableTupleIds.addAll(getChild(0).getNullableTupleIds());
-    }
-
-    @Override
-    public void init(Analyzer analyzer) throws StarRocksException {
-        super.init(analyzer);
-        Preconditions.checkState(conjuncts.isEmpty());
     }
 
     /**
@@ -195,16 +203,17 @@ public class ExchangeNode extends PlanNode {
         }
         if (mergeInfo != null) {
             TSortInfo sortInfo = new TSortInfo(
-                    Expr.treesToThrift(mergeInfo.getOrderingExprs()), mergeInfo.getIsAscOrder(),
+                    ExprToThrift.treesToThrift(mergeInfo.getOrderingExprs()), mergeInfo.getIsAscOrder(),
                     mergeInfo.getNullsFirst());
             msg.exchange_node.setSort_info(sortInfo);
             msg.exchange_node.setOffset(offset);
         }
         if (partitionType != null) {
             msg.exchange_node.setPartition_type(partitionType);
+            msg.exchange_node.setOffset(offset);
         }
         SessionVariable sv = ConnectContext.get().getSessionVariable();
-        msg.exchange_node.setEnable_parallel_merge(sv.isEnableParallelMerge());
+        msg.exchange_node.setEnable_parallel_merge(isUseParallelMerge());
         TLateMaterializeMode mode = TLateMaterializeMode.valueOf(sv.getParallelMergeLateMaterializationMode().toUpperCase());
         msg.exchange_node.setParallel_merge_late_materialize_mode(mode);
     }
@@ -233,7 +242,7 @@ public class ExchangeNode extends PlanNode {
             if (CollectionUtils.isNotEmpty(partitionExprs)) {
                 output.append(detailPrefix)
                         .append("partition exprs: ")
-                        .append(getVerboseExplain(partitionExprs, detailLevel))
+                        .append(explainExpr(detailLevel, partitionExprs))
                         .append('\n');
             }
         }
@@ -272,10 +281,11 @@ public class ExchangeNode extends PlanNode {
         // we enable this only when:
         // - session variable enabled &
         // - this rf has been accepted by children nodes(global rf).
-        boolean isBound = probeExpr.isBoundByTupleIds(getTupleIds());
+        boolean isBound = ExprUtils.isBoundByTupleIds(probeExpr, getTupleIds());
         // local runtime filter won't use partition by expr to evaluate runtime filters
         if (!description.inLocalFragmentInstance()) {
-            isBound = isBound && partitionByExprs.stream().allMatch(expr -> expr.isBoundByTupleIds(getTupleIds()));
+            isBound = isBound && partitionByExprs.stream()
+                    .allMatch(expr -> ExprUtils.isBoundByTupleIds(expr, getTupleIds()));
         }
         if (isBound && description.canAcceptFilter(this, context)) {
             if (onExchangeNode || (description.isLocalApplicable() && description.inLocalFragmentInstance())) {

@@ -46,7 +46,7 @@ public class PruneScanColumnRule extends TransformationRule {
             OperatorType.LOGICAL_MYSQL_SCAN,
             OperatorType.LOGICAL_ES_SCAN,
             OperatorType.LOGICAL_JDBC_SCAN,
-            OperatorType.LOGICAL_BINLOG_SCAN,
+            OperatorType.LOGICAL_BENCHMARK_SCAN,
             OperatorType.LOGICAL_KUDU_SCAN
     );
 
@@ -78,7 +78,7 @@ public class PruneScanColumnRule extends TransformationRule {
         }
 
         if (scanOperator.getColRefToColumnMetaMap().keySet().equals(outputColumns)) {
-            scanOperator.getScanOptimzeOption().setCanUseMinMaxCountOpt(canUseAnyColumn);
+            scanOperator.getScanOptimizeOption().setCanUseAnyColumn(canUseAnyColumn);
             return Collections.emptyList();
         } else {
             Map<ColumnRefOperator, Column> newColumnRefMap = outputColumns.stream()
@@ -89,7 +89,7 @@ public class PruneScanColumnRule extends TransformationRule {
                 LogicalOlapScanOperator.Builder builder = new LogicalOlapScanOperator.Builder();
                 LogicalOlapScanOperator newScanOperator = builder.withOperator(olapScanOperator)
                         .setColRefToColumnMetaMap(newColumnRefMap).build();
-                newScanOperator.getScanOptimzeOption().setCanUseAnyColumn(canUseAnyColumn);
+                newScanOperator.getScanOptimizeOption().setCanUseAnyColumn(canUseAnyColumn);
                 return Lists.newArrayList(new OptExpression(newScanOperator));
             } else {
                 LogicalScanOperator.Builder builder = OperatorBuilderFactory.build(scanOperator);

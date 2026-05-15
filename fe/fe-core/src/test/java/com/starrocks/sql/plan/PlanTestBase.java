@@ -14,6 +14,7 @@
 
 package com.starrocks.sql.plan;
 
+import com.starrocks.clone.ColocateTableBalancer;
 import com.starrocks.common.FeConstants;
 import com.starrocks.planner.TpchSQL;
 import com.starrocks.qe.DefaultCoordinator;
@@ -22,8 +23,6 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TScanRangeParams;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 
@@ -36,7 +35,7 @@ public class PlanTestBase extends PlanTestNoneDBBase {
     private static final Logger LOG = LogManager.getLogger(PlanTestBase.class);
 
     // use a unique dir so that it won't be conflict with other unit test which
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         // disable checking tablets
         PlanTestNoneDBBase.beforeClass();
@@ -310,6 +309,17 @@ public class PlanTestBase extends PlanTestNoneDBBase {
                 "\"replication_num\" = \"1\",\n" +
                 "\"in_memory\" = \"false\"\n" +
                 ");");
+
+        starRocksAssert.withTable("CREATE TABLE test_using (" +
+                "v1 bigint," +
+                "v2 array<int>," +
+                "v3 int," +
+                "v5 int," +
+                "v6 bigint," +
+                "v4 json) " +
+                "DUPLICATE KEY (`v1`) " +
+                "DISTRIBUTED BY HASH(`v1`) BUCKETS 1 " +
+                "PROPERTIES(\"replication_num\" = \"1\");");
 
         starRocksAssert.withTable(TpchSQL.REGION);
         starRocksAssert.withTable(TpchSQL.SUPPLIER);
@@ -892,6 +902,23 @@ public class PlanTestBase extends PlanTestNoneDBBase {
                 "\"in_memory\" = \"false\"\n" +
                 ");");
 
+        starRocksAssert.withTable("CREATE TABLE `tprimary_multi_cols` (\n" +
+                "  `pk` bigint NOT NULL COMMENT \"\",\n" +
+                "  `v1` string NOT NULL COMMENT \"\",\n" +
+                "  `v2` int NOT NULL COMMENT \"\",\n" +
+                "  `v3` int NOT NULL COMMENT \"\",\n" +
+                "  `v4` int NOT NULL COMMENT \"\",\n" +
+                "  `v5` int NOT NULL COMMENT \"\",\n" +
+                "  `v6` int NOT NULL COMMENT \"\"\n" +
+                ") ENGINE=OLAP\n" +
+                "PRIMARY KEY(`pk`)\n" +
+                "DISTRIBUTED BY HASH(`pk`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"replicated_storage\" = \"false\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
         starRocksAssert.withTable("CREATE TABLE `tprimary_auto_increment` (\n" +
                 "  `pk` bigint NOT NULL COMMENT \"\",\n" +
                 "  `v1` bigint NOT NULL COMMENT \"\",\n" +
@@ -972,9 +999,22 @@ public class PlanTestBase extends PlanTestNoneDBBase {
                 "\"replicated_storage\" = \"true\",\n" +
                 "\"replication_num\" = \"1\"\n" +
                 ");");
+        starRocksAssert.withTable("CREATE TABLE test_laglead (\n" +
+                "  `ta` int(11) NULL COMMENT \"\",\n" +
+                "  `tb` int(11) NULL COMMENT \"\",\n" +
+                "  `tc` int(11) NOT NULL COMMENT \"\"\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`ta`)\n" +
+                "COMMENT \"OLAP\"\n" +
+                "DISTRIBUTED BY HASH(`ta`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
 
         connectContext.getGlobalStateMgr().setStatisticStorage(new MockTpchStatisticStorage(connectContext, 1));
         GlobalStateMgr.getCurrentState().getAnalyzeMgr().getBasicStatsMetaMap().clear();
+        ColocateTableBalancer.getInstance().setStop();
 
         connectContext.getSessionVariable().setMaxTransformReorderJoins(8);
         connectContext.getSessionVariable().setEnableReplicationJoin(false);
@@ -983,23 +1023,23 @@ public class PlanTestBase extends PlanTestNoneDBBase {
         connectContext.getSessionVariable().setEnableLowCardinalityOptimize(false);
         connectContext.getSessionVariable().setEnableShortCircuit(true);
         connectContext.getSessionVariable().setCboPushDownGroupingSet(false);
+        connectContext.getSessionVariable().setCboEnableSingleNodePreferTwoStageAggregate(false);
+        connectContext.getSessionVariable().setCboRewriteMonotonicMinmax(false);
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         connectContext.getSessionVariable().setEnableLowCardinalityOptimize(true);
         connectContext.getSessionVariable().setEnableLocalShuffleAgg(true);
         connectContext.getSessionVariable().setCboPushDownGroupingSet(true);
     }
 
-    // NOTE: for JUnit 5
-    @BeforeAll
+    // NOTE: remove beforeAll after junit5 migration
     public static void beforeAll() throws Exception {
         beforeClass();
     }
 
-    // NOTE: for JUnit 5
-    @AfterAll
+    // NOTE: beforeAll afterAll junit5 migration
     public static void afterAll() throws Exception {
         afterClass();
     }

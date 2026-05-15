@@ -73,6 +73,8 @@ public class FeConstants {
             "Compute node not found. Check if any compute node is down.";
     public static final String QUERY_FINISHED_ERROR = "QueryFinished";
     public static final String LIMIT_REACH_ERROR = "LimitReach";
+    public static final String SCHEDULE_FRAGMENT_ERROR =
+            "Schedule Fragment error. caused by:";
 
 
     public static boolean USE_MOCK_DICT_MANAGER = false;
@@ -106,23 +108,29 @@ public class FeConstants {
 
     public static final String GENERATED_PARTITION_COLUMN_PREFIX = "__generated_partition_column_";
 
+    public static final String ICEBERG_TRANSFORM_EXPRESSION_PREFIX = "__iceberg_transform_";
+
     // Max counter num of TOP K function
     public static final int MAX_COUNTER_NUM_OF_TOP_K = 100000;
 
     public static final int DEFAULT_UNPARTITIONED_TABLE_BUCKET_NUM = 16;
+    // When inferring bucket num from recent partitions, we will check at most 5 recent partitions
+    public static final int DEFAULT_INFER_BUCKET_NUM_RECENT_PARTITION_NUM = 5;
 
     public static final int MAX_LIST_PARTITION_NAME_LENGTH = 50;
 
     public static final String DOCUMENT_SHOW_ALTER =
-            "https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SHOW_ALTER";
+            "https://docs.starrocks.io/docs/sql-reference/sql-statements/table_bucket_part_index/SHOW_ALTER";
     public static final String DOCUMENT_SHOW_ALTER_MATERIALIZED_VIEW =
-            "https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SHOW_ALTER_MATERIALIZED_VIEW";
+            "https://docs.starrocks.io/docs/sql-reference/sql-statements/materialized_view/SHOW_ALTER_MATERIALIZED_VIEW";
     public static final String DOCUMENT_SHOW_BACKUP =
-            "https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SHOW_BACKUP";
+            "https://docs.starrocks.io/docs/sql-reference/sql-statements/backup_restore/SHOW_BACKUP";
     public static final String DOCUMENT_SHOW_RESTORE =
-            "https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/SHOW_RESTORE";
+            "https://docs.starrocks.io/docs/sql-reference/sql-statements/backup_restore/SHOW_RESTORE";
     public static final String DOCUMENT_ALTER_ROUTINE_LOAD =
-            "https://docs.starrocks.io/docs/sql-reference/sql-statements/data-manipulation/ALTER_ROUTINE_LOAD";
+            "https://docs.starrocks.io/docs/sql-reference/sql-statements/loading_unloading/routine_load/ALTER_ROUTINE_LOAD";
+
+    public static final String METRIC_LABEL_IS_LEADER = "is_leader";
 
     public static String getNodeNotFoundError(boolean chooseComputeNode) {
         return chooseComputeNode ? COMPUTE_NODE_NOT_FOUND_ERROR : BACKEND_NODE_NOT_FOUND_ERROR;

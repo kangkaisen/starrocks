@@ -1,10 +1,23 @@
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <iostream>
 #include <memory>
 
-#include "exec/file_scanner.h"
+#include "exec/file_scanner/file_scanner.h"
 #include "formats/csv/csv_reader.h"
 #include "fs/fs.h"
-#include "fs/fs_memory.h"
 #include "runtime/mem_tracker.h"
 #include "runtime/runtime_state.h"
 
@@ -150,7 +163,8 @@ std::unique_ptr<BenchScanner> create_bench_scanner(const std::vector<TBrokerRang
                                                    const std::string& multi_column_separator = "|") {
     // Init RuntimeState
     ObjectPool _obj_pool;
-    RuntimeState* state = _obj_pool.add(new RuntimeState(TUniqueId(), TQueryOptions(), TQueryGlobals(), nullptr));
+    RuntimeState* state = _obj_pool.add(
+            new RuntimeState(TUniqueId(), TQueryOptions(), TQueryGlobals(), static_cast<ExecEnv*>(nullptr)));
     state->init_instance_mem_tracker();
 
     /// TBrokerScanRangeParams

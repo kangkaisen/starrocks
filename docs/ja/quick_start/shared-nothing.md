@@ -7,7 +7,7 @@ import Clients from '../_assets/quick-start/_clientsAllin1.mdx'
 import SQL from '../_assets/quick-start/_SQL.mdx'
 import Curl from '../_assets/quick-start/_curl.mdx'
 
-# Deploy StarRocks with Docker
+# Docker で StarRocks をデプロイ
 
 このチュートリアルでは以下をカバーします：
 
@@ -41,7 +41,7 @@ Docker 環境で提供される SQL クライアントを使用するか、シ�
 
 ### curl
 
-`curl` は StarRocks にデータロードジョブを発行し、データセットをダウンロードするために使用されます。OS のプロンプトで `curl` または `curl.exe` を実行して、インストールされているか確認してください。curl がインストールされていない場合は、[こちらから curl を取得してください](https://curl.se/dlwiz/?type=bin)。
+`curl` は StarRocks にデータロードジョブを発行し、データセットをダウンロードするために使用されます。OS のプロンプトで `curl` または `curl.exe` を実行して、インストールされているか確認してください。curl がインストールされていない場合は、[こちらから curl を取得してください](https://curl.se/download.html)。
 
 ---
 

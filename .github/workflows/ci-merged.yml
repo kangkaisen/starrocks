@@ -4,7 +4,7 @@ on:
   pull_request_target:
     branches:
       - main
-      - 'branch-[0-9].[0-9]'
+      - "branch-[0-9].[0-9]"
     types:
       - closed
 permissions:
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['3.5', '3.4', '3.3', '3.2', '3.1']
+        version: ["4.1", "4.0", "3.5", "3.4", "3.3"]
     env:
       PR_NUMBER: ${{ github.event.number }}
     steps:
@@ -44,10 +44,38 @@ jobs:
         with:
           labels: ${{ matrix.version }}
 
+  thirdparty-filter:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    outputs:
+      thirdparty: ${{ steps.filter-info.outputs.thirdparty }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: linux-thirdparty-filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            thirdparty:
+              - 'thirdparty/**'
+              - '!thirdparty/build-thirdparty-darwin.sh'
+              - '!thirdparty/vars-darwin-aarch64.sh'
+            dev_env:
+              - 'docker/dockerfiles/dev-env/dev-env.Dockerfile'
+
+      - name: Prepare filter info
+        id: filter-info
+        run: |
+          thirdparty=false
+          if [[ "${{ steps.linux-thirdparty-filter.outputs.thirdparty }}" == 'true' || "${{ steps.linux-thirdparty-filter.outputs.dev_env }}" == 'true' ]]; then
+            thirdparty=true
+          fi
+          echo "thirdparty=${thirdparty}" >> $GITHUB_OUTPUT
+
   thirdparty-update-image:
+    needs: thirdparty-filter
     runs-on: [self-hosted, normal]
     name: Thirdparty Update Image
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true && needs.thirdparty-filter.outputs.thirdparty == 'true'
     env:
       PR_NUMBER: ${{ github.event.number }}
       BRANCH: ${{ github.base_ref }}
@@ -58,22 +86,12 @@ jobs:
           rm -rf ${{ github.workspace }}
           mkdir -p ${{ github.workspace }}
 
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            thirdparty:
-            - 'thirdparty/**'
-            - 'docker/dockerfiles/dev-env/dev-env.Dockerfile'
-
       - name: update image - ubuntu
-        if: steps.changes.outputs.thirdparty == 'true'
         run: |
           rm -rf ./ci-tool && cp -rf /var/lib/ci-tool ./ci-tool && cd ci-tool && git pull && source lib/init.sh
           ./bin/elastic-update-image.sh $BRANCH $PR_NUMBER ubuntu
 
       - name: update image - centos7
-        if: steps.changes.outputs.thirdparty == 'true'
         run: |
           rm -rf ./ci-tool && cp -rf /var/lib/ci-tool ./ci-tool && cd ci-tool && git pull && source lib/init.sh
           ./bin/elastic-update-image.sh $BRANCH $PR_NUMBER centos7
@@ -134,11 +152,11 @@ jobs:
           else
             yaml=ci-pipeline-branch.yml
           fi
-          
+
           gh run list --workflow ${yaml} -R ${REPO} -b ${GITHUB_HEAD_REF} --json databaseId -q '.[].databaseId' | xargs gh run cancel -R ${REPO} || true
 
   update_backport_merged_msg:
-    runs-on: [ self-hosted, quick ]
+    runs-on: [self-hosted, quick]
     if: >
       github.base_ref != 'main' && github.event.pull_request.merged == true
     env:
@@ -189,7 +207,7 @@ jobs:
           gh pr edit ${PR_NUMBER} -R ${GITHUB_REPOSITORY} --add-label "${VERSION_LABEL}"
 
   update_version_label_for_main_feature:
-    runs-on: [ self-hosted, quick ]
+    runs-on: [self-hosted, quick]
     if: >
       github.base_ref == 'main' && github.event.pull_request.merged == true &&
       !contains(github.event.pull_request.labels.*.name, 'sync') &&
@@ -220,7 +238,7 @@ jobs:
           gh pr edit ${PR_NUMBER} -R ${GITHUB_REPOSITORY} --add-label "${VERSION_LABEL}"
 
   update_feature_issue:
-    runs-on: [ self-hosted, quick ]
+    runs-on: [self-hosted, quick]
     needs:
       - update_backport_merged_msg
       - update_version_label_for_main_feature
@@ -242,3 +260,17 @@ jobs:
         run: |
           rm -rf ./ci-tool && cp -rf /var/lib/ci-tool ./ci-tool && cd ci-tool && git pull >/dev/null
           python3 scripts/get_pr_issue.py update_issue ${GITHUB_REPOSITORY} ${PR_NUMBER} ${BRANCH_VERSION_LABEL}
+
+  merge_testcase:
+    runs-on: [self-hosted, quick]
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      GH_TOKEN: ${{ secrets.PAT }}
+      BRANCH: ${{ github.base_ref }}
+    if: >
+      github.base_ref == 'main' && github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'sync')
+    steps:
+      - name: merge testcase
+        run: |
+          rm -rf ./ci-tool && cp -rf /var/lib/ci-tool ./ci-tool && cd ci-tool && git pull >/dev/null
+          ./scripts/merge-testcase.py --pr ${PR_NUMBER} --repo ${REPOSITORY} --branch ${BRANCH}

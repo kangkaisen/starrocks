@@ -34,29 +34,26 @@
 
 #pragma once
 
-#include <column/type_traits.h>
-
 #include <boost/container/flat_set.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/variant.hpp>
 #include <cstdint>
 #include <map>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <variant>
 
+#include "base/string/slice.h"
+#include "column/runtime_type_traits.h"
 #include "exec/olap_utils.h"
 #include "exec/scan_node.h"
 #include "gen_cpp/PlanNodes_types.h"
 #include "gutil/stl_util.h"
 #include "gutil/strings/substitute.h"
-#include "runtime/datetime_value.h"
-#include "runtime/descriptors.h"
-#include "runtime/string_value.hpp"
-#include "storage/tuple.h"
-#include "types/date_value.hpp"
+#include "storage/olap_tuple.h"
+#include "types/date_value.h"
+#include "types/datetime_value.h"
 #include "types/timestamp_value.h"
-#include "util/slice.h"
 
 namespace starrocks {
 
@@ -70,6 +67,7 @@ namespace starrocks {
 template <class T>
 class ColumnValueRange {
 public:
+    using RangeValueType = T;
     using ValuesContainer = boost::container::flat_set<T>;
     using iterator_type = typename ValuesContainer::iterator;
 
@@ -92,6 +90,8 @@ public:
     bool is_fixed_value_range() const;
 
     bool is_empty_value_range() const;
+
+    bool is_full_value_range() const;
 
     bool is_init_state() const { return _is_init_state; }
 
@@ -214,6 +214,7 @@ using ColumnValueRangeType =  std::variant<
         ColumnValueRange<int32_t>,
         ColumnValueRange<int64_t>,
         ColumnValueRange<__int128>,
+        ColumnValueRange<int256_t>,
         ColumnValueRange<Slice>,
         ColumnValueRange<DecimalV2Value>,
         ColumnValueRange<bool>,

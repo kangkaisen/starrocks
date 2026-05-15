@@ -15,6 +15,11 @@
 package com.starrocks.http;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.common.collect.Lists;
+import com.starrocks.catalog.UserIdentity;
+import com.starrocks.common.DdlException;
+import com.starrocks.common.jmockit.Deencapsulation;
+import com.starrocks.common.proc.ProcResult;
 import com.starrocks.load.batchwrite.BatchWriteMgr;
 import com.starrocks.load.batchwrite.RequestCoordinatorBackendResult;
 import com.starrocks.load.batchwrite.TableId;
@@ -22,11 +27,20 @@ import com.starrocks.load.streamload.StreamLoadKvParams;
 import com.starrocks.qe.SimpleScheduler;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
+import com.starrocks.server.WarehouseManager;
+import com.starrocks.sql.ast.warehouse.cngroup.AlterCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.CreateCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.DropCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.EnableDisableCnGroupStmt;
 import com.starrocks.system.Backend;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TStatus;
 import com.starrocks.thrift.TStatusCode;
+import com.starrocks.warehouse.Utils;
+import com.starrocks.warehouse.Warehouse;
+import com.starrocks.warehouse.cngroup.CRAcquireContext;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -47,20 +61,20 @@ import org.apache.http.impl.client.BasicResponseHandler;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.DefaultRedirectStrategy;
 import org.apache.http.impl.client.HttpClients;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static com.starrocks.load.streamload.StreamLoadHttpHeader.HTTP_ENABLE_BATCH_WRITE;
-import static com.starrocks.server.WarehouseManager.DEFAULT_WAREHOUSE_NAME;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class LoadActionTest extends StarRocksHttpTestCase {
 
@@ -86,13 +100,14 @@ public class LoadActionTest extends StarRocksHttpTestCase {
 
         new MockUp<BatchWriteMgr>() {
             @Mock
-            public RequestCoordinatorBackendResult requestCoordinatorBackends(TableId tableId, StreamLoadKvParams params) {
+            public RequestCoordinatorBackendResult requestCoordinatorBackends(
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 return new RequestCoordinatorBackendResult(new TStatus(TStatusCode.OK), computeNodes);
             }
         };
 
         try (Response response = noRedirectClient.newCall(request).execute()) {
-            assertEquals(307, response.code());
+            assertEquals(307, response.code(), response.message());
             String location = response.header("Location");
             assertTrue(redirectLocations.contains(location));
         }
@@ -106,7 +121,8 @@ public class LoadActionTest extends StarRocksHttpTestCase {
 
         new MockUp<BatchWriteMgr>() {
             @Mock
-            public RequestCoordinatorBackendResult requestCoordinatorBackends(TableId tableId, StreamLoadKvParams params) {
+            public RequestCoordinatorBackendResult requestCoordinatorBackends(
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 TStatus status = new TStatus();
                 status.setStatus_code(TStatusCode.INTERNAL_ERROR);
                 status.addToError_msgs("artificial failure");
@@ -187,10 +203,10 @@ public class LoadActionTest extends StarRocksHttpTestCase {
             // next request entirely, so it will be looked like the server never respond at all from client side.
             HttpPut put = buildPutRequest(2, true);
             try (CloseableHttpResponse response = client.execute(put)) {
-                Assert.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
+                Assertions.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
                         response.getStatusLine().getStatusCode());
                 // The server indicates that the connection should be closed.
-                Assert.assertEquals(HttpHeaderValues.CLOSE.toString(),
+                Assertions.assertEquals(HttpHeaderValues.CLOSE.toString(),
                         response.getFirstHeader(HttpHeaderNames.CONNECTION.toString()).getValue());
             }
         }
@@ -229,10 +245,10 @@ public class LoadActionTest extends StarRocksHttpTestCase {
             HttpPut put = buildPutRequest(128, true);
             put.setProtocolVersion(new ProtocolVersion("HTTP", 1, 1));
             try (CloseableHttpResponse response = client.execute(put)) {
-                Assert.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
+                Assertions.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
                         response.getStatusLine().getStatusCode());
                 // The server indicates that the connection should be closed.
-                Assert.assertEquals(HttpHeaderValues.CLOSE.toString(),
+                Assertions.assertEquals(HttpHeaderValues.CLOSE.toString(),
                         response.getFirstHeader(HttpHeaderNames.CONNECTION.toString()).getValue());
             }
         }
@@ -242,18 +258,18 @@ public class LoadActionTest extends StarRocksHttpTestCase {
             HttpPut put = buildPutRequest(256, false);
             put.setProtocolVersion(new ProtocolVersion("HTTP", 1, 1));
             try (CloseableHttpResponse response = client.execute(put)) {
-                Assert.assertEquals(HttpResponseStatus.OK.code(),
+                Assertions.assertEquals(HttpResponseStatus.OK.code(),
                         response.getStatusLine().getStatusCode());
                 // The server indicates that the connection should be closed.
-                Assert.assertEquals(HttpHeaderValues.CLOSE.toString(),
+                Assertions.assertEquals(HttpHeaderValues.CLOSE.toString(),
                         response.getFirstHeader(HttpHeaderNames.CONNECTION.toString()).getValue());
 
                 String body = new BasicResponseHandler().handleResponse(response);
                 Map<String, Object> result = objectMapper.readValue(body, new TypeReference<>() {});
 
                 // {"Status":"FAILED","Message":"class com.starrocks.common.DdlException: There is no 100-continue header"}
-                Assert.assertEquals("FAILED", result.get("Status"));
-                Assert.assertEquals("class com.starrocks.common.DdlException: There is no 100-continue header",
+                Assertions.assertEquals("FAILED", result.get("Status"));
+                Assertions.assertEquals("class com.starrocks.common.DdlException: There is no 100-continue header",
                         result.get("Message"));
             }
         }
@@ -263,10 +279,10 @@ public class LoadActionTest extends StarRocksHttpTestCase {
             HttpPut put = buildPutRequest(512, false);
             put.setProtocolVersion(new ProtocolVersion("HTTP", 1, 0));
             try (CloseableHttpResponse response = client.execute(put)) {
-                Assert.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
+                Assertions.assertEquals(HttpResponseStatus.TEMPORARY_REDIRECT.code(),
                         response.getStatusLine().getStatusCode());
                 // The server indicates that the connection should be closed.
-                Assert.assertEquals(HttpHeaderValues.CLOSE.toString(),
+                Assertions.assertEquals(HttpHeaderValues.CLOSE.toString(),
                         response.getFirstHeader(HttpHeaderNames.CONNECTION.toString()).getValue());
             }
         }
@@ -311,7 +327,7 @@ public class LoadActionTest extends StarRocksHttpTestCase {
 
         new Expectations() {
             {
-                GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(DEFAULT_WAREHOUSE_NAME);
+                GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds((ComputeResource) any);
                 result = nodeIds;
                 GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
                 result = service;
@@ -417,6 +433,159 @@ public class LoadActionTest extends StarRocksHttpTestCase {
             SimpleScheduler.removeFromBlocklist(1L);
             SimpleScheduler.removeFromBlocklist(2L);
             SimpleScheduler.removeFromBlocklist(3L);
+        }
+    }
+
+    @Test
+    public void testStreamLoadWarehouseSelection() throws Exception {
+        String host = "192.0.0.1";
+        int httpPort = 8040;
+        ComputeNode node = new ComputeNode(1, host, 9050);
+        node.setHttpPort(httpPort);
+        node.setAlive(true);
+        Deencapsulation.setField(node, "status", ComputeNode.Status.OK);
+
+        ComputeResource computeResource = new ComputeResource() {
+            @Override
+            public long getWarehouseId() {
+                return 1L;
+            }
+
+            @Override
+            public long getWorkerGroupId() {
+                return 1L;
+            }
+        };
+
+        new MockUp<RunMode>() {
+            @Mock
+            boolean isSharedDataMode() {
+                return true;
+            }
+        };
+
+        new MockUp<WarehouseManager>() {
+            @Mock
+            public boolean warehouseExists(String warehouseName) {
+                return true;
+            }
+
+            @Mock
+            public ComputeResource acquireComputeResource(CRAcquireContext context) {
+                return computeResource;
+            }
+
+            @Mock
+            public List<Long> getAllComputeNodeIds(ComputeResource resource) {
+                return Lists.newArrayList(1L);
+            }
+
+            @Mock
+            public Warehouse getWarehouse(String warehouseName) {
+                return new Warehouse(1L, "user_wh", "root") {
+                    @Override
+                    public long getResumeTime() {
+                        return 0L;
+                    }
+
+                    @Override
+                    public Long getAnyWorkerGroupId() {
+                        return 0L;
+                    }
+
+                    @Override
+                    public void addNodeToCNGroup(ComputeNode node, String cnGroupName) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void validateRemoveNodeFromCNGroup(ComputeNode node, String cnGroupName) throws DdlException {
+
+                    }
+
+                    @Override
+                    public List<Long> getWorkerGroupIds() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public List<String> getWarehouseInfo() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public List<List<String>> getWarehouseNodesInfo() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public ProcResult fetchResult() {
+                        return null;
+                    }
+
+                    @Override
+                    public void createCNGroup(CreateCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void dropCNGroup(DropCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void enableCNGroup(EnableDisableCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void disableCNGroup(EnableDisableCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void alterCNGroup(AlterCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void replayInternalOpLog(String payload) {
+
+                    }
+
+                    @Override
+                    public boolean isAvailable() {
+                        return false;
+                    }
+                };
+            }
+        };
+
+        new MockUp<CRAcquireContext>() {
+            @Mock
+            public String getWarehouseName() {
+                return "user_wh";
+            }
+        };
+
+        new MockUp<Utils>() {
+            @Mock
+            public Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
+                return Optional.of("user_wh");
+            }
+        };
+
+        new MockUp<SystemInfoService>() {
+            @Mock
+            public ComputeNode getBackendOrComputeNode(long nodeId) {
+                return node;
+            }
+        };
+
+        Map<String, String> headers = new HashMap<>();
+        Request request = buildRequest(headers);
+        try (Response response = noRedirectClient.newCall(request).execute()) {
+            assertEquals(307, response.code());
         }
     }
 }

@@ -30,12 +30,12 @@ Flink が提供する JDBC コネクタとは異なり、StarRocks の Flink コ
 
 ## バージョン要件
 
-| コネクタ | Flink                    | StarRocks     | Java | Scala     |
-|---------|--------------------------|---------------| ---- |-----------|
-| 1.2.10  | 1.15,1.16,1.17,1.18,1.19 | 2.1 and later | 8    | 2.11,2.12 |
-| 1.2.9   | 1.15,1.16,1.17,1.18      | 2.1 and later | 8    | 2.11,2.12 |
-| 1.2.8   | 1.13,1.14,1.15,1.16,1.17 | 2.1 and later | 8    | 2.11,2.12 |
-| 1.2.7   | 1.11,1.12,1.13,1.14,1.15 | 2.1 and later | 8    | 2.11,2.12 |
+| コネクタ   | Flink                         | StarRocks     | Java | Scala     |
+|-----------|-------------------------------|---------------| ---- |-----------|
+| 1.2.14    | 1.16,1.17,1.18,1.19,1.20      | 2.1 以降       | 8    | 2.11,2.12 |
+| 1.2.12    | 1.16,1.17,1.18,1.19,1.20      | 2.1 以降       | 8    | 2.11,2.12 |
+| 1.2.11    | 1.15,1.16,1.17,1.18,1.19,1.20 | 2.1 以降       | 8    | 2.11,2.12 |
+| 1.2.10    | 1.15,1.16,1.17,1.18,1.19      | 2.1 以降       | 8    | 2.11,2.12 |
 
 ## 前提条件
 
@@ -115,7 +115,7 @@ Flink が配置されているマシンが、StarRocks クラスターの FE ノ
 | connector                   | Yes      | STRING    | データを読み取るために使用するコネクタのタイプ。値を `starrocks` に設定します。                                |
 | scan-url                    | Yes      | STRING    | Web サーバーから FE に接続するために使用されるアドレス。形式: `<fe_host>:<fe_http_port>`。デフォルトポートは `8030`。複数のアドレスを指定することができ、カンマ（,）で区切る必要があります。例: `192.168.xxx.xxx:8030,192.168.xxx.xxx:8030`。 |
 | jdbc-url                    | Yes      | STRING    | FE の MySQL クライアントに接続するために使用されるアドレス。形式: `jdbc:mysql://<fe_host>:<fe_query_port>`。デフォルトのポート番号は `9030`。 |
-| username                    | Yes      | STRING    | StarRocks クラスターアカウントのユーザー名。読み取りたい StarRocks テーブルに対する読み取り権限を持っている必要があります。[ユーザー権限](../administration/user_privs/User_privilege.md) を参照してください。 |
+| username                    | Yes      | STRING    | StarRocks クラスターアカウントのユーザー名。読み取りたい StarRocks テーブルに対する読み取り権限を持っている必要があります。[ユーザー権限](../administration/user_privs/authorization/User_privilege.md) を参照してください。 |
 | password                    | Yes      | STRING    | StarRocks クラスターアカウントのパスワード。              |
 | database-name               | Yes      | STRING    | 読み取りたい StarRocks テーブルが属する StarRocks データベースの名前。 |
 | table-name                  | Yes      | STRING    | 読み取りたい StarRocks テーブルの名前。            |
@@ -343,6 +343,12 @@ Flink SQL を使用してデータを読み取る際には、次の点に注意�
 
        }
    ```
+
+## FAQ
+
+#### Flink Connector でデータをエクスポート中に “Failed to get next from be” というエラーが発生しました。どうすればよいですか？
+
+BE 設定の `scan_context_gc_interval_min`（デフォルト: 5、単位: 分）を大きい値に設定することで、Scan Context がクリーンアップされる時間間隔を長くできます。
 
 ## 次のステップ
 

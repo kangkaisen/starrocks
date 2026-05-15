@@ -16,13 +16,15 @@
 
 #include <gen_cpp/olap_file.pb.h>
 
+#include <sstream>
+
 #include "gen_cpp/AgentService_types.h"
 
 namespace starrocks {
 class FlatJsonConfig {
 public:
     // Constructor
-    FlatJsonConfig() = default;
+    FlatJsonConfig();
 
     // Constructor with parameters
     FlatJsonConfig(bool enable, double nullFactor, double sparsityFactor, int maxColumnMax)
@@ -86,10 +88,21 @@ public:
         _flat_json_max_column_max = maxColumnMax;
     }
 
+    std::string to_string() const {
+        std::ostringstream oss;
+        oss << "FlatJsonConfig{";
+        oss << "flat_json_enable=" << (_flat_json_enable ? "true" : "false") << ", ";
+        oss << "flat_json_null_factor=" << _flat_json_null_factor << ", ";
+        oss << "flat_json_sparsity_factor=" << _flat_json_sparsity_factor << ", ";
+        oss << "flat_json_max_column_max=" << _flat_json_max_column_max;
+        oss << "}";
+        return oss.str();
+    }
+
 private:
     bool _flat_json_enable = false;
-    double _flat_json_null_factor = 0.3;
-    double _flat_json_sparsity_factor = 0.9;
-    int _flat_json_max_column_max = 100;
+    double _flat_json_null_factor = 0;
+    double _flat_json_sparsity_factor = 0;
+    int _flat_json_max_column_max = 0;
 };
 } // namespace starrocks

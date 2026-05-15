@@ -24,11 +24,11 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import mockit.Mocked;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class OlapScanImplementationRuleTest {
 
@@ -46,7 +46,7 @@ public class OlapScanImplementationRuleTest {
         assertEquals(1, output.size());
 
         PhysicalOlapScanOperator physical = (PhysicalOlapScanOperator) output.get(0).getOp();
-        assertEquals(1, physical.getSelectedIndexId());
+        assertEquals(1, physical.getSelectedIndexMetaId());
 
         assertEquals(3, physical.getSelectedPartitionId().size());
         assertEquals(1, physical.getSelectedTabletId().size());

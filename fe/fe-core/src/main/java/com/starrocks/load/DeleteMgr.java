@@ -43,47 +43,37 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.reflect.TypeToken;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.analysis.BinaryPredicate;
-import com.starrocks.analysis.BinaryType;
-import com.starrocks.analysis.DateLiteral;
-import com.starrocks.analysis.DecimalLiteral;
-import com.starrocks.analysis.InPredicate;
-import com.starrocks.analysis.IsNullPredicate;
-import com.starrocks.analysis.LiteralExpr;
-import com.starrocks.analysis.NullLiteral;
-import com.starrocks.analysis.Predicate;
-import com.starrocks.analysis.SlotRef;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.MaterializedIndexMeta;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
-import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.FeConstants;
-import com.starrocks.common.Pair;
 import com.starrocks.common.io.Writable;
 import com.starrocks.common.util.ListComparator;
 import com.starrocks.common.util.TimeUtils;
+import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.lake.delete.LakeDeleteJob;
 import com.starrocks.memory.MemoryTrackable;
+import com.starrocks.memory.estimate.Estimator;
 import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
 import com.starrocks.persist.metablock.SRMetaBlockReader;
 import com.starrocks.persist.metablock.SRMetaBlockWriter;
+import com.starrocks.proto.TableSchemaKeyPB;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryState;
 import com.starrocks.qe.QueryStateException;
@@ -94,7 +84,21 @@ import com.starrocks.sql.StatementPlanner;
 import com.starrocks.sql.analyzer.Analyzer;
 import com.starrocks.sql.analyzer.DeleteAnalyzer;
 import com.starrocks.sql.ast.DeleteStmt;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.TableRef;
+import com.starrocks.sql.ast.expression.BinaryPredicate;
+import com.starrocks.sql.ast.expression.BinaryType;
+import com.starrocks.sql.ast.expression.DateLiteral;
+import com.starrocks.sql.ast.expression.DecimalLiteral;
+import com.starrocks.sql.ast.expression.ExprToSql;
+import com.starrocks.sql.ast.expression.InPredicate;
+import com.starrocks.sql.ast.expression.IsNullPredicate;
+import com.starrocks.sql.ast.expression.LiteralExpr;
+import com.starrocks.sql.ast.expression.LiteralExprFactory;
+import com.starrocks.sql.ast.expression.NullLiteral;
+import com.starrocks.sql.ast.expression.Predicate;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalOlapScanOperator;
 import com.starrocks.sql.parser.SqlParser;
@@ -103,6 +107,9 @@ import com.starrocks.transaction.RunningTxnExceedException;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TransactionState.TxnCoordinator;
 import com.starrocks.transaction.TransactionState.TxnSourceType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.PrimitiveType;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.logging.log4j.LogManager;
@@ -110,6 +117,8 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -117,7 +126,6 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -160,8 +168,12 @@ public class DeleteMgr implements Writable, MemoryTrackable {
     }
 
     public void process(DeleteStmt stmt) throws DdlException, QueryStateException {
-        String dbName = stmt.getTableName().getDb();
-        String tableName = stmt.getTableName().getTbl();
+        TableRef tableRef = stmt.getTableRef();
+        if (tableRef == null) {
+            throw new DdlException("Table reference is null in delete statement");
+        }
+        String dbName = tableRef.getDbName();
+        String tableName = tableRef.getTableName();
 
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         if (db == null) {
@@ -221,7 +233,8 @@ public class DeleteMgr implements Writable, MemoryTrackable {
                                 List<Partition> partitions)
             throws DdlException, AnalysisException, RunningTxnExceedException {
         // check table state
-        if (olapTable.getState() != OlapTable.OlapTableState.NORMAL) {
+        if (olapTable.getState() != OlapTable.OlapTableState.NORMAL
+                && olapTable.getState() != OlapTable.OlapTableState.TABLET_RESHARD) {
             throw new DdlException("Table's state is not normal: " + olapTable.getName());
         }
 
@@ -259,13 +272,13 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         }
 
         // generate label
-        String label = "delete_" + UUID.randomUUID();
+        String label = "delete_" + UUIDUtil.genUUID().toString();
         long jobId = GlobalStateMgr.getCurrentState().getNextId();
         stmt.setJobId(jobId);
 
-        long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
+        ComputeResource computeResource = WarehouseManager.DEFAULT_RESOURCE;
         if (ConnectContext.get() != null) {
-            warehouseId = ConnectContext.get().getCurrentWarehouseId();
+            computeResource = ConnectContext.get().getCurrentComputeResource();
         }
 
         // begin txn here and generate txn id
@@ -273,7 +286,7 @@ public class DeleteMgr implements Writable, MemoryTrackable {
                 Lists.newArrayList(olapTable.getId()), label, null,
                 new TxnCoordinator(TxnSourceType.FE, FrontendOptions.getLocalHostAddress()),
                 TransactionState.LoadJobSourceType.DELETE, jobId, Config.stream_load_default_timeout_second,
-                warehouseId);
+                computeResource);
 
         MultiDeleteInfo deleteInfo =
                 new MultiDeleteInfo(db.getId(), olapTable.getId(), olapTable.getName(), deleteConditions);
@@ -282,7 +295,11 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         DeleteJob deleteJob = null;
 
         if (olapTable.isCloudNativeTable()) {
-            deleteJob = new LakeDeleteJob(jobId, transactionId, label, deleteInfo, warehouseId);
+            TableSchemaKeyPB schemaKey = new TableSchemaKeyPB();
+            schemaKey.setDbId(db.getId());
+            schemaKey.setTableId(olapTable.getId());
+            schemaKey.setSchemaId(olapTable.getIndexMetaByMetaId(olapTable.getBaseIndexMetaId()).getSchemaId());
+            deleteJob = new LakeDeleteJob(jobId, transactionId, label, schemaKey, deleteInfo, computeResource);
         } else {
             deleteJob = new OlapDeleteJob(jobId, transactionId, label, partitionReplicaNum, deleteInfo);
         }
@@ -306,8 +323,10 @@ public class DeleteMgr implements Writable, MemoryTrackable {
      * @return pruned partitions with delete conditions
      */
     private List<String> partitionPruneForDelete(DeleteStmt stmt, OlapTable table) {
-        String tableName = stmt.getTableName().toSql();
-        String predicate = stmt.getWherePredicate().toSql();
+        TableRef tableRef = stmt.getTableRef();
+        TableName tableNameObj = TableName.fromTableRef(tableRef);
+        String tableName = tableNameObj.toSql();
+        String predicate = ExprToSql.toSql(stmt.getWherePredicate());
         String fakeSql = String.format("SELECT * FROM %s WHERE %s", tableName, predicate);
         PhysicalOlapScanOperator physicalOlapScanOperator;
         ConnectContext currentSession = ConnectContext.get();
@@ -331,10 +350,14 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         } finally {
             currentSession.setBypassAuthorizerCheck(false);
         }
+        // Get the selected partition ids. `selectedPartitionId` may contain outdated partitions since of concurrent
+        // DDL operations, such as automatic partition generating, so filter them out.
         List<Long> selectedPartitionId = physicalOlapScanOperator.getSelectedPartitionId();
         return ListUtils.emptyIfNull(selectedPartitionId)
                 .stream()
-                .map(x -> table.getPartition(x).getName())
+                .map(x -> table.getPartition(x))
+                .filter(Objects::nonNull)
+                .map(Partition::getName)
                 .collect(Collectors.toList());
     }
 
@@ -482,7 +505,7 @@ public class DeleteMgr implements Writable, MemoryTrackable {
                 try {
                     InPredicate inPredicate = (InPredicate) condition;
                     // delete a in (null) means delete nothing
-                    inPredicate.removeNullChild();
+                    inPredicate.getChildren().removeIf(child -> child instanceof NullLiteral);
                     int inElementNum = inPredicate.getInElementNum();
                     if (inElementNum == 0) {
                         return false;
@@ -500,18 +523,18 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         }
         // check materialized index.
         // only need check the first partition because each partition has same materialized view
-        Map<Long, List<Column>> indexIdToSchema = table.getIndexIdToSchema();
+        Map<Long, List<Column>> indexMetaIdToSchema = table.getIndexMetaIdToSchema();
         PhysicalPartition partition = partitions.get(0).getDefaultPhysicalPartition();
-        for (MaterializedIndex index : partition.getMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)) {
-            if (table.getBaseIndexId() == index.getId()) {
+        for (MaterializedIndex index : partition.getLatestMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)) {
+            if (table.getBaseIndexMetaId() == index.getMetaId()) {
                 continue;
             }
             // check table has condition column
             Map<String, Column> indexColNameToColumn = Maps.newTreeMap(String.CASE_INSENSITIVE_ORDER);
-            for (Column column : indexIdToSchema.get(index.getId())) {
+            for (Column column : indexMetaIdToSchema.get(index.getMetaId())) {
                 indexColNameToColumn.put(column.getName(), column);
             }
-            String indexName = table.getIndexNameById(index.getId());
+            String indexName = table.getIndexNameByMetaId(index.getMetaId());
             for (Predicate condition : conditions) {
                 String columnName = getSlotRef(condition).getColumnName();
                 Column column = indexColNameToColumn.get(columnName);
@@ -519,7 +542,7 @@ public class DeleteMgr implements Writable, MemoryTrackable {
                     ErrorReport
                             .reportDdlException(ErrorCode.ERR_BAD_FIELD_ERROR, columnName, "index[" + indexName + "]");
                 }
-                MaterializedIndexMeta indexMeta = table.getIndexIdToMeta().get(index.getId());
+                MaterializedIndexMeta indexMeta = table.getIndexMetaByMetaId(index.getMetaId());
                 if (indexMeta.getKeysType() != KeysType.DUP_KEYS && !column.isKey()) {
                     throw new DdlException("Column[" + columnName + "] is not key column in index[" + indexName + "]");
                 }
@@ -557,7 +580,7 @@ public class DeleteMgr implements Writable, MemoryTrackable {
                 strBuilder.append(columnName).append(" ").append(notStr).append("IN (");
                 int inElementNum = inPredicate.getInElementNum();
                 for (int i = 1; i <= inElementNum; ++i) {
-                    strBuilder.append(inPredicate.getChild(i).toSql());
+                    strBuilder.append(ExprToSql.toSql(inPredicate.getChild(i)));
                     strBuilder.append((i != inPredicate.getInElementNum()) ? ", " : "");
                 }
                 strBuilder.append(")");
@@ -575,9 +598,9 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         String value = ((LiteralExpr) predicate.getChild(childNo)).getStringValue();
         if (column.getPrimitiveType() == PrimitiveType.BOOLEAN) {
             if (value.equalsIgnoreCase("true")) {
-                predicate.setChild(childNo, LiteralExpr.create("1", Type.TINYINT));
+                predicate.setChild(childNo, LiteralExprFactory.create("1", IntegerType.TINYINT));
             } else if (value.equalsIgnoreCase("false")) {
-                predicate.setChild(childNo, LiteralExpr.create("0", Type.TINYINT));
+                predicate.setChild(childNo, LiteralExprFactory.create("0", IntegerType.TINYINT));
             }
         } else if (column.getType().isStringType()) {
             byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
@@ -587,7 +610,7 @@ public class DeleteMgr implements Writable, MemoryTrackable {
             }
         }
 
-        LiteralExpr result = LiteralExpr.create(value, Objects.requireNonNull(column.getType()));
+        LiteralExpr result = LiteralExprFactory.create(value, Objects.requireNonNull(column.getType()));
         if (result instanceof DecimalLiteral) {
             ((DecimalLiteral) result).checkPrecisionAndScale(column.getType(), column.getPrecision(), column.getScale());
         } else if (result instanceof DateLiteral) {
@@ -748,6 +771,11 @@ public class DeleteMgr implements Writable, MemoryTrackable {
         return dbToDeleteInfos.values().stream().mapToLong(List::size).sum();
     }
 
+    protected List<MultiDeleteInfo> getDeleteInfosForDb(long dbId) {
+        List<MultiDeleteInfo> multiDeleteInfos = dbToDeleteInfos.get(dbId);
+        return Objects.requireNonNullElse(multiDeleteInfos, Collections.emptyList());
+    }
+
     public void save(ImageWriter imageWriter) throws IOException, SRMetaBlockException {
         int numJson = 1 + dbToDeleteInfos.size() * 2;
         SRMetaBlockWriter writer = imageWriter.getBlockWriter(SRMetaBlockID.DELETE_MGR, numJson);
@@ -776,13 +804,41 @@ public class DeleteMgr implements Writable, MemoryTrackable {
     }
 
     @Override
-    public List<Pair<List<Object>, Long>> getSamples() {
-        List<Object> samples = dbToDeleteInfos.values()
-                .stream()
-                .filter(infos -> !infos.isEmpty())
-                .map(infos -> infos.stream().findAny().get())
-                .collect(Collectors.toList());
-        long size = dbToDeleteInfos.values().stream().mapToInt(List::size).sum();
-        return Lists.newArrayList(Pair.create(samples, size));
+    public long estimateSize() {
+        long size = Estimator.estimate(idToDeleteJob, 20);
+
+        long totalInfos = dbToDeleteInfos.values().stream()
+                .mapToLong(List::size)
+                .sum();
+
+        if (totalInfos > 0) {
+            int sampleTarget = (int) Math.min(20, totalInfos);
+            long step = totalInfos / sampleTarget;
+            List<MultiDeleteInfo> samples = new ArrayList<>(sampleTarget);
+            long index = 0;
+            long nextSampleIndex = 0;
+
+            outer:
+            for (List<MultiDeleteInfo> infos : dbToDeleteInfos.values()) {
+                for (MultiDeleteInfo info : infos) {
+                    if (index == nextSampleIndex) {
+                        samples.add(info);
+                        nextSampleIndex += step;
+                        if (samples.size() >= sampleTarget) {
+                            break outer;
+                        }
+                    }
+                    index++;
+                }
+            }
+
+            if (!samples.isEmpty()) {
+                long sampleTotalSize = Estimator.estimate(samples, samples.size());
+                long avgSize = sampleTotalSize / samples.size();
+                size += avgSize * totalInfos;
+            }
+        }
+
+        return size;
     }
 }

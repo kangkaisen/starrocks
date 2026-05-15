@@ -16,38 +16,39 @@ package com.starrocks.scheduler;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Range;
-import com.starrocks.analysis.DateLiteral;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.PartitionKey;
-import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.common.util.UUIDUtil;
+import com.starrocks.scheduler.mv.pct.MVPCTRefreshProcessor;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.expression.DateLiteral;
 import com.starrocks.sql.common.DmlException;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MVTestBase;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.sql.plan.PlanTestBase;
 import com.starrocks.thrift.TExplainLevel;
+import com.starrocks.type.PrimitiveType;
 import org.apache.commons.lang3.StringUtils;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.FixMethodOrder;
-import org.junit.Test;
-import org.junit.runners.MethodSorters;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer.MethodName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@TestMethodOrder(MethodName.class)
 public class PartitionBasedMvRefreshTest extends MVTestBase {
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         MVTestBase.beforeClass();
-        ConnectorPlanTestBase.mockAllCatalogs(connectContext, temp.newFolder().toURI().toString());
+        ConnectorPlanTestBase.mockAllCatalogs(connectContext, newFolder(temp, "junit").toURI().toString());
         starRocksAssert
                     .withTable("CREATE TABLE `t1` (\n" +
                                 "    `k1`  date not null, \n" +
@@ -111,8 +112,8 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
         String explainString = execPlan.getExplainString(TExplainLevel.NORMAL);
 
         for (String expected : explain) {
-            Assert.assertTrue("expected is: " + expected + " but plan is \n" + explainString,
-                        StringUtils.containsIgnoreCase(explainString.toLowerCase(), expected));
+            Assertions.assertTrue(StringUtils.containsIgnoreCase(explainString.toLowerCase(), expected),
+                        "expected is: " + expected + " but plan is \n" + explainString);
         }
     }
 
@@ -138,7 +139,7 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
     private void testRefreshUnionAllWithDefaultRefreshNumber(String mvSql,
                                                              List<Integer> t1PartitionNums,
                                                              List<Integer> t2PartitionNums) {
-        Assert.assertTrue(t1PartitionNums.size() == t2PartitionNums.size());
+        Assertions.assertTrue(t1PartitionNums.size() == t2PartitionNums.size());
         int mvRefreshTimes = t1PartitionNums.size();
         starRocksAssert.withMaterializedView(mvSql,
                     () -> {
@@ -152,15 +153,14 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                             if (i == 0) {
                                 taskRun = TaskRunBuilder.newBuilder(task).build();
                             }
-                            System.out.println("start to execute task run:" + i);
-                            Assert.assertTrue(taskRun != null);
+                            logSysInfo("start to execute task run:" + i);
+                            Assertions.assertTrue(taskRun != null);
                             initAndExecuteTaskRun(taskRun);
-                            PartitionBasedMvRefreshProcessor processor = (PartitionBasedMvRefreshProcessor)
-                                        taskRun.getProcessor();
+                            MVPCTRefreshProcessor processor = getPartitionBasedRefreshProcessor(taskRun);
                             MvTaskRunContext mvContext = processor.getMvContext();
                             ExecPlan execPlan = mvContext.getExecPlan();
                             String plan = execPlan.getExplainString(TExplainLevel.NORMAL);
-                            Assert.assertTrue(plan != null);
+                            Assertions.assertTrue(plan != null);
                             taskRun = processor.getNextTaskRun();
                             PlanTestBase.assertContains(plan, String.format("     TABLE: t1\n" +
                                         "     PREAGGREGATION: ON\n" +
@@ -169,7 +169,7 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                                         "     PREAGGREGATION: ON\n" +
                                         "     partitions=%s/5", t2PartitionNums.get(i)));
                             if (i == mvRefreshTimes - 1) {
-                                Assert.assertTrue(taskRun == null);
+                                Assertions.assertTrue(taskRun == null);
                             }
                         }
                     });
@@ -186,8 +186,8 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                     ")" +
                     "as " +
                     " select * from t1 union all select * from t2;";
-        List<Integer> t1PartitionNums = ImmutableList.of(0, 0, 0, 0, 1, 1, 1);
-        List<Integer> t2PartitionNums = ImmutableList.of(1, 1, 1, 1, 1, 0, 0);
+        List<Integer> t1PartitionNums = ImmutableList.of(1, 1, 1, 0, 0, 0, 0);
+        List<Integer> t2PartitionNums = ImmutableList.of(0, 0, 1, 1, 1, 1, 1);
         testRefreshUnionAllWithDefaultRefreshNumber(sql, t1PartitionNums, t2PartitionNums);
     }
 
@@ -202,8 +202,8 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                     ")" +
                     "as " +
                     " select * from t2 union all select * from t1;";
-        List<Integer> t1PartitionNums = ImmutableList.of(0, 0, 0, 0, 1, 1, 1);
-        List<Integer> t2PartitionNums = ImmutableList.of(1, 1, 1, 1, 1, 0, 0);
+        List<Integer> t1PartitionNums = ImmutableList.of(1, 1, 1, 0, 0, 0, 0);
+        List<Integer> t2PartitionNums = ImmutableList.of(0, 0, 1, 1, 1, 1, 1);
         testRefreshUnionAllWithDefaultRefreshNumber(sql, t1PartitionNums, t2PartitionNums);
     }
 
@@ -228,11 +228,10 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                             if (i == 0) {
                                 taskRun = TaskRunBuilder.newBuilder(task).build();
                             }
-                            System.out.println("start to execute task run:" + i);
-                            Assert.assertTrue(taskRun != null);
+                            logSysInfo("start to execute task run:" + i);
+                            Assertions.assertTrue(taskRun != null);
                             initAndExecuteTaskRun(taskRun);
-                            PartitionBasedMvRefreshProcessor processor = (PartitionBasedMvRefreshProcessor)
-                                        taskRun.getProcessor();
+                            MVPCTRefreshProcessor processor = getPartitionBasedRefreshProcessor(taskRun);
                             MvTaskRunContext mvContext = processor.getMvContext();
                             ExecPlan execPlan = mvContext.getExecPlan();
                             String plan = execPlan.getExplainString(TExplainLevel.NORMAL);
@@ -245,7 +244,7 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                                         "     PREAGGREGATION: ON\n" +
                                         "     partitions=5/5");
                             if (i == refreshTimes - 1) {
-                                Assert.assertTrue(taskRun == null);
+                                Assertions.assertTrue(taskRun == null);
                             }
                         }
                     });
@@ -270,11 +269,11 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
 
                         Task task = TaskBuilder.buildMvTask(mv, testDb.getFullName());
                         int mvRefreshTimes = 3;
-                        List<Integer> t1PartitionNums = ImmutableList.of(0, 0, 1);
+                        List<Integer> t1PartitionNums = ImmutableList.of(1, 0, 0);
                         List<Integer> t2PartitionNums = ImmutableList.of(1, 1, 1);
                         TaskRun taskRun = null;
                         for (int i = 0; i < mvRefreshTimes; i++) {
-                            System.out.println("start to execute task run:" + i);
+                            logSysInfo("start to execute task run:" + i);
                             if (i == 0) {
                                 taskRun = TaskRunBuilder.newBuilder(task).build();
                                 initAndExecuteTaskRun(taskRun, "2020-10-12", "2020-10-23");
@@ -284,12 +283,11 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                                 String partitionEnd = executeOption.getTaskRunProperties().get(TaskRun.PARTITION_END);
                                 initAndExecuteTaskRun(taskRun, partitionStart, partitionEnd);
                             }
-                            PartitionBasedMvRefreshProcessor processor = (PartitionBasedMvRefreshProcessor)
-                                        taskRun.getProcessor();
+                            MVPCTRefreshProcessor processor = getPartitionBasedRefreshProcessor(taskRun);
                             MvTaskRunContext mvContext = processor.getMvContext();
                             ExecPlan execPlan = mvContext.getExecPlan();
                             String plan = execPlan.getExplainString(TExplainLevel.NORMAL);
-                            Assert.assertTrue(plan != null);
+                            Assertions.assertTrue(plan != null);
                             taskRun = processor.getNextTaskRun();
                             PlanTestBase.assertContains(plan, String.format("     TABLE: t1\n" +
                                         "     PREAGGREGATION: ON\n" +
@@ -298,7 +296,7 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                                         "     PREAGGREGATION: ON\n" +
                                         "     partitions=%s/5", t2PartitionNums.get(i)));
                             if (i == mvRefreshTimes - 1) {
-                                Assert.assertTrue(taskRun == null);
+                                Assertions.assertTrue(taskRun == null);
                             }
                         }
                     });
@@ -329,10 +327,10 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                     "JOIN join_base_t2 t2 ON t1.dt1=t2.dt2 GROUP BY dt1,dt2;");
 
         MaterializedView mv = starRocksAssert.getMv("test", "join_mv1");
-        Assert.assertEquals(3, mv.getPartitionNames().size());
+        Assertions.assertEquals(3, mv.getPartitionNames().size());
         Set<Range<PartitionKey>> ranges =
-                mv.getRangePartitionMap().values().stream().collect(Collectors.toSet());
-        Assert.assertEquals(3, ranges.size());
+                toRangeMap(mv.getRangePartitionMap()).values().stream().collect(Collectors.toSet());
+        Assertions.assertEquals(3, ranges.size());
         PartitionKey p0 = new PartitionKey(ImmutableList.of(new DateLiteral(0, 1, 1)),
                 ImmutableList.of(PrimitiveType.DATE));
         PartitionKey p1 = new PartitionKey(ImmutableList.of(new DateLiteral(2020, 7, 1)),
@@ -341,9 +339,9 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                 ImmutableList.of(PrimitiveType.DATE));
         PartitionKey p3 = new PartitionKey(ImmutableList.of(new DateLiteral(2020, 9, 1)),
                 ImmutableList.of(PrimitiveType.DATE));
-        Assert.assertTrue(ranges.contains(Range.closedOpen(p0, p1)));
-        Assert.assertTrue(ranges.contains(Range.closedOpen(p1, p2)));
-        Assert.assertTrue(ranges.contains(Range.closedOpen(p2, p3)));
+        Assertions.assertTrue(ranges.contains(Range.closedOpen(p0, p1)));
+        Assertions.assertTrue(ranges.contains(Range.closedOpen(p1, p2)));
+        Assertions.assertTrue(ranges.contains(Range.closedOpen(p2, p3)));
         starRocksAssert.dropTable("join_base_t1");
         starRocksAssert.dropTable("join_base_t2");
         starRocksAssert.dropMaterializedView("join_mv1");
@@ -365,7 +363,7 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                     "    PARTITION p202007 VALUES in (\"2020-07-23\"),\n" +
                     "    PARTITION p202008 VALUES in (\"2020-08-23\")\n" +
                     ");");
-        Exception e = Assert.assertThrows(DmlException.class, () ->
+        Exception e = Assertions.assertThrows(DmlException.class, () ->
                     starRocksAssert.withRefreshedMaterializedView("CREATE MATERIALIZED VIEW join_mv1 " +
                                 "PARTITION BY dt1 REFRESH MANUAL PROPERTIES (\"partition_refresh_number\"=\"3\") AS \n" +
                                 "SELECT dt1,dt2,sum(int1) " +
@@ -373,8 +371,8 @@ public class PartitionBasedMvRefreshTest extends MVTestBase {
                                 "JOIN join_base_t2 t2 ON t1.dt1=t2.dt2 GROUP BY dt1,dt2")
         );
         // TODO(fix me): throw a better stack
-        System.out.println(e.getMessage());
-        Assert.assertTrue(e.getMessage().contains("Must be range partitioned table"));
+        logSysInfo(e.getMessage());
+        Assertions.assertTrue(e.getMessage().contains("Must be range partitioned table"));
 
         starRocksAssert.dropTable("join_base_t1");
         starRocksAssert.dropTable("join_base_t2");

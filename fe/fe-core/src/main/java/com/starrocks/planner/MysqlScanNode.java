@@ -37,15 +37,14 @@ package com.starrocks.planner;
 import com.google.common.base.Joiner;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.Analyzer;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.ExprSubstitutionMap;
-import com.starrocks.analysis.SlotDescriptor;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.MysqlTable;
 import com.starrocks.common.StarRocksException;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.ExprSubstitutionMap;
+import com.starrocks.sql.ast.expression.ExprToSql;
+import com.starrocks.sql.ast.expression.ExprUtils;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TMySQLScanNode;
 import com.starrocks.thrift.TPlanNode;
@@ -87,7 +86,7 @@ public class MysqlScanNode extends ScanNode {
     }
 
     @Override
-    public void finalizeStats(Analyzer analyzer) throws StarRocksException {
+    public void finalizeStats() throws StarRocksException {
         computeColumnsAndFilters();
     }
 
@@ -142,7 +141,7 @@ public class MysqlScanNode extends ScanNode {
 
         }
         List<SlotRef> slotRefs = Lists.newArrayList();
-        Expr.collectList(conjuncts, SlotRef.class, slotRefs);
+        ExprUtils.collectList(conjuncts, SlotRef.class, slotRefs);
         ExprSubstitutionMap sMap = new ExprSubstitutionMap();
         for (SlotRef slotRef : slotRefs) {
             SlotRef tmpRef = (SlotRef) slotRef.clone();
@@ -150,10 +149,14 @@ public class MysqlScanNode extends ScanNode {
 
             sMap.put(slotRef, tmpRef);
         }
-        ArrayList<Expr> mysqlConjuncts = Expr.cloneList(conjuncts, sMap);
+        ArrayList<Expr> mysqlConjuncts = ExprUtils.cloneList(conjuncts, sMap);
+        // Filters instead of conjuncts are used in BE to filter rows, the types of conjuncts' children
+        // would be unmatched after remove cast operator in PushDownPredicateTOExternalTableScanRule, which
+        // would cause BE report error "VectorizedInPredicate type not same";
+        conjuncts.clear();
         for (Expr p : mysqlConjuncts) {
-            p = p.replaceLargeStringLiteral();
-            filters.add(p.toMySql());
+            p = ExprUtils.replaceLargeStringLiteral(p);
+            filters.add(ExprToSql.toMySql(p));
         }
     }
 
@@ -165,6 +168,8 @@ public class MysqlScanNode extends ScanNode {
         if (temporalClause != null && !temporalClause.isEmpty()) {
             msg.mysql_scan_node.setTemporal_clause(temporalClause);
         }
+
+        setConnectorCatalogType(msg);
     }
 
     /**
@@ -178,8 +183,8 @@ public class MysqlScanNode extends ScanNode {
 
 
     @Override
-    public void computeStats(Analyzer analyzer) {
-        super.computeStats(analyzer);
+    public void computeStats() {
+        super.computeStats();
         // this is just to avoid mysql scan node's cardinality being -1. So that we can calculate the join cost
         // normally.
         // We assume that the data volume of all mysql tables is very small, so set cardinality directly to 1.

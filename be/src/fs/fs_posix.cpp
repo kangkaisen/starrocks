@@ -15,6 +15,10 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include "starrocks_macos_posix_shims.h"
+#endif
+
 #include <cerrno>
 #include <climits>
 #include <cstdio>
@@ -22,26 +26,29 @@
 #include <filesystem>
 #include <memory>
 
-#include "common/config.h"
+#include "base/concurrency/stopwatch.hpp"
+#include "base/string/slice.h"
+#include "base/system/errno.h"
+#include "base/testutil/sync_point.h"
+#include "common/config_local_io_fwd.h"
 #include "common/logging.h"
 #include "fs/encrypt_file.h"
 #include "fs/fd_cache.h"
 #include "fs/fs.h"
+#include "fs/fs_posix.h"
+#include "fs/fs_registry.h"
+#include "fs/fs_scheme.h"
 #include "gutil/gscoped_ptr.h"
 #include "gutil/macros.h"
 #include "gutil/port.h"
 #include "gutil/strings/substitute.h"
 #include "gutil/strings/util.h"
-#include "io/fd_input_stream.h"
-#include "io/io_profiler.h"
-#include "testutil/sync_point.h"
-#include "util/errno.h"
-#include "util/slice.h"
-#include "util/stopwatch.hpp"
+#include "io/core/fd_input_stream.h"
+#include "io/core/io_profiler.h"
 
 #ifdef USE_STAROS
-#include "fslib/metric_key.h"
-#include "metrics/metrics.h"
+#include <fslib/metric_key.h>
+#include <metrics/metrics.h>
 #endif
 
 #ifdef USE_STAROS
@@ -225,7 +232,9 @@ public:
 #ifdef USE_STAROS
         s_sr_posix_write_iosize.Observe(bytes_written);
 #endif
+#ifndef __APPLE__
         IOProfiler::add_write(bytes_written, watch.elapsed_time());
+#endif
         return Status::OK();
     }
 
@@ -314,7 +323,9 @@ public:
             _pending_sync = false;
             RETURN_IF_ERROR(do_sync(_fd, _filename));
         }
+#ifndef __APPLE__
         IOProfiler::add_sync(watch.elapsed_time());
+#endif
         return Status::OK();
     }
 
@@ -537,24 +548,29 @@ public:
         // On CentOS create_directories() will fail in this situation, but on Ubuntu, it won't.
         // So we make a precheck here in order to have the same expected behavior on both and probably
         // all the other platforms.
-        if (std::filesystem::is_symlink(dirname)) {
-            char real_path[PATH_MAX];
-            char* result = realpath(dirname.c_str(), real_path);
-            if (result == nullptr) {
-                return io_error(fmt::format("create {} recursively", dirname), errno);
+        try {
+            if (std::filesystem::is_symlink(dirname)) {
+                char real_path[PATH_MAX];
+                char* result = realpath(dirname.c_str(), real_path);
+                if (result == nullptr) {
+                    return io_error(fmt::format("create {} recursively", dirname), errno);
+                }
+                if (std::filesystem::is_directory(real_path)) {
+                    return Status::OK();
+                } else {
+                    return io_error(fmt::format("create {} recursively", dirname), ENOTDIR);
+                }
             }
-            if (std::filesystem::is_directory(real_path)) {
-                return Status::OK();
-            } else {
-                return io_error(fmt::format("create {} recursively", dirname), ENOTDIR);
-            }
+        } catch (const std::filesystem::filesystem_error& e) {
+            // is_symlink throws error when BE has no permission to access the path
+            return io_error(fmt::format("create {} recursively", dirname), e.code().value());
         }
 
         std::error_code ec;
         // If `dirname` already exist and is a directory, the return value would be false and ec.value() would be 0
         (void)std::filesystem::create_directories(dirname, ec);
         if (ec.value() != 0) {
-            return io_error(fmt::format("create {} recursive", dirname), ec.value());
+            return io_error(fmt::format("create {} recursively", dirname), ec.value());
         }
         return Status::OK();
     }
@@ -665,6 +681,17 @@ public:
             return Status::IOError(fmt::format("fail to get space info of path {}: {}", path, e.what()));
         }
     }
+
+    // Directly return size as both cached and total for local file system.
+    StatusOr<std::pair<size_t, size_t>> get_cache_stats(const std::string& path, int64_t offset,
+                                                        int64_t size) override {
+        (void)offset;
+        if (size < 0) {
+            ASSIGN_OR_RETURN(auto file_size, get_file_size(path));
+            return std::make_pair(static_cast<size_t>(file_size), static_cast<size_t>(file_size));
+        }
+        return std::make_pair(static_cast<size_t>(size), static_cast<size_t>(size));
+    }
 };
 
 // Default Posix FileSystem
@@ -676,5 +703,44 @@ FileSystem* FileSystem::Default() {
 std::unique_ptr<FileSystem> new_fs_posix() {
     return std::make_unique<PosixFileSystem>();
 }
+
+namespace fs {
+namespace {
+
+thread_local std::shared_ptr<FileSystem> tls_fs_posix_registry;
+
+bool match_posix_shared(std::string_view uri) {
+    return is_posix_uri(uri);
+}
+
+bool match_posix_unique(std::string_view uri, const FSOptions&) {
+    return is_posix_uri(uri);
+}
+
+StatusOr<std::shared_ptr<FileSystem>> create_posix_shared(std::string_view) {
+    if (tls_fs_posix_registry == nullptr) {
+        tls_fs_posix_registry = std::make_shared<PosixFileSystem>();
+    }
+    return tls_fs_posix_registry;
+}
+
+StatusOr<std::unique_ptr<FileSystem>> create_posix_unique(std::string_view, const FSOptions&) {
+    return new_fs_posix();
+}
+
+} // namespace
+
+FileSystemProvider new_posix_file_system_provider(int priority) {
+    return {
+            .id = "posix",
+            .priority = priority,
+            .match_shared = match_posix_shared,
+            .create_shared = create_posix_shared,
+            .match_unique = match_posix_unique,
+            .create_unique = create_posix_unique,
+    };
+}
+
+} // namespace fs
 
 } // end namespace starrocks

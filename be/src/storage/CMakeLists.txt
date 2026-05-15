@@ -22,11 +22,11 @@ add_subdirectory(rowset)
 set(STORAGE_FILES
     aggregate_type.cpp
     base_tablet.cpp
-    decimal12.cpp
-    decimal_type_info.cpp
     delete_handler.cpp
     del_vector.cpp
     delta_column_group.cpp
+    flat_json_config.cpp
+    flat_json_metrics.cpp
     key_coder.cpp
     memtable_flush_executor.cpp
     segment_flush_executor.cpp
@@ -39,7 +39,6 @@ set(STORAGE_FILES
     olap_define.cpp
     olap_server.cpp
     options.cpp
-    page_cache.cpp
     persistent_index.cpp
     primary_index.cpp
     primary_key_encoder.cpp
@@ -52,6 +51,7 @@ set(STORAGE_FILES
     update_compaction_state.cpp
     version_graph.cpp
     storage_engine.cpp
+    storage_metrics.cpp
     data_dir.cpp
     short_key_index.cpp
     snapshot_manager.cpp
@@ -65,7 +65,7 @@ set(STORAGE_FILES
     tablet_schema_map.cpp
     tablet_updates.cpp
     txn_manager.cpp
-    types.cpp
+    type_info_factory.cpp
     update_manager.cpp
     utils.cpp
     compaction_utils.cpp
@@ -80,6 +80,7 @@ set(STORAGE_FILES
     rowset/json_column_compactor.cpp
     rowset/json_column_iterator.cpp
     rowset/json_column_writer.cpp
+    rowset/object_column_writer.cpp
     rowset/cast_column_iterator.cpp
     rowset/column_reader.cpp
     rowset/column_writer.cpp
@@ -103,6 +104,7 @@ set(STORAGE_FILES
     rowset/data_sample.cpp
     rowset/dict_page.cpp
     rowset/segment.cpp
+    rowset/segment_file_info.cpp
     rowset/segment_writer.cpp
     rowset/segment_rewriter.cpp
     rowset/segment_group.cpp
@@ -112,6 +114,7 @@ set(STORAGE_FILES
     rowset/parsed_page.cpp
     rowset/zone_map_index.cpp
     rowset/segment_iterator.cpp
+    rowset/options.cpp
     rowset/segment_options.cpp
     rowset/rowid_range_option.cpp
     rowset/rowset_meta.cpp
@@ -128,6 +131,7 @@ set(STORAGE_FILES
     aggregate_iterator.cpp
     async_delta_writer.cpp
     chunk_helper.cpp
+    chunk_variant_helper.cpp
     chunk_iterator.cpp
     column_predicate_cmp.cpp
     column_in_predicate.cpp
@@ -172,11 +176,14 @@ set(STORAGE_FILES
     rowset_merger.cpp
     column_predicate_rewriter.cpp
     column_predicate_dict_conjuct.cpp
+    column_predicate_inverted_index_fallback.cpp
     compaction_task.cpp
     compaction_utils.cpp
     compaction_manager.cpp
     horizontal_compaction_task.cpp
     vertical_compaction_task.cpp
+    virtual_column_utils.cpp
+    extends_column_utils.cpp
     compaction_task_factory.cpp
     default_compaction_policy.cpp
     size_tiered_compaction_policy.cpp
@@ -185,23 +192,37 @@ set(STORAGE_FILES
     primary_key_recover.cpp
     local_primary_key_recover.cpp
     lake/async_delta_writer.cpp
+    lake/async_file_deleter.cpp
     lake/compaction_policy.cpp
     lake/compaction_scheduler.cpp
     lake/compaction_task.cpp
     lake/compaction_task_context.cpp
+    lake/tablet_parallel_compaction_manager.cpp
     lake/horizontal_compaction_task.cpp
     lake/delta_writer.cpp
     lake/vacuum.cpp
+    lake/vacuum_full.cpp
+    lake/vector_index_build_task.cpp
     lake/general_tablet_writer.cpp
     lake/pk_tablet_writer.cpp
+    lake/pk_tablet_sst_writer.cpp
     lake/primary_key_compaction_policy.cpp
+    lake/tablet_reshard_helper.cpp
+    lake/tablet_splitter.cpp
+    lake/tablet_merger.cpp
+    lake/tablet_merger_split_family.cpp
+    lake/tablet_reshard.cpp
     lake/replication_txn_manager.cpp
+    lake/lake_replication_txn_manager.cpp
     lake/rowset.cpp
+    lake/segment_metadata_filter.cpp
     lake/schema_change.cpp
     lake/starlet_location_provider.cpp
     lake/tablet.cpp
     lake/tablet_manager.cpp
     lake/tablet_reader.cpp
+    lake/tablet_range_helper.cpp
+    lake/sst_seek_range.cpp
     lake/transactions.cpp
     lake/metadata_iterator.cpp
     lake/spark_load.cpp
@@ -214,8 +235,16 @@ set(STORAGE_FILES
     lake/cloud_native_index_compaction_task.cpp
     lake/metacache.cpp
     lake/lake_primary_key_recover.cpp
-    lake/load_spill_block_manager.cpp
     lake/spill_mem_table_sink.cpp
+    lake/tablet_retain_info.cpp
+    lake/tablet_writer.cpp
+    lake/lake_persistent_index_parallel_compact_mgr.cpp
+    lake/lake_persistent_index_size_tiered_compaction_strategy.cpp
+    lake/persistent_index_sstable_fileset.cpp
+    lake/lake_persistent_index_key_value_merger.cpp
+    lake/tablet_internal_parallel_merge_task.cpp
+    load_spill_block_manager.cpp
+    load_chunk_spiller.cpp
     sstable/block_builder.cpp
     sstable/block.cpp
     sstable/coding.cpp
@@ -229,6 +258,7 @@ set(STORAGE_FILES
     sstable/iterator.cpp
     sstable/options.cpp
     sstable/merger.cpp
+    sstable/concatenating_iterator.cpp
     lake/lake_delvec_loader.cpp
     binlog_util.cpp
     binlog_file_writer.cpp
@@ -250,11 +280,14 @@ set(STORAGE_FILES
     lake/persistent_index_sstable.cpp
     lake/lake_primary_key_compaction_conflict_resolver.cpp
     lake/column_mode_partial_update_handler.cpp
+    lake/tablet_write_log_manager.cpp
     primary_key_dump.cpp
     dictionary_cache_manager.cpp
     rows_mapper.cpp
     primary_key_compaction_conflict_resolver.cpp
     local_primary_key_compaction_conflict_resolver.cpp
+    load_spill_pipeline_merge_iterator.cpp
+    load_spill_pipeline_merge_context.cpp
     index/inverted/inverted_index_iterator.cpp
     index/inverted/inverted_index_option.cpp
     index/inverted/inverted_plugin_factory.cpp
@@ -270,12 +303,21 @@ set(STORAGE_FILES
     index/vector/tenann_index_reader.cpp
     index/vector/tenann/del_id_filter.cpp
     index/vector/tenann/tenann_index_builder.cpp
-    index/vector/tenann/tenann_index_utils.cpp)
+    index/vector/tenann/tenann_index_utils.cpp
+    lake/table_schema_service.cpp
+    index/inverted/builtin/builtin_plugin.cpp
+    index/inverted/builtin/builtin_inverted_writer.cpp
+    index/inverted/builtin/builtin_inverted_reader.cpp
+    index/inverted/builtin/builtin_inverted_index_iterator.cpp
+    index/inverted/builtin/builtin_simple_analyzer.cpp
+    manual_compaction.cpp)
 
 if (NOT BUILD_FORMAT_LIB)
     list(APPEND STORAGE_FILES  lake/starlet_location_provider.cpp)
 endif()
 
-add_library(Storage STATIC
+ADD_BE_LIB(Storage
     ${STORAGE_FILES}
 )
+
+target_link_libraries(Storage PUBLIC ExecCore Serde)

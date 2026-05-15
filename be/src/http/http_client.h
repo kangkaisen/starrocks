@@ -21,13 +21,13 @@
 
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 
 #include "common/status.h"
 #include "common/statusor.h"
 #include "http/http_headers.h"
 #include "http/http_method.h"
-#include "http/http_response.h"
-#include "http/utils.h"
+
 namespace starrocks {
 
 // Helper class to access HTTP resource
@@ -55,21 +55,24 @@ public:
     }
 
     // content_type such as "application/json"
-    void set_content_type(const std::string& content_type) {
-        std::string scratch_str = "Content-Type: " + content_type;
-        _header_list = curl_slist_append(_header_list, scratch_str.c_str());
-        curl_easy_setopt(_curl, CURLOPT_HTTPHEADER, _header_list);
-    }
+    void set_content_type(const std::string& content_type) { set_header("Content-Type", content_type); }
 
     void set_payload(const std::string& post_body) {
         curl_easy_setopt(_curl, CURLOPT_POSTFIELDSIZE, (long)post_body.length());
         curl_easy_setopt(_curl, CURLOPT_COPYPOSTFIELDS, post_body.c_str());
     }
 
-    // TODO(zc): support set header
-    // void set_header(const std::string& key, const std::string& value) {
-    // _cntl.http_request().SetHeader(key, value);
-    // }
+    // Set HTTP header
+    void set_header(const std::string& key, const std::string& value);
+
+    // Set multiple headers at once
+    void set_headers(const std::unordered_map<std::string, std::string>& headers);
+
+    // Clear all headers
+    void clear_headers();
+
+    // Set Authorization header with Bearer token (useful for LLM APIs)
+    void set_bearer_token(const std::string& token) { set_header("Authorization", "Bearer " + token); }
 
     std::string get_response_content_type() {
         char* ct = nullptr;
@@ -90,6 +93,20 @@ public:
         curl_easy_setopt(_curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(_curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+
+    // Pin DNS resolution to a specific IP address to prevent DNS rebinding attacks
+    // Format: "hostname:port:ip_address" (e.g., "example.com:443:93.184.216.34")
+    // This forces curl to use the specified IP for the given hostname, bypassing DNS resolution
+    void set_resolve_host(const std::string& resolve_entry);
+
+    // Control whether HTTP error status codes (4xx, 5xx) should cause curl to fail
+    // When set to false, the response body will be returned even for HTTP errors
+    void set_fail_on_error(bool fail) { curl_easy_setopt(_curl, CURLOPT_FAILONERROR, fail ? 1L : 0L); }
+
+    // Control whether to follow HTTP redirects (3xx responses)
+    // Default is true (follow redirects). Set to false to disable redirect following,
+    // which is important for SSRF protection in http_request() function.
+    void set_follow_redirects(bool follow) { curl_easy_setopt(_curl, CURLOPT_FOLLOWLOCATION, follow ? 1L : 0L); }
     // used to get content length
     int64_t get_content_length() const {
         // CURLINFO_CONTENT_LENGTH_DOWNLOAD is deprecated since v7.55.0
@@ -133,12 +150,19 @@ public:
 private:
     const char* _to_errmsg(CURLcode code);
 
+    // Apply all headers to curl
+    void _apply_headers();
+
 private:
     CURL* _curl = nullptr;
     using HttpCallback = std::function<bool(const void* data, size_t length)>;
     const HttpCallback* _callback = nullptr;
     char _error_buf[CURL_ERROR_SIZE];
     curl_slist* _header_list = nullptr;
+    curl_slist* _resolve_list = nullptr; // For CURLOPT_RESOLVE (DNS pinning to prevent rebinding)
+
+    // Store headers for easy management
+    std::unordered_map<std::string, std::string> _headers;
 };
 
 } // namespace starrocks

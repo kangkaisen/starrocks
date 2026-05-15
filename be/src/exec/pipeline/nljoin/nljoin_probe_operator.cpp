@@ -14,13 +14,17 @@
 
 #include "exec/pipeline/nljoin/nljoin_probe_operator.h"
 
+#include "base/simd/simd.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
+#include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+#include "exprs/expr_executor.h"
 #include "gen_cpp/PlanNodes_types.h"
 #include "runtime/current_thread.h"
 #include "runtime/descriptors.h"
-#include "simd/simd.h"
+#include "runtime/runtime_state.h"
+#include "storage/chunk_helper.h"
 
 namespace starrocks::pipeline {
 
@@ -29,6 +33,7 @@ NLJoinProbeOperator::NLJoinProbeOperator(OperatorFactory* factory, int32_t id, i
                                          const std::string& sql_join_conjuncts,
                                          const std::vector<ExprContext*>& join_conjuncts,
                                          const std::vector<ExprContext*>& conjunct_ctxs,
+                                         const std::map<SlotId, ExprContext*>& common_expr_ctxs,
                                          const std::vector<SlotDescriptor*>& col_types, size_t probe_column_count,
                                          const std::shared_ptr<NLJoinContext>& cross_join_context)
         : OperatorWithDependency(factory, id, "nestloop_join_probe", plan_node_id, false, driver_sequence),
@@ -38,6 +43,7 @@ NLJoinProbeOperator::NLJoinProbeOperator(OperatorFactory* factory, int32_t id, i
           _sql_join_conjuncts(sql_join_conjuncts),
           _join_conjuncts(join_conjuncts),
           _conjunct_ctxs(conjunct_ctxs),
+          _common_expr_ctxs(common_expr_ctxs),
           _cross_join_context(cross_join_context) {}
 
 Status NLJoinProbeOperator::prepare(RuntimeState* state) {
@@ -80,7 +86,7 @@ void NLJoinProbeOperator::_advance_join_stage(JoinStage stage) const {
     DCHECK_LE(_join_stage, stage) << "current=" << _join_stage << ", advance to " << stage;
     if (_join_stage != stage) {
         _join_stage = stage;
-        VLOG(3) << fmt::format("operator {} enter join_stage {}", _driver_sequence, stage);
+        VLOG(3) << fmt::format("operator {} enter join_stage {}", _driver_sequence, static_cast<int>(stage));
     }
 }
 
@@ -173,7 +179,11 @@ bool NLJoinProbeOperator::_is_left_semi_join() const {
 }
 
 bool NLJoinProbeOperator::_is_left_anti_join() const {
-    return _join_op == TJoinOp::LEFT_ANTI_JOIN;
+    return _join_op == TJoinOp::LEFT_ANTI_JOIN || _join_op == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN;
+}
+
+bool NLJoinProbeOperator::_is_null_aware_left_anti_join() const {
+    return _join_op == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN;
 }
 
 bool NLJoinProbeOperator::_is_build_side_empty() const {
@@ -292,8 +302,68 @@ void NLJoinProbeOperator::iterate_enumerate_chunk(const ChunkPtr& chunk,
     }
 }
 
+Status NLJoinProbeOperator::_eval_nullaware_anti_conjuncts(const ChunkPtr& chunk, FilterPtr* filter) {
+    if (!_join_conjuncts.empty() && chunk && !chunk->is_empty()) {
+        size_t num_rows = chunk->num_rows();
+        auto null_column = NullColumn::create(chunk->num_rows());
+        auto& null_data = null_column->get_data();
+
+        *filter = std::make_shared<Filter>(chunk->num_rows(), 1);
+        auto& filter_data = **filter;
+
+        // for null-aware left anti join, join_conjunct[0] is on-predicate
+        // others are other-conjuncts
+        // process on conjuncts
+        CommonExprEvalScopeGuard guard(chunk, _common_expr_ctxs);
+        RETURN_IF_ERROR(guard.evaluate());
+
+        {
+            ASSIGN_OR_RETURN(ColumnPtr column, _join_conjuncts[0]->evaluate(chunk.get()));
+            size_t num_false = ColumnHelper::count_false_with_notnull(column);
+            // is null or true
+            size_t num_not_false = column->size() - num_false;
+            if (num_not_false == num_rows) {
+                // nothing to do
+            } else if (0 == num_not_false) {
+                (*filter)->assign(num_rows, 0);
+            } else {
+                ColumnHelper::merge_two_anti_filters(column, null_data, filter->get());
+            }
+        }
+
+        // null data
+        for (size_t i = 0; i < num_rows; ++i) {
+            filter_data[i] |= null_data[i];
+        }
+
+        // process other conjucts
+        for (size_t i = 1; i < _join_conjuncts.size(); ++i) {
+            auto* ctx = _join_conjuncts[i];
+            ASSIGN_OR_RETURN(ColumnPtr column, ctx->evaluate(chunk.get()));
+            size_t true_count = ColumnHelper::count_true_with_notnull(column);
+
+            if (true_count == column->size()) {
+                // all hit, skip
+                continue;
+            } else if (0 == true_count) {
+                (*filter)->assign(num_rows, 0);
+                break;
+            } else {
+                bool all_zero = false;
+                ColumnHelper::merge_two_filters(column, filter->get(), &all_zero);
+                if (all_zero) {
+                    chunk->set_num_rows(0);
+                }
+            }
+        }
+    }
+    return Status::OK();
+}
+
 Status NLJoinProbeOperator::_probe_for_inner_join(const ChunkPtr& chunk) {
     if (!_join_conjuncts.empty() && chunk && !chunk->is_empty()) {
+        CommonExprEvalScopeGuard guard(chunk, _common_expr_ctxs);
+        RETURN_IF_ERROR(guard.evaluate());
         RETURN_IF_ERROR(eval_conjuncts_and_in_filters(_join_conjuncts, chunk.get(), nullptr, true));
     }
     return Status::OK();
@@ -311,7 +381,14 @@ Status NLJoinProbeOperator::_probe_for_other_join(const ChunkPtr& chunk) {
     bool apply_filter = (!_is_left_semi_join() && !_is_left_anti_join()) || _is_build_side_empty();
     if (!_join_conjuncts.empty() && chunk && !chunk->is_empty()) {
         size_t rows = chunk->num_rows();
-        RETURN_IF_ERROR(eval_conjuncts_and_in_filters(_join_conjuncts, chunk.get(), &filter, apply_filter));
+        if (_is_null_aware_left_anti_join()) {
+            RETURN_IF_ERROR(_eval_nullaware_anti_conjuncts(chunk, &filter));
+        } else {
+            CommonExprEvalScopeGuard guard(chunk, _common_expr_ctxs);
+            RETURN_IF_ERROR(guard.evaluate());
+            RETURN_IF_ERROR(eval_conjuncts_and_in_filters(_join_conjuncts, chunk.get(), &filter, apply_filter));
+            chunk->check_or_die();
+        }
         DCHECK(!!filter);
         // The filter has not been assigned if no rows matched
         if (chunk->num_rows() == 0) {
@@ -439,13 +516,13 @@ ChunkPtr NLJoinProbeOperator::_permute_chunk_for_inner_join(size_t chunk_size) {
 void NLJoinProbeOperator::_permute_chunk_base_left(ChunkPtr* chunk) {
     for (size_t i = 0; i < _probe_column_count; i++) {
         SlotId slot_id = _col_types[i]->id();
-        ColumnPtr& dest_col = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* dest_col = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         const ColumnPtr& src_col = _probe_chunk->get_column_by_slot_id(slot_id);
         dest_col->append(*src_col);
     }
     for (size_t i = _probe_column_count; i < _col_types.size(); i++) {
         SlotId slot_id = _col_types[i]->id();
-        ColumnPtr& dest_col = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* dest_col = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         const ColumnPtr& src_col = _curr_build_chunk->get_column_by_slot_id(slot_id);
         dest_col->append_value_multiple_times(*src_col, _build_row_current, _probe_chunk->num_rows());
     }
@@ -454,13 +531,13 @@ void NLJoinProbeOperator::_permute_chunk_base_left(ChunkPtr* chunk) {
 void NLJoinProbeOperator::_permute_chunk_base_right(ChunkPtr* chunk) {
     for (size_t i = 0; i < _probe_column_count; i++) {
         SlotId slot_id = _col_types[i]->id();
-        ColumnPtr& dest_col = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* dest_col = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         const ColumnPtr& src_col = _probe_chunk->get_column_by_slot_id(slot_id);
         dest_col->append_value_multiple_times(*src_col, _probe_row_current, _curr_build_chunk->num_rows());
     }
     for (size_t i = _probe_column_count; i < _col_types.size(); i++) {
         SlotId slot_id = _col_types[i]->id();
-        ColumnPtr& dest_col = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* dest_col = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         const ColumnPtr& src_col = _curr_build_chunk->get_column_by_slot_id(slot_id);
         dest_col->append(*src_col);
     }
@@ -520,7 +597,7 @@ Status NLJoinProbeOperator::_permute_probe_row(const ChunkPtr& chunk) {
     for (size_t i = 0; i < _col_types.size(); i++) {
         bool is_probe = i < _probe_column_count;
         SlotDescriptor* slot = _col_types[i];
-        ColumnPtr& dst_col = chunk->get_column_by_slot_id(slot->id());
+        auto* dst_col = chunk->get_column_raw_ptr_by_slot_id(slot->id());
         if (is_probe) {
             ColumnPtr& src_col = _probe_chunk->get_column_by_slot_id(slot->id());
             dst_col->append_value_multiple_times(*src_col, _probe_row_current, cur_build_chunk_rows);
@@ -538,7 +615,7 @@ void NLJoinProbeOperator::_permute_left_join(const ChunkPtr& chunk, size_t probe
     COUNTER_UPDATE(_permute_left_rows_counter, probe_rows);
     for (size_t i = 0; i < _col_types.size(); i++) {
         SlotDescriptor* slot = _col_types[i];
-        ColumnPtr& dst_col = chunk->get_column_by_slot_id(slot->id());
+        auto* dst_col = chunk->get_column_raw_ptr_by_slot_id(slot->id());
         bool is_probe = i < _probe_column_count;
         if (is_probe) {
             ColumnPtr& src_col = _probe_chunk->get_column_by_slot_id(slot->id());
@@ -571,7 +648,7 @@ Status NLJoinProbeOperator::_permute_right_join(size_t chunk_size) {
         ChunkPtr chunk = _init_output_chunk(chunk_size);
         for (size_t col = 0; col < _col_types.size(); col++) {
             SlotDescriptor* slot = _col_types[col];
-            ColumnPtr& dst_col = chunk->get_column_by_slot_id(slot->id());
+            auto* dst_col = chunk->get_column_raw_ptr_by_slot_id(slot->id());
             bool is_probe = col < _probe_column_count;
             if (is_probe) {
                 size_t nonmatched_count = SIMD::count_zero(build_match_flag.data() + match_flag_index, cur_chunk_size);
@@ -579,7 +656,7 @@ Status NLJoinProbeOperator::_permute_right_join(size_t chunk_size) {
                     dst_col->append_nulls(nonmatched_count);
                 }
             } else {
-                ColumnPtr& src_col = _curr_build_chunk->get_column_by_slot_id(slot->id());
+                const ColumnPtr& src_col = _curr_build_chunk->get_column_by_slot_id(slot->id());
                 for (int i = 0; i < cur_chunk_size; i++) {
                     if (!build_match_flag[match_flag_index + i]) {
                         dst_col->append(*src_col, i, 1);
@@ -588,13 +665,12 @@ Status NLJoinProbeOperator::_permute_right_join(size_t chunk_size) {
             }
         }
         permute_rows += chunk->num_rows();
-
-        RETURN_IF_ERROR(eval_conjuncts(_conjunct_ctxs, chunk.get(), nullptr));
+        RETURN_IF_ERROR(_eval_conjuncts(chunk));
         RETURN_IF_ERROR(_output_accumulator.push(std::move(chunk)));
         match_flag_index += cur_chunk_size;
     }
     auto permute_right_rows_counter = ADD_COUNTER(_unique_metrics, "PermuteRightRows", TUnit::UNIT);
-    permute_right_rows_counter->set(permute_rows);
+    COUNTER_SET(permute_right_rows_counter, permute_rows);
     _output_accumulator.finalize();
 
     return Status::OK();
@@ -613,6 +689,14 @@ StatusOr<ChunkPtr> NLJoinProbeOperator::pull_chunk(RuntimeState* state) {
     } else {
         return _pull_chunk_for_other_join(chunk_size);
     }
+}
+
+// eval conjuncts for nest loop join, apply common exprs and conjuncts first
+Status NLJoinProbeOperator::_eval_conjuncts(const ChunkPtr& chunk) {
+    CommonExprEvalScopeGuard guard(chunk, _common_expr_ctxs);
+    RETURN_IF_ERROR(guard.evaluate());
+    RETURN_IF_ERROR(eval_conjuncts(_conjunct_ctxs, chunk.get(), nullptr));
+    return Status::OK();
 }
 
 StatusOr<ChunkPtr> NLJoinProbeOperator::_pull_chunk_for_other_join(size_t chunk_size) {
@@ -639,7 +723,7 @@ StatusOr<ChunkPtr> NLJoinProbeOperator::_pull_chunk_for_other_join(size_t chunk_
         ASSIGN_OR_RETURN(ChunkPtr chunk, _permute_chunk_for_other_join(chunk_size));
         DCHECK(chunk);
         RETURN_IF_ERROR(_probe_for_other_join(chunk));
-        RETURN_IF_ERROR(eval_conjuncts(_conjunct_ctxs, chunk.get(), nullptr));
+        RETURN_IF_ERROR(_eval_conjuncts(chunk));
 
         RETURN_IF_ERROR(_output_accumulator.push(std::move(chunk)));
         if (ChunkPtr res = _output_accumulator.pull()) {
@@ -668,7 +752,7 @@ StatusOr<ChunkPtr> NLJoinProbeOperator::_pull_chunk_for_inner_join(size_t chunk_
         ChunkPtr chunk = _permute_chunk_for_inner_join(chunk_size);
         DCHECK(chunk);
         RETURN_IF_ERROR(_probe_for_inner_join(chunk));
-        RETURN_IF_ERROR(eval_conjuncts(_conjunct_ctxs, chunk.get(), nullptr));
+        RETURN_IF_ERROR(_eval_conjuncts(chunk));
 
         RETURN_IF_ERROR(_output_accumulator.push(std::move(chunk)));
         if (ChunkPtr res = _output_accumulator.pull()) {
@@ -703,21 +787,22 @@ Status NLJoinProbeOperator::push_chunk(RuntimeState* state, const ChunkPtr& chun
     return Status::OK();
 }
 
-void NLJoinProbeOperator::update_exec_stats(RuntimeState* state) {
-    auto ctx = state->query_ctx();
-    if (ctx != nullptr) {
-        ctx->update_pull_rows_stats(_plan_node_id, _pull_row_num_counter->value());
-        if (_conjuncts_input_counter != nullptr && _conjuncts_output_counter != nullptr) {
-            ctx->update_pred_filter_stats(_plan_node_id,
-                                          _conjuncts_input_counter->value() - _conjuncts_output_counter->value());
-        }
-
-        if (_bloom_filter_eval_context.join_runtime_filter_input_counter != nullptr) {
-            int64_t input_rows = _bloom_filter_eval_context.join_runtime_filter_input_counter->value();
-            int64_t output_rows = _bloom_filter_eval_context.join_runtime_filter_output_counter->value();
-            ctx->update_rf_filter_stats(_plan_node_id, input_rows - output_rows);
-        }
+OperatorExecStatsSnapshot NLJoinProbeOperator::exec_stats_snapshot() const {
+    OperatorExecStatsSnapshot snapshot;
+    snapshot.plan_node_id = _plan_node_id;
+    snapshot.update_pull_rows = true;
+    snapshot.pull_rows = COUNTER_VALUE(_pull_row_num_counter);
+    if (_conjuncts_input_counter != nullptr && _conjuncts_output_counter != nullptr) {
+        snapshot.update_pred_filter_rows = true;
+        snapshot.pred_filter_rows = COUNTER_VALUE(_conjuncts_input_counter) - COUNTER_VALUE(_conjuncts_output_counter);
     }
+    if (_bloom_filter_eval_context.join_runtime_filter_input_counter != nullptr) {
+        snapshot.update_rf_filter_rows = true;
+        int64_t input_rows = COUNTER_VALUE(_bloom_filter_eval_context.join_runtime_filter_input_counter);
+        int64_t output_rows = COUNTER_VALUE(_bloom_filter_eval_context.join_runtime_filter_output_counter);
+        snapshot.rf_filter_rows = input_rows - output_rows;
+    }
+    return snapshot;
 }
 
 void NLJoinProbeOperatorFactory::_init_row_desc() {
@@ -736,9 +821,9 @@ void NLJoinProbeOperatorFactory::_init_row_desc() {
 }
 
 OperatorPtr NLJoinProbeOperatorFactory::create(int32_t degree_of_parallelism, int32_t driver_sequence) {
-    return std::make_shared<NLJoinProbeOperator>(this, _id, _plan_node_id, driver_sequence, _join_op,
-                                                 _sql_join_conjuncts, _join_conjuncts, _conjunct_ctxs, _col_types,
-                                                 _probe_column_count, _cross_join_context);
+    return std::make_shared<NLJoinProbeOperator>(
+            this, _id, _plan_node_id, driver_sequence, _join_op, _sql_join_conjuncts, _join_conjuncts, _conjunct_ctxs,
+            _common_expr_ctxs, _col_types, _probe_column_count, _cross_join_context);
 }
 
 Status NLJoinProbeOperatorFactory::prepare(RuntimeState* state) {
@@ -748,17 +833,21 @@ Status NLJoinProbeOperatorFactory::prepare(RuntimeState* state) {
     _cross_join_context->ref();
 
     _init_row_desc();
-    RETURN_IF_ERROR(Expr::prepare(_join_conjuncts, state));
-    RETURN_IF_ERROR(Expr::open(_join_conjuncts, state));
-    RETURN_IF_ERROR(Expr::prepare(_conjunct_ctxs, state));
-    RETURN_IF_ERROR(Expr::open(_conjunct_ctxs, state));
+
+    RETURN_IF_ERROR(ExprExecutor::prepare(_common_expr_ctxs, state));
+    RETURN_IF_ERROR(ExprExecutor::open(_common_expr_ctxs, state));
+    RETURN_IF_ERROR(ExprExecutor::prepare(_join_conjuncts, state));
+    RETURN_IF_ERROR(ExprExecutor::open(_join_conjuncts, state));
+    RETURN_IF_ERROR(ExprExecutor::prepare(_conjunct_ctxs, state));
+    RETURN_IF_ERROR(ExprExecutor::open(_conjunct_ctxs, state));
 
     return Status::OK();
 }
 
 void NLJoinProbeOperatorFactory::close(RuntimeState* state) {
-    Expr::close(_join_conjuncts, state);
-    Expr::close(_conjunct_ctxs, state);
+    ExprExecutor::close(_common_expr_ctxs, state);
+    ExprExecutor::close(_join_conjuncts, state);
+    ExprExecutor::close(_conjunct_ctxs, state);
 
     OperatorWithDependencyFactory::close(state);
 }

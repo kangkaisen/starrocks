@@ -21,6 +21,7 @@ import com.starrocks.common.profile.Tracers;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.feedback.OperatorTuningGuides;
+import com.starrocks.qe.feedback.PlanAdvisorMetrics;
 import com.starrocks.qe.feedback.PlanTuningAdvisor;
 import com.starrocks.qe.feedback.guide.TuningGuide;
 import com.starrocks.qe.feedback.skeleton.SkeletonBuilder;
@@ -68,7 +69,9 @@ public class ApplyTuningGuideRule implements TreeRewriteRule {
 
         // delete the useless tuning guides
         if (!tuningGuides.isUseful()) {
-            PlanTuningAdvisor.getInstance().deleteTuningGuides(tuningGuides.getOriginalQueryId());
+            boolean enablePlanAdvisorBlacklist = taskContext.getOptimizerContext().getSessionVariable()
+                    .isEnablePlanAdvisorBlacklist();
+            PlanTuningAdvisor.getInstance().deleteTuningGuides(tuningGuides.getOriginalQueryId(), enablePlanAdvisorBlacklist);
             return root;
         }
 
@@ -125,6 +128,7 @@ public class ApplyTuningGuideRule implements TreeRewriteRule {
                     if (newOpt.isPresent()) {
                         res = newOpt.get();
                         usedGuides.add(guide);
+                        PlanAdvisorMetrics.increaseGuideApplied(guide);
                     }
                 }
             }

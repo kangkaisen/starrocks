@@ -14,15 +14,15 @@
 package com.starrocks.sql.optimizer.operator;
 
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.Expr;
+import com.google.common.collect.Maps;
 import com.starrocks.catalog.constraint.ForeignKeyConstraint;
 import com.starrocks.catalog.constraint.UniqueConstraint;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.sql.plan.ScalarOperatorToExpr;
-import org.apache.hadoop.shaded.com.google.common.collect.Maps;
 
 import java.util.List;
 import java.util.Map;

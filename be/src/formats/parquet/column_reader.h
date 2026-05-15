@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "cache/block_cache/cache_options.h"
+#include "cache/cache_options.h"
 #include "column/column.h"
 #include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
@@ -88,6 +88,7 @@ struct ColumnReaderOptions {
     const DataCacheOptions* datacache_options;
 };
 
+class ColumnConverter;
 class StoredColumnReader;
 
 struct ColumnDictFilterContext {
@@ -102,6 +103,9 @@ struct ColumnDictFilterContext {
     SlotId slot_id;
     std::vector<std::string> sub_field_path;
     ObjectPool obj_pool;
+    // If set, applied to raw dict values before predicate evaluation.
+    // Required for columns whose physical bytes differ from the logical string form (e.g. UUID).
+    ColumnConverter* dict_value_converter = nullptr;
 
 public:
     Status rewrite_conjunct_ctxs_to_predicate(StoredColumnReader* reader, bool* is_group_filtered);
@@ -138,7 +142,9 @@ public:
     }
 
     virtual Status fill_dst_column(ColumnPtr& dst, ColumnPtr& src) {
-        dst->swap_column(*src);
+        auto* src_col = src->as_mutable_raw_ptr();
+        auto* dst_col = dst->as_mutable_raw_ptr();
+        dst_col->swap_column(*src_col);
         return Status::OK();
     }
 

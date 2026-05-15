@@ -453,7 +453,13 @@ displayed_sidebar: docs
 - 从 3.1.4 版本开始，新搭建集群的主键表持久化索引在表创建时默认打开（如若从低版本升级到 3.1.4 版本则保持不变）。[#33374](https://github.com/StarRocks/starrocks/pull/33374)
 - 新增 FE 参数 `enable_sync_publish` 且默认开启。设置为 `true` 时，主键表导入的 Publish 过程会等 Apply 完成后才返回结果，这样，导入作业返回成功后数据立即可见，但可能会导致主键表导入比原来有延迟。（之前无此参数，导入时 Publish 过程中 Apply 是异步的）。[#27055](https://github.com/StarRocks/starrocks/pull/27055)
 
-## 3.1.3
+## 3.1.3（已下线）
+
+:::tip
+
+此版本已经下线。
+
+:::
 
 发布日期：2023 年 9 月 25 日
 
@@ -549,8 +555,8 @@ displayed_sidebar: docs
 #### 存算分离架构
 
 - 新增支持主键表，暂不支持持久化索引。
-- 支持自增列属性 [AUTO_INCREMENT](https://docs.starrocks.io/zh/docs/sql-reference/sql-statements/auto_increment/)，提供表内全局唯一 ID，简化数据管理。
-- 支持[导入时自动创建分区和使用分区表达式定义分区规则](https://docs.starrocks.io/zh/docs/table_design/expression_partitioning/)，提高了分区创建的易用性和灵活性。
+- 支持自增列属性 [AUTO_INCREMENT](https://docs.starrocks.io/zh/docs/sql-reference/sql-statements/table_bucket_part_index/auto_increment/)，提供表内全局唯一 ID，简化数据管理。
+- 支持[导入时自动创建分区和使用分区表达式定义分区规则](https://docs.starrocks.io/zh/docs/table_design/data_distribution/expression_partitioning/)，提高了分区创建的易用性和灵活性。
 - 支持[存储卷（Storage Volume）抽象](https://docs.starrocks.io/zh/docs/deployment/shared_data/s3/)，方便在存算分离架构中配置存储位置及鉴权等相关信息。后续创建库表时可以直接引用，提升易用性。
 
 #### 数据湖分析

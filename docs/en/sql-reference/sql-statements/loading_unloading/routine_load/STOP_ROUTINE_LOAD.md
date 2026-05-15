@@ -4,11 +4,9 @@ displayed_sidebar: docs
 
 # STOP ROUTINE LOAD
 
-import RoutineLoadPrivNote from '../../../../_assets/commonMarkdown/RoutineLoadPrivNote.md'
+import RoutineLoadPrivNote from '../../../../_assets/commonMarkdown/RoutineLoadPrivNote.mdx'
 
-## Description
-
-Stops a Routine Load job.
+STOP ROUTINE LOAD stops a Routine Load job.
 
 <RoutineLoadPrivNote />
 

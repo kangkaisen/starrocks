@@ -36,20 +36,21 @@ package com.starrocks.planner;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.Analyzer;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.ExprSubstitutionMap;
-import com.starrocks.analysis.SlotDescriptor;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.catalog.AggregateType;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.qe.SimpleScheduler;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
+import com.starrocks.sql.ast.AggregateType;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.ExprSubstitutionMap;
+import com.starrocks.sql.ast.expression.ExprSubstitutionVisitor;
+import com.starrocks.sql.ast.expression.ExprUtils;
+import com.starrocks.sql.ast.expression.SlotRef;
 import com.starrocks.system.ComputeNode;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 
 import java.util.List;
 import java.util.Map;
@@ -60,7 +61,7 @@ public abstract class LoadScanNode extends ScanNode {
         super(id, desc, planNodeName);
     }
 
-    protected void initWhereExpr(Expr whereExpr, Analyzer analyzer) throws StarRocksException {
+    protected void initWhereExpr(Expr whereExpr) throws StarRocksException {
         if (whereExpr == null) {
             return;
         }
@@ -80,13 +81,12 @@ public abstract class LoadScanNode extends ScanNode {
                 throw new StarRocksException("unknown column in where statement. "
                         + "the column '" + slot.getColumnName() + "' in where clause must be in the target table.");
             }
-            smap.getLhs().add(slot);
             SlotRef slotRef = new SlotRef(slotDesc);
             slotRef.setColumnName(slot.getColumnName());
-            smap.getRhs().add(slotRef);
+            smap.put(slot, slotRef);
         }
-        whereExpr = whereExpr.clone(smap);
-        whereExpr = Expr.analyzeAndCastFold(whereExpr);
+        whereExpr = ExprSubstitutionVisitor.rewrite(whereExpr, smap);
+        whereExpr = ExprUtils.analyzeAndCastFold(whereExpr);
 
         if (!whereExpr.getType().isBoolean()) {
             throw new StarRocksException("where statement is not a valid statement return bool");
@@ -94,10 +94,9 @@ public abstract class LoadScanNode extends ScanNode {
         addConjuncts(AnalyzerUtils.extractConjuncts(whereExpr));
     }
 
-    protected void checkBitmapCompatibility(Analyzer analyzer, SlotDescriptor slotDesc, Expr expr)
+    protected void checkBitmapCompatibility(SlotDescriptor slotDesc, Expr expr)
             throws AnalysisException {
         if (slotDesc.getColumn().getAggregationType() == AggregateType.BITMAP_UNION) {
-            expr.analyze(analyzer);
             if (!expr.getType().isBitmapType()) {
                 String errorMsg = String.format("bitmap column %s require the function return type is BITMAP",
                         slotDesc.getColumn().getName());
@@ -109,11 +108,12 @@ public abstract class LoadScanNode extends ScanNode {
     // Return all available nodes under the warehouse to run load scan. Should consider different deployment modes
     // 1. Share-nothing: only backends can be used for scan
     // 2. Share-data: both backends and compute nodes can be used for scan
-    public static List<ComputeNode> getAvailableComputeNodes(long warehouseId) {
+    public static List<ComputeNode> getAvailableComputeNodes(ComputeResource computeResource) {
         List<ComputeNode> nodes = Lists.newArrayList();
         // TODO: need to refactor after be split into cn + dn
         if (RunMode.isSharedDataMode()) {
-            List<Long> computeNodeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouseId);
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            final List<Long> computeNodeIds = warehouseManager.getAllComputeNodeIds(computeResource);
             for (long cnId : computeNodeIds) {
                 ComputeNode cn = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendOrComputeNode(cnId);
                 if (cn != null && cn.isAvailable() && !SimpleScheduler.isInBlocklist(cnId)) {

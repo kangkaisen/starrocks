@@ -14,25 +14,41 @@
 
 #include "storage/merge_iterator.h"
 
-#include <boost/heap/skew_heap.hpp>
 #include <memory>
 #include <queue>
 #include <vector>
 
 #include "column/chunk.h"
-#include "common/config.h"
+#include "exec/sorting/sorting.h"
 #include "gutil/strings/substitute.h"
 #include "storage/chunk_helper.h"
 
 namespace starrocks {
 
 // Compare the row of index |m| in |lhs|, with the row of index |n| in |rhs|.
-inline int compare_chunk(size_t key_columns, const std::vector<uint32_t>& sort_key_idxes, const Chunk& lhs, size_t m,
-                         const Chunk& rhs, size_t n, const std::string& merge_condition) {
-    for (unsigned int sort_key_idx : sort_key_idxes) {
+inline int compare_column(const ColumnPtr& lc, size_t m, const ColumnPtr& rc, size_t n, const SortDesc* sort_desc) {
+    int sort_order = 1;
+    int nan_direction = -1;
+    if (sort_desc) {
+        sort_order = sort_desc->sort_order;
+        nan_direction = sort_desc->nan_direction();
+    }
+    return lc->compare_at(m, n, *rc, nan_direction) * sort_order;
+}
+
+// Compare the row of index |m| in |lhs|, with the row of index |n| in |rhs|.
+inline int compare_chunk(size_t key_columns, const std::vector<uint32_t>& sort_key_idxes,
+                         const std::shared_ptr<SortDescs>& sort_descs, const Chunk& lhs, size_t m, const Chunk& rhs,
+                         size_t n, const std::string& merge_condition) {
+    for (size_t pos = 0; pos < sort_key_idxes.size(); ++pos) {
+        uint32_t sort_key_idx = sort_key_idxes[pos];
         const ColumnPtr& lc = lhs.get_column_by_index(sort_key_idx);
         const ColumnPtr& rc = rhs.get_column_by_index(sort_key_idx);
-        if (int r = lc->compare_at(m, n, *rc, -1); r != 0) {
+        SortDesc* sort_desc = nullptr;
+        if (sort_descs && pos < sort_descs->descs.size()) {
+            sort_desc = &sort_descs->descs[pos];
+        }
+        if (int r = compare_column(lc, m, rc, n, sort_desc); r != 0) {
             return r;
         }
     }
@@ -42,7 +58,7 @@ inline int compare_chunk(size_t key_columns, const std::vector<uint32_t>& sort_k
     if (!merge_condition.empty() && lhs.columns().size() > key_columns) {
         const ColumnPtr& lc = lhs.get_column_by_index(key_columns);
         const ColumnPtr& rc = rhs.get_column_by_index(key_columns);
-        if (int r = lc->compare_at(m, n, *rc, -1); r != 0) {
+        if (int r = compare_column(lc, m, rc, n, nullptr); r != 0) {
             return r;
         }
     }
@@ -74,23 +90,26 @@ protected:
 class ComparableChunk : public MergingChunk {
 public:
     explicit ComparableChunk(Chunk* chunk, size_t order, size_t key_columns, std::vector<uint32_t> sort_key_idxes,
-                             std::string merge_condition)
+                             std::shared_ptr<SortDescs> sort_descs, std::string merge_condition)
             : MergingChunk(chunk),
               _order(order),
               _key_columns(key_columns),
               _sort_key_idxes(std::move(sort_key_idxes)),
+              _sort_descs(std::move(sort_descs)),
               _merge_condition(std::move(merge_condition)) {}
 
     explicit ComparableChunk(Chunk* chunk, size_t order, size_t key_columns, std::vector<uint32_t> sort_key_idxes,
-                             std::string merge_condition, std::shared_ptr<std::vector<uint64_t>> rssid_rowids)
-            : ComparableChunk(chunk, order, key_columns, std::move(sort_key_idxes), std::move(merge_condition)) {
+                             std::shared_ptr<SortDescs> sort_descs, std::string merge_condition,
+                             std::shared_ptr<std::vector<uint64_t>> rssid_rowids)
+            : ComparableChunk(chunk, order, key_columns, std::move(sort_key_idxes), std::move(sort_descs),
+                              std::move(merge_condition)) {
         _rssid_rowids = std::move(rssid_rowids);
     }
 
     bool operator>(const ComparableChunk& rhs) const {
         DCHECK_EQ(_key_columns, rhs._key_columns);
-        int r = compare_chunk(_key_columns, _sort_key_idxes, *_chunk, _compared_row, *rhs._chunk, rhs._compared_row,
-                              _merge_condition);
+        int r = compare_chunk(_key_columns, _sort_key_idxes, _sort_descs, *_chunk, _compared_row, *rhs._chunk,
+                              rhs._compared_row, _merge_condition);
         return (r > 0) | ((r == 0) & (_order > rhs._order));
     }
 
@@ -115,8 +134,8 @@ public:
     }
 
     bool less_than(size_t lhs_row, const ComparableChunk& rhs) {
-        int r = compare_chunk(_key_columns, _sort_key_idxes, *_chunk, lhs_row, *rhs._chunk, rhs._compared_row,
-                              _merge_condition);
+        int r = compare_chunk(_key_columns, _sort_key_idxes, _sort_descs, *_chunk, lhs_row, *rhs._chunk,
+                              rhs._compared_row, _merge_condition);
         return (r < 0) | ((r == 0) & (_order < rhs._order));
     }
 
@@ -127,6 +146,7 @@ private:
     uint16_t _order;
     uint16_t _key_columns;
     std::vector<uint32_t> _sort_key_idxes;
+    std::shared_ptr<SortDescs> _sort_descs;
     std::string _merge_condition;
     std::shared_ptr<std::vector<uint64_t>> _rssid_rowids;
 };
@@ -353,11 +373,11 @@ inline Status HeapMergeIterator::fill(size_t child) {
                     "Merge iterator only supports merging chunks with rows less than $0", max_merge_chunk_size));
         }
         if (need_rssid_rowids) {
-            _heap.push(ComparableChunk{chunk, child, _schema.num_key_fields(), _schema.sort_key_idxes(),
-                                       merge_condition, std::move(rssid_rowids)});
+            _heap.emplace(chunk, child, _schema.num_key_fields(), _schema.sort_key_idxes(), _schema.sort_descs(),
+                          merge_condition, std::move(rssid_rowids));
         } else {
-            _heap.push(
-                    ComparableChunk{chunk, child, _schema.num_key_fields(), _schema.sort_key_idxes(), merge_condition});
+            _heap.emplace(chunk, child, _schema.num_key_fields(), _schema.sort_key_idxes(), _schema.sort_descs(),
+                          merge_condition);
         }
     } else if (st.is_end_of_file()) {
         // ignore Status::EndOfFile.
@@ -477,6 +497,10 @@ inline Status MaskMergeIterator::do_get_next(Chunk* chunk, std::vector<RowSource
         RowSourceMask mask = _mask_buffer->current();
         uint16_t child = mask.get_source_num();
         auto& min_chunk = _chunks[child];
+        if (min_chunk._chunk == nullptr) {
+            return Status::InternalError(strings::Substitute(
+                    "Mask buffer expects more rows from child $0, but child iterator is exhausted", child));
+        }
         DCHECK_GT(min_chunk.remaining_rows(), 0);
 
         size_t offset = min_chunk.compared_row();
@@ -564,8 +588,10 @@ inline Status MaskMergeIterator::fill(size_t child) {
     } else if (st.is_end_of_file()) {
         // ignore Status::EndOfFile.
         close_child(child);
+        _chunks[child]._chunk = nullptr;
     } else {
         close_child(child);
+        _chunks[child]._chunk = nullptr;
         return st;
     }
     return Status::OK();

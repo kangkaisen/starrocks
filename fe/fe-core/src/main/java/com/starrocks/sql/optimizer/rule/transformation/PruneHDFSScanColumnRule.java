@@ -17,9 +17,7 @@ package com.starrocks.sql.optimizer.rule.transformation;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.Column;
-import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
 import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.OptExpression;
@@ -33,6 +31,8 @@ import com.starrocks.sql.optimizer.operator.pattern.MultiOpPattern;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.RuleType;
+import com.starrocks.type.PrimitiveType;
+import com.starrocks.type.Type;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -122,7 +122,7 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
         }
 
         if (scanOperator.getOutputColumns().equals(new ArrayList<>(scanColumns))) {
-            scanOperator.getScanOptimzeOption().setCanUseAnyColumn(canUseAnyColumn);
+            scanOperator.getScanOptimizeOption().setCanUseAnyColumn(canUseAnyColumn);
             return Collections.emptyList();
         } else {
             try {
@@ -137,9 +137,9 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
                                 scanOperator.getColumnMetaToColRefMap(),
                                 scanOperator.getLimit(),
                                 scanOperator.getPredicate());
-                newScanOperator.getScanOptimzeOption().setCanUseAnyColumn(canUseAnyColumn);
+                newScanOperator.getScanOptimizeOption().setCanUseAnyColumn(canUseAnyColumn);
                 newScanOperator.setScanOperatorPredicates(scanOperator.getScanOperatorPredicates());
-                newScanOperator.setTableVersionRange(scanOperator.getTableVersionRange());
+                newScanOperator.setTvrVersionRange(scanOperator.getTvrVersionRange());
 
                 if (newScanOperator.getOpType() == OperatorType.LOGICAL_ICEBERG_SCAN) {
                     LogicalIcebergScanOperator newIcebergScanOp = (LogicalIcebergScanOperator) newScanOperator;
@@ -165,14 +165,32 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
                 scanColumnRefOperators.stream().map(col -> context.getColumnRefFactory().getColumn(col)).
                         collect(Collectors.toList());
         partitionColumns.retainAll(scanColumns);
-        if (partitionColumns.stream().map(Column::getType).anyMatch(this::notSupportedPartitionColumnType)) {
+        if (table.isIcebergTable()) {
+            if (partitionColumns.stream().map(Column::getType).anyMatch(this::icebergNotSupportedPartitionColumnType)) {
+                throw new StarRocksPlannerException("Iceberg table partition by float/double/decimalV2 datatype is not supported",
+                        ErrorType.UNSUPPORTED);
+            }
+        } else if (table.isHiveTable()) {
+            if (partitionColumns.stream().map(Column::getType).anyMatch(this::hiveNotSupportedPartitionColumnType)) {
+                throw new StarRocksPlannerException("Hive table partition by decimalV2 datatype is not supported",
+                        ErrorType.UNSUPPORTED);
+            }
+        } else if (partitionColumns.stream().map(Column::getType).anyMatch(this::notSupportedPartitionColumnType)) {
             throw new StarRocksPlannerException("Table partition by float/double/decimal datatype is not supported",
                     ErrorType.UNSUPPORTED);
         }
     }
 
+    private boolean hiveNotSupportedPartitionColumnType(Type type) {
+        return type.isDecimalV2();
+    }
+
     private boolean notSupportedPartitionColumnType(Type type) {
         return type.isFloat() || type.isDouble() || type.isDecimalOfAnyVersion();
+    }
+
+    private boolean icebergNotSupportedPartitionColumnType(Type type) {
+        return type.isFloat() || type.isDouble() || type.isDecimalV2();
     }
 
     private boolean containsMaterializedColumn(LogicalScanOperator scanOperator, Set<ColumnRefOperator> scanColumns) {

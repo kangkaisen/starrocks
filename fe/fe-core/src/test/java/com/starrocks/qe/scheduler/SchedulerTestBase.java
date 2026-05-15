@@ -39,6 +39,8 @@ import com.starrocks.thrift.FrontendService;
 import com.starrocks.thrift.TFinishSlotRequirementRequest;
 import com.starrocks.thrift.TFinishSlotRequirementResponse;
 import com.starrocks.thrift.TNetworkAddress;
+import com.starrocks.thrift.TNotifyForwardDeploymentFinishedRequest;
+import com.starrocks.thrift.TNotifyForwardDeploymentFinishedRespone;
 import com.starrocks.thrift.TReleaseSlotRequest;
 import com.starrocks.thrift.TReleaseSlotResponse;
 import com.starrocks.thrift.TRequireSlotRequest;
@@ -47,9 +49,10 @@ import com.starrocks.thrift.TWorkGroup;
 import com.starrocks.utframe.MockGenericPool;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
+import org.apache.thrift.TException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -72,7 +75,7 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
     protected final Map<Long, ResourceGroup> mockedGroups = new ConcurrentHashMap<>();
     protected final QueryQueueManager manager = QueryQueueManager.getInstance();
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         SchedulerTestNoneDBBase.beforeClass();
         starRocksAssert.getCtx().getSessionVariable().setCboPushDownAggregateMode(-1);
@@ -112,7 +115,7 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
                 "    \"replication_num\" = \"1\"\n" +
                 ");\n");
 
-        starRocksAssert.withTable("CREATE TABLE `lineitem_partition` (\n" +
+        String lineItemSql = "CREATE TABLE `lineitem_partition` (\n" +
                 "  `L_ORDERKEY` int(11) NOT NULL COMMENT \"\",\n" +
                 "  `L_PARTKEY` int(11) NOT NULL COMMENT \"\",\n" +
                 "  `L_SUPPKEY` int(11) NOT NULL COMMENT \"\",\n" +
@@ -144,7 +147,14 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
                 "PROPERTIES (\n" +
                 "    \"replication_num\" = \"1\",\n" +
                 "    \"colocate_with\" = \"" + tpchGroup + "\"\n" +
-                ");");
+                ");";
+        starRocksAssert.withTable(lineItemSql);
+        starRocksAssert.withTable(lineItemSql.replace("lineitem_partition", "lineitem0"));
+        starRocksAssert.withTable(lineItemSql.replace("lineitem_partition", "lineitem1"));
+        starRocksAssert.withTable(
+                lineItemSql.replace("lineitem_partition", "lineitem2").replace(tpchGroup, tpchGroup + "xx"));
+        starRocksAssert.withTable(
+                lineItemSql.replace("lineitem_partition", "lineitem3").replace(tpchGroup, tpchGroup + "xx"));
 
         starRocksAssert.withTable("CREATE TABLE customer (\n" +
                 "    c_custkey       INT NOT NULL,\n" +
@@ -262,7 +272,7 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
 
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         FeConstants.runningUnitTest = false;
 
@@ -290,6 +300,12 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
         public TFinishSlotRequirementResponse finishSlotRequirement(TFinishSlotRequirementRequest request)
                 throws org.apache.thrift.TException {
             return frontendService.finishSlotRequirement(request);
+        }
+
+        @Override
+        public TNotifyForwardDeploymentFinishedRespone notifyForwardDeploymentFinished(
+                TNotifyForwardDeploymentFinishedRequest request) throws TException {
+            return frontendService.notifyForwardDeploymentFinished(request);
         }
     }
 
@@ -386,7 +402,7 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
         FrontendHbResponse hbResponse;
         if (isAlive) {
             hbResponse = new FrontendHbResponse(fe.getNodeName(), fe.getQueryPort(), fe.getRpcPort(),
-                    fe.getReplayedJournalId(), fe.getLastUpdateTime(), startTimeMs, fe.getFeVersion(), 0.5f);
+                    fe.getReplayedJournalId(), fe.getLastUpdateTime(), startTimeMs, fe.getFeVersion(), 0.5f, 1, null);
         } else {
             hbResponse = new FrontendHbResponse(fe.getNodeName(), "mock-dead-frontend");
         }
@@ -396,8 +412,8 @@ public class SchedulerTestBase extends SchedulerTestNoneDBBase {
     protected DefaultCoordinator runNoPendingQuery() throws Exception {
         DefaultCoordinator coord = getSchedulerWithQueryId("select count(1) from lineitem");
         manager.maybeWait(connectContext, coord);
-        Assert.assertEquals(0L, MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue().longValue());
-        Assert.assertEquals(LogicalSlot.State.ALLOCATED, coord.getSlot().getState());
+        Assertions.assertEquals(0L, MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue().longValue());
+        Assertions.assertEquals(LogicalSlot.State.ALLOCATED, coord.getSlot().getState());
         return coord;
     }
 

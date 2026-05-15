@@ -16,15 +16,14 @@
 
 #include <queue>
 
+#include "exec/aggregator.h"
 #include "exec/analytor.h"
 #include "exec/chunks_sorter.h"
 #include "exec/partition/chunks_partitioner.h"
-#include "runtime/runtime_state.h"
+#include "runtime/runtime_state_fwd.h"
 
 namespace starrocks {
 class RuntimeFilterBuildDescriptor;
-
-struct FunctionTypes;
 } // namespace starrocks
 
 namespace starrocks::pipeline {
@@ -57,7 +56,7 @@ struct PreAggState {
     std::vector<Columns> _agg_input_columns;
     //raw pointers in order to get multi-column values
     std::vector<std::vector<const Column*>> _agg_input_raw_columns;
-    std::vector<FunctionTypes> _agg_fn_types;
+    std::vector<AggFunctionTypes> _agg_fn_types;
     // every partition has one Agg State
     std::vector<ManagedFunctionStatesPtr<PreAggState>> _managed_fn_states;
 };
@@ -76,12 +75,14 @@ class LocalPartitionTopnContext {
     friend class ManagedFunctionStates<LocalPartitionTopnContext>;
 
 public:
-    LocalPartitionTopnContext(const std::vector<TExpr>& t_partition_exprs, bool has_nullable_key, bool enable_pre_agg,
-                              const std::vector<TExpr>& t_pre_agg_exprs,
+    LocalPartitionTopnContext(const std::vector<TExpr>& t_partition_exprs, bool has_outer_join_child,
+                              bool enable_pre_agg, const std::vector<TExpr>& t_pre_agg_exprs,
                               const std::vector<TSlotId>& t_pre_agg_output_slot_id,
                               const std::vector<ExprContext*>& sort_exprs, std::vector<bool> is_asc_order,
                               std::vector<bool> is_null_first, std::string sort_keys, int64_t offset,
                               int64_t partition_limit, const TTopNType::type topn_type);
+
+    ~LocalPartitionTopnContext() = default;
 
     Status prepare(RuntimeState* state, RuntimeProfile* runtime_profile);
 
@@ -131,35 +132,18 @@ private:
 
     Status _evaluate_agg_input_columns(Chunk* chunk);
 
-    Columns _create_agg_result_columns(size_t num_rows);
+    MutableColumns _create_agg_result_columns(size_t num_rows);
     const std::vector<TExpr>& _t_partition_exprs;
     std::vector<ExprContext*> _partition_exprs;
     std::vector<PartitionColumnType> _partition_types;
     bool _has_nullable_key = false;
+    bool _has_outer_join_child = false;
 
-    // only set when _enable_pre_agg=true
+    // used in preagg
+    std::unique_ptr<MemPool> _mem_pool = nullptr;
     bool _enable_pre_agg;
+    // only set when _enable_pre_agg=true
     std::unique_ptr<PreAggState> _pre_agg;
-    // bool _is_first_chunk_of_current_sorter = true;
-    // const std::vector<TExpr>& _t_pre_agg_exprs;
-    // const std::vector<TSlotId>& _t_pre_agg_output_slot_id;
-
-    // // The offset of the n-th aggregate function in a row of aggregate functions.
-    // std::vector<size_t> _agg_states_offsets;
-    // // The total size of the row for the aggregate function state.
-    // size_t _agg_states_total_size = 0;
-    // // The max align size for all aggregate state
-    // size_t _max_agg_state_align_size = 1;
-    // // The followings are aggregate function information:
-    // std::vector<FunctionContext*> _agg_fn_ctxs;
-    // std::vector<const AggregateFunction*> _agg_functions;
-    // std::vector<std::vector<ExprContext*>> _agg_expr_ctxs;
-    // std::vector<Columns> _agg_input_columns;
-    // //raw pointers in order to get multi-column values
-    // std::vector<std::vector<const Column*>> _agg_input_raw_columns;
-    // std::vector<FunctionTypes> _agg_fn_types;
-    // // every partition has one Agg State
-    // std::vector<ManagedFunctionStatesPtr<LocalPartitionTopnContext>> _managed_fn_states;
 
     // No more input chunks if after _is_sink_complete is set to true
     bool _is_sink_complete = false;
@@ -179,8 +163,6 @@ private:
     const TTopNType::type _topn_type;
 
     int32_t _sorter_index = 0;
-
-    std::unique_ptr<MemPool> _mem_pool = nullptr;
 
     PipeObservable _observable;
 };

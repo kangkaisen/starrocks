@@ -1,4 +1,4 @@
--- name: test_array_map_2
+-- name: test_array_map_2 @mac
 CREATE TABLE `array_map_test` (
   `id` tinyint(4) NOT NULL COMMENT "",
   `arr_str` array<string> NULL COMMENT "",
@@ -219,4 +219,27 @@ set @arr=array_generate(1,10000);
 select /*+ SET_VAR(query_mem_limit=104857600)*/array_sum(array_map(x->array_contains(@arr,x), array_generate(1,100000)));
 -- result:
 10000
+-- !result
+CREATE TABLE `array_map_x` (
+  `id` tinyint(4) NOT NULL COMMENT "",
+  `arr_str` array<varchar(65533)> NULL COMMENT "",
+  `arr_largeint` array<largeint(40)> NULL COMMENT ""
+) ENGINE=OLAP 
+DUPLICATE KEY(`id`)
+DISTRIBUTED BY RANDOM
+PROPERTIES (
+"replication_num" = "1"
+);
+-- result:
+-- !result
+insert into array_map_x values (1, array_repeat("abcdefghasdasdasirnqwrq", 2), array_repeat(100, 2));
+-- result:
+-- !result
+select cast(if (1 > rand(), "[]", "") as array<string>) l , array_map((x)-> (concat(x,l)), arr_str) from array_map_x;
+-- result:
+[]	[["abcdefghasdasdasirnqwrq"],["abcdefghasdasdasirnqwrq"]]
+-- !result
+SELECT cast(array_map(x->cast(json_query(x, '$.Id') as varchar), ['a','b']) as array<varchar>);
+-- result:
+[null,null]
 -- !result

@@ -39,14 +39,11 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.catalog.MaterializedIndex.IndexExtState;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.memory.estimate.IgnoreMemoryTrack;
 import com.starrocks.persist.gson.GsonPostProcessable;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 
-import java.io.DataInput;
-import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +56,7 @@ import java.util.Set;
 public class TempPartitions implements Writable, GsonPostProcessable {
     @SerializedName(value = "idToPartition")
     private Map<Long, Partition> idToPartition = Maps.newHashMap();
+    @IgnoreMemoryTrack
     private Map<String, Partition> nameToPartition = Maps.newHashMap();
     @Deprecated
     // the range info of temp partitions has been moved to "partitionInfo" in OlapTable.
@@ -85,7 +83,7 @@ public class TempPartitions implements Writable, GsonPostProcessable {
             if (!GlobalStateMgr.isCheckpointThread() && needDropTablet) {
                 TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentState().getTabletInvertedIndex();
                 for (MaterializedIndex index :
-                        partition.getDefaultPhysicalPartition().getMaterializedIndices(IndexExtState.ALL)) {
+                        partition.getDefaultPhysicalPartition().getAllMaterializedIndices(IndexExtState.ALL)) {
                     for (Tablet tablet : index.getTablets()) {
                         invertedIndex.deleteTablet(tablet.getId());
                     }
@@ -130,13 +128,6 @@ public class TempPartitions implements Writable, GsonPostProcessable {
         for (String partName : partNames) {
             dropPartition(partName, true);
         }
-    }
-
-
-
-    public static TempPartitions read(DataInput in) throws IOException {
-        String json = Text.readString(in);
-        return GsonUtils.GSON.fromJson(json, TempPartitions.class);
     }
 
     @Override

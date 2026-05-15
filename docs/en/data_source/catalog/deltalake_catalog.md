@@ -1,23 +1,15 @@
 ---
 displayed_sidebar: docs
 toc_max_heading_level: 5
+description: "Query data directly from Delta Lake"
 ---
+import Intro from '../../_assets/catalog/_deltalake_intro.mdx'
+import DatabricksMetaParams from '../../_assets/catalog/_databricks_meta_params.mdx'
+import DatabricksDataParams from '../../_assets/catalog/_databricks_data_params.mdx'
 
 # Delta Lake catalog
 
-A Delta Lake catalog is a kind of external catalog that enables you to query data from Delta Lake without ingestion.
-
-Also, you can directly transform and load data from Delta Lake by using [INSERT INTO](../../sql-reference/sql-statements/loading_unloading/INSERT.md) based on Delta Lake catalogs. StarRocks supports Delta Lake catalogs from v2.5 onwards.
-
-To ensure successful SQL workloads on your Delta Lake cluster, your StarRocks cluster must be able to access the storage system and metastore of your Delta Lake cluster. StarRocks supports the following storage systems and metastores:
-
-- Distributed file system (HDFS) or object storage like AWS S3, Microsoft Azure Storage, Google GCS, or other S3-compatible storage system (for example, MinIO)
-
-- Metastore like Hive metastore or AWS Glue
-
-  > **NOTE**
-  >
-  > If you choose AWS S3 as storage, you can use HMS or AWS Glue as metastore. If you choose any other storage system, you can only use HMS as metastore.
+<Intro />
 
 ## Usage notes
 
@@ -52,9 +44,9 @@ If you choose HDFS as storage, configure your StarRocks cluster as follows:
   - High availability (HA) is enabled for your HDFS cluster: Add the **hdfs-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE or the **$CN_HOME/conf** path of each CN.
   - View File System (ViewFs) is enabled for your HDFS cluster: Add the **core-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE or the **$CN_HOME/conf** path of each CN.
 
-> **NOTE**
->
-> If an error indicating an unknown host is returned when you send a query, you must add the mapping between the host names and IP addresses of your HDFS cluster nodes to the **/etc/hosts** path.
+  :::note
+  If an error indicating an unknown host is returned when you send a query, you must add the mapping between the host names and IP addresses of your HDFS cluster nodes to the **/etc/hosts** path.
+  :::
 
 ### Kerberos authentication
 
@@ -109,9 +101,9 @@ If you choose Hive metastore as the metastore of your data source, configure `Me
 "hive.metastore.uris" = "<hive_metastore_uri>"
 ```
 
-> **NOTE**
->
-> Before querying Delta Lake data, you must add the mapping between the host names and IP addresses of your Hive metastore nodes to the `/etc/hosts` path. Otherwise, StarRocks may fail to access your Hive metastore when you start a query.
+:::note
+Before querying Delta Lake data, you must add the mapping between the host names and IP addresses of your Hive metastore nodes to the `/etc/hosts` path. Otherwise, StarRocks may fail to access your Hive metastore when you start a query.
+:::
 
 The following table describes the parameter you need to configure in `MetastoreParams`.
 
@@ -164,6 +156,8 @@ The following table describes the parameters you need to configure in `Metastore
 
 For information about how to choose an authentication method for accessing AWS Glue and how to configure an access control policy in the AWS IAM Console, see [Authentication parameters for accessing AWS Glue](../../integrations/authenticate_to_aws_resources.md#authentication-parameters-for-accessing-aws-glue).
 
+<DatabricksMetaParams />
+
 #### StorageCredentialParams
 
 A set of parameters about how StarRocks integrates with your storage system. This parameter set is optional.
@@ -171,6 +165,8 @@ A set of parameters about how StarRocks integrates with your storage system. Thi
 If you use HDFS as storage, you do not need to configure `StorageCredentialParams`.
 
 If you use AWS S3, other S3-compatible storage system, Microsoft Azure Storage, or Google GCS as storage, you must configure `StorageCredentialParams`.
+
+<DatabricksDataParams />
 
 ##### AWS S3
 
@@ -324,6 +320,22 @@ If you choose Data Lake Storage Gen2 as storage for your Delta Lake cluster, tak
   | azure.adls2.oauth2_client_secret   | Yes          | The value of the new client (application) secret created.    |
   | azure.adls2.oauth2_client_endpoint | Yes          | The OAuth 2.0 token endpoint (v1) of the service principal or application. |
 
+- To choose the Workload Identity authentication method, configure `StorageCredentialParams` as follows:
+
+  ```SQL
+  "azure.adls2.oauth2_token_file" = "<path_to_token>",
+  "azure.adls2.oauth2_tenant_id" = "<service_principal_tenant_id>",
+  "azure.adls2.oauth2_client_id" = "<service_client_id>"
+  ```
+
+  The following table describes the parameters you need to configure in `StorageCredentialParams`.
+
+  | **Parameter**                           | **Required** | **Description**                                              |
+  | --------------------------------------- | ------------ | ------------------------------------------------------------ |
+  | azure.adls2.oauth2_token_file           | Yes          | The absolute file path to the OAuth2 token file projected into the pod by the Azure Workload Identity webhook. |
+  | azure.adls2.oauth2_tenant_id            | Yes          | The ID of the tenant whose data you want to access.          |
+  | azure.adls2.oauth2_client_id            | Yes          | The client ID (application ID) of the Azure AD application (user-assigned managed identity or app registration) associated with the workload identity. |
+
 ###### Azure Data Lake Storage Gen1
 
 If you choose Data Lake Storage Gen1 as storage for your Delta Lake cluster, take one of the following actions:
@@ -370,7 +382,7 @@ If you choose Google GCS as storage for your Delta Lake cluster, take one of the
 
   The following table describes the parameters you need to configure in `StorageCredentialParams`.
 
-  | **Parameter**                              | **Default value** | **Value** **example** | **Description**                                              |
+  | **Parameter**                              | **Default value** | **Value example** | **Description**                                              |
   | ------------------------------------------ | ----------------- | --------------------- | ------------------------------------------------------------ |
   | gcp.gcs.use_compute_engine_service_account | false             | true                  | Specifies whether to directly use the service account that is bound to your Compute Engine. |
 
@@ -384,9 +396,9 @@ If you choose Google GCS as storage for your Delta Lake cluster, take one of the
 
   The following table describes the parameters you need to configure in `StorageCredentialParams`.
 
-  | **Parameter**                          | **Default value** | **Value** **example**                                        | **Description**                                              |
+  | **Parameter**                          | **Default value** | **Value example**                                        | **Description**                                              |
   | -------------------------------------- | ----------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-  | gcp.gcs.service_account_email          | ""                | "[user@hello.iam.gserviceaccount.com](mailto:user@hello.iam.gserviceaccount.com)" | The email address in the JSON file generated at the creation of the service account. |
+  | gcp.gcs.service_account_email          | ""                | `"user@hello.iam.gserviceaccount.com"` | The email address in the JSON file generated at the creation of the service account. |
   | gcp.gcs.service_account_private_key_id | ""                | "61d257bd8479547cb3e04f0b9b6b9ca07af3b7ea"                   | The private key ID in the JSON file generated at the creation of the service account. |
   | gcp.gcs.service_account_private_key    | ""                | "-----BEGIN PRIVATE KEY----xxxx-----END PRIVATE KEY-----\n"  | The private key in the JSON file generated at the creation of the service account. |
 
@@ -401,7 +413,7 @@ If you choose Google GCS as storage for your Delta Lake cluster, take one of the
 
     The following table describes the parameters you need to configure in `StorageCredentialParams`.
 
-    | **Parameter**                              | **Default value** | **Value** **example** | **Description**                                              |
+    | **Parameter**                              | **Default value** | **Value example** | **Description**                                              |
     | ------------------------------------------ | ----------------- | --------------------- | ------------------------------------------------------------ |
     | gcp.gcs.use_compute_engine_service_account | false             | true                  | Specifies whether to directly use the service account that is bound to your Compute Engine. |
     | gcp.gcs.impersonation_service_account      | ""                | "hello"               | The service account that you want to impersonate.            |
@@ -417,9 +429,9 @@ If you choose Google GCS as storage for your Delta Lake cluster, take one of the
 
     The following table describes the parameters you need to configure in `StorageCredentialParams`.
 
-    | **Parameter**                          | **Default value** | **Value** **example**                                        | **Description**                                              |
+    | **Parameter**                          | **Default value** | **Value example**                                        | **Description**                                              |
     | -------------------------------------- | ----------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-    | gcp.gcs.service_account_email          | ""                | "[user@hello.iam.gserviceaccount.com](mailto:user@hello.iam.gserviceaccount.com)" | The email address in the JSON file generated at the creation of the meta service account. |
+    | gcp.gcs.service_account_email          | ""                | `"user@hello.iam.gserviceaccount.com"` | The email address in the JSON file generated at the creation of the meta service account. |
     | gcp.gcs.service_account_private_key_id | ""                | "61d257bd8479547cb3e04f0b9b6b9ca07af3b7ea"                   | The private key ID in the JSON file generated at the creation of the meta service account. |
     | gcp.gcs.service_account_private_key    | ""                | "-----BEGIN PRIVATE KEY----xxxx-----END PRIVATE KEY-----\n"  | The private key in the JSON file generated at the creation of the meta service account. |
     | gcp.gcs.impersonation_service_account  | ""                | "hello"                                                      | The data service account that you want to impersonate.       |
@@ -432,12 +444,12 @@ From v3.3.3 onwards, Delta Lake Catalog supports [Metadata Local Cache and Retri
 
 However, if the frequency of data updates in Delta Lake is high, you can tune these parameters to further optimize the performance of automatic asynchronous updates.
 
-> **NOTE**
->
-> In most cases, if your Delta Lake data is updated at a granularity of 1 hour or less, the data update frequency is considered high.
+:::note
+In most cases, if your Delta Lake data is updated at a granularity of 1 hour or less, the data update frequency is considered high.
+:::
 
-| **Parameter**                                      | **Unit** | **Default** | **Description**                                |
-|----------------------------------------------------| -------- | ------------------------------------------------------------ |
+| **Parameter**                                      | **Unit** | **Default** | **Description**                                                                    |
+|----------------------------------------------------| -------- | -------------|---------------------------------------------------------------------------------- |
 | enable_deltalake_table_cache                       | -        | true         | Whether to enable Table Cache in the metadata cache for Delta Lake. |
 | enable_deltalake_json_meta_cache                   | -        | true         | Whether to enable cache for Delta Log JSON files. |
 | deltalake_json_meta_cache_ttl_sec                  | Second   | 48 * 60 * 60 | Time-To-Live (TTL) for the Delta Log JSON file cache. |
@@ -696,6 +708,21 @@ PROPERTIES
   );
   ```
 
+- If you choose the Workload Identity authentication method, run a command like below:
+
+  ```SQL
+  CREATE EXTERNAL CATALOG deltalake_catalog_hms
+  PROPERTIES
+  (
+      "type" = "deltalake",
+      "hive.metastore.type" = "hive",
+      "hive.metastore.uris" = "thrift://xx.xx.xx.xx:9083",
+      "azure.adls2.oauth2_token_file" = "/var/run/secrets/azure/tokens/azure-identity-token",
+      "azure.adls2.oauth2_tenant_id" = "<service_principal_tenant_id>",
+      "azure.adls2.oauth2_client_id" = "<service_client_id>"
+  );
+  ```
+
 #### Google GCS
 
 - If you choose the VM-based authentication method, run a command like below:
@@ -827,7 +854,7 @@ You can use one of the following syntaxes to view the schema of a Delta Lake tab
 
 2. [Switch to a Delta Lake Catalog and a database in it](#switch-to-a-delta-lake-catalog-and-a-database-in-it).
 
-3. Use [SELECT](../../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) to query the destination table in the specified database:
+3. Use [SELECT](../../sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT.md) to query the destination table in the specified database:
 
    ```SQL
    SELECT count(*) FROM <table_name> LIMIT 10

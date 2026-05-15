@@ -14,11 +14,28 @@
 
 #include "storage/push_utils.h"
 
+#include "column/column_builder.h"
+#include "column/column_helper.h"
+#include "column/column_viewer.h"
+#include "common/config_exec_fwd.h"
+#include "exec/file_scanner/file_scanner.h"
+#include "exec/file_scanner/parquet_scanner.h"
+#include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
+#include "runtime/runtime_state.h"
+#include "storage/chunk_helper.h"
+
 namespace starrocks {
 
 PushBrokerReader::~PushBrokerReader() {
     _counter.reset();
     _scanner.reset();
+}
+
+Status PushBrokerReader::close() {
+    _scanner->close();
+    _ready = false;
+    return Status::OK();
 }
 
 Status PushBrokerReader::init(const TBrokerScanRange& t_scan_range, const TPushReq& request) {
@@ -49,7 +66,7 @@ Status PushBrokerReader::init(const TBrokerScanRange& t_scan_range, const TPushR
     _runtime_profile = _runtime_state->runtime_profile();
     _runtime_profile->set_name("PushBrokerReader");
 
-    _runtime_state->init_mem_trackers(dummy_id);
+    _runtime_state->init_mem_trackers(dummy_id, ExecEnv::GetInstance()->query_pool_mem_tracker());
 
     // init tuple desc
     auto tuple_id = t_scan_range.params.dest_tuple_id;
@@ -138,7 +155,7 @@ ColumnPtr PushBrokerReader::_padding_char_column(const ColumnPtr& column, const 
                                                  size_t num_rows) {
     const Column* data_column = ColumnHelper::get_data_column(column.get());
     const auto* binary = down_cast<const BinaryColumn*>(data_column);
-    const Offsets& offset = binary->get_offset();
+    const auto offsets = binary->get_offset();
     uint32_t len = slot_desc->type().len;
 
     // Padding 0 to CHAR field, the storage bitmap index and zone map need it.
@@ -149,10 +166,10 @@ ColumnPtr PushBrokerReader::_padding_char_column(const ColumnPtr& column, const 
     new_bytes.assign(num_rows * len, 0); // padding 0
 
     uint32_t from = 0;
-    const Bytes& bytes = binary->get_bytes();
+    auto bytes = binary->get_immutable_bytes();
     for (size_t i = 0; i < num_rows; ++i) {
-        uint32_t copy_data_len = std::min(len, offset[i + 1] - offset[i]);
-        strings::memcpy_inlined(new_bytes.data() + from, bytes.data() + offset[i], copy_data_len);
+        uint32_t copy_data_len = std::min(len, offsets[i + 1] - offsets[i]);
+        strings::memcpy_inlined(new_bytes.data() + from, bytes.data() + offsets[i], copy_data_len);
         from += len; // no copy data will be 0
     }
 
@@ -174,7 +191,7 @@ Status PushBrokerReader::_convert_chunk(const ChunkPtr& from, ChunkPtr* to) {
     size_t num_rows = from->num_rows();
     for (int i = 0; i < from->num_columns(); ++i) {
         auto from_col = from->get_column_by_index(i);
-        auto to_col = (*to)->get_column_by_index(i);
+        auto* to_col = (*to)->get_column_raw_ptr_by_index(i);
 
         const SlotDescriptor* slot_desc = _tuple_desc->slots().at(i);
         const TypeDescriptor& type_desc = slot_desc->type();

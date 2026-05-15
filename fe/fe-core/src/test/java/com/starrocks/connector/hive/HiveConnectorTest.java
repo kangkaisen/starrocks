@@ -18,7 +18,6 @@ package com.starrocks.connector.hive;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.starrocks.catalog.HiveTable;
-import com.starrocks.catalog.ScalarType;
 import com.starrocks.common.FeConstants;
 import com.starrocks.connector.CachingRemoteFileConf;
 import com.starrocks.connector.CachingRemoteFileIO;
@@ -26,14 +25,15 @@ import com.starrocks.connector.ConnectorContext;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.MetastoreType;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.type.IntegerType;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -51,7 +51,7 @@ public class HiveConnectorTest {
     private ExecutorService executorForRemoteFileRefresh;
     private ExecutorService executorForPullFiles;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         executorForHmsRefresh = Executors.newFixedThreadPool(5);
         executorForRemoteFileRefresh = Executors.newFixedThreadPool(5);
@@ -66,10 +66,10 @@ public class HiveConnectorTest {
         FileSystem fs = new MockedRemoteFileSystem(HDFS_HIVE_TABLE);
         hiveRemoteFileIO.setFileSystem(fs);
         cachingRemoteFileIO = CachingRemoteFileIO.createCatalogLevelInstance(
-                hiveRemoteFileIO, executorForRemoteFileRefresh, 100, 10, 10);
+                hiveRemoteFileIO, executorForRemoteFileRefresh, 100, 10, 0.1);
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         executorForHmsRefresh.shutdown();
         executorForRemoteFileRefresh.shutdown();
@@ -104,17 +104,17 @@ public class HiveConnectorTest {
 
         HiveConnector hiveConnector = new HiveConnector(new ConnectorContext("hive_catalog", "hive", properties));
         ConnectorMetadata metadata = hiveConnector.getMetadata();
-        Assert.assertTrue(metadata instanceof HiveMetadata);
+        Assertions.assertTrue(metadata instanceof HiveMetadata);
         com.starrocks.catalog.Table table = metadata.getTable(new ConnectContext(), "db1", "tbl1");
         HiveTable hiveTable = (HiveTable) table;
-        Assert.assertEquals("db1", hiveTable.getCatalogDBName());
-        Assert.assertEquals("tbl1", hiveTable.getCatalogTableName());
-        Assert.assertEquals(Lists.newArrayList("col1"), hiveTable.getPartitionColumnNames());
-        Assert.assertEquals(Lists.newArrayList("col2"), hiveTable.getDataColumnNames());
-        Assert.assertEquals("hdfs://127.0.0.1:10000/hive", hiveTable.getTableLocation());
-        Assert.assertEquals(ScalarType.INT, hiveTable.getPartitionColumns().get(0).getType());
-        Assert.assertEquals(ScalarType.INT, hiveTable.getBaseSchema().get(0).getType());
-        Assert.assertEquals("hive_catalog", hiveTable.getCatalogName());
+        Assertions.assertEquals("db1", hiveTable.getCatalogDBName());
+        Assertions.assertEquals("tbl1", hiveTable.getCatalogTableName());
+        Assertions.assertEquals(Lists.newArrayList("col1"), hiveTable.getPartitionColumnNames());
+        Assertions.assertEquals(Lists.newArrayList("col2"), hiveTable.getDataColumnNames());
+        Assertions.assertEquals("hdfs://127.0.0.1:10000/hive", hiveTable.getTableLocation());
+        Assertions.assertEquals(IntegerType.INT, hiveTable.getPartitionColumns().get(0).getType());
+        Assertions.assertEquals(IntegerType.INT, hiveTable.getBaseSchema().get(0).getType());
+        Assertions.assertEquals("hive_catalog", hiveTable.getCatalogName());
     }
 
     @Test
@@ -146,6 +146,6 @@ public class HiveConnectorTest {
 
         HiveConnector hiveConnector = new HiveConnector(new ConnectorContext("hive_catalog", "hive", properties));
         ConnectorMetadata metadata = hiveConnector.getMetadata();
-        Assert.assertTrue(metadata instanceof HiveMetadata);
+        Assertions.assertTrue(metadata instanceof HiveMetadata);
     }
 }

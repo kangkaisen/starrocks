@@ -15,15 +15,15 @@
 package com.starrocks.sql.analyzer;
 
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeFail;
 import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeSuccess;
 
 public class AnalyzeAnalyticTest {    // use a unique dir so that it won't be conflict with other unit test which
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         AnalyzeTestUtil.init();
@@ -33,7 +33,6 @@ public class AnalyzeAnalyticTest {    // use a unique dir so that it won't be co
     public void testSingle() {
         analyzeFail("select sum(v1) over(partition by v2 rows between 1 preceding and 2 following) from t0",
                 "Windowing clause requires ORDER BY clause");
-        analyzeFail("select count(distinct v1) over() from t0", "DISTINCT not allowed in analytic function");
 
         analyzeFail("select abs(v1) over() from t0", "not supported with OVER clause");
 

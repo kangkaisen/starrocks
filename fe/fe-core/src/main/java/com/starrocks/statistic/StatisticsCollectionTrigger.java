@@ -110,9 +110,10 @@ public class StatisticsCollectionTrigger {
                                           Database db,
                                           Table table,
                                           boolean sync,
-                                          boolean useLock) {
+                                                                 boolean useLock,
+                                                                 DmlType dmlType) {
         StatisticsCollectionTrigger trigger = new StatisticsCollectionTrigger();
-        trigger.dmlType = DmlType.INSERT_INTO;
+        trigger.dmlType = dmlType == null ? DmlType.INSERT_INTO : dmlType;
         trigger.db = db;
         trigger.table = table;
         trigger.sync = sync;
@@ -123,15 +124,23 @@ public class StatisticsCollectionTrigger {
     }
 
     private void process() {
-        // check if this feature is disabled
+        if (table instanceof OlapTable) {
+            if (!((OlapTable) table).enableStatisticCollectOnFirstLoad()) {
+                return;
+            }
+        }
+
         if (!Config.enable_statistic_collect_on_first_load) {
+            return;
+        }
+        if (!Config.enable_statistic_collect_on_update && dmlType.equals(DmlType.UPDATE)) {
             return;
         }
         // check if it's in black-list
         if (StatisticUtils.statisticDatabaseBlackListCheck(db.getFullName())) {
             return;
         }
-        // check it's the first-load
+        // prepare analyze job for various statements
         if (txnState != null) {
             if (txnState.getIdToTableCommitInfos() == null) {
                 return;
@@ -149,8 +158,24 @@ public class StatisticsCollectionTrigger {
             return;
         }
 
+        // Handle overwrite and load differently:
+        // - For INSERT_OVERWRITE: if data change is small (analyzeType == null), copy statistics from source
+        //   partition to target partition instead of recollecting, which is more efficient.
+        // - For LOAD: if analyzeType == null, skip collection; if analyzeType != null, recollect statistics.
+        //   Load operations don't have the copy optimization since there's no source partition to copy from.
         if (dmlType == DmlType.INSERT_OVERWRITE && analyzeType == null) {
-            // update the partition id of existing statistics
+            executeOverWrite();
+            waitFinish();
+        } else if (analyzeType != null) {
+            executeCollect();
+            waitFinish();
+        }
+    }
+
+    private void executeOverWrite() {
+        // update the partition id of existing statistics
+        Runnable task = () -> {
+            isRunning.set(true);
             ConnectContext statsConnectCtx = StatisticUtils.buildConnectContext();
             try (ConnectContext.ScopeGuard guard = statsConnectCtx.bindScope()) {
                 for (int i = 0; i < overwriteJobStats.getSourcePartitionIds().size(); i++) {
@@ -161,20 +186,22 @@ public class StatisticsCollectionTrigger {
                         continue;
                     }
                     StatisticExecutor.overwritePartitionStatistics(
-                            statsConnectCtx, db.getId(), table.getId(), sourcePartitionId, targetPartitionId);
+                            statsConnectCtx, db.getId(), table.getId(), sourcePartitionId,
+                            targetPartitionId);
                 }
             } catch (Exception e) {
                 LOG.warn("overwrite partition stats failed table={} partitions={}",
                         table.getId(), overwriteJobStats.getTargetPartitionIds(), e);
             }
-        } else if (analyzeType != null) {
-            // collect
-            execute();
-            waitFinish();
+        };
+        try {
+            future = GlobalStateMgr.getCurrentState().getAnalyzeMgr().getAnalyzeTaskThreadPool().submit(task);
+        } catch (Throwable e) {
+            LOG.error("failed to submit statistic overwrite job", e);
         }
     }
 
-    private void execute() {
+    private void executeCollect() {
         Map<String, String> properties = Maps.newHashMap();
         if (SAMPLE == analyzeType) {
             properties = StatsConstants.buildInitStatsProp();
@@ -182,35 +209,45 @@ public class StatisticsCollectionTrigger {
         AnalyzeStatus analyzeStatus = new NativeAnalyzeStatus(GlobalStateMgr.getCurrentState().getNextId(),
                 db.getId(), table.getId(), null, analyzeType,
                 StatsConstants.ScheduleType.ONCE, properties, LocalDateTime.now());
-        analyzeStatus.setStatus(StatsConstants.ScheduleStatus.PENDING);
+        analyzeStatus.setStatus(StatsConstants.ScheduleStatus.FAILED);
         GlobalStateMgr.getCurrentState().getAnalyzeMgr().addAnalyzeStatus(analyzeStatus);
+        analyzeStatus.setStatus(StatsConstants.ScheduleStatus.PENDING);
+        GlobalStateMgr.getCurrentState().getAnalyzeMgr().replayAddAnalyzeStatus(analyzeStatus);
 
         try {
-            future = GlobalStateMgr.getCurrentState().getAnalyzeMgr().getAnalyzeTaskThreadPool()
-                    .submit(() -> {
-                        isRunning.set(true);
-                        // reset the start time after pending, so [end-start] can represent execution period
-                        analyzeStatus.setStartTime(LocalDateTime.now());
-                        StatisticExecutor statisticExecutor = new StatisticExecutor();
-                        ConnectContext statsConnectCtx = StatisticUtils.buildConnectContext();
-                        // set session id for temporary table
-                        if (table.isTemporaryTable()) {
-                            statsConnectCtx.setSessionId(((OlapTable) table).getSessionId());
-                        }
-                        statsConnectCtx.setThreadLocalInfo();
-                        StatisticsCollectJob job = StatisticsCollectJobFactory.buildStatisticsCollectJob(db, table,
-                                new ArrayList<>(partitionIds), null, null,
-                                analyzeType, StatsConstants.ScheduleType.ONCE,
-                                analyzeStatus.getProperties(), List.of(), List.of());
-                        if (!partitionTabletRowCounts.isEmpty()) {
-                            job.setPartitionTabletRowCounts(partitionTabletRowCounts);
-                        }
+            Runnable originalTask = () -> {
+                isRunning.set(true);
+                // reset the start time after pending, so [end-start] can represent execution period
+                analyzeStatus.setStartTime(LocalDateTime.now());
+                StatisticExecutor statisticExecutor = new StatisticExecutor();
+                ConnectContext statsConnectCtx = StatisticUtils.buildConnectContext();
+                try (var scope = statsConnectCtx.bindScope()) {
+                    // set session id for temporary table
+                    if (table.isTemporaryTable()) {
+                        statsConnectCtx.setSessionId(((OlapTable) table).getSessionId());
+                    }
+                    StatisticsCollectJob job = StatisticsCollectJobFactory.buildStatisticsCollectJob(db, table,
+                            new ArrayList<>(partitionIds), null, null,
+                            analyzeType, StatsConstants.ScheduleType.ONCE,
+                            analyzeStatus.getProperties(), List.of(), List.of(), false);
+                    if (!partitionTabletRowCounts.isEmpty()) {
+                        job.setPartitionTabletRowCounts(partitionTabletRowCounts);
+                    }
 
-                        statisticExecutor.collectStatistics(statsConnectCtx, job, analyzeStatus, false);
-                    });
+                    statisticExecutor.collectStatistics(statsConnectCtx, job, analyzeStatus, false,
+                            true /* resetWarehouse */);
+                    if (dmlType == DmlType.INSERT_OVERWRITE && overwriteJobStats != null) {
+                        AnalyzeMgr analyzeMgr = GlobalStateMgr.getCurrentState().getAnalyzeMgr();
+                        overwriteJobStats.getSourcePartitionIds().forEach(analyzeMgr::recordDropPartition);
+                    }
+                }
+            };
+
+            CancelableAnalyzeTask cancelableTask = new CancelableAnalyzeTask(originalTask, analyzeStatus);
+            GlobalStateMgr.getCurrentState().getAnalyzeMgr().getAnalyzeTaskThreadPool().execute(cancelableTask);
+            this.future = cancelableTask;
         } catch (Throwable e) {
             LOG.error("failed to submit statistic collect job", e);
-            return;
         }
     }
 
@@ -260,11 +297,30 @@ public class StatisticsCollectionTrigger {
                 PartitionCommitInfo partitionCommitInfo = entry.getValue();
                 Map<Long, Long> tabletRows = partitionCommitInfo.getTabletIdToRowCountForPartitionFirstLoad();
 
-                if (partitionCommitInfo.getVersion() == Partition.PARTITION_INIT_VERSION + 1) {
-                    PhysicalPartition physicalPartition = table.getPhysicalPartition(physicalPartitionId);
-                    Long partitionId = table.getPartition(physicalPartition.getParentId()).getId();
+                PhysicalPartition physicalPartition = table.getPhysicalPartition(physicalPartitionId);
+                Long partitionId = table.getPartition(physicalPartition.getParentId()).getId();
+                if (table.isNativeTableOrMaterializedView()) {
+                    OlapTable olapTable = (OlapTable) table;
+                    if (olapTable.isTempPartition(partitionId)) {
+                        continue;
+                    }
+                }
+
+                if (dmlType == DmlType.UPDATE) {
+                    // For UPDATE, collect on touched partitions regardless of version.
                     partitionIds.add(partitionId);
-                    tabletRows.forEach((tabletId, rowCount) -> partitionTabletRowCounts.put(partitionId, tabletId, rowCount));
+                    tabletRows.forEach(
+                            (tabletId, rowCount) -> partitionTabletRowCounts.put(partitionId, tabletId, rowCount));
+                } else if (dmlType == DmlType.INSERT_INTO) {
+                    // For INSERT, only consider the first load of a partition
+                    if (partitionCommitInfo.getVersion() == Partition.PARTITION_INIT_VERSION + 1) {
+                        partitionIds.add(partitionId);
+                        tabletRows.forEach(
+                                (tabletId, rowCount) -> partitionTabletRowCounts.put(partitionId, tabletId, rowCount));
+                    }
+                } else {
+                    // TODO: support DELETE
+                    LOG.debug("Statistics collection not triggered for DML type: {}", dmlType);
                 }
             }
         } finally {
@@ -286,6 +342,12 @@ public class StatisticsCollectionTrigger {
     private void prepareAnalyzeForOverwrite() {
         partitionIds.addAll(overwriteJobStats.getTargetPartitionIds());
         analyzeType = decideAnalyzeTypeForOverwrite();
+        
+        // Set partition tablet row counts for sample-based statistics collection
+        if (analyzeType == StatsConstants.AnalyzeType.SAMPLE &&
+                !overwriteJobStats.getPartitionTabletRowCounts().isEmpty()) {
+            partitionTabletRowCounts.putAll(overwriteJobStats.getPartitionTabletRowCounts());
+        }
     }
 
     private StatsConstants.AnalyzeType decideAnalyzeTypeForOverwrite() {
@@ -317,9 +379,8 @@ public class StatisticsCollectionTrigger {
             return null;
         }
 
-        long totalRows = partitionIds.stream()
-                .mapToLong(p -> table.mayGetPartition(p).stream().mapToLong(Partition::getRowCount).sum())
-                .sum();
+        // Use BasicStatsMeta.getTotalRows() for more accurate totalRows
+        long totalRows = getTotalRowsFromStatsMeta(table);
         double deltaRatio = 1.0 * loadRows / (totalRows + 1);
         if (deltaRatio < Config.statistic_sample_collect_ratio_threshold_of_first_load) {
             return null;
@@ -328,6 +389,23 @@ public class StatisticsCollectionTrigger {
         } else {
             return StatsConstants.AnalyzeType.FULL;
         }
+    }
+
+    /**
+     * Get total rows using BasicStatsMeta.getTotalRows() if available, otherwise fallback to partition.getRowCount().
+     */
+    private long getTotalRowsFromStatsMeta(OlapTable table) {
+        BasicStatsMeta basicStatsMeta = GlobalStateMgr.getCurrentState()
+                .getAnalyzeMgr().getTableBasicStatsMeta(table.getId());
+        
+        if (basicStatsMeta != null && basicStatsMeta.getTotalRows() > 0) {
+            return basicStatsMeta.getTotalRows();
+        }
+        
+        // Fallback to partition.getRowCount() if no stats meta exists
+        return partitionIds.stream()
+                .mapToLong(p -> table.mayGetPartition(p).stream().mapToLong(Partition::getRowCount).sum())
+                .sum();
     }
 
     StatsConstants.AnalyzeType getAnalyzeType() {

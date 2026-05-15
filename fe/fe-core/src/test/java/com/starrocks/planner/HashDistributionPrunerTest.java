@@ -37,19 +37,20 @@ package com.starrocks.planner;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.FunctionCallExpr;
-import com.starrocks.analysis.InPredicate;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.StringLiteral;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Partition;
-import com.starrocks.catalog.Type;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.FunctionCallExpr;
+import com.starrocks.sql.ast.expression.InPredicate;
+import com.starrocks.sql.ast.expression.SlotRef;
+import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.plan.PlanTestBase;
+import com.starrocks.type.CharType;
+import com.starrocks.type.DateType;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
 import java.util.List;
@@ -66,11 +67,11 @@ public class HashDistributionPrunerTest extends PlanTestBase {
         }
 
         // distribution columns
-        Column dealDate = new Column("dealDate", Type.DATE, false);
-        Column mainBrandId = new Column("main_brand_id", Type.CHAR, false);
-        Column itemThirdCateId = new Column("item_third_cate_id", Type.CHAR, false);
-        Column channel = new Column("channel", Type.CHAR, false);
-        Column shopType = new Column("shop_type", Type.CHAR, false);
+        Column dealDate = new Column("dealDate", DateType.DATE, false);
+        Column mainBrandId = new Column("main_brand_id", CharType.CHAR, false);
+        Column itemThirdCateId = new Column("item_third_cate_id", CharType.CHAR, false);
+        Column channel = new Column("channel", CharType.CHAR, false);
+        Column shopType = new Column("shop_type", CharType.CHAR, false);
         List<Column> columns = Lists.newArrayList(dealDate, mainBrandId, itemThirdCateId, channel, shopType);
 
         // filters
@@ -111,18 +112,18 @@ public class HashDistributionPrunerTest extends PlanTestBase {
         filters.put("channel", channelFilter);
         filters.put("shop_type", shopTypeFilter);
 
-        HashDistributionPruner pruner = new HashDistributionPruner(tabletIds, columns, filters, tabletIds.size());
+        HashDistributionPruner pruner = new HashDistributionPruner(tabletIds, columns, filters);
 
         Collection<Long> results = pruner.prune();
         // 20 = 1 * 5 * 2 * 2 * 1 (element num of each filter)
-        Assert.assertEquals(20, results.size());
+        Assertions.assertEquals(20, results.size());
 
         filters.get("shop_type").getInPredicate().addChild(new StringLiteral("4"));
         filters.get("shop_type").setInPredicate(filters.get("shop_type").getInPredicate());
         results = pruner.prune();
         // 40 = 1 * 5 * 2 * 2 * 2 (element num of each filter)
         // 39 is because these is hash conflict
-        Assert.assertEquals(39, results.size());
+        Assertions.assertEquals(39, results.size());
 
         filters.get("shop_type").getInPredicate().addChild(new StringLiteral("5"));
         filters.get("shop_type").getInPredicate().addChild(new StringLiteral("6"));
@@ -131,21 +132,21 @@ public class HashDistributionPrunerTest extends PlanTestBase {
         filters.get("shop_type").setInPredicate(filters.get("shop_type").getInPredicate());
         results = pruner.prune();
         // 120 = 1 * 5 * 2 * 2 * 6 (element num of each filter) > 100
-        Assert.assertEquals(300, results.size());
+        Assertions.assertEquals(300, results.size());
 
         // check hash conflict
         inList4.add(new StringLiteral("4"));
         HashDistributionKey hashKey = new HashDistributionKey();
         Set<Long> tablets = Sets.newHashSet();
-        hashKey.pushColumn(new StringLiteral("2019-08-22"), Type.DATE);
+        hashKey.pushColumn(new StringLiteral("2019-08-22"), DateType.DATE);
         for (Expr inLiteral : inList) {
-            hashKey.pushColumn((StringLiteral) inLiteral, Type.CHAR);
+            hashKey.pushColumn((StringLiteral) inLiteral, CharType.CHAR);
             for (Expr inLiteral2 : inList2) {
-                hashKey.pushColumn((StringLiteral) inLiteral2, Type.CHAR);
+                hashKey.pushColumn((StringLiteral) inLiteral2, CharType.CHAR);
                 for (Expr inLiteral3 : inList3) {
-                    hashKey.pushColumn((StringLiteral) inLiteral3, Type.CHAR);
+                    hashKey.pushColumn((StringLiteral) inLiteral3, CharType.CHAR);
                     for (Expr inLiteral4 : inList4) {
-                        hashKey.pushColumn((StringLiteral) inLiteral4, Type.CHAR);
+                        hashKey.pushColumn((StringLiteral) inLiteral4, CharType.CHAR);
                         long hashValue = hashKey.getHashValue();
                         tablets.add(tabletIds.get((int) ((hashValue & 0xffffffff) % tabletIds.size())));
                         hashKey.popColumn();
@@ -157,7 +158,7 @@ public class HashDistributionPrunerTest extends PlanTestBase {
             hashKey.popColumn();
         }
 
-        Assert.assertEquals(39, tablets.size());
+        Assertions.assertEquals(39, tablets.size());
     }
 
     @Test
@@ -168,11 +169,11 @@ public class HashDistributionPrunerTest extends PlanTestBase {
         }
 
         // distribution columns
-        Column dealDate = new Column("dealDate", Type.DATE, false);
-        Column mainBrandId = new Column("main_brand_id", Type.CHAR, false);
-        Column itemThirdCateId = new Column("item_third_cate_id", Type.CHAR, false);
-        Column channel = new Column("channel", Type.CHAR, false);
-        Column shopType = new Column("shop_type", Type.CHAR, false);
+        Column dealDate = new Column("dealDate", DateType.DATE, false);
+        Column mainBrandId = new Column("main_brand_id", CharType.CHAR, false);
+        Column itemThirdCateId = new Column("item_third_cate_id", CharType.CHAR, false);
+        Column channel = new Column("channel", CharType.CHAR, false);
+        Column shopType = new Column("shop_type", CharType.CHAR, false);
         List<Column> columns = Lists.newArrayList(dealDate, mainBrandId, itemThirdCateId, channel, shopType);
 
         // filters
@@ -190,10 +191,10 @@ public class HashDistributionPrunerTest extends PlanTestBase {
         Map<String, PartitionColumnFilter> filters = Maps.newHashMap();
         filters.put("main_brand_id", mainBrandFilter);
 
-        HashDistributionPruner pruner = new HashDistributionPruner(tabletIds, columns, filters, tabletIds.size());
+        HashDistributionPruner pruner = new HashDistributionPruner(tabletIds, columns, filters);
 
         Collection<Long> results = pruner.prune();
-        Assert.assertEquals(tabletIds.size(), results.size());
+        Assertions.assertEquals(tabletIds.size(), results.size());
     }
 
     @Test

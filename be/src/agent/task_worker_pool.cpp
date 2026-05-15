@@ -41,37 +41,43 @@
 #include <sstream>
 #include <string>
 
+#include "agent/agent_metrics.h"
 #include "agent/agent_server.h"
 #include "agent/finish_task.h"
-#include "agent/master_info.h"
 #include "agent/publish_version.h"
 #include "agent/report_task.h"
 #include "agent/resource_group_usage_recorder.h"
 #include "agent/task_signatures_manager.h"
-#include "cache/block_cache/block_cache.h"
-#include "cache/block_cache/datacache_utils.h"
+#include "base/simd/simd.h"
+#include "cache/datacache.h"
+#include "cache/datacache_utils.h"
+#include "common/config_agent_fwd.h"
+#include "common/config_metrics_fwd.h"
+#include "common/config_network_fwd.h"
 #include "common/status.h"
+#include "common/system/backend_options.h"
+#include "common/system/master_info.h"
+#include "common/thread/thread.h"
+#include "common/util/misc.h"
 #include "exec/pipeline/query_context.h"
 #include "exec/workgroup/work_group.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/DataCache_types.h"
 #include "gen_cpp/Types_types.h"
+#include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
 #include "runtime/snapshot_loader.h"
-#include "service/backend_options.h"
 #include "storage/data_dir.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/olap_common.h"
 #include "storage/publish_version_manager.h"
 #include "storage/snapshot_manager.h"
 #include "storage/storage_engine.h"
+#include "storage/storage_metrics.h"
 #include "storage/task/engine_batch_load_task.h"
 #include "storage/task/engine_clone_task.h"
 #include "storage/update_manager.h"
 #include "storage/utils.h"
-#include "util/misc.h"
-#include "util/starrocks_metrics.h"
-#include "util/thread.h"
 
 namespace starrocks {
 
@@ -282,6 +288,7 @@ void TaskWorkerPool<AgentTaskRequest>::_spawn_callback_worker_thread(CALLBACK_FU
 }
 
 void* PushTaskWorkerPool::_worker_thread_callback(void* arg_this) {
+    SCOPED_SET_MODULE_TYPE(ThreadModuleType::LOAD);
     static uint32_t s_worker_count = 0;
 
     auto* worker_pool_this = (PushTaskWorkerPool*)arg_this;
@@ -318,15 +325,19 @@ void* PushTaskWorkerPool::_worker_thread_callback(void* arg_this) {
             continue;
         }
         auto& push_req = agent_task_req->task_req;
-
         LOG(INFO) << "get push task. signature: " << agent_task_req->signature << " priority: " << priority
                   << " push_type: " << push_req.push_type;
         std::vector<TTabletInfo> tablet_infos;
 
+#ifndef __APPLE__
         EngineBatchLoadTask engine_task(push_req, &tablet_infos, agent_task_req->signature, &status,
                                         GlobalEnv::GetInstance()->load_mem_tracker());
         // EngineBatchLoadTask execute always return OK
         (void)(StorageEngine::instance()->execute_task(&engine_task));
+#else
+        LOG(WARNING) << "push is not supported on MacOS, signature: " << agent_task_req->signature;
+        status = STARROCKS_ERROR;
+#endif
 
         if (status == STARROCKS_PUSH_HAD_LOADED) {
             // remove the task and not return to fe
@@ -372,6 +383,7 @@ void* PushTaskWorkerPool::_worker_thread_callback(void* arg_this) {
 }
 
 void* DeleteTaskWorkerPool::_worker_thread_callback(void* arg_this) {
+    SCOPED_SET_MODULE_TYPE(ThreadModuleType::LOAD);
     static uint32_t s_worker_count = 0;
 
     auto* worker_pool_this = (DeleteTaskWorkerPool*)arg_this;
@@ -401,8 +413,8 @@ void* DeleteTaskWorkerPool::_worker_thread_callback(void* arg_this) {
 
             int num_of_remove_task = 0;
             if (push_req.push_type == TPushType::CANCEL_DELETE) {
-                LOG(INFO) << "get delete push task. remove delete task txn_id: " << push_req.transaction_id
-                          << " priority: " << priority << " push_type: " << push_req.push_type;
+                VLOG(3) << "get delete push task. remove delete task txn_id: " << push_req.transaction_id
+                        << " priority: " << priority << " push_type: " << push_req.push_type;
 
                 std::lock_guard l(worker_pool_this->_worker_thread_lock);
                 auto& tasks = worker_pool_this->_tasks;
@@ -435,13 +447,18 @@ void* DeleteTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         }
         auto& push_req = agent_task_req->task_req;
 
-        LOG(INFO) << "get delete push task. signature: " << agent_task_req->signature << " priority: " << priority
-                  << " push_type: " << push_req.push_type;
+        VLOG(3) << "get delete push task. signature: " << agent_task_req->signature << " priority: " << priority
+                << " push_type: " << push_req.push_type;
         std::vector<TTabletInfo> tablet_infos;
+#ifndef __APPLE__
         EngineBatchLoadTask engine_task(push_req, &tablet_infos, agent_task_req->signature, &status,
                                         GlobalEnv::GetInstance()->load_mem_tracker());
         // EngineBatchLoadTask execute always return OK
         (void)(StorageEngine::instance()->execute_task(&engine_task));
+#else
+        LOG(WARNING) << "delete is not supported on MacOS, signature: " << agent_task_req->signature;
+        status = STARROCKS_ERROR;
+#endif
 
         if (status == STARROCKS_PUSH_HAD_LOADED) {
             // remove the task and not return to fe
@@ -492,6 +509,7 @@ void* DeleteTaskWorkerPool::_worker_thread_callback(void* arg_this) {
 }
 
 void* PublishVersionTaskWorkerPool::_worker_thread_callback(void* arg_this) {
+    SCOPED_SET_MODULE_TYPE(ThreadModuleType::LOAD);
     auto* worker_pool_this = (PublishVersionTaskWorkerPool*)arg_this;
     auto* agent_server = worker_pool_this->_env->agent_server();
     auto token =
@@ -511,7 +529,7 @@ void* PublishVersionTaskWorkerPool::_worker_thread_callback(void* arg_this) {
     std::unordered_set<DataDir*> affected_dirs;
     std::vector<TFinishTaskRequest> finish_task_requests;
     int64_t batch_publish_latency = 0;
-
+    std::vector<int64_t> finished_txn;
     while (true) {
         uint32_t wait_time = config::wait_apply_time;
         {
@@ -541,7 +559,7 @@ void* PublishVersionTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         if (enable_sync_publish) {
             wait_time = 0;
         }
-        StarRocksMetrics::instance()->publish_task_request_total.increment(1);
+        AgentMetrics::instance()->publish_task_request_total.increment(1);
         auto& finish_task_request = finish_task_requests.emplace_back();
         finish_task_request.__set_backend(BackendOptions::get_localBackend());
         finish_task_request.__set_report_version(g_report_version.load(std::memory_order_relaxed));
@@ -552,6 +570,7 @@ void* PublishVersionTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         finish_task_request.__set_signature(publish_version_task.signature);
 
         batch_publish_latency += MonotonicMillis() - start_ts;
+        finished_txn.emplace_back(publish_version_task.task_req.transaction_id);
         priority_tasks.pop();
 
         if (!enable_sync_publish) {
@@ -589,6 +608,14 @@ void* PublishVersionTaskWorkerPool::_worker_thread_callback(void* arg_this) {
                         << "txn publish task(s). #dir:" << affected_dirs.size() << " flush:" << t1 - t0 << "ms";
             }
         }
+        if (priority_tasks.empty() || finished_txn.size() > PUBLISH_VERSION_BATCH_SIZE) {
+            std::stringstream ss;
+            for (auto& txn_id : finished_txn) {
+                ss << txn_id << ",";
+            }
+            LOG(INFO) << "publish version finished transactions: [" << ss.str() << "]";
+            finished_txn.clear();
+        }
     }
     return nullptr;
 }
@@ -610,12 +637,12 @@ void* ReportTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         request.__set_tasks(tasks);
         request.__set_backend(BackendOptions::get_localBackend());
 
-        StarRocksMetrics::instance()->report_task_requests_total.increment(1);
+        AgentMetrics::instance()->report_task_requests_total.increment(1);
         TMasterResult result;
         AgentStatus status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_task_requests_failed.increment(1);
+            AgentMetrics::instance()->report_task_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report task to " << master_address.hostname << ":" << master_address.port
                          << ", err=" << status;
         }
@@ -655,23 +682,19 @@ void* ReportDiskStateTaskWorkerPool::_worker_thread_callback(void* arg_this) {
             disk.__set_used(root_path_info.is_used);
             disks[root_path_info.path] = disk;
 
-            StarRocksMetrics::instance()->disks_total_capacity.set_metric(root_path_info.path,
-                                                                          root_path_info.disk_capacity);
-            StarRocksMetrics::instance()->disks_avail_capacity.set_metric(root_path_info.path,
-                                                                          root_path_info.available);
-            StarRocksMetrics::instance()->disks_data_used_capacity.set_metric(root_path_info.path,
-                                                                              root_path_info.data_used_capacity);
-            StarRocksMetrics::instance()->disks_state.set_metric(root_path_info.path, root_path_info.is_used ? 1L : 0L);
+            AgentMetrics::instance()->set_disk_metrics(root_path_info.path, root_path_info.disk_capacity,
+                                                       root_path_info.available, root_path_info.data_used_capacity,
+                                                       root_path_info.is_used ? 1L : 0L);
         }
         request.__set_disks(disks);
         request.__set_backend(BackendOptions::get_localBackend());
 
-        StarRocksMetrics::instance()->report_disk_requests_total.increment(1);
+        AgentMetrics::instance()->report_disk_requests_total.increment(1);
         TMasterResult result;
         AgentStatus status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_disk_requests_failed.increment(1);
+            AgentMetrics::instance()->report_disk_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report disk state to " << master_address.hostname << ":" << master_address.port
                          << ", err=" << status;
         }
@@ -710,8 +733,8 @@ void* ReportOlapTableTaskWorkerPool::_worker_thread_callback(void* arg_this) {
             continue;
         }
         int64_t max_compaction_score =
-                std::max(StarRocksMetrics::instance()->tablet_cumulative_max_compaction_score.value(),
-                         StarRocksMetrics::instance()->tablet_base_max_compaction_score.value());
+                std::max(StorageMetrics::instance()->tablet_cumulative_max_compaction_score.value(),
+                         StorageMetrics::instance()->tablet_base_max_compaction_score.value());
         request.__set_tablet_max_compaction_score(max_compaction_score);
         request.__set_backend(BackendOptions::get_localBackend());
 
@@ -719,7 +742,7 @@ void* ReportOlapTableTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_all_tablets_requests_failed.increment(1);
+            AgentMetrics::instance()->report_all_tablets_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report olap table state to " << master_address.hostname << ":"
                          << master_address.port << ", err=" << status;
         } else {
@@ -750,7 +773,7 @@ void* ReportWorkgroupTaskWorkerPool::_worker_thread_callback(void* arg_this) {
             continue;
         }
 
-        StarRocksMetrics::instance()->report_workgroup_requests_total.increment(1);
+        AgentMetrics::instance()->report_workgroup_requests_total.increment(1);
         request.__set_report_version(g_report_version.load(std::memory_order_relaxed));
         auto workgroups = ExecEnv::GetInstance()->workgroup_manager()->list_workgroups();
         request.__set_active_workgroups(workgroups);
@@ -759,7 +782,7 @@ void* ReportWorkgroupTaskWorkerPool::_worker_thread_callback(void* arg_this) {
         status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_workgroup_requests_failed.increment(1);
+            AgentMetrics::instance()->report_workgroup_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report workgroup to " << master_address.hostname << ":" << master_address.port
                          << ", err=" << status;
         }
@@ -790,7 +813,7 @@ void* ReportResourceUsageTaskWorkerPool::_worker_thread_callback(void* arg_this)
             continue;
         }
 
-        StarRocksMetrics::instance()->report_resource_usage_requests_total.increment(1);
+        AgentMetrics::instance()->report_resource_usage_requests_total.increment(1);
         request.__set_backend(BackendOptions::get_localBackend());
         request.__set_report_version(g_report_version.load(std::memory_order_relaxed));
 
@@ -803,12 +826,12 @@ void* ReportResourceUsageTaskWorkerPool::_worker_thread_callback(void* arg_this)
 
         resource_usage.__set_group_usages(group_usage_recorder.get_resource_group_usages());
 
-        request.__set_resource_usage(std::move(resource_usage));
+        request.__set_resource_usage(resource_usage);
         TMasterResult result;
         status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_resource_usage_requests_failed.increment(1);
+            AgentMetrics::instance()->report_resource_usage_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report resource_usage to " << master_address.hostname << ":" << master_address.port
                          << ", err=" << status;
         }
@@ -820,6 +843,7 @@ void* ReportResourceUsageTaskWorkerPool::_worker_thread_callback(void* arg_this)
 }
 
 void* ReportDataCacheMetricsTaskWorkerPool::_worker_thread_callback(void* arg_this) {
+#ifndef __APPLE__
     const auto* worker_pool_this = static_cast<ReportDataCacheMetricsTaskWorkerPool*>(arg_this);
 
     TReportRequest request;
@@ -834,33 +858,41 @@ void* ReportDataCacheMetricsTaskWorkerPool::_worker_thread_callback(void* arg_th
             continue;
         }
 
-        StarRocksMetrics::instance()->report_datacache_metrics_requests_total.increment(1);
+        AgentMetrics::instance()->report_datacache_metrics_requests_total.increment(1);
         request.__set_backend(BackendOptions::get_localBackend());
         request.__set_report_version(g_report_version.load(std::memory_order_relaxed));
 
         TDataCacheMetrics t_metrics{};
-        const BlockCache* cache = BlockCache::instance();
-        if (cache->is_initialized()) {
-            const DataCacheMetrics& metrics = cache->cache_metrics();
-            DataCacheUtils::set_metrics_from_thrift(t_metrics, metrics);
-        } else {
-            t_metrics.__set_status(TDataCacheStatus::DISABLED);
-        }
+        const LocalDiskCacheEngine* disk_cache = DataCache::GetInstance()->local_disk_cache();
+        const LocalMemCacheEngine* mem_cache = DataCache::GetInstance()->local_mem_cache();
+        bool disk_cache_inited = disk_cache != nullptr && disk_cache->is_initialized();
+        bool mem_cache_inited = mem_cache != nullptr && mem_cache->is_initialized();
 
+        if (!disk_cache_inited && !mem_cache_inited) {
+            t_metrics.__set_status(TDataCacheStatus::DISABLED);
+        } else {
+            if (mem_cache_inited) {
+                t_metrics.__set_status(TDataCacheStatus::NORMAL);
+                DataCacheUtils::set_metrics_to_thrift(t_metrics, mem_cache->cache_metrics());
+            }
+            if (disk_cache_inited) {
+                DataCacheUtils::set_metrics_to_thrift(t_metrics, disk_cache->cache_metrics());
+            }
+        }
         request.__set_datacache_metrics(t_metrics);
 
         TMasterResult result;
         status = report_task(request, &result);
 
         if (status != STARROCKS_SUCCESS) {
-            StarRocksMetrics::instance()->report_datacache_metrics_requests_failed.increment(1);
+            AgentMetrics::instance()->report_datacache_metrics_requests_failed.increment(1);
             LOG(WARNING) << "Fail to report resource_usage to " << master_address.hostname << ":" << master_address.port
                          << ", err=" << status;
         }
         size_t sleep_secs = config::report_datacache_metrics_interval_ms / 1000;
         nap_sleep(sleep_secs, [&]() { return worker_pool_this->_stopped.load(); });
     }
-
+#endif // __APPLE__
     return nullptr;
 }
 

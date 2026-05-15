@@ -46,6 +46,7 @@ import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
 import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.util.concurrent.lock.AutoCloseableLock;
 import com.starrocks.common.util.concurrent.lock.LockType;
@@ -56,7 +57,6 @@ import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.sql.ast.UserIdentity;
 import io.netty.handler.codec.http.HttpMethod;
 
 import java.util.Map;
@@ -109,13 +109,13 @@ public class RowCountAction extends RestBaseAction {
             OlapTable olapTable = (OlapTable) table;
             for (PhysicalPartition partition : olapTable.getAllPhysicalPartitions()) {
                 long version = partition.getVisibleVersion();
-                for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
+                for (MaterializedIndex index : partition.getLatestMaterializedIndices(IndexExtState.VISIBLE)) {
                     long indexRowCount = 0L;
                     for (Tablet tablet : index.getTablets()) {
                         indexRowCount += tablet.getRowCount(version);
                     } // end for tablets
                     index.setRowCount(indexRowCount);
-                    String indexName = olapTable.getIndexNameById(index.getId());
+                    String indexName = olapTable.getIndexNameByMetaId(index.getMetaId());
                     indexRowCountMap.put(indexName, indexRowCountMap.getOrDefault(indexName, 0L) + indexRowCount);
                 } // end for indices
             } // end for partitions            

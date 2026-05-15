@@ -21,20 +21,21 @@
 #include <limits>
 
 #include "column/column.h"
+#include "column/column_helper.h"
+#include "common/util/debug_util.h"
 #include "storage/chunk_helper.h"
 #include "storage/rowset/binary_plain_page.h"
 #include "storage/rowset/page_decoder.h"
 #include "storage/rowset/storage_page_decoder.h"
 #include "storage/types.h"
-#include "util/debug_util.h"
 
 namespace starrocks {
 
 class DictPageTest : public testing::Test {
 public:
     template <LogicalType Type>
-    void test_encode_decode_page_template(typename TypeTraits<Type>::CppType* data, size_t base_size, size_t all_size) {
-        using CppType = typename TypeTraits<Type>::CppType;
+    void test_encode_decode_page_template(StorageCppType<Type>* data, size_t base_size, size_t all_size) {
+        using CppType = StorageCppType<Type>;
         // encode
         PageBuilderOptions options;
         // 64K
@@ -70,7 +71,7 @@ public:
         dict_footer.set_type(starrocks::DATA_PAGE);
         starrocks::DataPageFooterPB* dict_page_footer = dict_footer.mutable_data_page_footer();
         dict_page_footer->set_nullmap_size(0);
-        std::unique_ptr<char[]> dict_page = nullptr;
+        std::unique_ptr<std::vector<uint8_t>> dict_page = nullptr;
         Status st = StoragePageDecoder::decode_page(&dict_footer, 0, starrocks::BIT_SHUFFLE, &dict_page, &encoded_dict);
         ASSERT_TRUE(st.ok());
 
@@ -85,7 +86,7 @@ public:
         footer_data.set_type(DATA_PAGE);
         starrocks::DataPageFooterPB* data_page_footer = footer_data.mutable_data_page_footer();
         data_page_footer->set_nullmap_size(0);
-        std::unique_ptr<char[]> data_page = nullptr;
+        std::unique_ptr<std::vector<uint8_t>> data_page = nullptr;
         st = StoragePageDecoder::decode_page(&footer_data, 0, starrocks::DICT_ENCODING, &data_page, &encoded_data);
         ASSERT_TRUE(st.ok());
 
@@ -102,14 +103,13 @@ public:
         status = page_decoder.next_batch(&decode_size, column.get());
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(data_num, decode_size);
-        auto* values = reinterpret_cast<const CppType*>(column->raw_data());
-        auto* decoded = (CppType*)values;
+        const auto values = GetStorageContainer<Type>::get_data(column);
         for (uint i = 0; i < decode_size; i++) {
-            if (data[i] != decoded[i]) {
+            if (data[i] != values[i]) {
                 if constexpr (std::is_same_v<int128_t, CppType>) {
                     FAIL() << "Fail at index " << i;
                 } else {
-                    FAIL() << "Fail at index " << i << " inserted=" << data[i] << " got=" << decoded[i];
+                    FAIL() << "Fail at index " << i << " inserted=" << data[i] << " got=" << values[i];
                 }
             }
         }
@@ -122,14 +122,13 @@ public:
         ASSERT_TRUE(status.ok()) << status.to_string();
         // 2000 - 100
         ASSERT_EQ(data_num - 100, decode_size);
-        values = reinterpret_cast<const CppType*>(column->raw_data());
-        decoded = (CppType*)values;
+        const auto values2 = GetStorageContainer<Type>::get_data(column);
         for (uint i = 0; i < decode_size; i++) {
-            if (data[i + 100] != decoded[i]) {
+            if (data[i + 100] != values2[i]) {
                 if constexpr (std::is_same_v<int128_t, CppType>) {
                     FAIL() << "Fail at index " << i;
                 } else {
-                    FAIL() << "Fail at index " << i << " inserted=" << data[i + 100] << " got=" << decoded[i];
+                    FAIL() << "Fail at index " << i << " inserted=" << data[i + 100] << " got=" << values2[i];
                 }
             }
         }
@@ -311,7 +310,7 @@ TEST_F(DictPageTest, TestLargeDataSize) {
     for (int i = 0; i < size; i++) {
         ints.get()[i] = i;
     }
-    using CppType = typename TypeTraits<TYPE_BIGINT>::CppType;
+    using CppType = StorageCppType<TYPE_BIGINT>;
     // encode
     PageBuilderOptions options;
     options.data_page_size = 1024 * 1024;
@@ -350,7 +349,7 @@ TEST_F(DictPageTest, TestLargeDataSize) {
     dict_footer.set_type(starrocks::DATA_PAGE);
     starrocks::DataPageFooterPB* dict_page_footer = dict_footer.mutable_data_page_footer();
     dict_page_footer->set_nullmap_size(0);
-    std::unique_ptr<char[]> dict_page = nullptr;
+    std::unique_ptr<std::vector<uint8_t>> dict_page = nullptr;
     Status st = StoragePageDecoder::decode_page(&dict_footer, 0, starrocks::BIT_SHUFFLE, &dict_page, &encoded_dict);
     ASSERT_TRUE(st.ok());
     auto dict_page_decoder = std::make_unique<BitShufflePageDecoder<TYPE_BIGINT>>(encoded_dict);
@@ -364,7 +363,7 @@ TEST_F(DictPageTest, TestLargeDataSize) {
         footer.set_type(DATA_PAGE);
         DataPageFooterPB* data_page_footer = footer.mutable_data_page_footer();
         data_page_footer->set_nullmap_size(0);
-        std::unique_ptr<char[]> page = nullptr;
+        std::unique_ptr<std::vector<uint8_t>> page = nullptr;
 
         st = StoragePageDecoder::decode_page(&footer, 0, starrocks::DICT_ENCODING, &page, &encoded_data);
         ASSERT_TRUE(st.ok());
@@ -381,11 +380,10 @@ TEST_F(DictPageTest, TestLargeDataSize) {
         st = page_decoder.next_batch(&decode_size, column.get());
         ASSERT_TRUE(st.ok());
         ASSERT_EQ(page_size, decode_size);
-        auto* values = reinterpret_cast<const CppType*>(column->raw_data());
-        auto* decoded = (CppType*)values;
+        const auto values = GetStorageContainer<TYPE_BIGINT>::get_data(column);
         for (int j = page_start_id; j < page_start_ids[i + 1]; j++) {
-            if (decoded[j - page_start_id] != j) {
-                FAIL() << "Fail at index " << i << " inserted=" << j << " got=" << decoded[j - page_start_id];
+            if (values[j - page_start_id] != j) {
+                FAIL() << "Fail at index " << i << " inserted=" << j << " got=" << values[j - page_start_id];
             }
         }
     }

@@ -31,28 +31,33 @@
 #include "column/json_column.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
-#include "common/config.h"
+#include "common/config_json_flat_fwd.h"
+#include "common/config_rowset_fwd.h"
+#include "common/config_scan_io_fwd.h"
 #include "common/status.h"
 #include "gen_cpp/segment.pb.h"
 #include "gutil/casts.h"
-#include "runtime/types.h"
+#include "storage/flat_json_metrics.h"
 #include "storage/rowset/column_writer.h"
 #include "storage/rowset/common.h"
 #include "storage/rowset/json_column_compactor.h"
 #include "types/constexpr.h"
 #include "types/logical_type.h"
+#include "types/type_descriptor.h"
 #include "util/json_flattener.h"
 #include "velocypack/vpack.h"
 
 namespace starrocks {
 
 FlatJsonColumnWriter::FlatJsonColumnWriter(const ColumnWriterOptions& opts, TypeInfoPtr type_info, WritableFile* wfile,
-                                           std::unique_ptr<ScalarColumnWriter> json_writer)
+                                           std::unique_ptr<ObjectColumnWriter> json_writer)
         : ColumnWriter(std::move(type_info), opts.meta->length(), opts.meta->is_nullable()),
           _json_meta(opts.meta),
           _wfile(wfile),
           _json_writer(std::move(json_writer)),
-          _flat_json_config(opts.flat_json_config) {}
+          _flat_json_config(opts.flat_json_config),
+          _global_dict(opts.flat_json_dicts),
+          _column_name(opts.field_name) {}
 
 Status FlatJsonColumnWriter::init() {
     _json_meta->mutable_json_meta()->set_format_version(kJsonMetaDefaultFormatVersion);
@@ -77,10 +82,12 @@ Status FlatJsonColumnWriter::append(const Column& column) {
     // schema change will reuse column, must copy in there.
     _json_datas.emplace_back(column.clone());
     _estimate_size += column.byte_size();
+    FlatJsonMetrics::instance()->flat_json_write_rows_total.increment(column.size());
     return Status::OK();
 }
 
-Status FlatJsonColumnWriter::_flat_column(Columns& json_datas) {
+Status FlatJsonColumnWriter::_flat_column(MutableColumns& json_datas) {
+    FlatJsonMetrics::instance()->flat_json_segment_write_total.increment(1);
     // all json datas must full json
     JsonPathDeriver deriver;
     deriver.init_flat_json_config(_flat_json_config);
@@ -91,11 +98,13 @@ Status FlatJsonColumnWriter::_flat_column(Columns& json_datas) {
         vc.emplace_back(js.get());
     }
     deriver.derived(vc);
+    FlatJsonMetrics::instance()->flat_json_paths_discovered_total.increment(deriver.flat_paths().size());
 
     _flat_paths = deriver.flat_paths();
     _flat_types = deriver.flat_types();
     _has_remain = deriver.has_remain_json();
     _remain_filter = deriver.remain_fitler();
+    FlatJsonMetrics::instance()->flat_json_paths_extracted_total.increment(_flat_paths.size());
 
     VLOG(2) << "FlatJsonColumnWriter flat_column flat json: "
             << JsonFlatPath::debug_flat_json(_flat_paths, _flat_types, _has_remain);
@@ -110,6 +119,11 @@ Status FlatJsonColumnWriter::_flat_column(Columns& json_datas) {
         auto* json_data = col.get();
         flattener.flatten(json_data);
         _flat_columns = flattener.mutable_result();
+
+        // IMPORTANT: Check flattener result integrity to prevent  inconsistency
+        for (const auto& flat_col : _flat_columns) {
+            flat_col->check_or_die();
+        }
 
         // recode null column in 1st
         if (_json_meta->is_nullable()) {
@@ -174,12 +188,13 @@ Status FlatJsonColumnWriter::_init_flat_writers() {
             opts.meta->set_is_nullable(true);
         }
 
-        if (_flat_types[i] == TYPE_JSON && (!_has_remain || i != _flat_paths.size() - 1)) {
+        if (config::json_flat_use_dict_encoding && _flat_types[i] == TYPE_JSON &&
+            (!_has_remain || i != _flat_paths.size() - 1)) {
             // try to use dict encoding for flat json
             opts.meta->set_encoding(EncodingTypePB::DICT_ENCODING);
             opts.meta->set_compression(_json_meta->compression());
         } else {
-            opts.meta->set_encoding(_json_meta->encoding());
+            opts.meta->set_encoding(EncodingTypePB::DEFAULT_ENCODING);
             opts.meta->set_compression(_json_meta->compression());
         }
 
@@ -190,6 +205,22 @@ Status FlatJsonColumnWriter::_init_flat_writers() {
 
         opts.meta->set_name(_flat_paths[i]);
         opts.need_flat = false;
+        opts.need_zone_map = config::json_flat_create_zonemap && is_zone_map_key_type(_flat_types[i]);
+        opts.need_zone_map |= config::enable_string_prefix_zonemap && is_string_type(_flat_types[i]);
+        opts.zone_map_truncate_string = config::enable_string_prefix_zonemap && is_string_type(_flat_types[i]);
+
+        // Set global dict for sub-columns that support it
+        if (is_string_type(_flat_types[i])) {
+            std::string sub_column_key = _column_name + "." + _flat_paths[i];
+            auto it = _global_dict.find(sub_column_key);
+            if (it != _global_dict.end()) {
+                const GlobalDictMap& sub_map = it->second;
+                opts.global_dict = &sub_map;
+                _subcolumn_dict_valid[sub_column_key] = true;
+            } else {
+                _subcolumn_dict_valid[sub_column_key] = false;
+            }
+        }
 
         TabletColumn col(StorageAggregateType::STORAGE_AGGREGATE_NONE, _flat_types[i], true);
         ASSIGN_OR_RETURN(auto fw, ColumnWriter::create(opts, &col, _wfile));
@@ -203,12 +234,35 @@ Status FlatJsonColumnWriter::_init_flat_writers() {
 Status FlatJsonColumnWriter::_write_flat_column() {
     DCHECK(!_flat_columns.empty());
     DCHECK_EQ(_flat_columns.size(), _flat_writers.size());
+
+    // IMPORTANT: Final integrity check before writing to prevent  inconsistency
+    for (const auto& flat_col : _flat_columns) {
+        flat_col->check_or_die();
+    }
+
     // flat datas
     for (size_t i = 0; i < _flat_columns.size(); i++) {
         RETURN_IF_ERROR(_flat_writers[i]->append(*_flat_columns[i]));
     }
 
     return Status::OK();
+}
+
+const std::map<std::string, bool>& FlatJsonColumnWriter::get_subcolumn_dict_valid() const {
+    return _subcolumn_dict_valid;
+}
+
+bool FlatJsonColumnWriter::is_global_dict_valid() {
+    // If any value in _subcolumn_dict_valid is true, return true
+    if (_subcolumn_dict_valid.empty()) {
+        return false;
+    }
+    for (const auto& kv : _subcolumn_dict_valid) {
+        if (kv.second) {
+            return true;
+        }
+    }
+    return false;
 }
 
 Status FlatJsonColumnWriter::finish() {
@@ -220,11 +274,21 @@ Status FlatJsonColumnWriter::finish() {
         }
     }
     _json_datas.clear(); // release after write
-    // flat datas
+
+    RETURN_IF_ERROR(_json_writer->finish());
+
     for (size_t i = 0; i < _flat_writers.size(); i++) {
         RETURN_IF_ERROR(_flat_writers[i]->finish());
+        std::string sub_column_key = _column_name + "." + _flat_paths[i];
+
+        // Record dict validity for each sub-column
+        if (_subcolumn_dict_valid[sub_column_key]) {
+            bool sub_dict_valid = _flat_writers[i]->is_global_dict_valid();
+            _subcolumn_dict_valid[sub_column_key] = sub_dict_valid;
+        }
     }
-    return _json_writer->finish();
+
+    return Status::OK();
 }
 
 ordinal_t FlatJsonColumnWriter::get_next_rowid() const {
@@ -298,8 +362,8 @@ Status FlatJsonColumnWriter::finish_current_page() {
 
 StatusOr<std::unique_ptr<ColumnWriter>> create_json_column_writer(const ColumnWriterOptions& opts,
                                                                   TypeInfoPtr type_info, WritableFile* wfile,
-                                                                  std::unique_ptr<ScalarColumnWriter> json_writer) {
-    VLOG(2) << "Create Json Column Writer is_compaction: " << opts.is_compaction << ", need_flat : " << opts.need_flat;
+                                                                  std::unique_ptr<ObjectColumnWriter> json_writer) {
+    VLOG(2) << "Create Json Column Writer " << opts.to_string();
     // compaction
     if (opts.is_compaction) {
         if (opts.need_flat) {

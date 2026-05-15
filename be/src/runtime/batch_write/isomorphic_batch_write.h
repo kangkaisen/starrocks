@@ -23,10 +23,10 @@
 #include <string>
 #include <unordered_set>
 
+#include "base/concurrency/countdown_latch.h"
 #include "common/statusor.h"
 #include "runtime/batch_write/batch_write_util.h"
 #include "runtime/batch_write/txn_state_cache.h"
-#include "util/countdown_latch.h"
 
 namespace starrocks {
 
@@ -64,6 +64,7 @@ public:
 private:
     static int _execute_tasks(void* meta, bthread::TaskIterator<Task>& iter);
 
+    Status _create_and_wait_async_task(StreamLoadContext* data_ctx);
     Status _execute_write(AsyncAppendDataContext* async_ctx);
     Status _write_data_to_pipe(AsyncAppendDataContext* data_ctx);
     Status _send_rpc_request(StreamLoadContext* data_ctx);

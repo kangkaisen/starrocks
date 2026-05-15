@@ -8,7 +8,7 @@ displayed_sidebar: docs
 
 ユーザーまたはロールに付与されたすべての権限を表示します。
 
-ロールと権限の詳細については、[権限の概要](../../../administration/user_privs/user_privs.md)を参照してください。
+ロールと権限の詳細については、[権限の概要](../../../administration/user_privs/authorization/user_privs.md)を参照してください。
 
 :::tip
 すべてのロールとユーザーは、自分に付与された権限や割り当てられたロールを確認できます。指定されたユーザーまたはロールの権限を表示できるのは、`user_admin` ロールを持つユーザーのみです。
@@ -18,12 +18,14 @@ displayed_sidebar: docs
 
 ```SQL
 SHOW GRANTS; -- 現在のユーザーの権限を表示します。
+SHOW GRANTS FOR CURRENT_USER[()]; -- 現在のユーザーの権限を表示します（MySQL互換構文）。
 SHOW GRANTS FOR ROLE <role_name>; -- 特定のロールの権限を表示します。
 SHOW GRANTS FOR <user_identity>; -- 特定のユーザーの権限を表示します。
 ```
 
 ## パラメータ
 
+- `CURRENT_USER[()]`: 現在のセッションユーザーの権限を返します。括弧は省略可能です。この形式は `SHOW GRANTS` と同等であり、接続初期化時にこのステートメントを自動的に発行する MySQL クライアント（Metabase、DBeaver など）との互換性のために提供されています。
 - role_name
 - user_identity
 
@@ -52,6 +54,13 @@ SHOW GRANTS FOR <user_identity>; -- 特定のユーザーの権限を表示し�
 
 ```SQL
 mysql> SHOW GRANTS;
++--------------+---------+----------------------------------------+
+| UserIdentity | Catalog | Grants                                 |
++--------------+---------+----------------------------------------+
+| 'root'@'%'   | NULL    | GRANT 'root', 'testrole' TO 'root'@'%' |
++--------------+---------+----------------------------------------+
+
+mysql> SHOW GRANTS FOR CURRENT_USER();
 +--------------+---------+----------------------------------------+
 | UserIdentity | Catalog | Grants                                 |
 +--------------+---------+----------------------------------------+

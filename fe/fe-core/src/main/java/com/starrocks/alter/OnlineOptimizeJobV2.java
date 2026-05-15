@@ -23,6 +23,7 @@ import com.google.gson.annotations.SerializedName;
 import com.starrocks.authorization.PrivilegeBuiltinConstants;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DistributionInfo;
+import com.starrocks.catalog.DistributionInfoBuilder;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.OlapTable.OlapTableState;
@@ -32,9 +33,9 @@ import com.starrocks.catalog.PartitionType;
 import com.starrocks.catalog.SinglePartitionInfo;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.ParseUtil;
 import com.starrocks.common.util.TimeUtils;
@@ -45,7 +46,6 @@ import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.load.PartitionUtils;
 import com.starrocks.persist.ReplacePartitionOperationLog;
 import com.starrocks.persist.gson.GsonPostProcessable;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryState;
 import com.starrocks.qe.SessionVariable;
@@ -56,13 +56,11 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.OptimizeClause;
 import com.starrocks.sql.ast.StatementBase;
-import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.sql.parser.SqlParser;
 import io.opentelemetry.api.trace.StatusCode;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataOutput;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
@@ -134,6 +132,18 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         this.postfix = "_" + jobId;
     }
 
+    protected OnlineOptimizeJobV2(OnlineOptimizeJobV2 job) {
+        super(job);
+        this.watershedTxnId = job.watershedTxnId;
+        this.tmpPartitionIds = job.tmpPartitionIds == null ? null : Lists.newArrayList(job.tmpPartitionIds);
+        this.rewriteTasks = job.rewriteTasks == null ? null : Lists.newArrayList(job.rewriteTasks);
+        this.sourcePartitionNames = job.sourcePartitionNames == null ? null : Lists.newArrayList(job.sourcePartitionNames);
+        this.tmpPartitionNames = job.tmpPartitionNames == null ? null : Lists.newArrayList(job.tmpPartitionNames);
+        this.allPartitionOptimized = job.allPartitionOptimized;
+        this.distributionInfo = job.distributionInfo;
+        this.optimizeOperation = job.optimizeOperation;
+    }
+
     public List<Long> getTmpPartitionIds() {
         return tmpPartitionIds;
     }
@@ -198,8 +208,8 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         OlapTable targetTable = checkAndGetTable(db, tableId);
         try {
             PartitionUtils.createAndAddTempPartitionsForTable(db, targetTable, postfix,
-                        optimizeClause.getSourcePartitionIds(), getTmpPartitionIds(), optimizeClause.getDistributionDesc(),
-                        warehouseId);
+                    optimizeClause.getSourcePartitionIds(), getTmpPartitionIds(), optimizeClause.getDistributionDesc(),
+                    computeResource);
             LOG.debug("create temp partitions {} success. job: {}", getTmpPartitionIds(), jobId);
         } catch (Exception e) {
             LOG.warn("create temp partitions failed", e);
@@ -208,14 +218,14 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         long createPartitionElapse = System.currentTimeMillis() - createPartitionStartTimestamp;
 
         // wait previous transactions finished
-        this.jobState = JobState.WAITING_TXN;
         this.optimizeOperation = optimizeClause.toString();
         span.setAttribute("createPartitionElapse", createPartitionElapse);
         span.setAttribute("watershedTxnId", this.watershedTxnId);
         span.addEvent("setWaitingTxn");
 
         // write edit log
-        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
+        // createAndAddTempPartitionsForTable will write edit log for creating temp partitions, so do not need to apply here.
+        persistStateChange(this, JobState.WAITING_TXN);
         LOG.info("transfer optimize job {} state to {}, watershed txn_id: {}", jobId, this.jobState, watershedTxnId);
     }
 
@@ -342,14 +352,17 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
 
         OlapTable tbl = checkAndGetTable(db, tableId);
 
-        int progress = 0;
+        // Use double to avoid integer division precision loss when task count > 100
+        double progressAcc = 0.0;
+        int taskCount = Math.max(1, rewriteTasks.size());
 
         for (OptimizeTask rewriteTask : rewriteTasks) {
             if (rewriteTask.getOptimizeTaskState() == Constants.TaskRunState.FAILED
                         || rewriteTask.getOptimizeTaskState() == Constants.TaskRunState.SUCCESS) {
-                progress += 100 / rewriteTasks.size();
-                if (this.progress < progress) {
-                    this.progress = progress;
+                progressAcc += 100.0 / taskCount;
+                int current = Math.min(99, (int) Math.floor(progressAcc));
+                if (this.progress < current) {
+                    this.progress = current;
                 }
                 continue;
             }
@@ -420,10 +433,10 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         LOG.debug("all insert overwrite tasks finished, optimize job: {}", jobId);
 
         this.progress = 100;
-        this.jobState = JobState.FINISHED;
         this.finishedTimeMs = System.currentTimeMillis();
 
-        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
+        // Replace tmp partitions log with be written in onFinished(), so do not need to apply here.
+        persistStateChange(this, JobState.FINISHED);
         LOG.info("optimize job finished: {}", jobId);
         this.span.end();
     }
@@ -437,7 +450,8 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         try {
             targetTable.setState(OlapTableState.UPDATING_META);
             if (allPartitionOptimized && optimizeClause.getDistributionDesc() != null) {
-                this.distributionInfo = optimizeClause.getDistributionDesc().toDistributionInfo(targetTable.getColumns());
+                this.distributionInfo =
+                        DistributionInfoBuilder.build(optimizeClause.getDistributionDesc(), targetTable.getColumns());
                 targetTable.setDefaultDistributionInfo(distributionInfo);
             }
             targetTable.setState(OlapTableState.NORMAL);
@@ -462,25 +476,30 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
             Set<Tablet> sourceTablets = Sets.newHashSet();
             Partition partition = targetTable.getPartition(sourcePartitionName);
             for (MaterializedIndex index
-                    : partition.getDefaultPhysicalPartition().getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
+                    : partition.getDefaultPhysicalPartition().getAllMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
                 sourceTablets.addAll(index.getTablets());
             }
 
             PartitionInfo partitionInfo = targetTable.getPartitionInfo();
+            List<String> sourcePartitions = Arrays.asList(sourcePartitionName);
+            List<String> tempPartitions = Arrays.asList(tmpPartitionName);
             if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
-                targetTable.replaceTempPartitions(
-                            Arrays.asList(sourcePartitionName), Arrays.asList(tmpPartitionName), true, false);
-            } else if (partitionInfo instanceof SinglePartitionInfo) {
-                targetTable.replacePartition(sourcePartitionName, tmpPartitionName);
-            } else {
+                targetTable.checkReplaceTempPartitions(sourcePartitions, tempPartitions, true);
+            } else if (!(partitionInfo instanceof SinglePartitionInfo)) {
                 throw new AlterCancelException("partition type " + partitionInfo.getType() + " is not supported");
             }
 
             // write log
             ReplacePartitionOperationLog info = new ReplacePartitionOperationLog(db.getId(), targetTable.getId(),
-                        Arrays.asList(sourcePartitionName), Arrays.asList(tmpPartitionName),
+                        sourcePartitions, tempPartitions,
                         true, false, partitionInfo instanceof SinglePartitionInfo);
-            GlobalStateMgr.getCurrentState().getEditLog().logReplaceTempPartition(info);
+            GlobalStateMgr.getCurrentState().getEditLog().logReplaceTempPartition(info, wal -> {
+                if (partitionInfo.isRangePartition() || partitionInfo.getType() == PartitionType.LIST) {
+                    targetTable.replaceTempPartitionsWithoutCheck(db.getId(), sourcePartitions, tempPartitions, false);
+                } else {
+                    targetTable.replacePartition(db.getId(), sourcePartitionName, tmpPartitionName);
+                }
+            });
 
             // mark all source tablet ids force delete to drop it directly on BE,
             // not to move it to trash
@@ -516,16 +535,20 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         if (jobState.isFinalState()) {
             return false;
         }
-        cancelInternal();
 
-        jobState = JobState.CANCELLED;
         this.errMsg = errMsg;
         this.finishedTimeMs = System.currentTimeMillis();
+        persistStateChange(this, JobState.CANCELLED, this::cancelInternal);
+
         LOG.info("cancel {} job {}, err: {}", this.type, jobId, errMsg);
-        GlobalStateMgr.getCurrentState().getEditLog().logAlterJob(this);
         span.setStatus(StatusCode.ERROR, errMsg);
         span.end();
         return true;
+    }
+
+    @Override
+    public AlterJobV2 copyForPersist() {
+        return new OnlineOptimizeJobV2(this);
     }
 
     private void cancelInternal() {
@@ -565,7 +588,7 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
                     Partition partition = targetTable.getPartition(pid);
                     if (partition != null) {
                         for (MaterializedIndex index : partition.getDefaultPhysicalPartition()
-                                .getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
+                                .getAllMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
                             // hash set is able to deduplicate the elements
                             tmpTablets.addAll(index.getTablets());
                         }
@@ -670,7 +693,7 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
             Partition partition = targetTable.getPartition(id);
             if (partition != null) {
                 for (MaterializedIndex index : partition.getDefaultPhysicalPartition()
-                        .getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
+                        .getAllMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
                     sourceTablets.addAll(index.getTablets());
                 }
                 targetTable.dropTempPartition(partition.getName(), true);
@@ -768,49 +791,52 @@ public class OnlineOptimizeJobV2 extends AlterJobV2 implements GsonPostProcessab
         this.jobState = jobState;
     }
 
-    @Override
-    public void write(DataOutput out) throws IOException {
-        String json = GsonUtils.GSON.toJson(this, OnlineOptimizeJobV2.class);
-        Text.writeString(out, json);
-    }
+
+
 
     @Override
     public Optional<Long> getTransactionId() {
         return watershedTxnId < 0 ? Optional.empty() : Optional.of(watershedTxnId);
     }
 
+    private ConnectContext buildConnectContext() {
+        ConnectContext context = ConnectContext.buildInner();
+        context.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
+        context.setCurrentUserIdentity(UserIdentity.ROOT);
+        context.setCurrentRoleIds(Sets.newHashSet(PrivilegeBuiltinConstants.ROOT_ROLE_ID));
+        context.setQualifiedUser(UserIdentity.ROOT.getUser());
+        return context;
+    }
+
     protected void executeSql(String sql) throws Exception {
         LOG.info("execute sql : {}", sql);
         ConnectContext context = ConnectContext.get();
         if (context == null) {
-            context = ConnectContext.buildInner();
-            context.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
-            context.setCurrentUserIdentity(UserIdentity.ROOT);
-            context.setCurrentRoleIds(Sets.newHashSet(PrivilegeBuiltinConstants.ROOT_ROLE_ID));
-            context.setQualifiedUser(UserIdentity.ROOT.getUser());
-            context.setThreadLocalInfo();
+            context = buildConnectContext();
         }
-        StatementBase parsedStmt = SqlParser.parseOneWithStarRocksDialect(sql, context.getSessionVariable());
-        if (parsedStmt instanceof InsertStmt) {
-            ((InsertStmt) parsedStmt).setIsVersionOverwrite(true);
-        }
-        StmtExecutor executor = StmtExecutor.newInternalExecutor(context, parsedStmt);
+        try (var scope = context.bindScope()) {
+            StatementBase parsedStmt = SqlParser.parseOneWithStarRocksDialect(sql, context.getSessionVariable());
+            if (parsedStmt instanceof InsertStmt) {
+                ((InsertStmt) parsedStmt).setIsVersionOverwrite(true);
+            }
+            StmtExecutor executor = StmtExecutor.newInternalExecutor(context, parsedStmt);
 
-        // set default session variables for stats context
-        SessionVariable sessionVariable = context.getSessionVariable();
-        sessionVariable.setUsePageCache(false);
-        sessionVariable.setEnableMaterializedViewRewrite(false);
-        sessionVariable.setInsertTimeoutS((int) timeoutMs / 2000);
+            // set default session variables for stats context
+            SessionVariable sessionVariable = context.getSessionVariable();
+            sessionVariable.setUsePageCache(false);
+            sessionVariable.setEnableMaterializedViewRewrite(false);
+            sessionVariable.setInsertTimeoutS((int) timeoutMs / 2000);
 
-        context.setExecutor(executor);
-        context.setQueryId(UUIDUtil.genUUID());
-        context.setStartTime();
-        executor.execute();
+            context.setExecutor(executor);
+            context.setQueryId(UUIDUtil.genUUID());
+            context.setStartTime();
+            executor.execute();
 
-        if (context.getState().getStateType() == QueryState.MysqlStateType.ERR) {
-            LOG.warn("Execute sql fail | Error Message [{}] | {} | SQL [{}]",
+            if (context.getState().getStateType() == QueryState.MysqlStateType.ERR) {
+                LOG.warn("Execute sql fail | Error Message [{}] | {} | SQL [{}]",
                         context.getState().getErrorMessage(), DebugUtil.printId(context.getQueryId()), sql);
-            throw new AlterCancelException(context.getState().getErrorMessage());
+                throw new AlterCancelException(context.getState().getErrorMessage());
+            }
         }
     }
 

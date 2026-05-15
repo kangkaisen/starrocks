@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "column/type_traits.h"
+#include "column/runtime_type_traits.h"
 #include "exprs/agg/aggregate.h"
 #include "exprs/agg/sum.h"
 #include "exprs/arithmetic_operation.h"
@@ -36,6 +36,11 @@ struct AvgResultTrait<LT, ArithmeticLTGuard<LT>> {
 template <LogicalType LT>
 struct AvgResultTrait<LT, DecimalLTGuard<LT>> {
     static const LogicalType value = TYPE_DECIMAL128;
+};
+
+template <>
+struct AvgResultTrait<TYPE_DECIMAL256, DecimalLTGuard<TYPE_DECIMAL256>> {
+    static const LogicalType value = TYPE_DECIMAL256;
 };
 
 template <LogicalType LT>
@@ -83,30 +88,30 @@ public:
         [[maybe_unused]] const auto* column = down_cast<const InputColumnType*>(columns[0]);
         if constexpr (is_inc) {
             if constexpr (lt_is_datetime<LT>) {
-                this->data(state).sum += column->get_data()[row_num].to_unix_second();
+                this->data(state).sum += column->immutable_data()[row_num].to_unix_second();
             } else if constexpr (lt_is_date<LT>) {
-                this->data(state).sum += column->get_data()[row_num].julian();
+                this->data(state).sum += column->immutable_data()[row_num].julian();
             } else if constexpr (lt_is_decimalv2<LT>) {
-                this->data(state).sum += column->get_data()[row_num];
+                this->data(state).sum += column->immutable_data()[row_num];
             } else if constexpr (lt_is_arithmetic<LT>) {
-                this->data(state).sum += column->get_data()[row_num];
+                this->data(state).sum += column->immutable_data()[row_num];
             } else if constexpr (lt_is_decimal<LT>) {
-                this->data(state).sum += column->get_data()[row_num];
+                this->data(state).sum += column->immutable_data()[row_num];
             } else {
                 DCHECK(false) << "Invalid LogicalTypes for avg function";
             }
             this->data(state).count++;
         } else {
             if constexpr (lt_is_datetime<LT>) {
-                this->data(state).sum -= column->get_data()[row_num].to_unix_second();
+                this->data(state).sum -= column->immutable_data()[row_num].to_unix_second();
             } else if constexpr (lt_is_date<LT>) {
-                this->data(state).sum -= column->get_data()[row_num].julian();
+                this->data(state).sum -= column->immutable_data()[row_num].julian();
             } else if constexpr (lt_is_decimalv2<LT>) {
-                this->data(state).sum -= column->get_data()[row_num];
+                this->data(state).sum -= column->immutable_data()[row_num];
             } else if constexpr (lt_is_arithmetic<LT>) {
-                this->data(state).sum -= column->get_data()[row_num];
+                this->data(state).sum -= column->immutable_data()[row_num];
             } else if constexpr (lt_is_decimal<LT>) {
-                this->data(state).sum -= column->get_data()[row_num];
+                this->data(state).sum -= column->immutable_data()[row_num];
             } else {
                 DCHECK(false) << "Invalid LogicalTypes for avg function";
             }
@@ -176,9 +181,9 @@ public:
     }
 
     void convert_to_serialize_format(FunctionContext* ctx, const Columns& src, size_t chunk_size,
-                                     ColumnPtr* dst) const override {
-        DCHECK((*dst)->is_binary());
-        auto* dst_column = down_cast<BinaryColumn*>((*dst).get());
+                                     MutableColumnPtr& dst) const override {
+        DCHECK(dst->is_binary());
+        auto* dst_column = down_cast<BinaryColumn*>(dst.get());
         Bytes& bytes = dst_column->get_bytes();
         size_t old_size = bytes.size();
 
@@ -191,15 +196,15 @@ public:
         ImmediateType result = {};
         for (size_t i = 0; i < chunk_size; ++i) {
             if constexpr (lt_is_datetime<LT>) {
-                result = src_column->get_data()[i].to_unix_second();
+                result = src_column->immutable_data()[i].to_unix_second();
             } else if constexpr (lt_is_date<LT>) {
-                result = src_column->get_data()[i].julian();
+                result = src_column->immutable_data()[i].julian();
             } else if constexpr (lt_is_decimalv2<LT>) {
-                result = src_column->get_data()[i];
+                result = src_column->immutable_data()[i];
             } else if constexpr (lt_is_arithmetic<LT>) {
-                result = src_column->get_data()[i];
+                result = src_column->immutable_data()[i];
             } else if constexpr (lt_is_decimal<LT>) {
-                result = src_column->get_data()[i];
+                result = src_column->immutable_data()[i];
             } else {
                 DCHECK(false) << "Invalid LogicalTypes for avg function";
             }
@@ -230,7 +235,8 @@ public:
         } else if constexpr (lt_is_arithmetic<LT>) {
             result = this->data(state).sum / this->data(state).count;
         } else if constexpr (lt_is_decimal<LT>) {
-            static_assert(lt_is_decimal128<ResultLT>, "Result type of avg on decimal32/64/128 is decimal 128");
+            static_assert(lt_is_decimal128<ResultLT> || lt_is_decimal256<ResultLT>,
+                          "Result type of avg on decimal32/64/128/256 is decimal 128 or 256");
             auto sum = ResultType(this->data(state).sum);
             auto count = ResultType(this->data(state).count);
             result = decimal_div_integer<ResultType>(sum, count, ctx->get_arg_type(0)->scale);
@@ -256,7 +262,8 @@ public:
         } else if constexpr (lt_is_arithmetic<LT>) {
             result = this->data(state).sum / this->data(state).count;
         } else if constexpr (lt_is_decimal<LT>) {
-            static_assert(lt_is_decimal128<ResultLT>, "Result type of avg on decimal32/64/128 is decimal 128");
+            static_assert(lt_is_decimal128<ResultLT> || lt_is_decimal256<ResultLT>,
+                          "Result type of avg on decimal32/64/128/256 is decimal 128 or 256");
             auto sum = ResultType(this->data(state).sum);
             auto count = ResultType(this->data(state).count);
             result = decimal_div_integer<ResultType>(sum, count, ctx->get_arg_type(0)->scale);
@@ -270,8 +277,9 @@ public:
 
     std::string get_name() const override { return "avg"; }
 };
+
 template <LogicalType LT, typename = DecimalLTGuard<LT>>
 using DecimalAvgAggregateFunction =
-        AvgAggregateFunction<LT, RunTimeCppType<LT>, TYPE_DECIMAL128, RunTimeCppType<TYPE_DECIMAL128>>;
+        AvgAggregateFunction<LT, RunTimeCppType<LT>, (LT == TYPE_DECIMAL256) ? TYPE_DECIMAL256 : TYPE_DECIMAL128>;
 
 } // namespace starrocks

@@ -37,8 +37,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
+#include "base/concurrency/once.h"
 #include "common/statusor.h"
 #include "fs/fs.h"
 #include "gen_cpp/olap_file.pb.h"
@@ -46,12 +46,11 @@
 #include "gutil/macros.h"
 #include "storage/delta_column_group.h"
 #include "storage/index/inverted/inverted_index_iterator.h"
+#include "storage/options.h"
 #include "storage/rowset/page_handle.h"
 #include "storage/rowset/page_pointer.h"
 #include "storage/short_key_index.h"
 #include "storage/tablet_schema.h"
-#include "util/faststring.h"
-#include "util/once.h"
 
 namespace starrocks {
 
@@ -71,6 +70,9 @@ class ColumnIterator;
 class Segment;
 using SegmentSharedPtr = std::shared_ptr<Segment>;
 using ChunkIteratorPtr = std::shared_ptr<ChunkIterator>;
+namespace lake {
+class TabletManager;
+}
 
 // A Segment is used to represent a segment in memory format. When segment is
 // generated, it won't be modified, so this struct aimed to help read operation.
@@ -193,12 +195,19 @@ public:
 
     uint32_t num_rows() const { return _num_rows; }
 
+    // True when the segment footer explicitly marks no .vi file for this segment
+    // (e.g. the writer's vector index build threshold was not met). The
+    // SegmentIterator uses this to skip opening the .vi file and go straight to
+    // the brute-force distance-computation fallback.
+    bool skip_vector_index() const { return _skip_vector_index; }
+
     // Load and decode short key index.
     // May be called multiple times, subsequent calls will no op.
     Status load_index(const LakeIOOptions& lake_io_opts = {});
     bool has_loaded_index() const;
 
-    Status new_inverted_index_iterator(uint32_t cid, InvertedIndexIterator** iter, const SegmentReadOptions& opts);
+    Status new_inverted_index_iterator(uint32_t cid, InvertedIndexIterator** iter, const SegmentReadOptions& opts,
+                                       const IndexReadOptions& index_opt);
 
     const ShortKeyIndexDecoder* decoder() const { return _sk_index_decoder.get(); }
 
@@ -220,10 +229,23 @@ public:
 
     const FileEncryptionInfo* encryption_info() const { return _encryption_info.get(); };
 
+    inline void turn_on_batch_update_cache_size() {
+#ifdef BE_TEST
+        if (!_s_allow_batch_update_mode) return;
+#endif
+        _batch_on_flags_counter.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void turn_off_batch_update_cache_size();
+
     DISALLOW_COPY_AND_MOVE(Segment);
 
     // for ut test
     void set_num_rows(uint32_t num_rows) { _num_rows = num_rows; }
+
+#ifdef BE_TEST
+    static void toggle_batch_update_cache_mode(bool enabled) { _s_allow_batch_update_mode = enabled; }
+#endif
 
 private:
     friend struct SegmentZoneMapPruner;
@@ -276,9 +298,16 @@ private:
                  const LakeIOOptions& lake_io_opts);
     Status _create_column_readers(SegmentFooterPB* footer);
 
+    Status _check_column_unique_id_uniqueness(SegmentFooterPB* footer,
+                                              std::unordered_map<uint32_t, uint32_t>& column_id_to_footer_ordinal);
+
     StatusOr<ChunkIteratorPtr> _new_iterator(const Schema& schema, const SegmentReadOptions& read_options);
 
     bool _use_segment_zone_map_filter(const SegmentReadOptions& read_options);
+
+    // Create an iterator for extended column
+    StatusOr<std::unique_ptr<ColumnIterator>> _new_extended_column_iterator(const TabletColumn& column,
+                                                                            ColumnAccessPath* path);
 
     friend class SegmentIterator;
 
@@ -288,6 +317,7 @@ private:
     uint32_t _segment_id = 0;
     uint32_t _num_rows = 0;
     PagePointer _short_key_index_page;
+    bool _skip_vector_index = false;
 
     // ColumnReader for each column in TabletSchema. If ColumnReader is nullptr,
     // This means that this segment has no data for that column, which may be added
@@ -303,10 +333,16 @@ private:
 
     std::unique_ptr<FileEncryptionInfo> _encryption_info;
 
+    std::atomic_int _batch_on_flags_counter{0};
+    std::atomic_int _dirty_cache_counter{0};
+
     // for cloud native tablet
     lake::TabletManager* _tablet_manager = nullptr;
     // used to guarantee that segment will be opened at most once in a thread-safe way
     OnceFlag _open_once;
+#ifdef BE_TEST
+    static bool _s_allow_batch_update_mode;
+#endif
 };
 
 } // namespace starrocks

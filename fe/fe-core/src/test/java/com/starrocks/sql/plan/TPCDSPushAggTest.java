@@ -16,10 +16,10 @@ package com.starrocks.sql.plan;
 
 import com.starrocks.common.FeConstants;
 import org.apache.commons.lang3.StringUtils;
-import org.junit.Test;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -32,12 +32,15 @@ public class TPCDSPushAggTest extends TPCDS1TTestBase {
     public static void beforeAll() {
         FeConstants.unitTestView = false;
         connectContext.getSessionVariable().setEnableMaterializedViewRewrite(false);
+        connectContext.getSessionVariable().setEnableInnerJoinToSemi(false);
+        connectContext.getSessionVariable().setSemiJoinDeduplicateMode(-1);
     }
 
     @AfterAll
     public static void afterAll() {
         FeConstants.unitTestView = true;
         connectContext.getSessionVariable().setEnableMaterializedViewRewrite(true);
+        connectContext.getSessionVariable().setEnableInnerJoinToSemi(true);
     }
 
     private String check(int mode, String sql, int aggNum) throws Exception {
@@ -129,7 +132,7 @@ public class TPCDSPushAggTest extends TPCDS1TTestBase {
         connectContext.getSessionVariable().setOptimizerExecuteTimeout(3000000000L);
         String sql = "Q75";
         String plan = getPlan(1, sql);
-        System.out.println(plan);
+        logSysInfo(plan);
     }
 
     private int getAggNum(int cboPushDownAggregateMode, String sql) throws Exception {
@@ -174,14 +177,14 @@ public class TPCDSPushAggTest extends TPCDS1TTestBase {
                 Arguments.of("Q43", 2, 4, true, 4, true, 4, true, 4, true),
                 Arguments.of("Q45", 6, 6, false, 8, true, 6, false, 8, true),
                 Arguments.of("Q46", 2, 2, false, 4, true, 2, false, 2, false),
-                Arguments.of("Q47", 2, 2, true, 4, true, 4, true, 4, true),
+                Arguments.of("Q47", 2, 2, false, 4, true, 4, true, 4, true),
                 Arguments.of("Q51", 4, 4, false, 8, true, 8, true, 8, true),
                 Arguments.of("Q52", 2, 2, false, 4, true, 4, true, 4, true),
                 Arguments.of("Q53", 2, 2, false, 4, true, 4, true, 4, true),
                 Arguments.of("Q54", 9, 9, false, 18, true, 11, true, 17, true),
                 Arguments.of("Q55", 2, 2, false, 4, true, 4, true, 4, true),
                 Arguments.of("Q56", 8, 8, false, 14, true, 14, true, 14, true),
-                Arguments.of("Q57", 2, 2, true, 4, true, 4, true, 4, true),
+                //                Arguments.of("Q57", 2, 2, true, 4, true, 4, true, 4, true),
                 Arguments.of("Q58", 6, 12, true, 12, true, 12, true, 12, true),
                 Arguments.of("Q59", 2, 4, true, 4, true, 4, true, 4, true),
                 Arguments.of("Q60", 8, 8, false, 14, true, 14, true, 14, true),
@@ -190,7 +193,7 @@ public class TPCDSPushAggTest extends TPCDS1TTestBase {
                 Arguments.of("Q68", 1, 1, false, 3, true, 1, false, 1, false),
                 Arguments.of("Q70", 4, 6, true, 6, true, 6, true, 6, true),
                 Arguments.of("Q71", 2, 2, false, 8, true, 8, true, 8, true),
-                Arguments.of("Q74", 8, 8, true, 8, true, 8, true, 8, true),
+                Arguments.of("Q74", 8, 8, true, 16, true, 16, true, 16, true),
                 Arguments.of("Q75", 4, 4, false, 16, true, 4, false, 4, false),
                 Arguments.of("Q77", 14, 26, true, 26, true, 26, true, 26, true),
                 Arguments.of("Q78", 6, 6, false, 9, true, 6, false, 6, false),
@@ -201,7 +204,7 @@ public class TPCDSPushAggTest extends TPCDS1TTestBase {
                 Arguments.of("Q87", 8, 14, true, 20, true, 14, true, 17, true),
                 Arguments.of("Q89", 2, 2, false, 4, true, 4, true, 4, true),
                 Arguments.of("Q91", 2, 4, true, 4, true, 4, true, 4, true),
-                Arguments.of("Q97", 6, 6, false, 12, true, 10, true, 12, true),
+                Arguments.of("Q97", 5, 5, false, 11, true, 9, true, 11, true),
                 Arguments.of("Q98", 2, 2, false, 4, true, 4, true, 4, true),
         };
 

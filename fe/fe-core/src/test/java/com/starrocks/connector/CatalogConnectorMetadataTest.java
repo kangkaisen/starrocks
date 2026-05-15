@@ -16,21 +16,24 @@ package com.starrocks.connector;
 
 import com.google.common.collect.ImmutableList;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.system.information.InfoSchemaDb;
 import com.starrocks.common.StarRocksException;
+import com.starrocks.common.tvr.TvrTableSnapshot;
 import com.starrocks.connector.informationschema.InformationSchemaMetadata;
 import com.starrocks.connector.jdbc.MockedJDBCMetadata;
 import com.starrocks.connector.metadata.TableMetaMetadata;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
-import com.starrocks.sql.ast.CreateMaterializedViewStmt;
+import com.starrocks.sql.ast.CreateSyncMVStmt;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -165,7 +168,7 @@ public class CatalogConnectorMetadataTest {
         ConnectContext ctx = com.starrocks.common.util.Util.getOrCreateInnerContext();
         ctx.setThreadLocalInfo();
         GetRemoteFilesParams getRemoteFilesParams =
-                GetRemoteFilesParams.newBuilder().setTableVersionRange(TableVersionRange.empty()).build();
+                GetRemoteFilesParams.newBuilder().setTableVersionRange(TvrTableSnapshot.empty()).build();
 
         new Expectations() {
             {
@@ -174,32 +177,33 @@ public class CatalogConnectorMetadataTest {
                 times = 1;
 
                 connectorMetadata.clear();
-                connectorMetadata.listPartitionNames("test_db", "test_tbl", ConnectorMetadatRequestContext.DEFAULT);
-                connectorMetadata.dropTable(null);
+                connectorMetadata.listPartitionNames("test_db", "test_tbl", ConnectorMetadataRequestContext.DEFAULT);
+                connectorMetadata.dropTable(ctx, null);
                 connectorMetadata.refreshTable("test_db", null, null, false);
                 connectorMetadata.alterMaterializedView(null);
                 connectorMetadata.addPartitions(ctx, null, null, null);
                 connectorMetadata.dropPartition(null, null, null);
                 connectorMetadata.renamePartition(null, null, null);
                 connectorMetadata.createMaterializedView((CreateMaterializedViewStatement) null);
-                connectorMetadata.createMaterializedView((CreateMaterializedViewStmt) null);
+                connectorMetadata.createMaterializedView((CreateSyncMVStmt) null);
                 connectorMetadata.dropMaterializedView(null);
                 connectorMetadata.alterMaterializedView(null);
                 connectorMetadata.refreshMaterializedView(null);
                 connectorMetadata.cancelRefreshMaterializedView(null);
-                connectorMetadata.createView(null);
-                connectorMetadata.alterView(null);
+                connectorMetadata.createView(ctx, null);
+                connectorMetadata.alterView(ctx, null);
                 connectorMetadata.truncateTable(null, null);
                 connectorMetadata.alterTableComment(null, null, null);
                 connectorMetadata.finishSink("test_db", "test_tbl", null, null);
                 connectorMetadata.abortSink("test_db", "test_tbl", null);
                 connectorMetadata.createTableLike(null);
-                connectorMetadata.createTable(null);
-                connectorMetadata.createDb("test_db");
+                connectorMetadata.createTable(ctx, null);
+                connectorMetadata.createDb(ctx, "test_db", new HashMap<>());
                 connectorMetadata.dropDb((ConnectContext) any, "test_db", false);
                 connectorMetadata.getRemoteFiles(null, getRemoteFilesParams);
                 connectorMetadata.getPartitions(null, null);
-                connectorMetadata.getTableStatistics(null, null, null, null, null, -1, TableVersionRange.empty());
+                connectorMetadata.getTableStatistics(null, null, null, null, null,
+                        -1, TvrTableSnapshot.empty());
             }
         };
 
@@ -210,31 +214,79 @@ public class CatalogConnectorMetadataTest {
         );
 
         catalogConnectorMetadata.clear();
-        catalogConnectorMetadata.listPartitionNames("test_db", "test_tbl", ConnectorMetadatRequestContext.DEFAULT);
-        catalogConnectorMetadata.dropTable(null);
+        catalogConnectorMetadata.listPartitionNames("test_db", "test_tbl", ConnectorMetadataRequestContext.DEFAULT);
+        catalogConnectorMetadata.dropTable(ctx, null);
         catalogConnectorMetadata.refreshTable("test_db", null, null, false);
         catalogConnectorMetadata.alterMaterializedView(null);
         catalogConnectorMetadata.addPartitions(com.starrocks.common.util.Util.getOrCreateInnerContext(), null, null, null);
         catalogConnectorMetadata.dropPartition(null, null, null);
         catalogConnectorMetadata.renamePartition(null, null, null);
         catalogConnectorMetadata.createMaterializedView((CreateMaterializedViewStatement) null);
-        catalogConnectorMetadata.createMaterializedView((CreateMaterializedViewStmt) null);
+        catalogConnectorMetadata.createMaterializedView((CreateSyncMVStmt) null);
         catalogConnectorMetadata.dropMaterializedView(null);
         catalogConnectorMetadata.alterMaterializedView(null);
         catalogConnectorMetadata.refreshMaterializedView(null);
         catalogConnectorMetadata.cancelRefreshMaterializedView(null);
-        catalogConnectorMetadata.createView(null);
-        catalogConnectorMetadata.alterView(null);
+        catalogConnectorMetadata.createView(ctx, null);
+        catalogConnectorMetadata.alterView(ctx, null);
         catalogConnectorMetadata.truncateTable(null, null);
         catalogConnectorMetadata.alterTableComment(null, null, null);
         catalogConnectorMetadata.finishSink("test_db", "test_tbl", null, null);
         catalogConnectorMetadata.abortSink("test_db", "test_tbl", null);
         catalogConnectorMetadata.createTableLike(null);
-        catalogConnectorMetadata.createTable(null);
-        catalogConnectorMetadata.createDb("test_db");
+        catalogConnectorMetadata.createTable(ctx, null);
+        catalogConnectorMetadata.createDb(ctx, "test_db", new HashMap<>());
         catalogConnectorMetadata.dropDb(new ConnectContext(), "test_db", false);
         connectorMetadata.getRemoteFiles(null, getRemoteFilesParams);
         catalogConnectorMetadata.getPartitions(null, null);
-        catalogConnectorMetadata.getTableStatistics(null, null, null, null, null, -1, TableVersionRange.empty());
+        catalogConnectorMetadata.getTableStatistics(null, null, null, null, null, -1,
+                TvrTableSnapshot.empty());
+    }
+
+    @Test
+    void testGetCatalogPropertiesDelegatesToNormal(@Mocked ConnectorMetadata connectorMetadata) {
+        Map<String, String> expectedProperties = Map.of(
+                "uri", "http://rest-catalog:8181",
+                "credential", "test-credential"
+        );
+
+        new Expectations() {
+            {
+                connectorMetadata.getCatalogProperties();
+                result = expectedProperties;
+                times = 1;
+            }
+        };
+
+        CatalogConnectorMetadata catalogConnectorMetadata = new CatalogConnectorMetadata(
+                connectorMetadata,
+                informationSchemaMetadata,
+                metaMetadata
+        );
+
+        Map<String, String> actualProperties = catalogConnectorMetadata.getCatalogProperties();
+        assertEquals(expectedProperties, actualProperties);
+    }
+
+    @Test
+    void testAcquireTvrSnapshotDelegatesToChild(@Mocked ConnectorMetadata connectorMetadata, @Mocked Table table) {
+        MvId mvId = new MvId(1L, 2L);
+        TvrTableSnapshot expected = TvrTableSnapshot.of(123L);
+        new Expectations() {
+            {
+                connectorMetadata.acquireTvrSnapshot("test_db", table, mvId);
+                result = expected;
+                times = 1;
+            }
+        };
+
+        CatalogConnectorMetadata catalogConnectorMetadata = new CatalogConnectorMetadata(
+                connectorMetadata,
+                informationSchemaMetadata,
+                metaMetadata
+        );
+
+        TvrTableSnapshot actual = catalogConnectorMetadata.acquireTvrSnapshot("test_db", table, mvId);
+        assertEquals(expected, actual);
     }
 }

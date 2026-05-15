@@ -14,13 +14,14 @@
 
 package com.starrocks.load.streamload;
 
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
 import com.starrocks.thrift.TPartialUpdateMode;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Test base for {@link StreamLoadParams}. */
 public abstract class StreamLoadParamsTestBase {
@@ -312,4 +313,19 @@ public abstract class StreamLoadParamsTestBase {
     }
 
     protected abstract StreamLoadParams buildStripOuterArray(Boolean expected);
+
+    @Test
+    public void testEnvelope() throws Exception {
+        assertFalse(buildEnvelope(null).getEnvelope().isPresent());
+        assertEquals(TEnvelopeType.DEBEZIUM,
+                buildEnvelope("debezium").getEnvelope().orElse(null));
+        assertEquals(TEnvelopeType.DEBEZIUM,
+                buildEnvelope("DEBEZIUM").getEnvelope().orElse(null));
+        assertEquals(TEnvelopeType.NONE,
+                buildEnvelope("none").getEnvelope().orElse(null));
+        assertEquals(TEnvelopeType.NONE,
+                buildEnvelope("NONE").getEnvelope().orElse(null));
+    }
+
+    protected abstract StreamLoadParams buildEnvelope(String value);
 }

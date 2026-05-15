@@ -54,6 +54,11 @@ enum TFunctionVersion {
     RUNTIME_FILTER_SERIALIZE_VERSION_3 = 8,
 }
 
+enum TArrowFlightSQLVersion {
+  V0 = 0,
+  V1 = 1,
+}
+
 enum TQueryType {
     SELECT,
     LOAD,
@@ -135,6 +140,17 @@ enum TTimeUnit {
     MINUTE = 4;
 }
 
+enum TBinaryEncodingFormat {
+  RAW = 0;
+  HEX = 1;
+  BASE64 = 2;
+}
+
+enum TBinaryEncodingLevel {
+  ALL = 0;
+  NESTED = 1;
+}
+
 struct TQueryQueueOptions {
   1: optional bool enable_global_query_queue;
   2: optional bool enable_group_level_query_queue;
@@ -171,6 +187,10 @@ struct TSpillOptions {
   23: optional bool enable_spill_buffer_read;
   24: optional i64 max_spill_read_buffer_bytes_per_driver;
   25: optional i64 spill_hash_join_probe_op_max_bytes;
+
+  26: optional bool spill_partitionwise_agg;
+  27: optional i32 spill_partitionwise_agg_partition_num;
+  28: optional bool spill_partitionwise_agg_skew_elimination;
 }
 
 // Query options with their respective defaults
@@ -284,6 +304,7 @@ struct TQueryOptions {
 
   104: optional TOverflowMode overflow_mode = TOverflowMode.OUTPUT_NULL;
   105: optional bool use_column_pool = true; // Deprecated
+  117: optional bool error_for_division_by_zero = false;
   // Deprecated
   106: optional bool enable_agg_spill_preaggregation;
   107: optional i64 global_runtime_filter_build_max_size;
@@ -308,6 +329,8 @@ struct TQueryOptions {
   120: optional bool enable_connector_split_io_tasks = false;
   121: optional i64 connector_max_split_size = 0;
   122: optional bool enable_connector_sink_writer_scaling = true;
+  123: optional TBinaryEncodingFormat binary_encoding_format = TBinaryEncodingFormat.HEX;
+  124: optional TBinaryEncodingLevel binary_encoding_level = TBinaryEncodingLevel.NESTED;
 
   130: optional bool enable_wait_dependent_event = false;
 
@@ -333,6 +356,9 @@ struct TQueryOptions {
 
   160: optional bool enable_join_runtime_filter_pushdown;
   161: optional bool enable_join_runtime_bitset_filter;
+  162: optional bool enable_hash_join_range_direct_mapping_opt;
+  163: optional bool enable_hash_join_linear_chained_opt;
+  164: optional bool enable_hash_join_serialize_fixed_size_string;
 
   170: optional bool enable_parquet_reader_bloom_filter;
   171: optional bool enable_parquet_reader_page_index;
@@ -341,6 +367,29 @@ struct TQueryOptions {
 
   190: optional i64 column_view_concat_rows_limit;
   191: optional i64 column_view_concat_bytes_limit;
+
+  200: optional bool enable_full_sort_use_german_string;
+
+  // Hash function version for exchange shuffle
+  // 0: fnv_hash (default, for backward compatibility)
+  // 1: xxh3_hash (faster)
+  201: optional i32 exchange_hash_function_version = 0;
+
+  // whether enable predicate column late materialization
+  202: optional bool enable_predicate_col_late_materialize;
+
+  210: optional bool enable_global_late_materialization;
+  211: optional bool enable_schedule_log;
+
+  // http_request function SSL settings
+  212: optional bool http_request_ssl_verification_required = true;
+
+  // http_request function SSRF protection settings
+  213: optional i32 http_request_security_level = 3;
+  214: optional string http_request_ip_allowlist = "";
+  215: optional string http_request_host_allowlist_regexp = "";
+  216: optional bool http_request_allow_private_in_allowlist = false;
+  217: optional bool enable_cache_udaf = false;
 }
 
 // A scan range plus the parameters needed to execute that scan.
@@ -404,6 +453,10 @@ struct TPlanFragmentExecParams {
 
   // Debug options: perform some action in a particular phase of a particular node
   74: optional list<TExecDebugOption> exec_debug_options
+
+  // used for global lazy materialization
+  75: optional map<Types.TPlanNodeId, i32> per_look_up_num_fetchers
+  76: optional map<Types.TPlanNodeId, Descriptors.TNodesInfo> per_fetch_target_nodes
 }
 
 // Global query parameters assigned by the coordinator.
@@ -444,6 +497,7 @@ struct TAdaptiveDopParam {
 struct TPredicateTreeParams {
   1: optional bool enable_or
   2: optional bool enable_show_in_profile
+  3: optional i32 max_pushdown_or_predicates
 }
 
 // ExecPlanFragment
@@ -509,11 +563,17 @@ struct TExecPlanFragmentParams {
   60: optional TPredicateTreeParams pred_tree_params
 
   61: optional list<i32> exec_stats_node_ids;
+
+  62: optional i32 arrow_flight_sql_version;
 }
 
 struct TExecPlanFragmentResult {
   // required in V1
   1: optional Status.TStatus status
+
+  // short circuit optimization on `select limit`
+  // scan nodes that don't need any scan ranges.
+  2: optional list<i32> closed_scan_nodes;
 }
 
 struct TExecBatchPlanFragmentsParams {

@@ -84,9 +84,6 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_REMOVE_ALTER_JOB_V2 = 125;
 
-    @Deprecated
-    public static final short OP_ADD_REPLICA = 42;
-
     public static final short OP_SET_REPLICA_STATUS = 47;
 
     @IgnorableOnReplayFailed
@@ -103,8 +100,8 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_DELETE_AUTO_INCREMENT_ID = 106;
 
-    // light schema change for add and drop columns
-    public static final short OP_MODIFY_TABLE_ADD_OR_DROP_COLUMNS = 107;
+    // fast schema evolution for alter columns
+    public static final short OP_FAST_ALTER_TABLE_COLUMNS = 107;
 
     @IgnorableOnReplayFailed
     public static final short OP_ALTER_ROUTINE_LOAD_JOB = 111;
@@ -120,10 +117,6 @@ public class OperationType {
     // set table replication_num config 266
     @IgnorableOnReplayFailed
     public static final short OP_MODIFY_REPLICATION_NUM = 266;
-
-    // set table in memory
-    @IgnorableOnReplayFailed
-    public static final short OP_MODIFY_IN_MEMORY = 267;
 
     // global dict
     @IgnorableOnReplayFailed
@@ -144,8 +137,6 @@ public class OperationType {
     public static final short OP_DROP_RESOURCE = 277;
 
     // NOTICE newly added type starts from 10000, to avoid conflicting with community added type
-
-    public static final short OP_META_VERSION_V2 = 10000;
 
     @IgnorableOnReplayFailed
     public static final short OP_SWAP_TABLE = 10001;
@@ -205,10 +196,23 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_MODIFY_FLAT_JSON_CONFIG = 10020;
 
+    // statistic meta batch remove 10032 ~ 10034
+    @IgnorableOnReplayFailed
+    public static final short OP_REMOVE_BASIC_STATS_META_BATCH = 10032;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_REMOVE_HISTOGRAM_STATS_META_BATCH = 10033;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_REMOVE_MULTI_COLUMN_STATS_META_BATCH = 10034;
+
 
     // workgroup 10021 ~ 10030
     @IgnorableOnReplayFailed
     public static final short OP_RESOURCE_GROUP = 10021;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_ALTER_RESOURCE_GROUP = 10022;
 
     // external hive table column change
     @IgnorableOnReplayFailed
@@ -343,6 +347,9 @@ public class OperationType {
     public static final short OP_MODIFY_ENABLE_LOAD_PROFILE = 11142;
 
     @IgnorableOnReplayFailed
+    public static final short OP_MODIFY_DEFAULT_BUCKET_NUM = 11144;
+
+    @IgnorableOnReplayFailed
     public static final short OP_MODIFY_BASE_COMPACTION_FORBIDDEN_TIME_RANGES = 11143;
 
     // external table analyze
@@ -414,6 +421,14 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_MODIFY_TABLE_COLOCATE_V2 = 12134;
 
+    // Colocate range mgr update (range distribution colocate). Marked @IgnorableOnReplayFailed
+    // to match the sibling colocate ops; if a follower skips this record under
+    // metadata_journal_ignore_replay_failure, the next DDL on the same group is fail-loud via
+    // ColocateTableIndex.addTableToGroup's range-metadata-missing guard rather than silently
+    // corrupting dispatch.
+    @IgnorableOnReplayFailed
+    public static final short OP_COLOCATE_RANGE_UPDATE = 12135;
+
     //Export json format log
 
     @IgnorableOnReplayFailed
@@ -439,6 +454,13 @@ public class OperationType {
 
     @IgnorableOnReplayFailed
     public static final short OP_CREATE_REPOSITORY_V2 = 12152;
+
+    // Pipe operations log
+    @IgnorableOnReplayFailed
+    public static final short OP_PIPE = 12200;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_ALTER_PIPE = 12201;
 
     //Table/Partition json format log
 
@@ -544,6 +566,9 @@ public class OperationType {
     public static final short OP_CREATE_STREAM_LOAD_TASK_V2 = 13070;
 
     @IgnorableOnReplayFailed
+    public static final short OP_CREATE_MULTI_STMT_STREAM_LOAD_TASK = 13071;
+
+    @IgnorableOnReplayFailed
     public static final short OP_MODIFY_COLUMN_COMMENT = 13080;
 
     // storage volume
@@ -563,10 +588,6 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_UPDATE_TABLE_STORAGE_INFOS = 13104;
 
-    // Pipe operations log
-    @IgnorableOnReplayFailed
-    public static final short OP_PIPE = 12200;
-
     // Primary key
     @IgnorableOnReplayFailed
     public static final short OP_MODIFY_PRIMARY_INDEX_CACHE_EXPIRE_SEC = 13200;
@@ -585,6 +606,9 @@ public class OperationType {
 
     @IgnorableOnReplayFailed
     public static final short OP_MODIFY_DICTIONARY_MGR = 13402;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_MODIFY_DICTIONARY_MGR_V2 = 13403;
 
     // Replication job
     @IgnorableOnReplayFailed
@@ -613,6 +637,11 @@ public class OperationType {
     public static final short OP_DELETE_SQL_QUERY_BLACK_LIST = 13521;
 
     @IgnorableOnReplayFailed
+    public static final short OP_ADD_SQL_DIGEST_BLACK_LIST = 13522;
+    @IgnorableOnReplayFailed
+    public static final short OP_DELETE_SQL_DIGEST_BLACK_LIST = 13523;
+
+    @IgnorableOnReplayFailed
     public static final short OP_CREATE_GROUP_PROVIDER = 13530;
 
     @IgnorableOnReplayFailed
@@ -627,7 +656,37 @@ public class OperationType {
     @IgnorableOnReplayFailed
     public static final short OP_SET_VIEW_SECURITY_LOG = 13542;
 
-    /**
+    @IgnorableOnReplayFailed
+    public static final short OP_ENABLE_SPM_BASELINE_LOG = 13543;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_DISABLE_SPM_BASELINE_LOG = 13544;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_UPDATE_TABLET_RESHARD_JOB_LOG = 13550;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_REMOVE_TABLET_RESHARD_JOB_LOG = 13551;
+
+    // New V2 operations for logEdit to logJsonObject migration
+    public static final short OP_SAVE_NEXTID_V2 = 13552;
+    
+    @IgnorableOnReplayFailed
+    public static final short OP_ERASE_DB_V2 = 13553;
+    
+    @IgnorableOnReplayFailed
+    public static final short OP_ERASE_PARTITION_V2 = 13554;
+    
+    @IgnorableOnReplayFailed
+    public static final short OP_DROP_ALL_BROKER_V2 = 13555;
+    
+    @IgnorableOnReplayFailed
+    public static final short OP_DROP_REPOSITORY_V2 = 13556;
+
+    @IgnorableOnReplayFailed
+    public static final short OP_ALTER_RESOURCE = 13557;
+
+    /*
      * NOTICE: OperationType cannot use a value exceeding 20000, please follow the above sequence number
      */
     public static final short OP_TYPE_EOF = 20000;
@@ -636,11 +695,17 @@ public class OperationType {
     public static final short OP_CREATE_WAREHOUSE = 20101;
     public static final short OP_DROP_WAREHOUSE = 20102;
     public static final short OP_ALTER_WAREHOUSE = 20103;
+    // warehouse internal op
+    public static final short OP_WAREHOUSE_INTERNAL_OP = 20111;
 
     // security integration and role mapping
     public static final short OP_CREATE_SECURITY_INTEGRATION = 20269;
     public static final short OP_DROP_SECURITY_INTEGRATION = 20271;
     public static final short OP_ALTER_SECURITY_INTEGRATION = 20272;
+
+    // Grant Role to Group
+    public static final short OP_GRANT_ROLE_TO_GROUP = 20501;
+    public static final short OP_REVOKE_ROLE_FROM_GROUP = 20502;
 
     public static final ImmutableSet<Short> IGNORABLE_OPERATIONS = buildIgnorableOperations();
 
@@ -664,9 +729,12 @@ public class OperationType {
                     opType != OP_CREATE_WAREHOUSE &&
                     opType != OP_DROP_WAREHOUSE &&
                     opType != OP_ALTER_WAREHOUSE &&
+                    opType != OP_WAREHOUSE_INTERNAL_OP &&
                     opType != OP_CREATE_SECURITY_INTEGRATION &&
                     opType != OP_DROP_SECURITY_INTEGRATION &&
-                    opType != OP_ALTER_SECURITY_INTEGRATION) {
+                    opType != OP_ALTER_SECURITY_INTEGRATION &&
+                    opType != OP_GRANT_ROLE_TO_GROUP &&
+                    opType != OP_REVOKE_ROLE_FROM_GROUP) {
                 LOG.fatal("OperationType cannot use a value exceeding 20000, " +
                         "and an error will be reported if it exceeds : {} = {}", field.getName(), opType);
                 System.exit(-1);

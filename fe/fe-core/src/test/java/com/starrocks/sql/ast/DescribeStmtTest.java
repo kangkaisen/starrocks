@@ -16,6 +16,7 @@ package com.starrocks.sql.ast;
 
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Column;
+import com.starrocks.common.FeConstants;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ShowExecutor;
 import com.starrocks.qe.ShowResultSet;
@@ -23,10 +24,10 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.AstToSQLBuilder;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
@@ -36,7 +37,7 @@ public class DescribeStmtTest {
     private static ConnectContext connectContext;
     private static StarRocksAssert starRocksAssert;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         // create connect context
@@ -68,10 +69,21 @@ public class DescribeStmtTest {
                         " AS\n" +
                         "SELECT store_id, SUM(sale_amt) as sale_amt\n" +
                         "FROM sales_records\n" +
-                        "GROUP BY store_id;");
+                        "GROUP BY store_id;")
+                .withTable("CREATE TABLE expr_part_tbl (\n" +
+                        "    event_day DATETIME,\n" +
+                        "    site_id INT,\n" +
+                        "    pv BIGINT DEFAULT '0'\n" +
+                        ")\n" +
+                        "DUPLICATE KEY(event_day, site_id)\n" +
+                        "PARTITION BY site_id, date_trunc('day', event_day)\n" +
+                        "DISTRIBUTED BY HASH(event_day, site_id)\n" +
+                        "PROPERTIES (\n" +
+                        "\"replication_num\" = \"1\"\n" +
+                        ");");
     }
 
-    @AfterClass
+    @AfterAll
     public static void tearDown() throws Exception {
         ConnectContext ctx = starRocksAssert.getCtx();
         String dropSQL = "drop table sales_records";
@@ -90,22 +102,22 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(6, columns.size());
-        Assert.assertEquals("Field", columns.get(0).getName());
-        Assert.assertEquals("Type", columns.get(1).getName());
-        Assert.assertEquals("Null", columns.get(2).getName());
-        Assert.assertEquals("Key", columns.get(3).getName());
-        Assert.assertEquals("Default", columns.get(4).getName());
-        Assert.assertEquals("Extra", columns.get(5).getName());
+        Assertions.assertEquals(6, columns.size());
+        Assertions.assertEquals("Field", columns.get(0).getName());
+        Assertions.assertEquals("Type", columns.get(1).getName());
+        Assertions.assertEquals("Null", columns.get(2).getName());
+        Assertions.assertEquals("Key", columns.get(3).getName());
+        Assertions.assertEquals("Default", columns.get(4).getName());
+        Assertions.assertEquals("Extra", columns.get(5).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("record_id", resultRows.get(0).get(0));
-        Assert.assertEquals("int", resultRows.get(0).get(1));
-        Assert.assertEquals("YES", resultRows.get(0).get(2));
+        Assertions.assertEquals("record_id", resultRows.get(0).get(0));
+        Assertions.assertEquals("int", resultRows.get(0).get(1));
+        Assertions.assertEquals("YES", resultRows.get(0).get(2));
 
-        Assert.assertEquals("sale_date", resultRows.get(3).get(0));
-        Assert.assertEquals("date", resultRows.get(3).get(1));
-        Assert.assertEquals("YES", resultRows.get(3).get(2));
+        Assertions.assertEquals("sale_date", resultRows.get(3).get(0));
+        Assertions.assertEquals("date", resultRows.get(3).get(1));
+        Assertions.assertEquals("YES", resultRows.get(3).get(2));
 
     }
 
@@ -116,24 +128,24 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(8, columns.size());
-        Assert.assertEquals("IndexName", columns.get(0).getName());
-        Assert.assertEquals("IndexKeysType", columns.get(1).getName());
-        Assert.assertEquals("Field", columns.get(2).getName());
-        Assert.assertEquals("Type", columns.get(3).getName());
-        Assert.assertEquals("Null", columns.get(4).getName());
-        Assert.assertEquals("Key", columns.get(5).getName());
-        Assert.assertEquals("Default", columns.get(6).getName());
-        Assert.assertEquals("Extra", columns.get(7).getName());
+        Assertions.assertEquals(8, columns.size());
+        Assertions.assertEquals("IndexName", columns.get(0).getName());
+        Assertions.assertEquals("IndexKeysType", columns.get(1).getName());
+        Assertions.assertEquals("Field", columns.get(2).getName());
+        Assertions.assertEquals("Type", columns.get(3).getName());
+        Assertions.assertEquals("Null", columns.get(4).getName());
+        Assertions.assertEquals("Key", columns.get(5).getName());
+        Assertions.assertEquals("Default", columns.get(6).getName());
+        Assertions.assertEquals("Extra", columns.get(7).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("record_id", resultRows.get(0).get(2));
-        Assert.assertEquals("int", resultRows.get(0).get(3));
-        Assert.assertEquals("YES", resultRows.get(0).get(4));
+        Assertions.assertEquals("record_id", resultRows.get(0).get(2));
+        Assertions.assertEquals("int", resultRows.get(0).get(3));
+        Assertions.assertEquals("YES", resultRows.get(0).get(4));
 
-        Assert.assertEquals("sale_date", resultRows.get(3).get(2));
-        Assert.assertEquals("date", resultRows.get(3).get(3));
-        Assert.assertEquals("YES", resultRows.get(3).get(4));
+        Assertions.assertEquals("sale_date", resultRows.get(3).get(2));
+        Assertions.assertEquals("date", resultRows.get(3).get(3));
+        Assertions.assertEquals("YES", resultRows.get(3).get(4));
     }
 
     @Test
@@ -143,22 +155,22 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(6, columns.size());
-        Assert.assertEquals("Field", columns.get(0).getName());
-        Assert.assertEquals("Type", columns.get(1).getName());
-        Assert.assertEquals("Null", columns.get(2).getName());
-        Assert.assertEquals("Key", columns.get(3).getName());
-        Assert.assertEquals("Default", columns.get(4).getName());
-        Assert.assertEquals("Extra", columns.get(5).getName());
+        Assertions.assertEquals(6, columns.size());
+        Assertions.assertEquals("Field", columns.get(0).getName());
+        Assertions.assertEquals("Type", columns.get(1).getName());
+        Assertions.assertEquals("Null", columns.get(2).getName());
+        Assertions.assertEquals("Key", columns.get(3).getName());
+        Assertions.assertEquals("Default", columns.get(4).getName());
+        Assertions.assertEquals("Extra", columns.get(5).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("store_id", resultRows.get(0).get(0));
-        Assert.assertEquals("int", resultRows.get(0).get(1));
-        Assert.assertEquals("YES", resultRows.get(0).get(2));
+        Assertions.assertEquals("store_id", resultRows.get(0).get(0));
+        Assertions.assertEquals("int", resultRows.get(0).get(1));
+        Assertions.assertEquals("YES", resultRows.get(0).get(2));
 
-        Assert.assertEquals("mv_sum_sale_amt", resultRows.get(1).get(0));
-        Assert.assertEquals("bigint", resultRows.get(1).get(1));
-        Assert.assertEquals("YES", resultRows.get(1).get(2));
+        Assertions.assertEquals("mv_sum_sale_amt", resultRows.get(1).get(0));
+        Assertions.assertEquals("bigint", resultRows.get(1).get(1));
+        Assertions.assertEquals("YES", resultRows.get(1).get(2));
     }
 
     @Test
@@ -168,22 +180,22 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(6, columns.size());
-        Assert.assertEquals("Field", columns.get(0).getName());
-        Assert.assertEquals("Type", columns.get(1).getName());
-        Assert.assertEquals("Null", columns.get(2).getName());
-        Assert.assertEquals("Key", columns.get(3).getName());
-        Assert.assertEquals("Default", columns.get(4).getName());
-        Assert.assertEquals("Extra", columns.get(5).getName());
+        Assertions.assertEquals(6, columns.size());
+        Assertions.assertEquals("Field", columns.get(0).getName());
+        Assertions.assertEquals("Type", columns.get(1).getName());
+        Assertions.assertEquals("Null", columns.get(2).getName());
+        Assertions.assertEquals("Key", columns.get(3).getName());
+        Assertions.assertEquals("Default", columns.get(4).getName());
+        Assertions.assertEquals("Extra", columns.get(5).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("store_id", resultRows.get(0).get(0));
-        Assert.assertEquals("int", resultRows.get(0).get(1));
-        Assert.assertEquals("YES", resultRows.get(0).get(2));
+        Assertions.assertEquals("store_id", resultRows.get(0).get(0));
+        Assertions.assertEquals("int", resultRows.get(0).get(1));
+        Assertions.assertEquals("YES", resultRows.get(0).get(2));
 
-        Assert.assertEquals("mv_sum_sale_amt", resultRows.get(1).get(0));
-        Assert.assertEquals("bigint", resultRows.get(1).get(1));
-        Assert.assertEquals("YES", resultRows.get(1).get(2));
+        Assertions.assertEquals("mv_sum_sale_amt", resultRows.get(1).get(0));
+        Assertions.assertEquals("bigint", resultRows.get(1).get(1));
+        Assertions.assertEquals("YES", resultRows.get(1).get(2));
     }
 
     @Test
@@ -193,22 +205,22 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(6, columns.size());
-        Assert.assertEquals("Field", columns.get(0).getName());
-        Assert.assertEquals("Type", columns.get(1).getName());
-        Assert.assertEquals("Null", columns.get(2).getName());
-        Assert.assertEquals("Key", columns.get(3).getName());
-        Assert.assertEquals("Default", columns.get(4).getName());
-        Assert.assertEquals("Extra", columns.get(5).getName());
+        Assertions.assertEquals(6, columns.size());
+        Assertions.assertEquals("Field", columns.get(0).getName());
+        Assertions.assertEquals("Type", columns.get(1).getName());
+        Assertions.assertEquals("Null", columns.get(2).getName());
+        Assertions.assertEquals("Key", columns.get(3).getName());
+        Assertions.assertEquals("Default", columns.get(4).getName());
+        Assertions.assertEquals("Extra", columns.get(5).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("store_id", resultRows.get(0).get(0));
-        Assert.assertEquals("int", resultRows.get(0).get(1));
-        Assert.assertEquals("YES", resultRows.get(0).get(2));
+        Assertions.assertEquals("store_id", resultRows.get(0).get(0));
+        Assertions.assertEquals("int", resultRows.get(0).get(1));
+        Assertions.assertEquals("YES", resultRows.get(0).get(2));
 
-        Assert.assertEquals("sale_amt", resultRows.get(1).get(0));
-        Assert.assertEquals("bigint", resultRows.get(1).get(1));
-        Assert.assertEquals("YES", resultRows.get(1).get(2));
+        Assertions.assertEquals("sale_amt", resultRows.get(1).get(0));
+        Assertions.assertEquals("bigint", resultRows.get(1).get(1));
+        Assertions.assertEquals("YES", resultRows.get(1).get(2));
     }
 
     @Test
@@ -218,24 +230,57 @@ public class DescribeStmtTest {
                 starRocksAssert.getCtx());
         ShowResultSet execute = ShowExecutor.execute(describeStmt, connectContext);
         List<Column> columns = execute.getMetaData().getColumns();
-        Assert.assertEquals(8, columns.size());
-        Assert.assertEquals("IndexName", columns.get(0).getName());
-        Assert.assertEquals("IndexKeysType", columns.get(1).getName());
-        Assert.assertEquals("Field", columns.get(2).getName());
-        Assert.assertEquals("Type", columns.get(3).getName());
-        Assert.assertEquals("Null", columns.get(4).getName());
-        Assert.assertEquals("Key", columns.get(5).getName());
-        Assert.assertEquals("Default", columns.get(6).getName());
-        Assert.assertEquals("Extra", columns.get(7).getName());
+        Assertions.assertEquals(8, columns.size());
+        Assertions.assertEquals("IndexName", columns.get(0).getName());
+        Assertions.assertEquals("IndexKeysType", columns.get(1).getName());
+        Assertions.assertEquals("Field", columns.get(2).getName());
+        Assertions.assertEquals("Type", columns.get(3).getName());
+        Assertions.assertEquals("Null", columns.get(4).getName());
+        Assertions.assertEquals("Key", columns.get(5).getName());
+        Assertions.assertEquals("Default", columns.get(6).getName());
+        Assertions.assertEquals("Extra", columns.get(7).getName());
 
         List<List<String>> resultRows = execute.getResultRows();
-        Assert.assertEquals("store_id", resultRows.get(0).get(2));
-        Assert.assertEquals("int", resultRows.get(0).get(3));
-        Assert.assertEquals("YES", resultRows.get(0).get(4));
+        Assertions.assertEquals("store_id", resultRows.get(0).get(2));
+        Assertions.assertEquals("int", resultRows.get(0).get(3));
+        Assertions.assertEquals("YES", resultRows.get(0).get(4));
 
-        Assert.assertEquals("sale_amt", resultRows.get(1).get(2));
-        Assert.assertEquals("bigint", resultRows.get(1).get(3));
-        Assert.assertEquals("YES", resultRows.get(1).get(4));
+        Assertions.assertEquals("sale_amt", resultRows.get(1).get(2));
+        Assertions.assertEquals("bigint", resultRows.get(1).get(3));
+        Assertions.assertEquals("YES", resultRows.get(1).get(4));
+    }
+
+    @Test
+    public void testDescExprPartitionTableHidesGeneratedColumns() throws Exception {
+        String sql = "desc expr_part_tbl";
+        DescribeStmt describeStmt = (DescribeStmt) UtFrameUtils.parseStmtWithNewParser(sql,
+                starRocksAssert.getCtx());
+        ShowResultSet result = ShowExecutor.execute(describeStmt, connectContext);
+        List<List<String>> rows = result.getResultRows();
+        for (List<String> row : rows) {
+            Assertions.assertFalse(row.get(0).startsWith(FeConstants.GENERATED_PARTITION_COLUMN_PREFIX),
+                    "DESC should not show generated partition column: " + row.get(0));
+        }
+        Assertions.assertEquals(3, rows.size());
+        Assertions.assertEquals("event_day", rows.get(0).get(0));
+        Assertions.assertEquals("site_id", rows.get(1).get(0));
+        Assertions.assertEquals("pv", rows.get(2).get(0));
+    }
+
+    @Test
+    public void testDescAllExprPartitionTableHidesGeneratedColumns() throws Exception {
+        String sql = "desc expr_part_tbl all";
+        DescribeStmt describeStmt = (DescribeStmt) UtFrameUtils.parseStmtWithNewParser(sql,
+                starRocksAssert.getCtx());
+        ShowResultSet result = ShowExecutor.execute(describeStmt, connectContext);
+        List<List<String>> rows = result.getResultRows();
+        for (List<String> row : rows) {
+            String fieldName = row.get(2);
+            if (fieldName != null && !fieldName.isEmpty()) {
+                Assertions.assertFalse(fieldName.startsWith(FeConstants.GENERATED_PARTITION_COLUMN_PREFIX),
+                        "DESC ALL should not show generated partition column: " + fieldName);
+            }
+        }
     }
 
     @Test
@@ -246,8 +291,8 @@ public class DescribeStmtTest {
         properties.put("aws.s3.secret_key", "password");
         DescribeStmt describeStmt = new DescribeStmt(properties, null);
         String text = AstToSQLBuilder.toSQL(describeStmt);
-        Assert.assertTrue(text.contains("(\"aws.s3.access_key\" = \"***\""));
-        Assert.assertTrue(text.contains(" \"aws.s3.secret_key\" = \"***\""));
-        Assert.assertTrue(text.contains("\"path\" = \"aaa\""));
+        Assertions.assertTrue(text.contains("(\"aws.s3.access_key\" = \"***\""));
+        Assertions.assertTrue(text.contains(" \"aws.s3.secret_key\" = \"***\""));
+        Assertions.assertTrue(text.contains("\"path\" = \"aaa\""));
     }
 }

@@ -42,16 +42,15 @@ import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.AuthorizationMgr;
 import com.starrocks.authorization.PrivilegeBuiltinConstants;
 import com.starrocks.authorization.PrivilegeException;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.sql.ast.UserIdentity;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelProgressiveFuture;
 import io.netty.channel.ChannelProgressiveFutureListener;
 import io.netty.channel.DefaultFileRegion;
@@ -120,6 +119,10 @@ public abstract class BaseAction implements IAction {
     }
 
     public abstract void execute(BaseRequest request, BaseResponse response) throws DdlException, AccessDeniedException;
+
+    public boolean isSqlAction() {
+        return false;
+    }
 
     protected void writeResponse(BaseRequest request, BaseResponse response, HttpResponseStatus status) {
         // if (HttpHeaders.is100ContinueExpected(request.getRequest())) {
@@ -274,9 +277,6 @@ public abstract class BaseAction implements IAction {
         }
     }
 
-    protected void handleChannelInactive(ChannelHandlerContext ctx) {
-    }
-
     public static class ActionAuthorizationInfo {
         public String fullUserName;
         public String remoteIp;
@@ -330,8 +330,7 @@ public abstract class BaseAction implements IAction {
         ActionAuthorizationInfo authInfo = new ActionAuthorizationInfo();
         try {
             if (!parseAuthInfo(request, authInfo)) {
-                LOG.info("parse auth info failed, Authorization header {}, url {}",
-                        request.getAuthorizationHeader(), request.getRequest().uri());
+                LOG.info("parse auth info failed, url {}", request.getRequest().uri());
                 throw new AccessDeniedException("Need auth information.");
             }
             LOG.debug("get auth info: {}", authInfo);

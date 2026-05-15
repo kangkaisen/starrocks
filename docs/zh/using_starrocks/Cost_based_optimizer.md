@@ -209,7 +209,10 @@ StarRocks 提供灵活的信息采集方式，您可以根据业务场景选择�
 | statistic_auto_collect_max_predicate_column_size_on_sample_strategy | INT    | 16       | 自动全量采集任务命中 Sample 策略时，如果表中 Predicate Column 特别多并且超过配置项，则不会转为对 Predicate Column 的全量采集，保持对所有列的抽样采集。当前配置项控制该行为中 Predicate Column 的最大值。 |
 | statistic_auto_collect_predicate_columns_threshold | INT     | 32       | 自动采集时若发现表中的列数超过配置项，则仅会采集 Predicate Column 的列统计信息。 |
 | statistic_predicate_columns_persist_interval_sec   | LONG    | 60       | FE 对 Predicate Column 的同步和持久化间隔周期。 |
-| statistic_predicate_columns_ttl_hours       | LONG    | 24       | Predicate Column 信息在 FE 中缓存淘汰时间。 |
+| statistic_predicate_columns_ttl_hours       | LONG    | 24       | Predicate Column 在 FE 中的 TTL（小时），vacuum 会清理更旧的数据；为负数时关闭 vacuum。 |
+| enable_predicate_columns_collection         | BOOLEAN | TRUE     | 是否启用 Predicate Column 采集。如果禁用，在查询优化期间将不会记录 Predicate Column。 |
+| enable_manual_collect_array_ndv             | BOOLEAN | FALSE        | 是否允许手动采集 ARRAY 类型列的 NDV 信息。 |
+| enable_auto_collect_array_ndv               | BOOLEAN | FALSE        | 是否允许自动采集 ARRAY 类型列的 NDV 信息。 |
 
 ### 手动采集 (Manual Collection)
 
@@ -316,13 +319,14 @@ ANALYZE TABLE tbl_name UPDATE HISTOGRAM ON col_name [, col_name]
 
 - PROPERTIES: 采集任务的自定义参数。如果不指定，则使用 `fe.conf` 中的默认配置。
 
-| **PROPERTIES**                 | **类型** | **默认值**  | **说明**                           |
-|--------------------------------|--------|----------|----------------------------------|
-| statistic_sample_collect_rows  | INT    | 200000   | 最小采样行数。如果参数取值超过了实际的表行数，默认进行全量采集。 |
-| histogram_mcv_size             | INT    | 100      | 直方图 most common value (MCV) 的数量。 |
-| histogram_sample_ratio         | FLOAT  | 0.1      | 直方图采样比例。                         |
+| **PROPERTIES**                    | **类型** | **默认值**  | **说明**                           |
+|-----------------------------------|--------|----------|----------------------------------|
+| statistic_sample_collect_rows     | INT    | 200000   | 最小采样行数。如果参数取值超过了实际的表行数，默认进行全量采集。 |
+| histogram_mcv_size                | INT    | 100      | 直方图 most common value (MCV) 的数量。 |
+| histogram_sample_ratio            | FLOAT  | 0.1      | 直方图采样比例。                         |
 | histogram_buckets_size                      | LONG    | 64           | 直方图默认分桶数。                                                                                             |
-| histogram_max_sample_row_count | LONG   | 10000000 | 直方图最大采样行数。                       |
+| histogram_max_sample_row_count    | LONG   | 10000000 | 直方图最大采样行数。                       |
+| histogram_collect_bucket_ndv_mode | STRING   | none              | 估算每个直方图桶的去重（NDV）值的模式。`none`（默认，不采集去重值）、`hll`（使用 HyperLogLog 进行精准估算）或 `sample`（使用低开销的基于采样的估算器）。 |
 
 直方图的采样行数由多个参数共同控制，采样行数取 `statistic_sample_collect_rows` 和表总行数 `histogram_sample_ratio` 两者中的最大值。最多不超过 `histogram_max_sample_row_count` 指定的行数。如果超过，则按照该参数定义的上限行数进行采集。
 
@@ -339,6 +343,12 @@ ANALYZE TABLE tbl_name UPDATE HISTOGRAM ON v1,v2 WITH 32 BUCKETS
 PROPERTIES(
    "histogram_mcv_size" = "32",
    "histogram_sample_ratio" = "0.5"
+);
+
+-- 采集 v3 列的直方图，对每个桶使用 'hll' 模式进行精准去重估算。
+ANALYZE TABLE tbl_name UPDATE HISTOGRAM ON v3
+PROPERTIES(
+   "histogram_collect_bucket_ndv_mode" = "hll"
 );
 ```
 
@@ -457,7 +467,7 @@ CREATE ANALYZE FULL ALL db_name PROPERTIES (
 
 | **PROPERTIES**                        | **类型** | **默认值** | **说明**                                                                                                                           |
 |-------------------------------------------|--------|---------|---------------------------------------------------------------------------------------------------------------------------- |
-| enable_statistic_collect_on_first_load    | BOOLEAN  | TRUE     | 执行 INSERT INTO/OVERWRITE 后是否触发统计信息采集任务。                                                                       |
+| enable_statistic_collect_on_first_load    | BOOLEAN  | TRUE     | 执行 INSERT INTO/OVERWRITE 后是否触发统计信息采集任务。该属性既是 FE 全局配置项，也可在表级别通过 CREATE TABLE 或 ALTER TABLE 设置。只有当全局配置和表级配置均为 `TRUE` 时，才会触发统计信息采集。                                                                       |
 | semi_sync_collect_statistic_await_seconds | LONG    | 30     | 返回结果前等待统计信息采集的最长时间。                                                                  |
 | statistic_sample_collect_ratio_threshold_of_first_load | DOUBLE    | 0.1  | OVERWRITE 不触发统计信息搜集任务的数据变动比例。                                                               |
 | statistic_sample_collect_rows             | LONG | 200000    | DML 导入总数据量超过该值时，使用抽样采集统计信息。                                                                               |
@@ -624,7 +634,7 @@ KILL ANALYZE <ID>
 
 ## 采集外表的统计信息
 
-从 3.2 版本起，支持采集 Hive、Iceberg、Hudi 表的统计信息。**采集的语法和内表相同，但是只支持手动全量采集、手动直方图采集（自 v3.2.7 起）、自动全量采集，不支持抽样采集**。自 v3.3.0 起，支持采集 Delta Lake 表的统计信息，并支持采集 STRUCT 子列的统计信息。自 v3.4.0 起，支持通过查询触发 ANALYZE 任务自动收集统计信息。
+从 3.2 版本起，支持采集 Hive、Iceberg、Hudi 表的统计信息。**采集的语法和内表相同，支持手动全量采集、手动直方图采集（自 v3.2.7 起）、自动全量采集**。自 v3.3.0 起，支持采集 Delta Lake 表的统计信息，并支持采集 STRUCT 子列的统计信息。自 v3.4.0 起，支持通过查询触发 ANALYZE 任务自动收集统计信息。自 v3.4.0 起，还支持手动抽样采集（`ANALYZE TABLE ... SAMPLE`）。目前 Histogram 仅支持 Hive 外表。
 
 收集的统计信息会写入到 `_statistics_` 数据库的 `external_column_statistics` 表中，不会写入到 Hive Metastore 中，因此无法和其他查询引擎共用。您可以通过查询 `default_catalog._statistics_.external_column_statistics` 表中是否写入了表的统计信息。
 
@@ -653,7 +663,7 @@ partition_name:
 对外表采集统计信息时，有如下限制：
 
 - 目前只支持采集 Hive、Iceberg、Hudi、Delta Lake（自 v3.3.0 起） 表的统计信息。
-- 目前只支持手动全量采集、手动直方图采集（自 v3.2.7 起）、自动全量采集、查询触发采集（自 v3.4.0 起），不支持抽样采集。
+- 目前支持手动全量采集、手动直方图采集（自 v3.2.7 起）、自动全量采集、查询触发采集（自 v3.4.0 起）、手动抽样采集（自 v3.4.0 起）。Histogram 仅支持 Hive 外表。
 - 全量自动采集，需要创建一个采集任务，系统不会默认自动采集外部数据源的统计信息。
 - 对于自动采集任务：
   - 只支持采集指定表的统计信息，不支持采集所有数据库、数据库下所有表的统计信息。

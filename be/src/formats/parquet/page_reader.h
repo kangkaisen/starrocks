@@ -19,14 +19,16 @@
 #include <cstdint>
 #include <string_view>
 
+#include "base/string/slice.h"
 #include "common/status.h"
 #include "common/statusor.h"
 #include "gen_cpp/parquet_types.h"
-#include "io/seekable_input_stream.h"
-#include "util/slice.h"
+#include "io/core/seekable_input_stream.h"
+#include "storage/rowset/page_handle.h"
 
 namespace starrocks {
 class ObjectCache;
+class StoragePageCache;
 class BlockCompressionCodec;
 } // namespace starrocks
 
@@ -104,16 +106,19 @@ private:
     size_t _page_num = 0xffffffff;
     size_t _next_read_page_idx = 0;
 
-    ObjectCache* _cache = nullptr;
+    StoragePageCache* _cache = nullptr;
     std::string _page_cache_key;
 
     const tparquet::CompressionCodec::type _codec;
     const BlockCompressionCodec* _compress_codec = nullptr;
 
-    using BufferPtr = std::shared_ptr<std::vector<uint8_t>>;
+    using BufferPtr = std::unique_ptr<std::vector<uint8_t>>;
     BufferPtr _compressed_buf;
     BufferPtr _uncompressed_buf;
-    BufferPtr _cache_buf;
+    std::vector<uint8_t>* _cache_buf = nullptr;
+    PageHandle _page_handle;
+    bool _hit_cache = false;
+    bool _skip_page_cache = false;
 
     Slice _uncompressed_data;
 };

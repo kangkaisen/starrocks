@@ -38,7 +38,9 @@
 #include <utility>
 #include <vector>
 
+#include "common/config_storage_fwd.h"
 #include "common/logging.h"
+#include "common/runtime_profile.h"
 #include "common/statusor.h"
 #include "gutil/strings/substitute.h"
 #include "rocksdb/convenience.h"
@@ -46,10 +48,13 @@
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/slice_transform.h"
+#include "runtime/exec_env.h"
+#include "runtime/mem_tracker.h"
 #include "storage/olap_define.h"
+#include "storage/options.h"
 #include "storage/rocksdb_status_adapter.h"
-#include "util/runtime_profile.h"
-#include "util/starrocks_metrics.h"
+#include "storage/storage_metrics.h"
+#include "storage/store_path.h"
 
 using rocksdb::DB;
 using rocksdb::DBOptions;
@@ -67,7 +72,7 @@ const std::string META_POSTFIX = "/meta"; // NOLINT
 const std::string SECOND_POSTFIX = "_secondary";
 const size_t PREFIX_LENGTH = 4;
 
-KVStore::KVStore(std::string root_path) : _root_path(std::move(root_path)), _db(nullptr) {}
+KVStore::KVStore(std::string root_path) : _root_path(std::move(root_path)) {}
 
 KVStore::~KVStore() {
     for (auto& handle : _handles) {
@@ -80,12 +85,47 @@ KVStore::~KVStore() {
     }
 }
 
+int64_t KVStore::calc_rocksdb_write_buffer_size(MemTracker* mem_tracker) {
+    // 1. Get the number of disks
+    std::vector<starrocks::StorePath> paths;
+    Status st = parse_conf_store_paths(config::storage_root_path, &paths);
+    if (!st.ok()) {
+        // ignore error, will treat disk count as 1
+        LOG(ERROR) << "parse_conf_store_paths failed, path=" << config::storage_root_path;
+    }
+    int64_t disk_cnt = paths.size();
+    // 2. Get the total memory bytes of BE
+    int64_t total_mem_bytes = mem_tracker->limit();
+    // 3. Calculate the write buffer memory bytes
+    int64_t write_buffer_mem_bytes =
+            total_mem_bytes *
+            std::max(std::min(static_cast<int64_t>(100),
+                              static_cast<int64_t>(config::rocksdb_write_buffer_memory_percent)),
+                     static_cast<int64_t>(0)) /
+            100;
+    // 4. Calculate the write buffer size for each disk, and there will be 2 memtables by default,
+    //    so we will divide it by 2
+    int64_t write_buffer_mem_bytes_per_disk = write_buffer_mem_bytes / std::max(disk_cnt, static_cast<int64_t>(1)) / 2;
+
+    // should be around 64MB ~ 1GB rocksdb_max_write_buffer_memory_bytes
+    int64_t res = std::min(std::max(static_cast<int64_t>(67108864), write_buffer_mem_bytes_per_disk),
+                           static_cast<int64_t>(config::rocksdb_max_write_buffer_memory_bytes));
+
+    LOG(INFO) << "rocksdb write buffer size: " << res << ", total memory: " << total_mem_bytes
+              << ", disk count: " << disk_cnt;
+    return res;
+}
+
 Status KVStore::init(bool read_only) {
     DBOptions options;
     options.IncreaseParallelism();
-    std::string db_path = _root_path + META_POSTFIX;
-
+    // 256MB. default is 0, which means all logs will be written to one log file
+    options.max_log_file_size = 268435456;
+    // default is 1000
+    options.keep_log_file_num = 10;
     RETURN_IF_ERROR(rocksdb::GetDBOptionsFromString(options, config::rocksdb_db_options_string, &options));
+
+    std::string db_path = _root_path + META_POSTFIX;
 
     ColumnFamilyOptions meta_cf_options;
     RETURN_IF_ERROR(rocksdb::GetColumnFamilyOptionsFromString(meta_cf_options, config::rocksdb_cf_options_string,
@@ -101,6 +141,10 @@ Status KVStore::init(bool read_only) {
     cf_descs[2].options = meta_cf_options;
     cf_descs[2].options.prefix_extractor.reset(NewFixedPrefixTransform(PREFIX_LENGTH));
     cf_descs[2].options.compression = rocksdb::kSnappyCompression;
+    auto* tracker = GlobalEnv::GetInstance()->process_mem_tracker();
+    if (tracker != nullptr) {
+        cf_descs[2].options.write_buffer_size = calc_rocksdb_write_buffer_size(tracker);
+    }
     static_assert(NUM_COLUMN_FAMILY_INDEX == 3);
 
     rocksdb::Status s;
@@ -148,7 +192,7 @@ Status KVStore::init(bool read_only) {
 }
 
 Status KVStore::get(ColumnFamilyIndex column_family_index, const std::string& key, std::string* value) {
-    StarRocksMetrics::instance()->meta_read_request_total.increment(1);
+    StorageMetrics::instance()->meta_read_request_total.increment(1);
     rocksdb::ColumnFamilyHandle* handle = _handles[column_family_index];
     int64_t duration_ns = 0;
     rocksdb::Status s;
@@ -156,12 +200,12 @@ Status KVStore::get(ColumnFamilyIndex column_family_index, const std::string& ke
         SCOPED_RAW_TIMER(&duration_ns);
         s = _db->Get(ReadOptions(), handle, key, value);
     }
-    StarRocksMetrics::instance()->meta_read_request_duration_us.increment(duration_ns / 1000);
+    StorageMetrics::instance()->meta_read_request_duration_us.increment(duration_ns / 1000);
     return to_status(s);
 }
 
 Status KVStore::put(ColumnFamilyIndex column_family_index, const std::string& key, const std::string& value) {
-    StarRocksMetrics::instance()->meta_write_request_total.increment(1);
+    StorageMetrics::instance()->meta_write_request_total.increment(1);
     rocksdb::ColumnFamilyHandle* handle = _handles[column_family_index];
     int64_t duration_ns = 0;
     rocksdb::Status s;
@@ -171,13 +215,13 @@ Status KVStore::put(ColumnFamilyIndex column_family_index, const std::string& ke
         write_options.sync = config::sync_tablet_meta;
         s = _db->Put(write_options, handle, key, value);
     }
-    StarRocksMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
+    StorageMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
     LOG_IF(WARNING, !s.ok()) << s.ToString();
     return to_status(s);
 }
 
 Status KVStore::write_batch(rocksdb::WriteBatch* batch) {
-    StarRocksMetrics::instance()->meta_write_request_total.increment(1);
+    StorageMetrics::instance()->meta_write_request_total.increment(1);
     int64_t duration_ns = 0;
     rocksdb::Status s;
     {
@@ -186,13 +230,13 @@ Status KVStore::write_batch(rocksdb::WriteBatch* batch) {
         write_options.sync = config::sync_tablet_meta;
         s = _db->Write(write_options, batch);
     }
-    StarRocksMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
+    StorageMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
     LOG_IF(WARNING, !s.ok()) << s.ToString();
     return to_status(s);
 }
 
 Status KVStore::remove(ColumnFamilyIndex column_family_index, const std::string& key) {
-    StarRocksMetrics::instance()->meta_write_request_total.increment(1);
+    StorageMetrics::instance()->meta_write_request_total.increment(1);
     rocksdb::ColumnFamilyHandle* handle = _handles[column_family_index];
     rocksdb::Status s;
     int64_t duration_ns = 0;
@@ -202,7 +246,7 @@ Status KVStore::remove(ColumnFamilyIndex column_family_index, const std::string&
         write_options.sync = config::sync_tablet_meta;
         s = _db->Delete(write_options, handle, key);
     }
-    StarRocksMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
+    StorageMetrics::instance()->meta_write_request_duration_us.increment(duration_ns / 1000);
     LOG_IF(WARNING, !s.ok()) << s.ToString();
     return to_status(s);
 }
@@ -230,6 +274,12 @@ static std::string get_iterate_upper_bound(const std::string& prefix) {
 Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string& prefix,
                         std::function<StatusOr<bool>(std::string_view, std::string_view)> const& func,
                         int64_t timeout_sec) {
+    return iterate(column_family_index, prefix, "", func, timeout_sec);
+}
+
+Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string& prefix, const std::string& start_key,
+                        std::function<StatusOr<bool>(std::string_view, std::string_view)> const& func,
+                        int64_t timeout_sec) {
     int64_t t_start = MonotonicMillis();
     rocksdb::ColumnFamilyHandle* handle = _handles[column_family_index];
     auto opts = ReadOptions();
@@ -240,11 +290,19 @@ Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string
         opts.iterate_upper_bound = &upper_bound_slice;
     }
     std::unique_ptr<Iterator> it(_db->NewIterator(opts, handle));
-    if (prefix.empty()) {
-        it->SeekToFirst();
+    if (start_key.empty()) {
+        if (prefix.empty()) {
+            it->SeekToFirst();
+        } else {
+            it->Seek(prefix);
+        }
     } else {
-        it->Seek(prefix);
+        it->Seek(start_key);
+        if (it->Valid() && it->key() == start_key) {
+            it->Next();
+        }
     }
+
     // if limit time is less than or equal to zero, it means no limit
     if (timeout_sec <= 0) {
         for (; it->Valid(); it->Next()) {
@@ -282,6 +340,30 @@ Status KVStore::iterate(ColumnFamilyIndex column_family_index, const std::string
     }
     LOG_IF(WARNING, !it->status().ok()) << it->status().ToString();
     return to_status(it->status());
+}
+
+Status KVStore::iterate_with_compact_on_timeout(
+        ColumnFamilyIndex column_family_index, const std::string& prefix,
+        std::function<StatusOr<bool>(std::string_view, std::string_view)> const& func, int64_t timeout_sec) {
+    std::string last_key;
+    auto func_wrapper = [&](std::string_view key, std::string_view value) -> StatusOr<bool> {
+        last_key.assign(key.data(), key.size());
+        return func(key, value);
+    };
+
+    Status st = iterate(column_family_index, prefix, func_wrapper, timeout_sec);
+    if (st.is_time_out()) {
+        LOG(WARNING) << "rocksdb iterate timeout, try to compact";
+        Status compact_st = compact();
+        if (!compact_st.ok()) {
+            LOG(ERROR) << "rocksdb compact failed before retry";
+        } else {
+            LOG(INFO) << "rocksdb compact finished, retry iterate from last key";
+        }
+        // retry, but with no timeout
+        return iterate(column_family_index, prefix, last_key, func_wrapper, 0);
+    }
+    return st;
 }
 
 Status KVStore::iterate_range(ColumnFamilyIndex column_family_index, const std::string& lower_bound,

@@ -19,6 +19,8 @@ import com.staros.util.LockCloseable;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
+import com.starrocks.metric.MetricRepo;
+import com.starrocks.persist.DeleteSqlBlackLists;
 import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.SqlBlackListPersistInfo;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
@@ -26,6 +28,10 @@ import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
 import com.starrocks.persist.metablock.SRMetaBlockReader;
 import com.starrocks.persist.metablock.SRMetaBlockWriter;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.AddSqlBlackListStmt;
+import com.starrocks.sql.ast.DelSqlBlackListStmt;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -40,6 +46,7 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 // Used by sql's blacklist
@@ -53,7 +60,8 @@ public class SqlBlackList {
             for (BlackListSql patternAndId : sqlBlackListMap.values()) {
                 Matcher m = patternAndId.pattern.matcher(formatSql);
                 if (m.find()) {
-                    ErrorReport.reportAnalysisException(ErrorCode.ERR_SQL_IN_BLACKLIST_ERROR);
+                    MetricRepo.COUNTER_SQL_BLOCK_HIT_COUNT.increase(1L);
+                    ErrorReport.reportSqlBlackListException(ErrorCode.ERR_SQL_IN_BLACKLIST_ERROR, patternAndId.id);
                 }
             }
         }
@@ -76,7 +84,9 @@ public class SqlBlackList {
             BlackListSql blackListSql = sqlBlackListMap.get(pattern.toString());
             if (blackListSql == null) {
                 long id = ids.getAndIncrement();
-                sqlBlackListMap.put(pattern.toString(), new BlackListSql(pattern, id));
+                GlobalStateMgr.getCurrentState().getEditLog().logAddSQLBlackList(
+                        new SqlBlackListPersistInfo(id, pattern.pattern()),
+                        wal -> sqlBlackListMap.put(pattern.toString(), new BlackListSql(pattern, id)));
                 return id;
             } else {
                 return blackListSql.id;
@@ -94,12 +104,46 @@ public class SqlBlackList {
         }
     }
 
+    public void addBlackSql(AddSqlBlackListStmt addSqlBlackListStmt) {
+        Pattern sqlPattern = null;
+        String sql = addSqlBlackListStmt.getSql().trim().toLowerCase().replaceAll(" +", " ")
+                .replace("\r", " ")
+                .replace("\n", " ")
+                .replaceAll("\\s+", " ");
+        if (!sql.isEmpty()) {
+            try {
+                sqlPattern = Pattern.compile(sql);
+            } catch (PatternSyntaxException e) {
+                throw new SemanticException("Sql syntax error: %s", e.getMessage());
+            }
+        }
+
+        if (sqlPattern == null) {
+            throw new SemanticException("Sql pattern cannot be empty");
+        }
+
+        GlobalStateMgr.getCurrentState().getSqlBlackList().put(sqlPattern);
+    }
+
+    public void deleteBlackSql(DelSqlBlackListStmt delSqlBlackListStmt) {
+        List<Long> indexs = delSqlBlackListStmt.getIndexs();
+        if (indexs != null) {
+            GlobalStateMgr.getCurrentState().getEditLog()
+                    .logDeleteSQLBlackList(new DeleteSqlBlackLists(indexs), wal -> {
+                        for (long id : indexs) {
+                            GlobalStateMgr.getCurrentState().getSqlBlackList().delete(id);
+                        }
+                    });
+        }
+    }
+
     // we delete sql's regular expression use id, so we iterate this map.
     public void delete(long id) {
         try (LockCloseable ignored = new LockCloseable(rwLock.writeLock())) {
             for (Map.Entry<String, BlackListSql> entry : sqlBlackListMap.entrySet()) {
                 if (entry.getValue().id == id) {
                     sqlBlackListMap.remove(entry.getKey());
+                    return;
                 }
             }
         }
@@ -140,5 +184,11 @@ public class SqlBlackList {
 
     // ids used in sql blacklist
     private final AtomicLong ids = new AtomicLong();
-}
 
+    protected void cleanup() {
+        try (LockCloseable ignored = new LockCloseable(rwLock.writeLock())) {
+            sqlBlackListMap.clear();
+            ids.set(0);
+        }
+    }
+}

@@ -37,6 +37,8 @@
 #include <memory>
 #include <utility>
 
+#include "base/compression/block_compression.h"
+#include "base/string/slice.h"
 #include "common/status.h"
 #include "fs/fs.h"
 #include "gen_cpp/segment.pb.h"
@@ -46,8 +48,7 @@
 #include "storage/rowset/page_handle.h"
 #include "storage/rowset/page_pointer.h"
 #include "storage/rowset/parsed_page.h"
-#include "util/compression/block_compression.h"
-#include "util/slice.h"
+#include "storage/types.h"
 
 namespace starrocks {
 

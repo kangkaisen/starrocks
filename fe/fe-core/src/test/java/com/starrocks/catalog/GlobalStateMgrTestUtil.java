@@ -43,12 +43,17 @@ import com.starrocks.common.DdlException;
 import com.starrocks.persist.EditLog;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.LocalMetastore;
+import com.starrocks.sql.ast.AggregateType;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.PartitionKeyDesc;
 import com.starrocks.sql.ast.PartitionValue;
 import com.starrocks.sql.ast.SingleRangePartitionDesc;
 import com.starrocks.system.Backend;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TStorageType;
+import com.starrocks.type.FloatType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.VarcharType;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -62,6 +67,7 @@ public class GlobalStateMgrTestUtil {
     public static String testDb1 = "testDb1";
     public static long testDbId1 = 1;
     public static String testTable1 = "testTable1";
+    public static String testTable2 = "testTable2";
     public static String testTable7 = "testTable7";
     public static long testTableId1 = 2;
     public static String testPartition1 = "testPartition1";
@@ -91,6 +97,7 @@ public class GlobalStateMgrTestUtil {
     public static String testTxnLable10 = "testTxnLable10";
     public static String testTxnLableCompaction1 = "testTxnLableCompaction1";
     public static String testTxnLableCompaction2 = "testTxnLableCompaction2";
+    public static String testTxnLableReplication1 = "testTxnLableReplication1";
     public static String testEsTable1 = "partitionedEsTable1";
     public static long testEsTableId1 = 14;
 
@@ -140,7 +147,7 @@ public class GlobalStateMgrTestUtil {
                 return false;
             }
             List<MaterializedIndex> allMaterializedIndices = masterPartition.getDefaultPhysicalPartition()
-                    .getMaterializedIndices(IndexExtState.ALL);
+                    .getLatestMaterializedIndices(IndexExtState.ALL);
             for (MaterializedIndex masterIndex : allMaterializedIndices) {
                 MaterializedIndex slaveIndex = slavePartition.getDefaultPhysicalPartition().getIndex(masterIndex.getId());
                 if (slaveIndex == null) {
@@ -186,7 +193,7 @@ public class GlobalStateMgrTestUtil {
 
         // index
         MaterializedIndex index = new MaterializedIndex(indexId, IndexState.NORMAL);
-        TabletMeta tabletMeta = new TabletMeta(dbId, tableId, partitionId + 100, indexId, 0, TStorageMedium.HDD);
+        TabletMeta tabletMeta = new TabletMeta(dbId, tableId, partitionId + 100, indexId, TStorageMedium.HDD);
         index.addTablet(tablet, tabletMeta);
 
         tablet.addReplica(replica1);
@@ -201,19 +208,19 @@ public class GlobalStateMgrTestUtil {
 
         // columns
         List<Column> columns = new ArrayList<Column>();
-        Column temp = new Column("k1", Type.INT);
+        Column temp = new Column("k1", IntegerType.INT);
         temp.setIsKey(true);
         columns.add(temp);
-        temp = new Column("k2", Type.INT);
+        temp = new Column("k2", IntegerType.INT);
         temp.setIsKey(true);
         columns.add(temp);
-        columns.add(new Column("v", Type.DOUBLE, false, AggregateType.SUM, "0", ""));
+        columns.add(new Column("v", FloatType.DOUBLE, false, AggregateType.SUM, "0", ""));
 
         List<Column> keysColumn = new ArrayList<Column>();
-        temp = new Column("k1", Type.INT);
+        temp = new Column("k1", IntegerType.INT);
         temp.setIsKey(true);
         keysColumn.add(temp);
-        temp = new Column("k2", Type.INT);
+        temp = new Column("k2", IntegerType.INT);
         temp.setIsKey(true);
         keysColumn.add(temp);
 
@@ -226,7 +233,8 @@ public class GlobalStateMgrTestUtil {
         table.addPartition(partition);
         table.setIndexMeta(indexId, testIndex1, columns, 0, testSchemaHash1, (short) 1, TStorageType.COLUMN,
                 KeysType.AGG_KEYS);
-        table.setBaseIndexId(indexId);
+        table.setBaseIndexMetaId(indexId);
+        table.setReplicationNum((short) 3);
         // db
         Database db = new Database(dbId, testDb1);
         db.registerTableUnlocked(table);
@@ -242,10 +250,10 @@ public class GlobalStateMgrTestUtil {
     public static void createEsTable(Database db) throws DdlException {
         // columns
         List<Column> columns = new ArrayList<>();
-        Column userId = new Column("userId", Type.VARCHAR);
+        Column userId = new Column("userId", VarcharType.VARCHAR);
         columns.add(userId);
-        columns.add(new Column("time", Type.BIGINT));
-        columns.add(new Column("type", Type.VARCHAR));
+        columns.add(new Column("time", IntegerType.BIGINT));
+        columns.add(new Column("type", VarcharType.VARCHAR));
 
         // table
         List<Column> partitionColumns = Lists.newArrayList();

@@ -19,18 +19,18 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.sql.plan.PlanTestBase;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.FixMethodOrder;
-import org.junit.Test;
-import org.junit.runners.MethodSorters;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer.MethodName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.util.List;
 
-@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@TestMethodOrder(MethodName.class)
 public class MvRewritePartitionTest extends MVTestBase {
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         MVTestBase.beforeClass();
         starRocksAssert.withTable(cluster, "table_with_day_partition");
@@ -39,7 +39,7 @@ public class MvRewritePartitionTest extends MVTestBase {
         prepareDatas();
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() throws Exception {
         try {
             starRocksAssert.dropTable("test_partition_tbl1");
@@ -130,7 +130,7 @@ public class MvRewritePartitionTest extends MVTestBase {
     @Test
     public void testPartitionPrune1() throws Exception {
         Tracers.register(connectContext);
-        Tracers.init(connectContext, Tracers.Mode.LOGS, "MV");
+        Tracers.init(connectContext, "LOGS", "MV");
         createAndRefreshMv("CREATE MATERIALIZED VIEW test_partition_tbl_mv1\n" +
                         " PARTITION BY k1\n" +
                         " DISTRIBUTED BY HASH(k1) BUCKETS 10\n" +
@@ -636,7 +636,7 @@ public class MvRewritePartitionTest extends MVTestBase {
                     cluster.runSql("test", String.format("refresh materialized view %s partition " +
                             "start('%s') end('%s') with sync mode;", mvName, param.refreshStart, param.refreshEnd));
                     for (PCompensateExpect expect : param.expectPartitionPredicates) {
-                        System.out.println(expect);
+                        logSysInfo(expect);
                         if (!Strings.isNullOrEmpty(expect.partitionPredicate)) {
                             String query = String.format("select a.t1a, a.id_date, sum(a.t1b), sum(b.t1b) \n" +
                                     "from table_with_day_partition a\n" +
@@ -705,7 +705,7 @@ public class MvRewritePartitionTest extends MVTestBase {
                 )
         );
         for (PartitionCompensateParam param : params) {
-            System.out.println(param);
+            logSysInfo(param);
             testRefreshAndRewriteWithMultiJoinMV(param);
         }
         connectContext.getSessionVariable().setEnableMaterializedViewTransparentUnionRewrite(true);

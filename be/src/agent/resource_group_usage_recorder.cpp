@@ -14,8 +14,10 @@
 
 #include "agent/resource_group_usage_recorder.h"
 
+#include "base/time/time.h"
+#include "common/system/cpu_info.h"
 #include "exec/workgroup/work_group.h"
-#include "util/time.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks {
 
@@ -38,16 +40,26 @@ std::vector<TResourceGroupUsage> ResourceGroupUsageRecorder::get_resource_group_
                 if (it == group_to_usage.end()) {
                     TResourceGroupUsage group_usage;
                     group_usage.__set_group_id(wg.id());
+                    group_usage.__set_group_version(wg.version());
                     group_usage.__set_mem_used_bytes(wg.mem_consumption_bytes());
                     group_usage.__set_num_running_queries(wg.num_running_queries());
+                    group_usage.__set_mem_limit_bytes(wg.mem_limit_bytes());
+                    group_usage.__set_mem_pool(wg.mem_pool());
+                    group_usage.__set_mem_pool_mem_limit_bytes(wg.parent_memory_limit_bytes().value_or(0));
+                    group_usage.__set_mem_pool_mem_used_bytes(wg.parent_memory_usage_bytes().value_or(0));
                     group_to_usage.emplace(wg.id(), std::move(group_usage));
-
                     curr_group_to_cpu_runtime_ns.emplace(wg.id(), wg.cpu_runtime_ns());
                 } else {
                     TResourceGroupUsage& group_usage = it->second;
                     group_usage.__set_mem_used_bytes(group_usage.mem_used_bytes + wg.mem_consumption_bytes());
                     group_usage.__set_num_running_queries(group_usage.num_running_queries + wg.num_running_queries());
-
+                    if (wg.version() >= group_usage.group_version) {
+                        group_usage.__set_group_version(wg.version());
+                        group_usage.__set_mem_pool(wg.mem_pool());
+                        group_usage.__set_mem_limit_bytes(wg.mem_limit_bytes());
+                        group_usage.__set_mem_pool_mem_limit_bytes(wg.parent_memory_limit_bytes().value_or(0));
+                        group_usage.__set_mem_pool_mem_used_bytes(wg.parent_memory_usage_bytes().value_or(0));
+                    }
                     curr_group_to_cpu_runtime_ns[wg.id()] += wg.cpu_runtime_ns();
                 }
             });
@@ -61,8 +73,8 @@ std::vector<TResourceGroupUsage> ResourceGroupUsageRecorder::get_resource_group_
             prev_runtime_ns = iter_prev->second;
         }
 
-        int32_t cpu_core_used_permille = (cpu_runtime_ns - prev_runtime_ns) * 1000 / delta_ns;
-        cpu_core_used_permille = std::clamp(cpu_core_used_permille, 0, CpuInfo::num_cores());
+        int64_t cpu_core_used_permille = (cpu_runtime_ns - prev_runtime_ns) * 1000 / delta_ns;
+        cpu_core_used_permille = std::clamp<int64_t>(cpu_core_used_permille, 0, CpuInfo::num_cores() * 1000);
         group_to_usage[group_id].__set_cpu_core_used_permille(cpu_core_used_permille);
     }
     _group_to_cpu_runtime_ns = std::move(curr_group_to_cpu_runtime_ns);

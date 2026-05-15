@@ -15,10 +15,9 @@
 package com.starrocks.catalog.system.information;
 
 import com.google.api.client.util.Lists;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.InternalCatalog;
-import com.starrocks.catalog.Type;
+import com.starrocks.catalog.TableName;
 import com.starrocks.catalog.system.SystemId;
 import com.starrocks.catalog.system.SystemTable;
 import com.starrocks.common.FeConstants;
@@ -36,10 +35,16 @@ import com.starrocks.thrift.TColumnStatsUsage;
 import com.starrocks.thrift.TColumnStatsUsageReq;
 import com.starrocks.thrift.TColumnStatsUsageRes;
 import com.starrocks.thrift.TSchemaTableType;
+import com.starrocks.type.DateType;
+import com.starrocks.type.StringType;
+import com.starrocks.type.VarcharType;
 import org.apache.commons.lang3.NotImplementedException;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -58,10 +63,10 @@ public class ColumnStatsUsageSystemTable extends SystemTable {
                         .column("TABLE_NAME", SystemTable.createNameType())
                         .column("COLUMN_NAME", SystemTable.createNameType())
 
-                        .column("USAGE", Type.STRING, "use case of this column stats")
-                        .column("LAST_USED", Type.DATETIME, "last time when using this column stats")
+                        .column("USAGE", StringType.STRING, "use case of this column stats")
+                        .column("LAST_USED", DateType.DATETIME, "last time when using this column stats")
 
-                        .column("CREATED", Type.DATETIME, "create time of this column stats")
+                        .column("CREATED", DateType.DATETIME, "create time of this column stats")
                         .build(),
                 TSchemaTableType.SCH_COLUMN_STATS_USAGE);
     }
@@ -70,9 +75,26 @@ public class ColumnStatsUsageSystemTable extends SystemTable {
         return new ColumnStatsUsageSystemTable();
     }
 
+    private static final Set<String> SUPPORTED_EQUAL_COLUMNS =
+            Collections.unmodifiableSet(new TreeSet<>(String.CASE_INSENSITIVE_ORDER) {
+                {
+                    add("TABLE_CATALOG");
+                    add("TABLE_DATABASE");
+                    add("TABLE_NAME");
+                }
+            });
+
     @Override
-    public boolean supportFeEvaluation() {
-        return FeConstants.runningUnitTest;
+    public boolean supportFeEvaluation(ScalarOperator predicate) {
+        // TODO(FIXME): use it in the non unit test environment
+        if (!FeConstants.runningUnitTest) {
+            return false;
+        }
+        final List<ScalarOperator> conjuncts = Utils.extractConjuncts(predicate);
+        if (!isOnlyEqualConstantOps(conjuncts)) {
+            return false;
+        }
+        return isSupportedEqualPredicateColumn(conjuncts, SUPPORTED_EQUAL_COLUMNS);
     }
 
     @Override
@@ -119,9 +141,9 @@ public class ColumnStatsUsageSystemTable extends SystemTable {
         Optional<Pair<TableName, ColumnId>> names = columnFullId.toNames();
         List<ScalarOperator> result = Lists.newArrayList();
         result.add(ConstantOperator.createVarchar(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME));
-        result.add(ConstantOperator.createVarchar(names.map(x -> x.first.getDb()).orElse(null)));
-        result.add(ConstantOperator.createVarchar(names.map(x -> x.first.getTbl()).orElse(null)));
-        result.add(ConstantOperator.createVarchar(names.map(x -> x.second.getId()).orElse(null)));
+        result.add(ConstantOperator.createNullableObject(names.map(x -> x.first.getDb()).orElse(null), VarcharType.VARCHAR));
+        result.add(ConstantOperator.createNullableObject(names.map(x -> x.first.getTbl()).orElse(null), VarcharType.VARCHAR));
+        result.add(ConstantOperator.createNullableObject(names.map(x -> x.second.getId()).orElse(null), VarcharType.VARCHAR));
         result.add(ConstantOperator.createVarchar(columnUsage.getUseCaseString()));
         result.add(ConstantOperator.createDatetime(columnUsage.getLastUsed()));
         result.add(ConstantOperator.createDatetime(columnUsage.getCreated()));

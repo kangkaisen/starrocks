@@ -4,9 +4,7 @@ displayed_sidebar: docs
 
 # SUBMIT TASK
 
-## Description
-
-Submits an ETL statement as an asynchronous task.
+SUBMIT TASK submits an ETL statement as an asynchronous task.
 
 You can use this statement to:
 
@@ -17,11 +15,11 @@ Supported statements include:
 
 - [CREATE TABLE AS SELECT](../../table_bucket_part_index/CREATE_TABLE_AS_SELECT.md) (from v3.0 onwards)
 - [INSERT](../INSERT.md) (from v3.0 onwards)
-- [CACHE SELECT](../../../../data_source/data_cache_warmup.md) (from v3.3 onwards)
+- [CACHE SELECT](../../../../data_source/block_cache_warmup.md) (from v3.3 onwards)
 
 You can view the list of tasks by querying `INFORMATION_SCHEMA.tasks`, or view the execution history of tasks by querying `INFORMATION_SCHEMA.task_runs`. For more information, see [Usage Notes](#usage-notes).
 
-You can drop an asynchronous task using [DROP TASK](DROP_TASK.md).
+You can modify an asynchronous task using [ALTER TASK](ALTER_TASK.md), or drop an asynchronous task using [DROP TASK](DROP_TASK.md).
 
 ## Syntax
 
@@ -32,6 +30,22 @@ SUBMIT TASK <task_name>
 AS <etl_statement>
 ```
 
+## PROPERTIES
+
+You can add `session.` with session variables to change the Task running connect context configurations.
+
+
+For example, the following statement submits a task named `test_task` with session properties which enables query profile and increase query timeout:
+
+```SQL
+SUBMIT TASK test_task
+PROPERTIES (
+    "session.enable_profile" = "true",
+    "session.insert_timeout" = "10000"
+)
+AS insert into t2 select * from t1;
+```
+
 ## Parameters
 
 | **Parameter**      | **Required** | **Description**                                                                                     |
@@ -40,6 +54,14 @@ AS <etl_statement>
 | schedule_start     | No      | The start time for the scheduled task.                                                                 |
 | schedule_interval  | No      | The interval at which the scheduled task is executed, with a minimum interval of 10 seconds.          |
 | etl_statement      | Yes     | The ETL statement that you want to submit as an asynchronous task. StarRocks currently supports submitting asynchronous tasks for [CREATE TABLE AS SELECT](../../table_bucket_part_index/CREATE_TABLE_AS_SELECT.md) and [INSERT](../../loading_unloading/INSERT.md). |
+
+## Return value
+
+- `TaskName`: The name of the task.
+- `Status`: The status of the task. Valid values:
+  - `SUBMITTED`: The task has been submitted.
+  - `REJECTED`: The task has been rejected.
+  - `FAILED`: The task has failed.
 
 ## Usage notes
 
@@ -101,7 +123,7 @@ SUBMIT TASK AS INSERT OVERWRITE tbl3 SELECT * FROM src_tbl;
 Example 4: Submit an asynchronous task for `INSERT OVERWRITE insert_wiki_edit SELECT * FROM source_wiki_edit` without specifying the task name, and extend the query timeout to `100000` seconds using the hint:
 
 ```SQL
-SUBMIT /*+set_var(query_timeout=100000)*/ TASK AS
+SUBMIT /*+set_var(insert_timeout=100000)*/ TASK AS
 INSERT OVERWRITE insert_wiki_edit
 SELECT * FROM source_wiki_edit;
 ```
@@ -116,4 +138,15 @@ INSERT OVERWRITE insert_wiki_edit
     SELECT dt, user_id, count(*) 
     FROM source_wiki_edit 
     GROUP BY dt, user_id;
+```
+
+Example 6: Create a task with custom session properties:
+
+```SQL
+SUBMIT TASK test_task
+PROPERTIES (
+    "session.enable_profile" = "true",
+    "session.insert_timeout" = "10000"
+)
+AS insert into t2 select * from t1;
 ```

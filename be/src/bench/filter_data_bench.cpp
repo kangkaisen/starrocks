@@ -12,23 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <base/testutil/assert.h>
 #include <benchmark/benchmark.h>
 #include <gtest/gtest.h>
-#include <testutil/assert.h>
 
 #include <cstdint>
 #include <random>
 #include <vector>
 
 #include "column/vectorized_fwd.h"
-#include "gutil/endian.h"
 #ifdef __AVX2__
 #include <emmintrin.h>
 #endif
 
 #include "column/column_helper.h"
-#include "runtime/current_thread.h"
-#include "simd/simd.h"
 
 namespace starrocks {
 
@@ -221,7 +218,7 @@ static void BM_FilterData_CAndA(benchmark::State& state) {
     BM_FilterData_T<FilterType::COLLECT_ASSIGN>(state);
 }
 
-static void BM_FilterData_Compress(benchmark::State& state) {
+[[maybe_unused]] static void BM_FilterData_Compress(benchmark::State& state) {
     BM_FilterData_T<FilterType::COMPRESS>(state);
 }
 

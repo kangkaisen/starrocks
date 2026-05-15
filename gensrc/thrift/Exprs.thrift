@@ -86,7 +86,7 @@ enum TExprNodeType {
 
   // query DICTIONARY object
   DICTIONARY_GET_EXPR,
-  
+
   JIT_EXPR,
 
   MATCH_EXPR,
@@ -253,6 +253,13 @@ struct TExprNode {
   56: optional TDictionaryGetExpr dictionary_get_expr
   // whether this expr is only used in index
   57: optional bool is_index_only_filter
+
+  // lambda function contain non-deterministic sub-exprs
+  58: optional bool is_nondeterministic
+
+  // When true, STRUCT cast matches fields by name instead of by position.
+  // Set by the FE when SQLMode contains STRUCT_CAST_BY_NAME.
+  59: optional bool cast_struct_by_name
 }
 
 struct TPartitionLiteral {
@@ -266,4 +273,14 @@ struct TPartitionLiteral {
 // traversal.
 struct TExpr {
   1: required list<TExprNode> nodes
+}
+
+struct TExprMinMaxValue {
+  1: required TExprNodeType type
+  2: required bool has_null
+  3: required bool all_null
+  4: optional i64 min_int_value
+  5: optional i64 max_int_value
+  6: optional double min_float_value
+  7: optional double max_float_value
 }

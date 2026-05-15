@@ -49,23 +49,24 @@ import com.starrocks.sql.ast.ShowAlterStmt;
 import com.starrocks.sql.ast.ShowCreateTableStmt;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.utframe.StarRocksAssert;
+import com.starrocks.utframe.StarRocksTestBase;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Map;
 
 import static com.starrocks.sql.optimizer.MVTestUtils.waitForSchemaChangeAlterJobFinish;
 
-public class AlterJobV2Test {
+public class AlterJobV2Test extends StarRocksTestBase {
     private static ConnectContext connectContext;
 
     private static StarRocksAssert starRocksAssert;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         UtFrameUtils.setUpForPersistTest();
@@ -98,7 +99,7 @@ public class AlterJobV2Test {
                         ");");
     }
 
-    @AfterClass
+    @AfterAll
     public static void teardown() throws Exception {
         UtFrameUtils.tearDownForPersisTest();
     }
@@ -110,7 +111,7 @@ public class AlterJobV2Test {
             Thread.sleep(5000);
             retryTimes--;
         }
-        Assert.assertEquals(OlapTable.OlapTableState.NORMAL, tb.getState());
+        Assertions.assertEquals(OlapTable.OlapTableState.NORMAL, tb.getState());
     }
 
     @Test
@@ -127,8 +128,8 @@ public class AlterJobV2Test {
         ShowAlterStmt showAlterStmt =
                     (ShowAlterStmt) UtFrameUtils.parseStmtWithNewParser(showAlterStmtStr, connectContext);
         ShowResultSet showResultSet = ShowExecutor.execute(showAlterStmt, connectContext);
-        System.out.println(showResultSet.getMetaData());
-        System.out.println(showResultSet.getResultRows());
+        logSysInfo(showResultSet.getMetaData());
+        logSysInfo(showResultSet.getResultRows());
     }
 
     @Test
@@ -141,20 +142,20 @@ public class AlterJobV2Test {
         Map<Long, AlterJobV2> alterJobs = GlobalStateMgr.getCurrentState().getRollupHandler().getAlterJobsV2();
         for (AlterJobV2 alterJobV2 : alterJobs.values()) {
             while (!alterJobV2.getJobState().isFinalState()) {
-                System.out.println(
+                logSysInfo(
                             "alter job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
                 Thread.sleep(1000);
             }
-            System.out.println("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
-            Assert.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
+            logSysInfo("alter job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
+            Assertions.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
         }
         // 3. check show alter table column
         String showAlterStmtStr = "show alter table rollup from test;";
         ShowAlterStmt showAlterStmt =
                     (ShowAlterStmt) UtFrameUtils.parseStmtWithNewParser(showAlterStmtStr, connectContext);
         ShowResultSet showResultSet = ShowExecutor.execute(showAlterStmt, connectContext);
-        System.out.println(showResultSet.getMetaData());
-        System.out.println(showResultSet.getResultRows());
+        logSysInfo(showResultSet.getMetaData());
+        logSysInfo(showResultSet.getResultRows());
     }
 
     @Test
@@ -171,8 +172,8 @@ public class AlterJobV2Test {
         ShowCreateTableStmt showCreateTableStmt =
                     (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(showCreateTableStr, connectContext);
         ShowResultSet showResultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
-        System.out.println(showResultSet.getMetaData());
-        System.out.println(showResultSet.getResultRows());
+        logSysInfo(showResultSet.getMetaData());
+        logSysInfo(showResultSet.getResultRows());
 
         // 4. process a modify table properties job(in_memory)
         String alterStmtStr2 = "alter table test.properties_change_test set ('in_memory' = 'true');";
@@ -186,8 +187,8 @@ public class AlterJobV2Test {
         showCreateTableStmt =
                     (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(showCreateTableStr, connectContext);
         showResultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
-        System.out.println(showResultSet.getMetaData());
-        System.out.println(showResultSet.getResultRows());
+        logSysInfo(showResultSet.getMetaData());
+        logSysInfo(showResultSet.getResultRows());
     }
 
     @Test
@@ -200,7 +201,7 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail();
+            Assertions.fail();
         }
     }
 
@@ -221,10 +222,10 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
             MaterializedView mv2 =
                         (MaterializedView) GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test").getTable("mv2");
-            Assert.assertFalse(mv2.isActive());
+            Assertions.assertFalse(mv2.isActive());
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail();
+            Assertions.fail();
         }
     }
 
@@ -248,7 +249,7 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
             MaterializedView mv = (MaterializedView) GlobalStateMgr.getCurrentState().getLocalMetastore()
                         .getDb("test").getTable("mv3");
-            Assert.assertTrue(!mv.isActive());
+            Assertions.assertTrue(!mv.isActive());
         } finally {
             starRocksAssert.dropTable("modify_column_test3");
         }
@@ -274,10 +275,10 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
             MaterializedView mv = (MaterializedView) GlobalStateMgr.getCurrentState()
                         .getLocalMetastore().getDb("test").getTable("mv6");
-            Assert.assertTrue(mv.isActive());
+            Assertions.assertTrue(mv.isActive());
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail();
+            Assertions.fail();
         } finally {
             starRocksAssert.dropTable("testModifyWithSelectStarMV2");
         }
@@ -303,9 +304,9 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
             MaterializedView mv = (MaterializedView) GlobalStateMgr.getCurrentState()
                         .getLocalMetastore().getDb("test").getTable("mv5");
-            Assert.assertTrue(!mv.isActive());
+            Assertions.assertTrue(!mv.isActive());
         } catch (Exception e) {
-            Assert.fail();
+            Assertions.fail();
         } finally {
             starRocksAssert.dropTable("modify_column_test5");
         }
@@ -333,7 +334,7 @@ public class AlterJobV2Test {
                 waitForSchemaChangeAlterJobFinish();
                 MaterializedView mv = (MaterializedView) GlobalStateMgr
                             .getCurrentState().getLocalMetastore().getDb("test").getTable("mv4");
-                Assert.assertTrue(mv.isActive());
+                Assertions.assertTrue(mv.isActive());
             }
 
             {
@@ -346,13 +347,13 @@ public class AlterJobV2Test {
                 waitForSchemaChangeAlterJobFinish();
                 MaterializedView mv = (MaterializedView) GlobalStateMgr
                             .getCurrentState().getLocalMetastore().getDb("test").getTable("mv4");
-                Assert.assertFalse(mv.isActive());
-                System.out.println(mv.getInactiveReason());
-                Assert.assertTrue(mv.getInactiveReason().contains("base table schema changed for columns: k2"));
+                Assertions.assertFalse(mv.isActive());
+                logSysInfo(mv.getInactiveReason());
+                Assertions.assertTrue(mv.getInactiveReason().contains("base table schema changed for columns: k2"));
             }
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail();
+            Assertions.fail();
         } finally {
             starRocksAssert.dropTable("modify_column_test4");
         }
@@ -375,10 +376,10 @@ public class AlterJobV2Test {
             waitForSchemaChangeAlterJobFinish();
             MaterializedView mv =
                         (MaterializedView) GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test").getTable("mv1");
-            Assert.assertTrue(mv.isActive());
+            Assertions.assertTrue(mv.isActive());
         } catch (Exception e) {
             e.printStackTrace();
-            Assert.fail();
+            Assertions.fail();
         }
     }
 
@@ -405,7 +406,7 @@ public class AlterJobV2Test {
         AlterJobV2 alterJobV2New =
                     GlobalStateMgr.getCurrentState().getSchemaChangeHandler().getAlterJobsV2().get(alterJobV2Old.jobId);
 
-        Assert.assertEquals(alterJobV2Old.jobId, alterJobV2New.jobId);
-        Assert.assertTrue(alterJobV2Old.lakePublishVersion());
+        Assertions.assertEquals(alterJobV2Old.jobId, alterJobV2New.jobId);
+        Assertions.assertTrue(alterJobV2Old.lakePublishVersion());
     }
 }

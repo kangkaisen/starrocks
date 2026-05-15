@@ -18,33 +18,36 @@ import com.google.api.client.util.Lists;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.TableName;
 import com.starrocks.backup.Status;
 import com.starrocks.backup.mv.MVRestoreUpdater;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.Pair;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.plan.PlanTestBase;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+import static com.starrocks.sql.optimizer.rule.transformation.materialization.MVTestBase.disableMVRewriteConsiderDataLayout;
+
 public class MaterializedViewTest extends MaterializedViewTestBase {
     private static final List<String> outerJoinTypes = ImmutableList.of("left", "right");
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         MaterializedViewTestBase.beforeClass();
 
+        disableMVRewriteConsiderDataLayout();
         starRocksAssert.useDatabase(MATERIALIZED_DB_NAME);
 
         starRocksAssert.useTable("depts");
@@ -1194,22 +1197,22 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     @Test
     public void testJoinAggregateMaterializationNoAggregateFuncs1() {
         // If agg push down is open, cannot rewrite.
-        testRewriteOK("select empid, depts.deptno from emps\n"
-                        + "join depts using (deptno) where depts.deptno > 10\n"
-                        + "group by empid, depts.deptno",
+        testRewriteOK("select empid, deptno from emps\n"
+                        + "join depts using (deptno) where deptno > 10\n"
+                        + "group by empid, deptno",
                 "select empid from emps\n"
-                        + "join depts using (deptno) where depts.deptno > 20\n"
-                        + "group by empid, depts.deptno");
+                        + "join depts using (deptno) where deptno > 20\n"
+                        + "group by empid, deptno");
     }
 
     @Test
     public void testJoinAggregateMaterializationNoAggregateFuncs2() {
-        testRewriteOK("select depts.deptno, empid from depts\n"
-                        + "join emps using (deptno) where depts.deptno > 10\n"
-                        + "group by empid, depts.deptno",
+        testRewriteOK("select deptno, empid from depts\n"
+                        + "join emps using (deptno) where deptno > 10\n"
+                        + "group by empid, deptno",
                 "select empid from emps\n"
-                        + "join depts using (deptno) where depts.deptno > 20\n"
-                        + "group by empid, depts.deptno");
+                        + "join depts using (deptno) where deptno > 20\n"
+                        + "group by empid, deptno");
     }
 
     @Test
@@ -1225,12 +1228,12 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
     @Test
     public void testJoinAggregateMaterializationNoAggregateFuncs4() {
-        testRewriteOK("select empid, depts.deptno from emps\n"
-                        + "join depts using (deptno) where emps.deptno > 10\n"
-                        + "group by empid, depts.deptno",
+        testRewriteOK("select empid, deptno from emps\n"
+                        + "join depts using (deptno) where deptno > 10\n"
+                        + "group by empid, deptno",
                 "select empid from emps\n"
-                        + "join depts using (deptno) where depts.deptno > 20\n"
-                        + "group by empid, depts.deptno");
+                        + "join depts using (deptno) where deptno > 20\n"
+                        + "group by empid, deptno");
     }
 
     @Test
@@ -1328,27 +1331,27 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
     @Test
     public void testJoinAggregateMaterializationAggregateFuncs1() {
-        testRewriteOK("select empid, depts.deptno, count(*) as c, sum(empid) as s\n"
+        testRewriteOK("select empid, deptno, count(*) as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "group by empid, depts.deptno",
+                        + "group by empid, deptno",
                 "select deptno from emps group by deptno");
     }
 
     @Test
     public void testJoinAggregateMaterializationAggregateFuncs2() {
-        testRewriteOK("select empid, emps.deptno, count(*) as c, sum(empid) as s\n"
+        testRewriteOK("select empid, deptno, count(*) as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
                         + "group by empid, emps.deptno",
-                "select depts.deptno, count(*) as c, sum(empid) as s\n"
+                "select deptno, count(*) as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "group by depts.deptno");
+                        + "group by deptno");
     }
 
     @Test
     public void testJoinAggregateMaterializationAggregateFuncs3() {
-        testRewriteOK("select empid, depts.deptno, count(*) as c, sum(empid) as s\n"
+        testRewriteOK("select empid, deptno, count(*) as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "group by empid, depts.deptno",
+                        + "group by empid, deptno",
                 "select deptno, empid, sum(empid) as s, count(*) as c\n"
                         + "from emps group by empid, deptno");
     }
@@ -1356,27 +1359,27 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     @Test
 
     public void testJoinAggregateMaterializationAggregateFuncs4() {
-        testRewriteOK("select empid, emps.deptno, count(*) as c, sum(empid) as s\n"
+        testRewriteOK("select empid, deptno, count(*) as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "where emps.deptno >= 10 group by empid, emps.deptno",
-                "select depts.deptno, sum(empid) as s\n"
+                        + "where deptno >= 10 group by empid, emps.deptno",
+                "select deptno, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "where emps.deptno > 10 group by depts.deptno");
+                        + "where deptno > 10 group by deptno");
     }
 
     @Test
 
     public void testJoinAggregateMaterializationAggregateFuncs5() {
-        testRewriteOK("select empid, depts.deptno, count(*) + 1 as c, sum(empid) as s\n"
+        testRewriteOK("select empid, deptno, count(*) + 1 as c, sum(empid) as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "where depts.deptno >= 10 group by empid, depts.deptno",
-                "select depts.deptno, sum(empid) + 1 as s\n"
+                        + "where deptno >= 10 group by empid, deptno",
+                "select deptno, sum(empid) + 1 as s\n"
                         + "from emps join depts using (deptno)\n"
-                        + "where depts.deptno > 10 group by depts.deptno");
+                        + "where deptno > 10 group by deptno");
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs6() {
         final String m = "select depts.name, sum(salary) as s\n"
                 + "from emps\n"
@@ -1391,7 +1394,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs7() {
         testRewriteOK("select dependents.empid, emps.deptno, sum(salary) as s\n"
                         + "from emps\n"
@@ -1405,7 +1408,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs8() {
         testRewriteOK("select dependents.empid, emps.deptno, sum(salary) as s\n"
                         + "from emps\n"
@@ -1443,7 +1446,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs11() {
         testRewriteOK("select depts.deptno, dependents.empid, count(emps.salary) as s\n"
                         + "from depts\n"
@@ -1493,7 +1496,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs14() {
         testRewriteOK("select empid, emps.name, emps.deptno, depts.name, "
                         + "count(*) as c, sum(empid) as s\n"
@@ -1508,7 +1511,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinAggregateMaterializationAggregateFuncs15() {
         final String m = ""
                 + "SELECT deptno,\n"
@@ -1530,7 +1533,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
     @Test
     public void testJoinMaterialization1() {
-        String q = "select depts.deptno, empid, locationid, t.name \n"
+        String q = "select deptno, empid, locationid, t.name \n"
                 + "from (select * from emps where empid < 300) t \n"
                 + "join depts using (deptno)";
         testRewriteOK("select deptno, empid, locationid, name from emps where empid < 500", q);
@@ -1573,7 +1576,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     // TODO: Need add no-loss-cast in lineage factory.
     public void testJoinMaterialization5() {
         testRewriteOK("select cast(empid as BIGINT) as a from emps\n"
@@ -1583,7 +1586,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     // TODO: Need add no-loss-cast in lineage factory.
     public void testJoinMaterialization6() {
         testRewriteOK("select cast(empid as BIGINT) as a from emps\n"
@@ -1628,7 +1631,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinMaterialization10() {
         testRewriteOK("select depts.deptno, dependents.empid\n"
                         + "from depts\n"
@@ -1651,7 +1654,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testJoinMaterialization12() {
         testRewriteOK("select empid, emps.name as a, emps.deptno, depts.name as b \n"
                         + "from emps join depts using (deptno)\n"
@@ -1666,7 +1669,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
 
     @Test
-    @Ignore
+    @Disabled
     // TODO: agg push down below Join
     public void testAggregateOnJoinKeys() {
         testRewriteOK("select deptno, empid, salary "
@@ -1679,7 +1682,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
 
     @Test
-    @Ignore
+    @Disabled
     public void testAggregateOnJoinKeys2() {
         testRewriteOK("select deptno, empid, salary, sum(1) as c "
                         + "from emps\n"
@@ -2113,10 +2116,10 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
 
     @Test
     public void testViewDeltaJoinUKFK10() {
-        String mv = "select emps.empid as empid1, emps.name, emps.deptno, dependents.empid as empid2 from emps\n"
+        String mv = "select empid as empid1, emps.name, emps.deptno, empid as empid2 from emps\n"
                 + "join dependents using (empid)";
 
-        String query = "select emps.empid, dependents.empid, emps.deptno\n"
+        String query = "select empid, empid, emps.deptno\n"
                 + "from emps\n"
                 + "join dependents using (empid)"
                 + "join depts a on (emps.deptno=a.deptno)\n"
@@ -2225,26 +2228,28 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
         // set join derive rewrite in view delta
         String mv = "select emps.empid, emps.deptno, dependents.name from emps\n"
                 + "left outer join depts b on (emps.deptno=b.deptno)\n"
-                + "full outer join dependents using (empid)";
+                + "full outer join dependents on (emps.empid=dependents.empid)";
 
         String query = "select emps.empid, dependents.name from emps\n"
-                + " full join dependents using (empid)\n"
+                + " full join dependents on (emps.empid=dependents.empid)\n"
                 + "where emps.empid = '1'";
         testRewriteOK(mv, query);
     }
+
 
     @Test
     public void testViewDeltaJoinUKFK19() {
         // set join derive rewrite in view delta
         String mv = "select emps.empid, emps.deptno, dependents.name from emps\n"
                 + "left outer join depts b on (emps.deptno=b.deptno)\n"
-                + "full outer join dependents using (empid)";
+                + "full outer join dependents on (emps.empid=dependents.empid)";
 
         String query = "select emps.empid, dependents.name from emps\n"
-                + " inner join dependents using (empid)\n"
+                + " inner join dependents on (emps.empid=dependents.empid)\n"
                 + "where emps.empid = '1'";
         testRewriteOK(mv, query);
     }
+
 
     @Test
     public void testViewDeltaJoinUKFKInMV1() {
@@ -3837,17 +3842,17 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
     @Test
     public void testFullOuterJoin() {
         {
-            String q = "select empid, depts.deptno from emps\n"
+            String q = "select empid, deptno from emps\n"
                     + "full outer join depts using (deptno)";
-            String m = "select empid, depts.deptno from emps\n"
+            String m = "select empid, deptno from emps\n"
                     + "full outer join depts using (deptno)";
             testRewriteOK(m, q);
         }
 
         {
-            String q = "select empid, depts.deptno from emps\n"
+            String q = "select empid, deptno from emps\n"
                     + "full outer join depts using (deptno) where empid = 1";
-            String m = "select empid, depts.deptno from emps\n"
+            String m = "select empid, deptno from emps\n"
                     + "full outer join depts using (deptno)";
             testRewriteOK(m, q);
         }
@@ -4912,9 +4917,9 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
                 "\"foreign_key_constraints\" = \"emps_no_constraint(empid) references dependents(empid)\" ";
         try {
             rewrite(mv, query, constraint);
-            Assert.fail();
+            Assertions.fail();
         } catch (Exception e) {
-            Assert.assertTrue(e.getMessage().contains("test_mv.DEPENDENTS does not exist."));
+            Assertions.assertTrue(e.getMessage().contains("test_mv.DEPENDENTS does not exist."));
         }
     }
 
@@ -4931,9 +4936,9 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
                 "\"foreign_key_constraints\" = \"EMPS_NO_CONSTRAINT(empid) references DEPENDENTS(empid)\" ";
         try {
             rewrite(mv, query, constraint);
-            Assert.fail();
+            Assertions.fail();
         } catch (Exception e) {
-            Assert.assertTrue(e.getMessage().contains("table:DEPENDENTS do not exist."));
+            Assertions.assertTrue(e.getMessage().contains("table:DEPENDENTS do not exist."));
         }
     }
 
@@ -4950,9 +4955,9 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
                 "\"foreign_key_constraints\" = \"emps_no_constraint(empid) references dependents(empid)\" ";
         try {
             rewrite(mv, query, constraint);
-            Assert.fail();
+            Assertions.fail();
         } catch (Exception e) {
-            Assert.assertTrue(e.getMessage().contains("Unknown table 'test_mv.EMPS_NO_CONSTRAINT'."));
+            Assertions.assertTrue(e.getMessage().contains("Unknown table 'test_mv.EMPS_NO_CONSTRAINT'."));
         }
     }
 
@@ -4969,9 +4974,9 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
             String constraint = "\"unique_constraints\" = \"dependents.empid\"," +
                     "\"foreign_key_constraints\" = \"emps_no_constraint(empid) references dependents(empid)\" ";
             rewrite(mv, query, constraint);
-            Assert.fail();
+            Assertions.fail();
         } catch (Exception e) {
-            Assert.assertTrue(e.getMessage().contains("Unknown table 'test_mv.EMPS_NO_CONSTRAINT'."));
+            Assertions.assertTrue(e.getMessage().contains("Unknown table 'test_mv.EMPS_NO_CONSTRAINT'."));
         }
     }
 
@@ -5472,7 +5477,7 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
                 () -> {
                     MaterializedView mvTable = (MaterializedView) getTable(MATERIALIZED_DB_NAME, mvName);
                     Pair<Status, Boolean> result = MVRestoreUpdater.checkMvDefinedQuery(mvTable, Maps.newHashMap(), Pair.create("", ""));
-                    Assert.assertTrue(result.first.ok());
+                    Assertions.assertTrue(result.first.ok());
                 });
 
     }
@@ -5493,9 +5498,9 @@ public class MaterializedViewTest extends MaterializedViewTestBase {
                             TableName.fromString("test.lineorder"));
                     boolean result = MVRestoreUpdater.renewMvBaseTableNames(mvTable,
                             remoteToLocalTableName, connectContext, newDefinedQueries);
-                    Assert.assertTrue(result);
-                    Assert.assertTrue(!Strings.isNullOrEmpty(newDefinedQueries.first));
-                    Assert.assertTrue(!Strings.isNullOrEmpty(newDefinedQueries.second));
+                    Assertions.assertTrue(result);
+                    Assertions.assertTrue(!Strings.isNullOrEmpty(newDefinedQueries.first));
+                    Assertions.assertTrue(!Strings.isNullOrEmpty(newDefinedQueries.second));
                 });
 
     }

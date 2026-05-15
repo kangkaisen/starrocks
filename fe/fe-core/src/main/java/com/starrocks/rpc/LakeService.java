@@ -20,6 +20,10 @@ import com.starrocks.proto.AbortCompactionRequest;
 import com.starrocks.proto.AbortCompactionResponse;
 import com.starrocks.proto.AbortTxnRequest;
 import com.starrocks.proto.AbortTxnResponse;
+import com.starrocks.proto.AggregateCompactRequest;
+import com.starrocks.proto.AggregatePublishVersionRequest;
+import com.starrocks.proto.BuildVectorIndexRequest;
+import com.starrocks.proto.BuildVectorIndexResponse;
 import com.starrocks.proto.CompactRequest;
 import com.starrocks.proto.CompactResponse;
 import com.starrocks.proto.DeleteDataRequest;
@@ -30,6 +34,10 @@ import com.starrocks.proto.DeleteTxnLogRequest;
 import com.starrocks.proto.DeleteTxnLogResponse;
 import com.starrocks.proto.DropTableRequest;
 import com.starrocks.proto.DropTableResponse;
+import com.starrocks.proto.DropTabletCacheRequest;
+import com.starrocks.proto.DropTabletCacheResponse;
+import com.starrocks.proto.GetTabletMetadatasRequest;
+import com.starrocks.proto.GetTabletMetadatasResponse;
 import com.starrocks.proto.LockTabletMetadataRequest;
 import com.starrocks.proto.LockTabletMetadataResponse;
 import com.starrocks.proto.PublishLogVersionBatchRequest;
@@ -37,6 +45,8 @@ import com.starrocks.proto.PublishLogVersionRequest;
 import com.starrocks.proto.PublishLogVersionResponse;
 import com.starrocks.proto.PublishVersionRequest;
 import com.starrocks.proto.PublishVersionResponse;
+import com.starrocks.proto.RepairTabletMetadataRequest;
+import com.starrocks.proto.RepairTabletMetadataResponse;
 import com.starrocks.proto.RestoreSnapshotsRequest;
 import com.starrocks.proto.RestoreSnapshotsResponse;
 import com.starrocks.proto.TabletStatRequest;
@@ -45,6 +55,8 @@ import com.starrocks.proto.UnlockTabletMetadataRequest;
 import com.starrocks.proto.UnlockTabletMetadataResponse;
 import com.starrocks.proto.UploadSnapshotsRequest;
 import com.starrocks.proto.UploadSnapshotsResponse;
+import com.starrocks.proto.VacuumFullRequest;
+import com.starrocks.proto.VacuumFullResponse;
 import com.starrocks.proto.VacuumRequest;
 import com.starrocks.proto.VacuumResponse;
 
@@ -67,6 +79,9 @@ public interface LakeService {
     long TIMEOUT_PUBLISH_LOG_VERSION_BATCH = MILLIS_PER_MINUTE;
     long TIMEOUT_ABORT_COMPACTION = 5 * MILLIS_PER_SECOND;
     long TIMEOUT_VACUUM = MILLIS_PER_HOUR;
+    long TIMEOUT_VACUUM_FULL = MILLIS_PER_HOUR * 24;
+    long TIMEOUT_REPAIR_METADATA = MILLIS_PER_HOUR;
+    long TIMEOUT_BUILD_VECTOR_INDEX = MILLIS_PER_DAY;
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "publish_version", onceTalkTimeout = TIMEOUT_PUBLISH_VERSION)
     Future<PublishVersionResponse> publishVersion(PublishVersionRequest request);
@@ -76,6 +91,9 @@ public interface LakeService {
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "compact", onceTalkTimeout = TIMEOUT_COMPACT)
     Future<CompactResponse> compact(CompactRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "aggregate_compact", onceTalkTimeout = TIMEOUT_COMPACT)
+    Future<CompactResponse> aggregateCompact(AggregateCompactRequest request);
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "delete_tablet", onceTalkTimeout = TIMEOUT_DELETE_TABLET)
     Future<DeleteTabletResponse> deleteTablet(DeleteTabletRequest request);
@@ -91,6 +109,9 @@ public interface LakeService {
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "drop_table", onceTalkTimeout = TIMEOUT_DROP_TABLE)
     Future<DropTableResponse> dropTable(DropTableRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "drop_tablet_cache", onceTalkTimeout = TIMEOUT_DROP_TABLE)
+    Future<DropTabletCacheResponse> dropTabletCache(DropTabletCacheRequest request);
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "publish_log_version", onceTalkTimeout = TIMEOUT_PUBLISH_LOG_VERSION)
     Future<PublishLogVersionResponse> publishLogVersion(PublishLogVersionRequest request);
@@ -116,5 +137,21 @@ public interface LakeService {
 
     @ProtobufRPC(serviceName = "LakeService", methodName = "vacuum", onceTalkTimeout = TIMEOUT_VACUUM)
     Future<VacuumResponse> vacuum(VacuumRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "aggregate_publish_version", onceTalkTimeout = TIMEOUT_PUBLISH_VERSION)
+    Future<PublishVersionResponse> aggregatePublishVersion(AggregatePublishVersionRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "vacuum_full", onceTalkTimeout = TIMEOUT_VACUUM_FULL)
+    Future<VacuumFullResponse> vacuumFull(VacuumFullRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "get_tablet_metadatas", onceTalkTimeout = TIMEOUT_GET_TABLET_STATS)
+    Future<GetTabletMetadatasResponse> getTabletMetadatas(GetTabletMetadatasRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "repair_tablet_metadata", onceTalkTimeout = TIMEOUT_REPAIR_METADATA)
+    Future<RepairTabletMetadataResponse> repairTabletMetadata(RepairTabletMetadataRequest request);
+
+    @ProtobufRPC(serviceName = "LakeService", methodName = "build_vector_index",
+            onceTalkTimeout = TIMEOUT_BUILD_VECTOR_INDEX)
+    Future<BuildVectorIndexResponse> buildVectorIndex(BuildVectorIndexRequest request);
 }
 

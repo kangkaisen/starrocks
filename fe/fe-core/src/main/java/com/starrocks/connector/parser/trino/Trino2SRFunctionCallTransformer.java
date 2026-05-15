@@ -17,13 +17,13 @@ package com.starrocks.connector.parser.trino;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.CaseExpr;
-import com.starrocks.analysis.CaseWhenClause;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.FunctionCallExpr;
-import com.starrocks.analysis.IntLiteral;
-import com.starrocks.analysis.StringLiteral;
-import com.starrocks.analysis.VariableExpr;
+import com.starrocks.sql.ast.expression.CaseExpr;
+import com.starrocks.sql.ast.expression.CaseWhenClause;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.FunctionCallExpr;
+import com.starrocks.sql.ast.expression.IntLiteral;
+import com.starrocks.sql.ast.expression.StringLiteral;
+import com.starrocks.sql.ast.expression.VariableExpr;
 
 import java.util.List;
 import java.util.Map;
@@ -303,6 +303,12 @@ public class Trino2SRFunctionCallTransformer {
         // regexp_like -> regexp
         registerFunctionTransformer("regexp_like", 2, "regexp",
                 List.of(Expr.class, Expr.class));
+
+        // support regexp_replace with 2 param
+        registerFunctionTransformer("regexp_replace", 2,
+                new FunctionCallExpr("regexp_replace",
+                        List.of(new PlaceholderExpr(1, Expr.class), new PlaceholderExpr(2, Expr.class),
+                                new StringLiteral(""))));
     }
 
     private static void registerURLFunctionTransformer() {
@@ -320,8 +326,8 @@ public class Trino2SRFunctionCallTransformer {
         registerFunctionTransformer("json_parse", 1, "parse_json",
                 List.of(Expr.class));
 
-        // json_extract -> get_json_string
-        registerFunctionTransformer("json_extract", 2, "get_json_string",
+        // json_extract -> json_query
+        registerFunctionTransformer("json_extract", 2, "json_query",
                 List.of(Expr.class, Expr.class));
 
         // json_size -> json_length

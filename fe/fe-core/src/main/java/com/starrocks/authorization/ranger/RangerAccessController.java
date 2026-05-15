@@ -13,13 +13,13 @@
 // limitations under the License.
 package com.starrocks.authorization.ranger;
 
-import com.starrocks.analysis.Expr;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.ExternalAccessController;
 import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.Column;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.sql.ast.UserIdentity;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.parser.SqlParser;
 import org.apache.commons.lang.StringUtils;
 import org.apache.ranger.authorization.hadoop.config.RangerPluginConfig;
@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Objects;
 import java.util.Set;
 
+import static com.starrocks.server.GlobalStateMgr.isCheckpointThread;
 import static java.util.Locale.ENGLISH;
 
 public abstract class RangerAccessController extends ExternalAccessController implements AccessTypeConverter {
@@ -45,7 +46,9 @@ public abstract class RangerAccessController extends ExternalAccessController im
     public RangerAccessController(String serviceType, String serviceName) {
         RangerPluginConfig rangerPluginContext = buildRangerPluginContext(serviceType, serviceName);
         rangerPlugin = new RangerBasePlugin(rangerPluginContext);
-        rangerPlugin.init(); // this will initialize policy engine and policy refresher
+        if (!isCheckpointThread()) {
+            rangerPlugin.init(); // this will initialize policy engine and policy refresher
+        }
         rangerPlugin.setResultProcessor(new RangerDefaultAuditHandler());
 
         LOG.info("Start Ranger plugin ({} - {}) success",
@@ -110,6 +113,10 @@ public abstract class RangerAccessController extends ExternalAccessController im
     protected void hasPermission(RangerAccessResourceImpl resource, UserIdentity user, Set<String> groups,
                                  PrivilegeType privilegeType)
             throws AccessDeniedException {
+        // root user bypasses Ranger authorization entirely
+        if (UserIdentity.ROOT.equals(user)) {
+            return;
+        }
         String accessType;
         if (privilegeType.equals(PrivilegeType.ANY)) {
             accessType = RangerPolicyEngine.ANY_ACCESS;

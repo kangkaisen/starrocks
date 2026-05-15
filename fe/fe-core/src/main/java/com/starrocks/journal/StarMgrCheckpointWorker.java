@@ -20,11 +20,11 @@ import com.starrocks.staros.StarMgrServer;
 
 public class StarMgrCheckpointWorker extends CheckpointWorker {
     public StarMgrCheckpointWorker(Journal journal) {
-        super("star_os_checkpoint_worker", journal);
+        super("star-os-checkpoint-worker", journal);
     }
 
     @Override
-    void doCheckpoint(long epoch, long journalId) throws Exception {
+    void doCheckpoint(long epoch, long journalId, boolean needClusterSnapshotInfo) throws Exception {
         LOG.info("begin to generate new image: image.{}", journalId);
         StarMgrServer starMgrServer = StarMgrServer.getCurrentState();
         try {

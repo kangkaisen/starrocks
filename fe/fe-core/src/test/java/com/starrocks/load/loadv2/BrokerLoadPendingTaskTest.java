@@ -36,21 +36,21 @@ package com.starrocks.load.loadv2;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.fs.HdfsUtil;
 import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.load.BrokerFileGroupAggInfo.FileGroupAggKey;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.BrokerDesc;
 import com.starrocks.thrift.TBrokerFileStatus;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
@@ -78,7 +78,7 @@ public class BrokerLoadPendingTaskTest {
         };
         new MockUp<HdfsUtil>() {
             @Mock
-            public void parseFile(String path, BrokerDesc brokerDesc, List<TBrokerFileStatus> fileStatuses) {
+            public void parseFile(String path, Map<String, String> properties, List<TBrokerFileStatus> fileStatuses) {
                 fileStatuses.add(tBrokerFileStatus);
             }
         };
@@ -88,7 +88,7 @@ public class BrokerLoadPendingTaskTest {
         brokerLoadPendingTask.executeTask();
         BrokerPendingTaskAttachment brokerPendingTaskAttachment =
                 Deencapsulation.getField(brokerLoadPendingTask, "attachment");
-        Assert.assertEquals(1, brokerPendingTaskAttachment.getFileNumByTable(aggKey));
-        Assert.assertEquals(tBrokerFileStatus, brokerPendingTaskAttachment.getFileStatusByTable(aggKey).get(0).get(0));
+        Assertions.assertEquals(1, brokerPendingTaskAttachment.getFileNumByTable(aggKey));
+        Assertions.assertEquals(tBrokerFileStatus, brokerPendingTaskAttachment.getFileStatusByTable(aggKey).get(0).get(0));
     }
 }

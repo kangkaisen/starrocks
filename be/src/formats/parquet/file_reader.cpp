@@ -18,39 +18,25 @@
 
 #include <cstring>
 #include <iterator>
-#include <map>
-#include <sstream>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "cache/block_cache/local_cache.h"
-#include "column/column.h"
-#include "column/column_helper.h"
-#include "column/const_column.h"
+#include "cache/datacache.h"
 #include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
-#include "common/config.h"
-#include "common/global_types.h"
+#include "common/config_scan_io_fwd.h"
 #include "common/logging.h"
 #include "common/status.h"
-#include "exec/hdfs_scanner.h"
-#include "exprs/expr_context.h"
-#include "exprs/runtime_filter.h"
-#include "exprs/runtime_filter_bank.h"
+#include "exec/hdfs_scanner/hdfs_scanner.h"
 #include "formats/parquet/metadata.h"
 #include "formats/parquet/predicate_filter_evaluator.h"
-#include "formats/parquet/scalar_column_reader.h"
-#include "formats/parquet/schema.h"
-#include "formats/parquet/statistics_helper.h"
 #include "formats/parquet/utils.h"
 #include "fs/fs.h"
 #include "gen_cpp/parquet_types.h"
 #include "gutil/casts.h"
 #include "gutil/strings/substitute.h"
 #include "io/shared_buffered_input_stream.h"
-#include "runtime/descriptors.h"
-#include "storage/chunk_helper.h"
 
 namespace starrocks::parquet {
 
@@ -69,7 +55,7 @@ FileReader::~FileReader() = default;
 Status FileReader::init(HdfsScannerContext* ctx) {
     _scanner_ctx = ctx;
     if (ctx->use_file_metacache) {
-        _cache = CacheEnv::GetInstance()->external_table_meta_cache();
+        _cache = DataCache::GetInstance()->page_cache();
     }
 
     // parse FileMetadata
@@ -101,8 +87,10 @@ Status FileReader::init(HdfsScannerContext* ctx) {
 
 std::shared_ptr<MetaHelper> FileReader::_build_meta_helper() {
     if (_scanner_ctx->lake_schema != nullptr && _file_metadata->schema().exist_filed_id()) {
-        // If we want read this parquet file with iceberg/paimon schema,
-        // we also need to make sure it contains parquet field id.
+        // Use LakeMetaHelper only when both an Iceberg/Paimon lake schema is present AND
+        // the parquet file carries field ids.  Without field ids, the lake schema cannot
+        // be matched reliably and we fall back to ParquetMetaHelper which handles
+        // col_unique_id / col_physical_name / name lookup chains correctly.
         return std::make_shared<LakeMetaHelper>(_file_metadata.get(), _scanner_ctx->case_sensitive,
                                                 _scanner_ctx->lake_schema);
     } else {
@@ -110,7 +98,7 @@ std::shared_ptr<MetaHelper> FileReader::_build_meta_helper() {
     }
 }
 
-FileMetaData* FileReader::get_file_metadata() {
+const FileMetaData* FileReader::get_file_metadata() {
     return _file_metadata.get();
 }
 
@@ -124,9 +112,9 @@ Status FileReader::collect_scan_io_ranges(std::vector<io::SharedBufferedInputStr
 }
 
 Status FileReader::_build_split_tasks() {
-    // dont do split in following cases:
+    // don't do split in following cases:
     // 1. this feature is not enabled
-    // 2. we have already do split before (that's why `split_context` is nullptr)
+    // 2. we have already done split before (that's why `split_context` is nullptr)
     if (!_scanner_ctx->enable_split_tasks || _scanner_ctx->split_context != nullptr) {
         return Status::OK();
     }
@@ -224,19 +212,11 @@ StatusOr<bool> FileReader::_update_rf_and_filter_group(const GroupReaderPtr& gro
     return filter;
 }
 
-int32_t FileReader::_get_partition_column_idx(const std::string& col_name) const {
-    for (int32_t i = 0; i < _scanner_ctx->partition_columns.size(); i++) {
-        if (_scanner_ctx->partition_columns[i].name() == col_name) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 void FileReader::_prepare_read_columns(std::unordered_set<std::string>& existed_column_names) {
-    _meta_helper->prepare_read_columns(_scanner_ctx->materialized_columns, _group_reader_param.read_cols,
-                                       existed_column_names);
-    _no_materialized_column_scan = (_group_reader_param.read_cols.size() == 0);
+    _meta_helper->prepare_read_columns(_scanner_ctx->materialized_columns, _scanner_ctx->column_access_paths,
+                                       _group_reader_param.read_cols, existed_column_names);
+    _no_materialized_column_scan =
+            (_group_reader_param.read_cols.empty() && _scanner_ctx->reserved_field_slots.empty());
 }
 
 bool FileReader::_select_row_group(const tparquet::RowGroup& row_group) {
@@ -285,27 +265,37 @@ Status FileReader::_init_group_readers() {
     _group_reader_param.partition_columns = &fd_scanner_ctx.partition_columns;
     _group_reader_param.partition_values = &fd_scanner_ctx.partition_values;
     _group_reader_param.not_existed_slots = &fd_scanner_ctx.not_existed_slots;
+    _group_reader_param.reserved_field_slots = &fd_scanner_ctx.reserved_field_slots;
     // for pageIndex
     _group_reader_param.min_max_conjunct_ctxs = fd_scanner_ctx.min_max_conjunct_ctxs;
     _group_reader_param.predicate_tree = &fd_scanner_ctx.predicate_tree;
     _group_reader_param.global_dictmaps = fd_scanner_ctx.global_dictmaps;
+    _group_reader_param.column_access_paths = fd_scanner_ctx.column_access_paths;
     _group_reader_param.modification_time = _datacache_options.modification_time;
     _group_reader_param.file_size = _file_size;
     _group_reader_param.datacache_options = &_datacache_options;
+    _group_reader_param.scan_range_id = fd_scanner_ctx.scan_range_id;
+    _group_reader_param.scan_range = fd_scanner_ctx.scan_range;
 
+    int64_t row_group_first_row_id = _scanner_ctx->scan_range->first_row_id;
     int64_t row_group_first_row = 0;
     // select and create row group readers.
     for (size_t i = 0; i < _file_metadata->t_metadata().row_groups.size(); i++) {
         if (i > 0) {
             row_group_first_row += _file_metadata->t_metadata().row_groups[i - 1].num_rows;
+            row_group_first_row_id += _file_metadata->t_metadata().row_groups[i - 1].num_rows;
         }
 
         if (!_select_row_group(_file_metadata->t_metadata().row_groups[i])) {
             continue;
         }
 
-        auto row_group_reader =
-                std::make_shared<GroupReader>(_group_reader_param, i, _skip_rows_ctx, row_group_first_row);
+        if (_file_metadata->t_metadata().row_groups[i].num_rows == 0) {
+            continue;
+        }
+
+        auto row_group_reader = std::make_shared<GroupReader>(_group_reader_param, i, _skip_rows_ctx,
+                                                              row_group_first_row, row_group_first_row_id);
         RETURN_IF_ERROR(row_group_reader->init());
 
         _group_reader_param.stats->parquet_total_row_groups += 1;
@@ -409,7 +399,7 @@ Status FileReader::get_next(ChunkPtr* chunk) {
 Status FileReader::_exec_no_materialized_column_scan(ChunkPtr* chunk) {
     if (_scan_row_count < _total_row_count) {
         size_t read_size = 0;
-        if (_scanner_ctx->return_count_column) {
+        if (_scanner_ctx->use_count_opt) {
             read_size = _total_row_count - _scan_row_count;
             _scanner_ctx->append_or_update_count_column_to_chunk(chunk, read_size);
             _scanner_ctx->append_or_update_partition_column_to_chunk(chunk, 1);

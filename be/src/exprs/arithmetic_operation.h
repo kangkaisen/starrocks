@@ -14,12 +14,12 @@
 
 #pragma once
 
-#include "column/type_traits.h"
+#include "base/utility/guard.h"
+#include "column/runtime_type_traits.h"
 #include "common/status.h"
 #include "exprs/expr_context.h"
-#include "runtime/decimalv3.h"
+#include "types/decimalv3.h"
 #include "types/logical_type.h"
-#include "util/guard.h"
 
 #ifdef STARROCKS_JIT_ENABLE
 #include <llvm/IR/Constants.h>
@@ -408,6 +408,10 @@ static inline std::tuple<int, int, int> compute_decimal_result_type(int lhs_scal
         DCHECK(scale <= max_precision);
     } else if constexpr (is_div_op<Op>) {
         precision = decimal_precision_limit<int128_t>;
+        if (std::is_same_v<int256_t, T>) {
+            precision = decimal_precision_limit<int256_t>;
+        }
+
         if (lhs_scale <= 6) {
             scale = lhs_scale + 6;
         } else if (lhs_scale <= 12) {

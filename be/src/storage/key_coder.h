@@ -37,13 +37,13 @@
 #include <string>
 #include <type_traits>
 
-#include "column/datum.h"
+#include "base/bit/bit_util.h"
 #include "common/status.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/mem_pool.h"
-#include "storage/type_traits.h"
 #include "storage/types.h"
-#include "util/bit_util.h"
+#include "types/datum.h"
+#include "types/storage_type_traits.h"
 
 namespace starrocks {
 
@@ -97,13 +97,12 @@ template <LogicalType field_type, typename Enable = void>
 class KeyCoderTraits {};
 
 template <LogicalType field_type>
-class KeyCoderTraits<field_type,
-                     typename std::enable_if_t<std::is_integral_v<typename CppTypeTraits<field_type>::CppType>>> {
+class KeyCoderTraits<field_type, typename std::enable_if_t<std::is_integral_v<StorageCppType<field_type>> &&
+                                                           field_type != TYPE_INT256>> {
 public:
-    using CppType = typename CppTypeTraits<field_type>::CppType;
-    using UnsignedCppType = typename CppTypeTraits<field_type>::UnsignedCppType;
+    using CppType = StorageCppType<field_type>;
+    using UnsignedCppType = StorageUnsignedCppType<field_type>;
 
-public:
     static void full_encode_ascending(const void* value, std::string* buf) {
         UnsignedCppType unsigned_val;
         memcpy(&unsigned_val, value, sizeof(unsigned_val));
@@ -152,9 +151,8 @@ public:
 template <>
 class KeyCoderTraits<TYPE_BOOLEAN> {
 public:
-    using CppType = typename CppTypeTraits<TYPE_BOOLEAN>::CppType;
+    using CppType = StorageCppType<TYPE_BOOLEAN>;
 
-public:
     static void full_encode_ascending(const void* value, std::string* buf) {
         bool v = *reinterpret_cast<const bool*>(value);
         static_assert(!std::is_signed_v<bool>);
@@ -192,10 +190,9 @@ public:
 template <>
 class KeyCoderTraits<TYPE_DATE_V1> {
 public:
-    using CppType = typename CppTypeTraits<TYPE_DATE_V1>::CppType;
-    using UnsignedCppType = typename CppTypeTraits<TYPE_DATE_V1>::UnsignedCppType;
+    using CppType = StorageCppType<TYPE_DATE_V1>;
+    using UnsignedCppType = StorageUnsignedCppType<TYPE_DATE_V1>;
 
-public:
     static void full_encode_ascending(const void* value, std::string* buf) {
         UnsignedCppType unsigned_val;
         memcpy(&unsigned_val, value, sizeof(unsigned_val));
@@ -297,6 +294,25 @@ public:
     }
 };
 
+// TODO (stephen): implement this trait later. because we can't test it in the current patch.
+template <>
+class KeyCoderTraits<TYPE_INT256> {
+public:
+    using CppType = int256_t;
+
+    static void full_encode_ascending(const void* value, std::string* buf) {}
+
+    static void full_encode_ascending_datum(const Datum& value, std::string* buf) {}
+
+    static void encode_ascending(const void* value, size_t index_size, std::string* buf) {}
+
+    static void encode_ascending_datum(const Datum& value, size_t index_size, std::string* buf) {}
+
+    static Status decode_ascending(Slice* encoded_key, size_t index_size, uint8_t* cell_ptr, MemPool* pool) {
+        return Status::OK();
+    }
+};
+
 template <>
 class KeyCoderTraits<TYPE_DECIMAL32> : KeyCoderTraits<TYPE_INT> {};
 
@@ -305,6 +321,9 @@ class KeyCoderTraits<TYPE_DECIMAL64> : KeyCoderTraits<TYPE_BIGINT> {};
 
 template <>
 class KeyCoderTraits<TYPE_DECIMAL128> : KeyCoderTraits<TYPE_LARGEINT> {};
+
+template <>
+class KeyCoderTraits<TYPE_DECIMAL256> : KeyCoderTraits<TYPE_INT256> {};
 
 template <>
 class KeyCoderTraits<TYPE_CHAR> {
@@ -385,5 +404,9 @@ public:
         return Status::OK();
     }
 };
+
+// Reuse VARCHAR's key coder behavior for VARBINARY
+template <>
+class KeyCoderTraits<TYPE_VARBINARY> : public KeyCoderTraits<TYPE_VARCHAR> {};
 
 } // namespace starrocks

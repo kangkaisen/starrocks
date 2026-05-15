@@ -14,37 +14,64 @@
 
 package com.starrocks.sql.ast.spm;
 
-import com.starrocks.catalog.Column;
-import com.starrocks.catalog.ScalarType;
-import com.starrocks.qe.ShowResultSetMetaData;
+import com.google.common.collect.ImmutableMap;
 import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.AstVisitorExtendInterface;
+import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.ShowStmt;
+import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.parser.NodePosition;
+import com.starrocks.type.BooleanType;
+import com.starrocks.type.FloatType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.Type;
+import com.starrocks.type.VarcharType;
+
+import java.util.Map;
 
 public class ShowBaselinePlanStmt extends ShowStmt {
 
-    private static final ShowResultSetMetaData META_DATA = ShowResultSetMetaData.builder()
-            .addColumn(new Column("Id", ScalarType.createVarchar(60)))
-            .addColumn(new Column("global", ScalarType.createVarchar(10)))
-            .addColumn(new Column("bindSQLDigest", ScalarType.createVarchar(65535)))
-            .addColumn(new Column("bindSQLHash", ScalarType.createVarchar(60)))
-            .addColumn(new Column("bindSQL", ScalarType.createVarchar(65535)))
-            .addColumn(new Column("planSQL", ScalarType.createVarchar(65535)))
-            .addColumn(new Column("costs", ScalarType.createVarchar(60)))
-            .addColumn(new Column("updateTime", ScalarType.createVarchar(60)))
+    public static final Map<String, Type> BASELINE_FIELD_META = ImmutableMap.<String, Type>builder()
+            .put("id", IntegerType.BIGINT)
+            .put("global", BooleanType.BOOLEAN)
+            .put("enable", BooleanType.BOOLEAN)
+            .put("bindsqldigest", VarcharType.VARCHAR)
+            .put("bindsqlhash", IntegerType.BIGINT)
+            .put("bindsql", VarcharType.VARCHAR)
+            .put("plansql", VarcharType.VARCHAR)
+            .put("costs", FloatType.DOUBLE)
+            .put("queryms", FloatType.DOUBLE)
+            .put("source", VarcharType.VARCHAR)
+            .put("updatetime", VarcharType.VARCHAR)
             .build();
 
-    public ShowBaselinePlanStmt(NodePosition pos) {
+    // save where clause
+    private final Expr where;
+
+    private final QueryRelation query;
+
+    public ShowBaselinePlanStmt(NodePosition pos, Expr where) {
         super(pos);
+        this.where = where;
+        this.query = null;
     }
 
-    @Override
-    public ShowResultSetMetaData getMetaData() {
-        return META_DATA;
+    public ShowBaselinePlanStmt(NodePosition pos, QueryRelation query) {
+        super(pos);
+        this.where = null;
+        this.query = query;
+    }
+
+    public QueryRelation getQuery() {
+        return query;
+    }
+
+    public Expr getWhere() {
+        return where;
     }
 
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context) {
-        return visitor.visitShowBaselinePlanStatement(this, context);
+        return ((AstVisitorExtendInterface<R, C>) visitor).visitShowBaselinePlanStatement(this, context);
     }
 }

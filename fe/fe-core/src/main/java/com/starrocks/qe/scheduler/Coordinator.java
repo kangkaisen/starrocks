@@ -14,11 +14,11 @@
 
 package com.starrocks.qe.scheduler;
 
-import com.starrocks.analysis.DescriptorTable;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.Status;
 import com.starrocks.common.util.RuntimeProfile;
 import com.starrocks.datacache.DataCacheSelectMetrics;
+import com.starrocks.planner.DescriptorTable;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.ScanNode;
 import com.starrocks.planner.StreamLoadPlanner;
@@ -43,6 +43,7 @@ import com.starrocks.thrift.TTabletFailInfo;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.transaction.TabletCommitInfo;
 import com.starrocks.transaction.TabletFailInfo;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 
 import java.util.Collections;
 import java.util.List;
@@ -55,12 +56,14 @@ public abstract class Coordinator {
         Coordinator createQueryScheduler(ConnectContext context,
                                          List<PlanFragment> fragments,
                                          List<ScanNode> scanNodes,
-                                         TDescriptorTable descTable);
+                                         TDescriptorTable descTable,
+                                         ExecPlan execPlan);
 
         Coordinator createInsertScheduler(ConnectContext context,
                                           List<PlanFragment> fragments,
                                           List<ScanNode> scanNodes,
-                                          TDescriptorTable descTable);
+                                          TDescriptorTable descTable,
+                                          ExecPlan execPlan);
 
         Coordinator createBrokerLoadScheduler(LoadPlanner loadPlanner);
 
@@ -68,23 +71,16 @@ public abstract class Coordinator {
 
         Coordinator createSyncStreamLoadScheduler(StreamLoadPlanner planner, TNetworkAddress address);
 
-        Coordinator createNonPipelineBrokerLoadScheduler(Long jobId, TUniqueId queryId, DescriptorTable descTable,
-                                                         List<PlanFragment> fragments,
-                                                         List<ScanNode> scanNodes, String timezone, long startTime,
-                                                         Map<String, String> sessionVariables,
-                                                         ConnectContext context, long execMemLimit,
-                                                         long warehouseId);
-
         Coordinator createBrokerExportScheduler(Long jobId, TUniqueId queryId, DescriptorTable descTable,
                                                 List<PlanFragment> fragments,
                                                 List<ScanNode> scanNodes, String timezone, long startTime,
                                                 Map<String, String> sessionVariables,
                                                 long execMemLimit,
-                                                long warehouseId);
+                                                ComputeResource computeResource);
 
         Coordinator createRefreshDictionaryCacheScheduler(ConnectContext context, TUniqueId queryId,
                                                           DescriptorTable descTable, List<PlanFragment> fragments,
-                                                          List<ScanNode> scanNodes);
+                                                          List<ScanNode> scanNodes, ExecPlan execPlan);
     }
 
     // ------------------------------------------------------------------------------------
@@ -106,9 +102,9 @@ public abstract class Coordinator {
         startScheduling(option);
     }
 
-    public void execWithQueryDeployExecutor() throws Exception {
+    public void execWithQueryDeployExecutor(ConnectContext context) throws Exception {
         ScheduleOption option = new ScheduleOption();
-        option.useQueryDeployExecutor = true;
+        option.useQueryDeployExecutor = context.getSessionVariable().isEnableConnectorDeployScanRangesBackground();
         startScheduling(option);
     }
 
@@ -265,4 +261,10 @@ public abstract class Coordinator {
     public abstract String getResourceGroupName();
 
     public abstract boolean isShortCircuit();
+
+    /**
+     * Release external resources held by scan nodes or connectors. Default no-op.
+     */
+    public void clearExternalResources() {
+    }
 }

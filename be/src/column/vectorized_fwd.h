@@ -15,9 +15,8 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <vector>
-
-#include "runtime/memory/column_allocator.h"
 
 namespace starrocks {
 
@@ -26,9 +25,12 @@ class HyperLogLog;
 class BitmapValue;
 class PercentileValue;
 class JsonValue;
+class VariantRowValue;
 
 class DateValue;
 class TimestampValue;
+
+struct int256_t;
 
 typedef __int128 int128_t;
 
@@ -45,12 +47,16 @@ class ColumnAllocator;
 template <typename T>
 using Buffer = std::vector<T, ColumnAllocator<T>>;
 
+template <typename T>
+using ImmBuffer = std::span<const T>;
+
 class ArrayColumn;
 class ArrayViewColumn;
 class MapColumn;
 class StructColumn;
 class NullableColumn;
 class ConstColumn;
+class AdaptiveNullableColumn;
 
 template <typename T>
 class FixedLengthColumn;
@@ -74,6 +80,7 @@ using UInt32Column = FixedLengthColumn<uint32_t>;
 using Int64Column = FixedLengthColumn<int64_t>;
 using UInt64Column = FixedLengthColumn<uint64_t>;
 using Int128Column = FixedLengthColumn<int128_t>;
+using Int256Column = FixedLengthColumn<int256_t>;
 using DoubleColumn = FixedLengthColumn<double>;
 using FloatColumn = FixedLengthColumn<float>;
 using DateColumn = FixedLengthColumn<DateValue>;
@@ -82,8 +89,12 @@ using TimestampColumn = FixedLengthColumn<TimestampValue>;
 using Decimal32Column = DecimalV3Column<int32_t>;
 using Decimal64Column = DecimalV3Column<int64_t>;
 using Decimal128Column = DecimalV3Column<int128_t>;
+using Decimal256Column = DecimalV3Column<int256_t>;
 using BinaryColumn = BinaryColumnBase<uint32_t>;
 using LargeBinaryColumn = BinaryColumnBase<uint64_t>;
+
+class ColumnVisitor;
+class ColumnVisitorMutable;
 
 template <typename T>
 constexpr bool is_decimal_column = false;
@@ -100,6 +111,9 @@ using BitmapColumn = ObjectColumn<BitmapValue>;
 using PercentileColumn = ObjectColumn<PercentileValue>;
 using JsonColumnBase = ObjectColumn<JsonValue>;
 class JsonColumn;
+
+using VariantColumnBase = ObjectColumn<VariantRowValue>;
+class VariantColumn;
 
 class MapColumn;
 class StructColumn;

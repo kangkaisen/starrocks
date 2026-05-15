@@ -16,7 +16,11 @@
 
 #include <vector>
 
+#include "base/debug/trace.h"
+#include "base/time/time.h"
 #include "column/schema.h"
+#include "common/config_compaction_fwd.h"
+#include "common/config_exec_fwd.h"
 #include "runtime/current_thread.h"
 #include "storage/chunk_helper.h"
 #include "storage/compaction_utils.h"
@@ -27,8 +31,6 @@
 #include "storage/rowset/rowset_writer.h"
 #include "storage/tablet_reader.h"
 #include "storage/tablet_reader_params.h"
-#include "util/time.h"
-#include "util/trace.h"
 
 namespace starrocks {
 
@@ -53,7 +55,7 @@ Status VerticalCompactionTask::_vertical_compaction_data(Statistics* statistics)
     if (_output_rowset != nullptr) {
         return Status::OK();
     }
-    TRACE("[Compaction] start vertical comapction data");
+    TRACE("[Compaction] start vertical compaction data");
     int64_t max_rows_per_segment = CompactionUtils::get_segment_max_rows(
             config::max_segment_file_size, _task_info.input_rows_num, _task_info.input_rowsets_size);
 

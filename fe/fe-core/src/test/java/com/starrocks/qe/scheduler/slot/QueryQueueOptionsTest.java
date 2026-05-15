@@ -21,23 +21,24 @@ import com.starrocks.qe.scheduler.SchedulerTestBase;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.system.BackendResourceStat;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
+import static com.starrocks.server.WarehouseManager.DEFAULT_WAREHOUSE_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class QueryQueueOptionsTest extends SchedulerTestBase {
     private boolean prevEnableQueryQueueV2 = false;
     private boolean prevEnableQueryQueueSelect = false;
 
-    @Before
+    @BeforeEach
     public void before() {
         prevEnableQueryQueueV2 = Config.enable_query_queue_v2;
         prevEnableQueryQueueSelect = GlobalVariable.isEnableQueryQueueSelect();
     }
 
-    @After
+    @AfterEach
     public void after() {
         Config.enable_query_queue_v2 = prevEnableQueryQueueV2;
         GlobalVariable.setEnableQueryQueueSelect(prevEnableQueryQueueSelect);
@@ -77,10 +78,10 @@ public class QueryQueueOptionsTest extends SchedulerTestBase {
             final int numBEs = 2;
             final int concurrencyLevel = Config.query_queue_v2_concurrency_level;
 
-            BackendResourceStat.getInstance().setNumHardwareCoresOfBe(1, numCores);
-            BackendResourceStat.getInstance().setMemLimitBytesOfBe(1, memLimitBytes);
-            BackendResourceStat.getInstance().setNumHardwareCoresOfBe(2, numCores);
-            BackendResourceStat.getInstance().setMemLimitBytesOfBe(2, memLimitBytes);
+            BackendResourceStat.getInstance().setNumCoresOfBe(DEFAULT_WAREHOUSE_ID, 1, numCores);
+            BackendResourceStat.getInstance().setMemLimitBytesOfBe(DEFAULT_WAREHOUSE_ID, 1, memLimitBytes);
+            BackendResourceStat.getInstance().setNumCoresOfBe(DEFAULT_WAREHOUSE_ID, 2, numCores);
+            BackendResourceStat.getInstance().setMemLimitBytesOfBe(DEFAULT_WAREHOUSE_ID, 2, memLimitBytes);
             Config.enable_query_queue_v2 = true;
             QueryQueueOptions opts = QueryQueueOptions.createFromEnv(WarehouseManager.DEFAULT_WAREHOUSE_ID);
 

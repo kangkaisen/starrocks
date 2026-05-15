@@ -18,6 +18,7 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
+import com.starrocks.qe.DmlType;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.optimizer.statistics.InMemoryStatisticStorage;
 import com.starrocks.sql.optimizer.statistics.StatisticStorage;
@@ -27,23 +28,23 @@ import com.starrocks.transaction.InsertTxnCommitAttachment;
 import com.starrocks.transaction.PartitionCommitInfo;
 import com.starrocks.transaction.TableCommitInfo;
 import com.starrocks.transaction.TransactionState;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 public class StatisticsCollectionTriggerTest extends PlanTestBase {
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         PlanTestBase.beforeClass();
 
         GlobalStateMgr.getCurrentState().setStatisticStorage(new InMemoryStatisticStorage());
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         PlanTestBase.afterClass();
     }
@@ -79,23 +80,26 @@ public class StatisticsCollectionTriggerTest extends PlanTestBase {
             InsertTxnCommitAttachment attachment = new InsertTxnCommitAttachment(1, 5);
             transactionState.setTxnCommitAttachment(attachment);
             StatisticsCollectionTrigger trigger =
-                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true);
-            Assert.assertEquals(null, trigger.getAnalyzeType());
+                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                            DmlType.INSERT_INTO);
+            Assertions.assertEquals(null, trigger.getAnalyzeType());
         }
         {
             InsertTxnCommitAttachment attachment = new InsertTxnCommitAttachment(1000, 5);
             transactionState.setTxnCommitAttachment(attachment);
             StatisticsCollectionTrigger trigger =
-                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true);
-            Assert.assertEquals(StatsConstants.AnalyzeType.FULL, trigger.getAnalyzeType());
+                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                            DmlType.INSERT_INTO);
+            Assertions.assertEquals(StatsConstants.AnalyzeType.FULL, trigger.getAnalyzeType());
         }
 
         {
             InsertTxnCommitAttachment attachment = new InsertTxnCommitAttachment(1000000, 5);
             transactionState.setTxnCommitAttachment(attachment);
             StatisticsCollectionTrigger trigger =
-                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true);
-            Assert.assertEquals(StatsConstants.AnalyzeType.SAMPLE, trigger.getAnalyzeType());
+                    StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                            DmlType.INSERT_INTO);
+            Assertions.assertEquals(StatsConstants.AnalyzeType.SAMPLE, trigger.getAnalyzeType());
         }
     }
 
@@ -130,15 +134,13 @@ public class StatisticsCollectionTriggerTest extends PlanTestBase {
             List<String> insertOverwriteSQLs = FullStatisticsCollectJob.buildOverwritePartitionSQL(
                     table.getId(), sourceId, targetId);
 
-            Assert.assertTrue(insertOverwriteSQLs.get(0).contains(String.format("SELECT    table_id, %d, column_name",
+            Assertions.assertTrue(insertOverwriteSQLs.get(0).contains(String.format("SELECT    table_id, %d, column_name",
                     targetId)));
-            Assert.assertTrue(insertOverwriteSQLs.get(0).contains(String.format("`partition_id`=%d", sourceId)));
-            Assert.assertTrue(insertOverwriteSQLs.get(1).contains(String.format("DELETE FROM column_statistics\n" +
-                    "WHERE `table_id`=%d AND `partition_id`=%d", table.getId(), sourceId)));
+            Assertions.assertTrue(insertOverwriteSQLs.get(0).contains(String.format("`partition_id`=%d", sourceId)));
 
             StatisticsCollectionTrigger trigger =
                     StatisticsCollectionTrigger.triggerOnInsertOverwrite(stats, db, table, true, true);
-            Assert.assertNull(trigger.getAnalyzeType());
+            Assertions.assertNull(trigger.getAnalyzeType());
         }
 
         // case: overwrite a lot of data, need to re-collect statistics
@@ -147,7 +149,7 @@ public class StatisticsCollectionTriggerTest extends PlanTestBase {
                     List.of(sourceId), List.of(targetId), 1000, 50000);
             StatisticsCollectionTrigger trigger =
                     StatisticsCollectionTrigger.triggerOnInsertOverwrite(stats, db, table, true, true);
-            Assert.assertEquals(StatsConstants.AnalyzeType.FULL, trigger.getAnalyzeType());
+            Assertions.assertEquals(StatsConstants.AnalyzeType.FULL, trigger.getAnalyzeType());
         }
 
         // case: overwrite a lot of data, need to re-collect statistics
@@ -156,7 +158,48 @@ public class StatisticsCollectionTriggerTest extends PlanTestBase {
                     List.of(sourceId), List.of(targetId), 1000, 50000000);
             StatisticsCollectionTrigger trigger =
                     StatisticsCollectionTrigger.triggerOnInsertOverwrite(stats, db, table, true, true);
-            Assert.assertEquals(StatsConstants.AnalyzeType.SAMPLE, trigger.getAnalyzeType());
+            Assertions.assertEquals(StatsConstants.AnalyzeType.SAMPLE, trigger.getAnalyzeType());
         }
+    }
+
+    @Test
+    public void triggerOnUpdate() throws Exception {
+        final String dbName = "test_statistics";
+        final String tableName = "t_update";
+        starRocksAssert.withDatabase(dbName).useDatabase(dbName);
+        starRocksAssert.withTable("create table t_update (" +
+                "c1 int not null," +
+                "c2 int not null" +
+                ") " +
+                "partition by (c1)\n" +
+                "properties('replication_num'='1')");
+        starRocksAssert.ddl("alter table t_update add partition p1 values in ('1')");
+
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
+        Table table = db.getTable(tableName);
+        Partition partition = table.getPartition("p1");
+        TransactionState transactionState = new TransactionState();
+        TableCommitInfo commitInfo = new TableCommitInfo(table.getId());
+        commitInfo.addPartitionCommitInfo(new PartitionCommitInfo(
+                partition.getDefaultPhysicalPartition().getId(), Partition.PARTITION_INIT_VERSION + 5, 1));
+        transactionState.putIdToTableCommitInfo(table.getId(), commitInfo);
+
+        setPartitionStatistics((OlapTable) table, "p1", 1000);
+
+        transactionState.setTxnCommitAttachment(new InsertTxnCommitAttachment(5));
+        StatisticsCollectionTrigger trigger =
+                StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                        DmlType.UPDATE);
+        Assertions.assertNull(trigger.getAnalyzeType());
+
+        transactionState.setTxnCommitAttachment(new InsertTxnCommitAttachment(500));
+        trigger = StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                DmlType.UPDATE);
+        Assertions.assertEquals(StatsConstants.AnalyzeType.FULL, trigger.getAnalyzeType());
+
+        transactionState.setTxnCommitAttachment(new InsertTxnCommitAttachment(500000));
+        trigger = StatisticsCollectionTrigger.triggerOnFirstLoad(transactionState, db, table, true, true,
+                DmlType.UPDATE);
+        Assertions.assertEquals(StatsConstants.AnalyzeType.SAMPLE, trigger.getAnalyzeType());
     }
 }

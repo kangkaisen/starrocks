@@ -21,13 +21,13 @@
 #include <utility>
 #include <vector>
 
+#include "base/concurrency/bthread_shared_mutex.h"
+#include "base/concurrency/countdown_latch.h"
+#include "base/testutil/sync_point.h"
+#include "common/thread/threadpool.h"
 #include "common/utils.h"
-#include "testutil/sync_point.h"
-#include "util/bthreads/bthread_shared_mutex.h"
-#include "util/countdown_latch.h"
+#include "gen_cpp/Status_types.h"
 #include "util/dynamic_cache.h"
-#include "util/threadpool.h"
-#include "util/thrift_rpc_helper.h"
 
 namespace starrocks {
 
@@ -57,6 +57,7 @@ inline std::ostream& operator<<(std::ostream& os, const TxnState& txn_state) {
 //    until the txn state reaches the finished state, and there is no subscriber
 class TxnStateHandler {
 public:
+    TxnStateHandler();
     ~TxnStateHandler();
 
     // update the txn state pushed by FE

@@ -14,17 +14,15 @@
 
 #include "fs/fs.h"
 
-#include <fmt/format.h>
+#include <ctime>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
+#include "base/format.h"
+#include "common/config_local_io_fwd.h"
+#include "fs/bundle_file.h"
 #include "fs/encrypt_file.h"
-#include "fs/fs_posix.h"
-#include "fs/fs_s3.h"
-#include "fs/fs_util.h"
-#include "fs/hdfs/fs_hdfs.h"
-#include "runtime/file_result_writer.h"
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-#include "fs/fs_starlet.h"
-#endif
 
 namespace starrocks {
 
@@ -49,110 +47,24 @@ std::unique_ptr<RandomAccessFile> RandomAccessFile::from(std::unique_ptr<io::See
     }
 }
 
-static thread_local std::shared_ptr<FileSystem> tls_fs_posix;
-static thread_local std::shared_ptr<FileSystem> tls_fs_s3;
-static thread_local std::shared_ptr<FileSystem> tls_fs_hdfs;
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-static thread_local std::shared_ptr<FileSystem> tls_fs_starlet;
-#endif
-
-inline std::shared_ptr<FileSystem> get_tls_fs_hdfs() {
-    if (tls_fs_hdfs == nullptr) {
-        tls_fs_hdfs.reset(new_fs_hdfs(FSOptions()).release());
-    }
-    return tls_fs_hdfs;
-}
-
-inline std::shared_ptr<FileSystem> get_tls_fs_posix() {
-    if (tls_fs_posix == nullptr) {
-        tls_fs_posix.reset(new_fs_posix().release());
-    }
-    return tls_fs_posix;
-}
-
-inline std::shared_ptr<FileSystem> get_tls_fs_s3() {
-    if (tls_fs_s3 == nullptr) {
-        tls_fs_s3.reset(new_fs_s3(FSOptions()).release());
-    }
-    return tls_fs_s3;
-}
-
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-inline std::shared_ptr<FileSystem> get_tls_fs_starlet() {
-    if (tls_fs_starlet == nullptr) {
-        tls_fs_starlet.reset(new_fs_starlet().release());
-    }
-    return tls_fs_starlet;
-}
-#endif
-
-StatusOr<std::shared_ptr<FileSystem>> FileSystem::Create(std::string_view uri, const FSOptions& options) {
-    if (!options._fs_options.empty()) {
-        return FileSystem::CreateUniqueFromString(uri, options);
+StatusOr<std::unique_ptr<RandomAccessFile>> FileSystem::new_random_access_file_with_bundling(
+        const RandomAccessFileOptions& opts, const FileInfo& file_info) {
+    if (file_info.bundle_file_offset.has_value() && file_info.bundle_file_offset.value() >= 0) {
+        // If the file is a shared file, we need to create a new random access file with the offset.
+        // Notice, we CAN'T pass file_info to new_random_access_file, because size in file_info is not the size of the
+        // total bundle file.
+        ASSIGN_OR_RETURN(auto file, new_random_access_file(opts, file_info.path));
+        auto bundle_file = std::make_unique<BundleSeekableInputStream>(
+                file->stream(), file_info.bundle_file_offset.value(), file_info.size.value());
+        RETURN_IF_ERROR(bundle_file->init());
+        // Pass the slice's base offset to the outer RandomAccessFile so its page_cache_key folds
+        // it in. The outer wrapper otherwise sees only `path` and would produce identical keys
+        // for every slice of the same physical file.
+        return std::make_unique<RandomAccessFile>(std::move(bundle_file), file->filename(), file->is_cache_hit(),
+                                                  file_info.bundle_file_offset.value());
     } else {
-        return FileSystem::CreateSharedFromString(uri);
+        return new_random_access_file(opts, file_info);
     }
-}
-
-StatusOr<std::unique_ptr<FileSystem>> FileSystem::CreateUniqueFromString(std::string_view uri,
-                                                                         const FSOptions& options) {
-    if (fs::is_fallback_to_hadoop_fs(uri)) {
-        return new_fs_hdfs(options);
-    }
-    if (fs::is_posix_uri(uri)) {
-        return new_fs_posix();
-    }
-    if (fs::is_s3_uri(uri)) {
-        return new_fs_s3(options);
-    }
-    if (fs::is_azure_uri(uri) || fs::is_gcs_uri(uri)) {
-        // TODO(SmithCruise):
-        // Now Azure storage and Google Cloud Storage both are using LibHdfs, we can use cpp sdk instead in the future.
-        return new_fs_hdfs(options);
-    }
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-    if (is_starlet_uri(uri)) {
-        return new_fs_starlet();
-    }
-#endif
-    // Since almost all famous storage are compatible with Hadoop FileSystem, it's always a choice to fallback using
-    // Hadoop FileSystem to access storage.
-    return new_fs_hdfs(options);
-}
-
-StatusOr<std::shared_ptr<FileSystem>> FileSystem::CreateSharedFromString(std::string_view uri) {
-    if (fs::is_fallback_to_hadoop_fs(uri)) {
-        return get_tls_fs_hdfs();
-    }
-    if (fs::is_posix_uri(uri)) {
-        return get_tls_fs_posix();
-    }
-    if (fs::is_s3_uri(uri)) {
-        return get_tls_fs_s3();
-    }
-#if defined(USE_STAROS) && !defined(BUILD_FORMAT_LIB)
-    if (is_starlet_uri(uri)) {
-        return get_tls_fs_starlet();
-    }
-#endif
-    // Since almost all famous storage are compatible with Hadoop FileSystem, it's always a choice to fallback using
-    // Hadoop FileSystem to access storage.
-    return get_tls_fs_hdfs();
-}
-
-const THdfsProperties* FSOptions::hdfs_properties() const {
-    if (scan_range_params != nullptr && scan_range_params->__isset.hdfs_properties) {
-        return &scan_range_params->hdfs_properties;
-    } else if (export_sink != nullptr && export_sink->__isset.hdfs_properties) {
-        return &export_sink->hdfs_properties;
-    } else if (result_file_options != nullptr) {
-        return &result_file_options->hdfs_properties;
-    } else if (upload != nullptr && upload->__isset.hdfs_properties) {
-        return &upload->hdfs_properties;
-    } else if (download != nullptr && download->__isset.hdfs_properties) {
-        return &download->hdfs_properties;
-    }
-    return nullptr;
 }
 
 static std::deque<FileWriteStat> file_write_history;
@@ -191,3 +103,9 @@ void FileSystem::on_file_write_close(WritableFile* file) {
 }
 
 } // namespace starrocks
+
+auto fmt::formatter<starrocks::FileSystem::OpenMode>::format(const starrocks::FileSystem::OpenMode value,
+                                                             format_context& ctx) const -> format_context::iterator {
+    return formatter<std::underlying_type_t<starrocks::FileSystem::OpenMode>>::format(
+            starrocks::enum_to_underlying_type(value), ctx);
+}

@@ -20,7 +20,7 @@ import com.starrocks.common.ErrorReport;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
-import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.AstVisitorExtendInterface;
 import com.starrocks.sql.ast.ShowStmt;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.ast.warehouse.AlterWarehouseStmt;
@@ -30,13 +30,17 @@ import com.starrocks.sql.ast.warehouse.ResumeWarehouseStmt;
 import com.starrocks.sql.ast.warehouse.SetWarehouseStmt;
 import com.starrocks.sql.ast.warehouse.ShowWarehousesStmt;
 import com.starrocks.sql.ast.warehouse.SuspendWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.AlterCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.CreateCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.DropCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.EnableDisableCnGroupStmt;
 
 public class WarehouseAnalyzer {
     public static void analyze(StatementBase stmt, ConnectContext session) {
         new WarehouseAnalyzerVisitor().visit(stmt, session);
     }
 
-    static class WarehouseAnalyzerVisitor implements AstVisitor<Void, ConnectContext> {
+    static class WarehouseAnalyzerVisitor implements AstVisitorExtendInterface<Void, ConnectContext> {
         public void analyze(ShowStmt statement, ConnectContext session) {
             visit(statement, session);
         }
@@ -110,6 +114,58 @@ public class WarehouseAnalyzer {
 
             return null;
         }
-    }
 
+        @Override
+        public Void visitCreateCNGroupStatement(CreateCnGroupStmt statement, ConnectContext context) {
+            String whName = statement.getWarehouseName();
+            if (Strings.isNullOrEmpty(whName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
+            }
+            String cnName = statement.getCnGroupName();
+            if (Strings.isNullOrEmpty(cnName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_CNGROUP_NAME);
+            }
+            FeNameFormat.checkCNGroupName(cnName);
+            return null;
+        }
+
+        @Override
+        public Void visitDropCNGroupStatement(DropCnGroupStmt statement, ConnectContext context) {
+            String whName = statement.getWarehouseName();
+            if (Strings.isNullOrEmpty(whName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
+            }
+            String cnName = statement.getCnGroupName();
+            if (Strings.isNullOrEmpty(cnName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_CNGROUP_NAME);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visitEnableDisableCNGroupStatement(EnableDisableCnGroupStmt statement, ConnectContext context) {
+            String whName = statement.getWarehouseName();
+            if (Strings.isNullOrEmpty(whName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
+            }
+            String cnName = statement.getCnGroupName();
+            if (Strings.isNullOrEmpty(cnName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_CNGROUP_NAME);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visitAlterCNGroupStatement(AlterCnGroupStmt statement, ConnectContext context) {
+            String whName = statement.getWarehouseName();
+            if (Strings.isNullOrEmpty(whName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
+            }
+            String cnName = statement.getCnGroupName();
+            if (Strings.isNullOrEmpty(cnName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_CNGROUP_NAME);
+            }
+            return null;
+        }
+    }
 }

@@ -40,9 +40,6 @@ import com.starrocks.thrift.TUniqueId;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TxnCommitAttachment;
 
-import java.io.DataOutput;
-import java.io.IOException;
-
 // {"progress": "", "backendId": "", "taskSignature": "", "numOfErrorData": "",
 // "numOfTotalData": "", "taskId": "", "jobId": ""}
 public class RLTaskTxnCommitAttachment extends TxnCommitAttachment {
@@ -65,6 +62,7 @@ public class RLTaskTxnCommitAttachment extends TxnCommitAttachment {
     private RoutineLoadProgress timestampProgress;
     private String errorLogUrl;
     private long loadedBytes;
+    private boolean nonRetryable = false;
 
     public RLTaskTxnCommitAttachment() {
         super(TransactionState.LoadJobSourceType.ROUTINE_LOAD_TASK);
@@ -98,6 +96,9 @@ public class RLTaskTxnCommitAttachment extends TxnCommitAttachment {
 
         if (rlTaskTxnCommitAttachment.isSetErrorLogUrl()) {
             this.errorLogUrl = rlTaskTxnCommitAttachment.getErrorLogUrl();
+        }
+        if (rlTaskTxnCommitAttachment.isSetNonRetryable()) {
+            this.nonRetryable = rlTaskTxnCommitAttachment.isNonRetryable();
         }
     }
 
@@ -149,6 +150,10 @@ public class RLTaskTxnCommitAttachment extends TxnCommitAttachment {
         return errorLogUrl;
     }
 
+    public boolean isNonRetryable() {
+        return nonRetryable;
+    }
+
     @Override
     public String toString() {
         return "RLTaskTxnCommitAttachment [filteredRows=" + filteredRows
@@ -161,14 +166,6 @@ public class RLTaskTxnCommitAttachment extends TxnCommitAttachment {
                 + ", progress=" + progress.toString() + "]";
     }
 
-    @Override
-    public void write(DataOutput out) throws IOException {
-        super.write(out);
-        out.writeLong(filteredRows);
-        out.writeLong(loadedRows);
-        out.writeLong(unselectedRows);
-        out.writeLong(receivedBytes);
-        out.writeLong(taskExecutionTimeMs);
-        progress.write(out);
-    }
+
+
 }

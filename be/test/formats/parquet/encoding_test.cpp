@@ -19,12 +19,13 @@
 #include <limits>
 #include <random>
 
+#include "base/simd/byte_stream_split.h"
 #include "column/binary_column.h"
+#include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "column/nullable_column.h"
-#include "common/config.h"
+#include "common/config_exec_fwd.h"
 #include "formats/parquet/types.h"
-#include "util/byte_stream_split.h"
 
 namespace starrocks::parquet {
 class ParquetEncodingTest : public testing::Test {
@@ -84,10 +85,9 @@ struct DecoderChecker {
                 st = decoder->next_batch(values.size(), ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const T* check = (const T*)column->raw_data();
+                const auto& check = column->immutable_data();
                 for (int i = 0; i < values.size(); ++i) {
-                    ASSERT_EQ(values[i], *check);
-                    check++;
+                    ASSERT_EQ(values[i], check[i]);
                 }
 
                 if (!is_dictionary) {
@@ -101,14 +101,14 @@ struct DecoderChecker {
                 size_t values_to_skip = values.size() / 2;
                 size_t remain_values = values.size() - values_to_skip;
 
-                auto column = starrocks::FixedLengthColumn<T>::create();
+                auto column = FixedLengthColumn<T>::create();
                 st = decoder->set_data(encoded_data);
                 ASSERT_TRUE(st.ok()) << st.to_string();
                 st = decoder->skip(values_to_skip);
                 st = decoder->next_batch(remain_values, ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const T* check = (const T*)column->raw_data();
+                const auto check = column->immutable_data();
                 for (int i = 0; i < remain_values; ++i) {
                     ASSERT_EQ(values[values_to_skip + i], check[i]);
                 }
@@ -131,10 +131,10 @@ struct DecoderChecker {
                 st = decoder->next_batch(values.size(), ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const T* check = (const T*)column->data_column()->raw_data();
+                const auto check =
+                        down_cast<const FixedLengthColumn<T>*>(column->data_column().get())->immutable_data();
                 for (int i = 0; i < values.size(); ++i) {
-                    ASSERT_EQ(values[i], *check);
-                    check++;
+                    ASSERT_EQ(values[i], check[i]);
                 }
 
                 if (!is_dictionary) {
@@ -148,7 +148,7 @@ struct DecoderChecker {
                 size_t values_to_skip = values.size() / 2;
                 size_t remain_values = values.size() - values_to_skip;
 
-                auto data_column = starrocks::FixedLengthColumn<T>::create();
+                auto data_column = FixedLengthColumn<T>::create();
                 auto column = NullableColumn::create(std::move(data_column), NullColumn::create());
 
                 st = decoder->set_data(encoded_data);
@@ -157,7 +157,8 @@ struct DecoderChecker {
                 st = decoder->next_batch(remain_values, ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const T* check = (const T*)column->data_column()->raw_data();
+                const auto check =
+                        down_cast<const FixedLengthColumn<T>*>(column->data_column().get())->immutable_data();
                 for (int i = 0; i < remain_values; ++i) {
                     ASSERT_EQ(values[values_to_skip + i], check[i]);
                 }
@@ -215,17 +216,16 @@ struct DecoderChecker<Slice, is_dictionary> {
         if (true) {
             // read
             {
-                auto column = starrocks::BinaryColumn::create();
+                auto column = BinaryColumn::create();
 
                 st = decoder->set_data(encoded_data);
                 ASSERT_TRUE(st.ok()) << st.to_string();
                 st = decoder->next_batch(values.size(), ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const auto* check = (const Slice*)column->raw_data();
-                for (auto value : values) {
-                    ASSERT_EQ(value, *check);
-                    check++;
+                const auto check = column->immutable_data();
+                for (int i = 0; i < values.size(); ++i) {
+                    ASSERT_EQ(values[i], check[i]);
                 }
 
                 if (!is_dictionary) {
@@ -247,7 +247,7 @@ struct DecoderChecker<Slice, is_dictionary> {
                 st = decoder->next_batch(remain_values, ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const auto* check = (const Slice*)column->raw_data();
+                const auto check = column->immutable_data();
                 for (size_t i = 0; i < remain_values; i++) {
                     EXPECT_EQ(values[values_to_skip + i], check[i]);
                 }
@@ -270,10 +270,9 @@ struct DecoderChecker<Slice, is_dictionary> {
                 st = decoder->next_batch(values.size(), ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const auto* check = (const Slice*)column->data_column()->raw_data();
-                for (auto value : values) {
-                    ASSERT_EQ(value, *check);
-                    check++;
+                const auto& checks = GetContainer<TYPE_VARCHAR>::get_data(column.get());
+                for (size_t i = 0; i < values.size(); i++) {
+                    ASSERT_EQ(values[i], checks[i]);
                 }
 
                 if (!is_dictionary) {
@@ -296,9 +295,9 @@ struct DecoderChecker<Slice, is_dictionary> {
                 st = decoder->next_batch(remain_values, ColumnContentType::VALUE, column.get());
                 ASSERT_TRUE(st.ok()) << st.to_string();
 
-                const auto* check = (const Slice*)column->data_column()->raw_data();
+                const auto& checks = GetContainer<TYPE_VARCHAR>::get_data(column.get());
                 for (size_t i = 0; i < remain_values; i++) {
-                    EXPECT_EQ(values[values_to_skip + i], check[i]);
+                    EXPECT_EQ(values[values_to_skip + i], checks[i]);
                 }
 
                 if (!is_dictionary) {
@@ -564,14 +563,27 @@ TEST_F(ParquetEncodingTest, DeltaBinaryPacked) {
         auto gen = std::mt19937(seed);
         std::uniform_int_distribution<T> dist(std::numeric_limits<T>::min(), std::numeric_limits<T>::max());
 
-        for (int rep = 0; rep < 10; rep++) {
-            values.push_back(std::numeric_limits<T>::max());
-            values.push_back(std::numeric_limits<T>::min());
-            for (int i = 0; i < n; i++) {
-                values.push_back(dist(gen));
+        if (seed == -1) {
+            values.resize(rep * n);
+            std::fill(values.begin(), values.end(), dist(gen));
+        } else {
+            for (int rep = 0; rep < 10; rep++) {
+                values.push_back(std::numeric_limits<T>::max());
+                values.push_back(std::numeric_limits<T>::min());
+                for (int i = 0; i < n; i++) {
+                    values.push_back(dist(gen));
+                }
+                values.push_back(std::numeric_limits<T>::max());
+                values.push_back(std::numeric_limits<T>::min());
             }
-            values.push_back(std::numeric_limits<T>::max());
-            values.push_back(std::numeric_limits<T>::min());
+        }
+
+        // unaligned access.
+        T* buffer = values.data();
+        size_t size = values.size();
+        {
+            buffer += 3;
+            size -= 3;
         }
 
         const EncodingInfo* encoding = nullptr;
@@ -588,38 +600,40 @@ TEST_F(ParquetEncodingTest, DeltaBinaryPacked) {
             st = encoding->create_encoder(&encoder);
             ASSERT_TRUE(st.ok()) << st.to_string();
 
-            st = encoder->append((uint8_t*)(&values[0]), values.size());
+            st = encoder->append((const uint8_t*)buffer, size);
             ASSERT_TRUE(st.ok()) << st.to_string();
 
             // simple verification.
             Slice encoded_data = encoder->build();
-            std::vector<T> check(values.size());
+            std::vector<T> check(size);
             st = decoder->set_data(encoded_data);
             ASSERT_TRUE(st.ok()) << st.to_string();
-            st = decoder->next_batch(values.size(), (uint8_t*)(&check[0]));
+            st = decoder->next_batch(size, (uint8_t*)(check.data()));
             ASSERT_TRUE(st.ok()) << st.to_string();
 
             for (int i = 0; i < check.size(); i++) {
-                ASSERT_EQ(check[i], values[i]);
+                ASSERT_EQ(check[i], buffer[i]);
             }
 
             // enhanced verification.
-            DecoderChecker<T, false>::check(values, encoded_data, decoder.get());
+            DecoderChecker<T, false>::check(check, encoded_data, decoder.get());
         }
     };
 
+    fn.operator()<tparquet::Type::INT32>(10, 8, -1);
     fn.operator()<tparquet::Type::INT32>(10, 8, 0);
     fn.operator()<tparquet::Type::INT32>(10, 31, 0);
     fn.operator()<tparquet::Type::INT32>(10, 127, 0);
     fn.operator()<tparquet::Type::INT32>(10, 255, 0);
 
+    fn.operator()<tparquet::Type::INT64>(10, 8, -1);
     fn.operator()<tparquet::Type::INT64>(10, 8, 0);
     fn.operator()<tparquet::Type::INT64>(10, 31, 0);
     fn.operator()<tparquet::Type::INT64>(10, 127, 0);
     fn.operator()<tparquet::Type::INT64>(10, 255, 0);
 }
 
-TEST_F(ParquetEncodingTest, DeltaLengthByteArray) {
+TEST_F(ParquetEncodingTest, DeltaLengthByteArrayNonFixedSizeString) {
     std::vector<std::string> strings;
     for (int i = 0; i < 1000; i++) {
         strings.push_back(std::to_string(i));
@@ -638,6 +652,52 @@ TEST_F(ParquetEncodingTest, DeltaLengthByteArray) {
         Status st = Status::OK();
         std::unique_ptr<Decoder> decoder;
         st = encoding->create_decoder(&decoder);
+        ASSERT_TRUE(st.ok()) << st.to_string();
+
+        std::unique_ptr<Encoder> encoder;
+        st = encoding->create_encoder(&encoder);
+        ASSERT_TRUE(st.ok()) << st.to_string();
+
+        st = encoder->append((uint8_t*)(&values[0]), values.size());
+        ASSERT_TRUE(st.ok()) << st.to_string();
+
+        // simple verification.
+        Slice encoded_data = encoder->build();
+        std::vector<Slice> check(values.size());
+        st = decoder->set_data(encoded_data);
+        ASSERT_TRUE(st.ok()) << st.to_string();
+        st = decoder->next_batch(values.size(), (uint8_t*)(&check[0]));
+        ASSERT_TRUE(st.ok()) << st.to_string();
+
+        for (int i = 0; i < check.size(); i++) {
+            ASSERT_EQ(check[i], values[i]);
+        }
+
+        // enhanced verification.
+        DecoderChecker<Slice, false>::check(values, encoded_data, decoder.get());
+    }
+}
+
+TEST_F(ParquetEncodingTest, DeltaLengthByteArrayFixedSizeString) {
+    std::vector<std::string> strings;
+    for (int i = 0; i < 1000; i++) {
+        strings.push_back(fmt::format("{:0>4}", i));
+    }
+
+    std::vector<Slice> values;
+    for (const auto& s : strings) {
+        values.emplace_back(s);
+    }
+
+    const EncodingInfo* encoding = nullptr;
+    (void)EncodingInfo::get(tparquet::Type::BYTE_ARRAY, tparquet::Encoding::DELTA_LENGTH_BYTE_ARRAY, &encoding);
+    ASSERT_TRUE(encoding != nullptr);
+
+    {
+        Status st = Status::OK();
+        std::unique_ptr<Decoder> decoder;
+        st = encoding->create_decoder(&decoder);
+        decoder->set_type_length(4);
         ASSERT_TRUE(st.ok()) << st.to_string();
 
         std::unique_ptr<Encoder> encoder;
@@ -769,7 +829,7 @@ TEST_F(ParquetEncodingTest, DeltaByteArrayNonFixedSizeString) {
 TEST_F(ParquetEncodingTest, DeltaByteArrayFixedSizeString) {
     std::vector<std::string> strings;
     for (int i = 0; i < 1000; i++) {
-        strings.push_back(std::to_string(i));
+        strings.push_back(fmt::format("{:0>4}", i));
     }
 
     std::vector<Slice> values;
@@ -784,6 +844,7 @@ TEST_F(ParquetEncodingTest, DeltaByteArrayFixedSizeString) {
     {
         std::unique_ptr<Decoder> decoder;
         auto st = encoding->create_decoder(&decoder);
+        decoder->set_type_length(4);
         ASSERT_TRUE(st.ok()) << st.to_string();
 
         std::unique_ptr<Encoder> encoder;

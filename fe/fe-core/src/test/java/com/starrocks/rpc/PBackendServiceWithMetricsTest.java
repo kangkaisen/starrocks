@@ -27,7 +27,6 @@ import com.starrocks.proto.PFetchArrowSchemaResult;
 import com.starrocks.proto.PFetchDataResult;
 import com.starrocks.proto.PGetFileSchemaResult;
 import com.starrocks.proto.PListFailPointResponse;
-import com.starrocks.proto.PMVMaintenanceTaskResult;
 import com.starrocks.proto.PProcessDictionaryCacheRequest;
 import com.starrocks.proto.PProcessDictionaryCacheResult;
 import com.starrocks.proto.PProxyRequest;
@@ -42,13 +41,13 @@ import com.starrocks.proto.PUpdateTransactionStateResponse;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Tested;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class PBackendServiceWithMetricsTest {
     @Tested
@@ -57,7 +56,7 @@ public class PBackendServiceWithMetricsTest {
     @Injectable
     PBackendService pBackendService;
 
-    @BeforeClass
+    @BeforeAll
     public static void setUp() {
         MetricRepo.init();
     }
@@ -180,20 +179,6 @@ public class PBackendServiceWithMetricsTest {
         };
 
         Future<PGetFileSchemaResult> result = pBackendServiceWithMetrics.getFileSchema(new PGetFileSchemaRequest());
-        assertNotNull(result);
-    }
-
-    @Test
-    public void testSubmitMVMaintenanceTaskAsync() throws Exception {
-        new Expectations() {
-            {
-                pBackendService.submitMVMaintenanceTaskAsync((PMVMaintenanceTaskRequest) any);
-                result = CompletableFuture.completedFuture(new PMVMaintenanceTaskResult());
-            }
-        };
-
-        Future<PMVMaintenanceTaskResult> result =
-                pBackendServiceWithMetrics.submitMVMaintenanceTaskAsync(new PMVMaintenanceTaskRequest());
         assertNotNull(result);
     }
 

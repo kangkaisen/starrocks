@@ -35,6 +35,7 @@
 #include "util/system_metrics.h"
 
 #include <runtime/exec_env.h>
+#include <runtime/mem_tracker.h>
 #ifdef WITH_TENANN
 #include <tenann/index/index_cache.h>
 #endif
@@ -42,18 +43,18 @@
 #include <cstdio>
 #include <memory>
 
-#include "cache/block_cache/block_cache.h"
+#include "cache/datacache.h"
 #ifdef USE_STAROS
 #include "fslib/star_cache_handler.h"
 #endif
+#include "base/metrics.h"
+#include "cache/mem_cache/page_cache.h"
+#include "common/config_cache_fwd.h"
+#include "exec/query_cache/cache_manager.h"
 #include "gutil/strings/split.h" // for string split
 #include "gutil/strtoint.h"      //  for atoi64
-#include "io/io_profiler.h"
 #include "jemalloc/jemalloc.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/runtime_filter_worker.h"
-#include "storage/page_cache.h"
-#include "util/metrics.h"
 
 namespace starrocks {
 
@@ -156,6 +157,14 @@ public:
 
 SystemMetrics::SystemMetrics() = default;
 
+SystemMetrics* SystemMetrics::instance() {
+    // Process-lifetime singleton: IO instrumentation may touch SystemMetrics
+    // before the process metrics registry is constructed, then install it into the
+    // registry later. Avoid exit-time destructor ordering against the registry.
+    static auto* instance = new SystemMetrics();
+    return instance;
+}
+
 SystemMetrics::~SystemMetrics() {
     // we must deregister us from registry
     if (_registry != nullptr) {
@@ -174,14 +183,14 @@ SystemMetrics::~SystemMetrics() {
     for (auto& it : _runtime_filter_metrics) {
         delete it.second;
     }
-    for (auto& it : _io_metrics) {
-        delete it;
-    }
 }
 
 void SystemMetrics::install(MetricRegistry* registry, const std::set<std::string>& disk_devices,
                             const std::vector<std::string>& network_interfaces) {
-    DCHECK(_registry == nullptr);
+    if (_registry != nullptr) {
+        DCHECK_EQ(_registry, registry);
+        return;
+    }
     if (!registry->register_hook(_s_hook_name, [this] { update(); })) {
         return;
     }
@@ -194,13 +203,20 @@ void SystemMetrics::install(MetricRegistry* registry, const std::set<std::string
     _install_query_cache_metrics(registry);
     _install_runtime_filter_metrics(registry);
     _install_vector_index_cache_metrics(registry);
-    _install_io_metrics(registry);
     _registry = registry;
 }
 
 void SystemMetrics::update() {
+    // Use try_lock to avoid blocking concurrent callers since metrics collection
+    // is best-effort and the data will be refreshed on the next collection cycle.
+    std::unique_lock lock(_update_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;
+    }
+
+    update_memory_metrics();
+
     _update_cpu_metrics();
-    _update_memory_metrics();
     _update_disk_metrics();
     _update_net_metrics();
     _update_fd_metrics();
@@ -273,6 +289,7 @@ void SystemMetrics::_install_memory_metrics(MetricRegistry* registry) {
 
     registry->register_metric("process_mem_bytes", &_memory_metrics->process_mem_bytes);
     registry->register_metric("query_mem_bytes", &_memory_metrics->query_mem_bytes);
+    registry->register_metric("connector_scan_pool_mem_bytes", &_memory_metrics->connector_scan_pool_mem_bytes);
     registry->register_metric("load_mem_bytes", &_memory_metrics->load_mem_bytes);
     registry->register_metric("metadata_mem_bytes", &_memory_metrics->metadata_mem_bytes);
     registry->register_metric("tablet_metadata_mem_bytes", &_memory_metrics->tablet_metadata_mem_bytes);
@@ -284,6 +301,7 @@ void SystemMetrics::_install_memory_metrics(MetricRegistry* registry) {
     registry->register_metric("ordinal_index_mem_bytes", &_memory_metrics->ordinal_index_mem_bytes);
     registry->register_metric("bitmap_index_mem_bytes", &_memory_metrics->bitmap_index_mem_bytes);
     registry->register_metric("bloom_filter_index_mem_bytes", &_memory_metrics->bloom_filter_index_mem_bytes);
+    registry->register_metric("builtin_inverted_index_mem_bytes", &_memory_metrics->builtin_inverted_index_mem_bytes);
     registry->register_metric("segment_zonemap_mem_bytes", &_memory_metrics->segment_zonemap_mem_bytes);
     registry->register_metric("short_key_index_mem_bytes", &_memory_metrics->short_key_index_mem_bytes);
     registry->register_metric("compaction_mem_bytes", &_memory_metrics->compaction_mem_bytes);
@@ -291,7 +309,6 @@ void SystemMetrics::_install_memory_metrics(MetricRegistry* registry) {
     registry->register_metric("storage_page_cache_mem_bytes", &_memory_metrics->storage_page_cache_mem_bytes);
     registry->register_metric("jit_cache_mem_bytes", &_memory_metrics->jit_cache_mem_bytes);
     registry->register_metric("update_mem_bytes", &_memory_metrics->update_mem_bytes);
-    registry->register_metric("chunk_allocator_mem_bytes", &_memory_metrics->chunk_allocator_mem_bytes);
     registry->register_metric("clone_mem_bytes", &_memory_metrics->clone_mem_bytes);
     registry->register_metric("consistency_mem_bytes", &_memory_metrics->consistency_mem_bytes);
     registry->register_metric("datacache_mem_bytes", &_memory_metrics->datacache_mem_bytes);
@@ -302,10 +319,10 @@ void SystemMetrics::_update_datacache_mem_tracker() {
     int64_t datacache_mem_bytes = 0;
     auto* datacache_mem_tracker = GlobalEnv::GetInstance()->datacache_mem_tracker();
     if (datacache_mem_tracker) {
-        BlockCache* block_cache = BlockCache::instance();
-        if (block_cache != nullptr && block_cache->is_initialized()) {
-            auto datacache_metrics = block_cache->cache_metrics();
-            datacache_mem_bytes = datacache_metrics.mem_used_bytes + datacache_metrics.meta_used_bytes;
+        LocalMemCacheEngine* local_cache = DataCache::GetInstance()->local_mem_cache();
+        if (local_cache != nullptr && local_cache->is_initialized()) {
+            auto datacache_metrics = local_cache->cache_metrics();
+            datacache_mem_bytes = datacache_metrics.mem_used_bytes;
         }
 #ifdef USE_STAROS
         if (!config::datacache_unified_instance_enable) {
@@ -319,12 +336,12 @@ void SystemMetrics::_update_datacache_mem_tracker() {
 void SystemMetrics::_update_pagecache_mem_tracker() {
     auto* pagecache_mem_tracker = GlobalEnv::GetInstance()->page_cache_mem_tracker();
     auto* page_cache = StoragePageCache::instance();
-    if (pagecache_mem_tracker && page_cache) {
+    if (pagecache_mem_tracker && page_cache != nullptr && page_cache->is_initialized()) {
         pagecache_mem_tracker->set(page_cache->memory_usage());
     }
 }
 
-void SystemMetrics::_update_memory_metrics() {
+void SystemMetrics::update_memory_metrics() {
 #if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) || defined(THREAD_SANITIZER)
     LOG(INFO) << "Memory tracking is not available with address sanitizer builds.";
 #else
@@ -367,6 +384,7 @@ void SystemMetrics::_update_memory_metrics() {
 
     SET_MEM_METRIC_VALUE(process_mem_tracker, process_mem_bytes)
     SET_MEM_METRIC_VALUE(query_pool_mem_tracker, query_mem_bytes)
+    SET_MEM_METRIC_VALUE(connector_scan_pool_mem_tracker, connector_scan_pool_mem_bytes)
     SET_MEM_METRIC_VALUE(load_mem_tracker, load_mem_bytes)
     SET_MEM_METRIC_VALUE(metadata_mem_tracker, metadata_mem_bytes)
     SET_MEM_METRIC_VALUE(tablet_metadata_mem_tracker, tablet_metadata_mem_bytes)
@@ -378,6 +396,7 @@ void SystemMetrics::_update_memory_metrics() {
     SET_MEM_METRIC_VALUE(ordinal_index_mem_tracker, ordinal_index_mem_bytes)
     SET_MEM_METRIC_VALUE(bitmap_index_mem_tracker, bitmap_index_mem_bytes)
     SET_MEM_METRIC_VALUE(bloom_filter_index_mem_tracker, bloom_filter_index_mem_bytes)
+    SET_MEM_METRIC_VALUE(builtin_inverted_index_mem_tracker, builtin_inverted_index_mem_bytes)
     SET_MEM_METRIC_VALUE(segment_zonemap_mem_tracker, segment_zonemap_mem_bytes)
     SET_MEM_METRIC_VALUE(short_key_index_mem_tracker, short_key_index_mem_bytes)
     SET_MEM_METRIC_VALUE(compaction_mem_tracker, compaction_mem_bytes)
@@ -385,11 +404,12 @@ void SystemMetrics::_update_memory_metrics() {
     SET_MEM_METRIC_VALUE(page_cache_mem_tracker, storage_page_cache_mem_bytes)
     SET_MEM_METRIC_VALUE(jit_cache_mem_tracker, jit_cache_mem_bytes)
     SET_MEM_METRIC_VALUE(update_mem_tracker, update_mem_bytes)
-    SET_MEM_METRIC_VALUE(chunk_allocator_mem_tracker, chunk_allocator_mem_bytes)
     SET_MEM_METRIC_VALUE(passthrough_mem_tracker, passthrough_mem_bytes)
+    SET_MEM_METRIC_VALUE(brpc_iobuf_mem_tracker, brpc_iobuf_mem_bytes)
     SET_MEM_METRIC_VALUE(clone_mem_tracker, clone_mem_bytes)
     SET_MEM_METRIC_VALUE(consistency_mem_tracker, consistency_mem_bytes)
     SET_MEM_METRIC_VALUE(datacache_mem_tracker, datacache_mem_bytes)
+    SET_MEM_METRIC_VALUE(replication_mem_tracker, replication_mem_bytes)
 #undef SET_MEM_METRIC_VALUE
 }
 
@@ -696,7 +716,6 @@ void SystemMetrics::_install_vector_index_cache_metrics(MetricRegistry* registry
 }
 
 void SystemMetrics::_update_vector_index_cache_metrics() {
-    auto hit_count = 0;
 #ifdef WITH_TENANN
     auto* index_cache = tenann::IndexCache::GetGlobalInstance();
     if (UNLIKELY(index_cache == nullptr)) {
@@ -705,17 +724,19 @@ void SystemMetrics::_update_vector_index_cache_metrics() {
     auto capacity = index_cache->capacity();
     auto usage = index_cache->memory_usage();
     auto lookup_count = index_cache->lookup_count();
+    auto hit_count = index_cache->hit_count();
 #else
     auto capacity = 0;
     auto usage = 0;
     auto lookup_count = 0;
+    auto hit_count = 0;
 #endif
     auto usage_ratio = (capacity == 0L) ? 0.0 : double(usage) / double(capacity);
     auto hit_ratio = (lookup_count == 0L) ? 0.0 : double(hit_count) / double(lookup_count);
     auto dynamic_lookup_count = lookup_count - _vector_index_cache_metrics->_previous_lookup_count;
     auto dynamic_hit_count = hit_count - _vector_index_cache_metrics->_previous_hit_count;
     auto dynamic_hit_ratio =
-            (dynamic_lookup_count == 0) ? 0.0 : double(dynamic_lookup_count) / double(dynamic_hit_count);
+            (dynamic_lookup_count == 0) ? 0.0 : double(dynamic_hit_count) / double(dynamic_lookup_count);
     _vector_index_cache_metrics->vector_index_cache_capacity.set_value(capacity);
     _vector_index_cache_metrics->vector_index_cache_usage.set_value(usage);
     _vector_index_cache_metrics->vector_index_cache_usage_ratio.set_value(usage_ratio);
@@ -866,18 +887,4 @@ void SystemMetrics::get_max_net_traffic(const std::map<std::string, int64_t>& ls
     *rcv_rate = max_rcv / interval_sec;
 }
 
-void SystemMetrics::_install_io_metrics(MetricRegistry* registry) {
-    for (uint32_t i = 0; i < IOProfiler::TAG::TAG_END; i++) {
-        std::string tag_name = IOProfiler::tag_to_string(i);
-        auto* metrics = new IOMetrics();
-#define REGISTER_IO_METRIC(name) \
-    registry->register_metric("io_" #name, MetricLabels().add("tag", tag_name), &metrics->name);
-        REGISTER_IO_METRIC(read_ops);
-        REGISTER_IO_METRIC(read_bytes);
-        REGISTER_IO_METRIC(write_ops);
-        REGISTER_IO_METRIC(write_bytes);
-
-        _io_metrics.emplace_back(metrics);
-    }
-}
 } // namespace starrocks

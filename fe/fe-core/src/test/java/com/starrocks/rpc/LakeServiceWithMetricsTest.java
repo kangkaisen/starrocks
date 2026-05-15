@@ -18,6 +18,7 @@ import com.starrocks.proto.AbortCompactionRequest;
 import com.starrocks.proto.AbortCompactionResponse;
 import com.starrocks.proto.AbortTxnRequest;
 import com.starrocks.proto.AbortTxnResponse;
+import com.starrocks.proto.AggregateCompactRequest;
 import com.starrocks.proto.CompactRequest;
 import com.starrocks.proto.CompactResponse;
 import com.starrocks.proto.DeleteDataRequest;
@@ -28,6 +29,8 @@ import com.starrocks.proto.DeleteTxnLogRequest;
 import com.starrocks.proto.DeleteTxnLogResponse;
 import com.starrocks.proto.DropTableRequest;
 import com.starrocks.proto.DropTableResponse;
+import com.starrocks.proto.GetTabletMetadatasRequest;
+import com.starrocks.proto.GetTabletMetadatasResponse;
 import com.starrocks.proto.LockTabletMetadataRequest;
 import com.starrocks.proto.LockTabletMetadataResponse;
 import com.starrocks.proto.PublishLogVersionBatchRequest;
@@ -35,6 +38,8 @@ import com.starrocks.proto.PublishLogVersionRequest;
 import com.starrocks.proto.PublishLogVersionResponse;
 import com.starrocks.proto.PublishVersionRequest;
 import com.starrocks.proto.PublishVersionResponse;
+import com.starrocks.proto.RepairTabletMetadataRequest;
+import com.starrocks.proto.RepairTabletMetadataResponse;
 import com.starrocks.proto.RestoreSnapshotsRequest;
 import com.starrocks.proto.RestoreSnapshotsResponse;
 import com.starrocks.proto.TabletStatRequest;
@@ -48,13 +53,13 @@ import com.starrocks.proto.VacuumResponse;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Tested;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class LakeServiceWithMetricsTest {
     @Tested
@@ -63,7 +68,7 @@ public class LakeServiceWithMetricsTest {
     @Injectable
     LakeService lakeService;
 
-    @BeforeClass
+    @BeforeAll
     public static void setUp() {
         MetricRepo.init();
     }
@@ -104,6 +109,19 @@ public class LakeServiceWithMetricsTest {
         };
 
         Future<CompactResponse> result = lakeServiceWithMetrics.compact(new CompactRequest());
+        assertNotNull(result);
+    }
+
+    @Test
+    public void testAggregateCompact() throws Exception {
+        new Expectations() {
+            {
+                lakeService.aggregateCompact((AggregateCompactRequest) any);
+                result = CompletableFuture.completedFuture(new CompactResponse());
+            }
+        };
+
+        Future<CompactResponse> result = lakeServiceWithMetrics.aggregateCompact(new AggregateCompactRequest());
         assertNotNull(result);
     }
 
@@ -276,6 +294,33 @@ public class LakeServiceWithMetricsTest {
         };
 
         Future<VacuumResponse> result = lakeServiceWithMetrics.vacuum(new VacuumRequest());
+        assertNotNull(result);
+    }
+
+    @Test
+    public void testGetTabletMetadatas() throws Exception {
+        new Expectations() {
+            {
+                lakeService.getTabletMetadatas((GetTabletMetadatasRequest) any);
+                result = CompletableFuture.completedFuture(new GetTabletMetadatasResponse());
+            }
+        };
+
+        Future<GetTabletMetadatasResponse> result = lakeServiceWithMetrics.getTabletMetadatas(new GetTabletMetadatasRequest());
+        assertNotNull(result);
+    }
+
+    @Test
+    public void testRepairTabletMetadata() throws Exception {
+        new Expectations() {
+            {
+                lakeService.repairTabletMetadata((RepairTabletMetadataRequest) any);
+                result = CompletableFuture.completedFuture(new RepairTabletMetadataResponse());
+            }
+        };
+
+        Future<RepairTabletMetadataResponse> result =
+                lakeServiceWithMetrics.repairTabletMetadata(new RepairTabletMetadataRequest());
         assertNotNull(result);
     }
 }

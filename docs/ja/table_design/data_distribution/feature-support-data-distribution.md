@@ -1,7 +1,7 @@
 ---
 displayed_sidebar: docs
 sidebar_position: 50
-sidebar_label: Feature Support
+sidebar_label: 機能サポート
 ---
 
 # 機能サポート: データ分散
@@ -56,6 +56,10 @@ sidebar_label: Feature Support
         <td></td>
     </tr>
 </table>
+
+:::note
+v4.1 以降、タブレットの最大容量は 100 GB に変更されました。
+:::
 
 ## パーティション化
 

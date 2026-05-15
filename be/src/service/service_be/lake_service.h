@@ -13,8 +13,12 @@
 // limitations under the License.
 
 #pragma once
+#include <mutex>
 #include <span>
+#include <unordered_set>
 
+#ifndef __APPLE__
+#include "common/status.h"
 #include "gen_cpp/lake_service.pb.h"
 
 namespace starrocks {
@@ -35,6 +39,11 @@ public:
                          const ::starrocks::PublishVersionRequest* request,
                          ::starrocks::PublishVersionResponse* response, ::google::protobuf::Closure* done) override;
 
+    void aggregate_publish_version(::google::protobuf::RpcController* controller,
+                                   const ::starrocks::AggregatePublishVersionRequest* request,
+                                   ::starrocks::PublishVersionResponse* response,
+                                   ::google::protobuf::Closure* done) override;
+
     void abort_txn(::google::protobuf::RpcController* controller, const ::starrocks::AbortTxnRequest* request,
                    ::starrocks::AbortTxnResponse* response, ::google::protobuf::Closure* done) override;
 
@@ -46,6 +55,10 @@ public:
 
     void compact(::google::protobuf::RpcController* controller, const ::starrocks::CompactRequest* request,
                  ::starrocks::CompactResponse* response, ::google::protobuf::Closure* done) override;
+
+    void aggregate_compact(::google::protobuf::RpcController* controller,
+                           const ::starrocks::AggregateCompactRequest* request, ::starrocks::CompactResponse* response,
+                           ::google::protobuf::Closure* done) override;
 
     void drop_table(::google::protobuf::RpcController* controller, const ::starrocks::DropTableRequest* request,
                     ::starrocks::DropTableResponse* response, ::google::protobuf::Closure* done) override;
@@ -88,16 +101,37 @@ public:
                           const ::starrocks::AbortCompactionRequest* request,
                           ::starrocks::AbortCompactionResponse* response, ::google::protobuf::Closure* done) override;
 
+    void drop_tablet_cache(::google::protobuf::RpcController* controller,
+                           const ::starrocks::DropTabletCacheRequest* request,
+                           ::starrocks::DropTabletCacheResponse* response, ::google::protobuf::Closure* done) override;
+
     void vacuum(::google::protobuf::RpcController* controller, const ::starrocks::VacuumRequest* request,
                 ::starrocks::VacuumResponse* response, ::google::protobuf::Closure* done) override;
 
     void vacuum_full(::google::protobuf::RpcController* controller, const ::starrocks::VacuumFullRequest* request,
                      ::starrocks::VacuumFullResponse* response, ::google::protobuf::Closure* done) override;
 
+    void get_tablet_metadatas(::google::protobuf::RpcController* controller,
+                              const ::starrocks::GetTabletMetadatasRequest* request,
+                              ::starrocks::GetTabletMetadatasResponse* response,
+                              ::google::protobuf::Closure* done) override;
+
+    void repair_tablet_metadata(::google::protobuf::RpcController* controller,
+                                const ::starrocks::RepairTabletMetadataRequest* request,
+                                ::starrocks::RepairTabletMetadataResponse* response,
+                                ::google::protobuf::Closure* done) override;
+
+    void build_vector_index(::google::protobuf::RpcController* controller,
+                            const ::starrocks::BuildVectorIndexRequest* request,
+                            ::starrocks::BuildVectorIndexResponse* response,
+                            ::google::protobuf::Closure* done) override;
+
 private:
     void _submit_publish_log_version_task(const int64_t* tablet_ids, size_t tablet_size,
                                           std::span<const TxnInfoPB> txn_infos, const int64_t* log_versions,
                                           ::starrocks::PublishLogVersionResponse* response);
+
+    Status _cleanup_before_repair(const ::starrocks::RepairTabletMetadataRequest* request);
 
 private:
     static constexpr int64_t kDefaultTimeoutForGetTabletStat = 5 * 60 * 1000L;  // 5 minutes
@@ -105,6 +139,17 @@ private:
 
     ExecEnv* _env;
     lake::TabletManager* _tablet_mgr;
+
+    // Tablets currently being built by this CN. Used to dedup repeated
+    // build_vector_index RPCs for the same tablet (e.g. after FE re-enqueue).
+    std::mutex _building_vi_mutex;
+    std::unordered_set<int64_t> _building_vi_tablets;
 };
 
+// Get txn_ids string from PublishVersionRequest (compatible with both new and old FE versions)
+// New FE uses txn_infos field, old FE uses deprecated txn_ids field
+// This function is exposed for unit testing
+std::string get_txn_ids_string(const PublishVersionRequest* request);
+
 } // namespace starrocks
+#endif // __APPLE__

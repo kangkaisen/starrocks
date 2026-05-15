@@ -18,15 +18,16 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.starrocks.alter.AlterJobMgr;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.TableName;
 import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
-import com.starrocks.common.util.FrontendDaemon;
+import com.starrocks.common.MaterializedViewExceptions;
+import com.starrocks.common.util.LeaderDaemon;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
@@ -45,24 +46,36 @@ import java.util.Set;
 /**
  * A daemon thread that check the MV active status, try to activate the MV it's inactive.
  */
-public class MVActiveChecker extends FrontendDaemon {
+public class MVActiveChecker extends LeaderDaemon {
 
     private static final Logger LOG = LogManager.getLogger(MVActiveChecker.class);
 
     private static final Map<MvId, MvActiveInfo> MV_ACTIVE_INFO = Maps.newConcurrentMap();
 
     public MVActiveChecker() {
-        super("MVActiveChecker", Config.mv_active_checker_interval_seconds * 1000);
+        super("mv-active-checker", Config.mv_active_checker_interval_seconds * 1000);
+    }
+
+    @Override
+    protected void onStopped() {
+        // MV_ACTIVE_INFO holds per-MV failure backoff state used only by the leader's activation
+        // loop. Drop it on demotion so the next leader (or this FE on re-election) starts fresh
+        // rather than honoring backoff windows accumulated under the previous leader session.
+        MV_ACTIVE_INFO.clear();
     }
 
     public static final String MV_BACKUP_INACTIVE_REASON = "it's in backup and will be activated after restore if possible";
 
     // there are some reasons that we don't active mv automatically, eg: mv backup/restore which may cause to refresh all
     // mv's data behind which is not expected.
-    private static final Set<String> MV_NO_AUTOMATIC_ACTIVE_REASONS = ImmutableSet.of(MV_BACKUP_INACTIVE_REASON);
+    private static final Set<String> MV_NO_AUTOMATIC_ACTIVE_REASONS = ImmutableSet.of(
+            MV_BACKUP_INACTIVE_REASON,
+            MaterializedViewExceptions.INACTIVE_REASON_FOR_BASE_TABLE_OPTIMIZED,
+            MaterializedViewExceptions.INACTIVE_REASON_FOR_CONSECUTIVE_FAILURES
+    );
 
     @Override
-    protected void runAfterCatalogReady() {
+    protected void runAfterLeaseValid() {
         // reset if the interval has been changed
         setInterval(Config.mv_active_checker_interval_seconds * 1000L);
 
@@ -98,7 +111,12 @@ public class MVActiveChecker extends FrontendDaemon {
                 if (table.isMaterializedView()) {
                     MaterializedView mv = (MaterializedView) table;
                     if (!mv.isActive()) {
-                        tryToActivate(mv, true);
+                        try {
+                            tryToActivate(mv, true);
+                        } catch (Exception e) {
+                            LOG.warn("[MVActiveChecker] failed to activate MV {} in database {}",
+                                    mv.getName(), db.getFullName(), e);
+                        }
                     }
                 }
             }
@@ -115,15 +133,12 @@ public class MVActiveChecker extends FrontendDaemon {
      *                         job doesn't
      */
     public static void tryToActivate(MaterializedView mv, boolean checkGracePeriod) {
-        if (!Config.enable_mv_automatic_active_check) {
-            return;
-        }
         // if the mv is set to inactive manually, we don't activate it
-        String reason = mv.getInactiveReason();
+        String reason = Optional.ofNullable(mv.getInactiveReason()).orElse("");
         if (mv.isActive() || AlterJobMgr.MANUAL_INACTIVE_MV_REASON.equalsIgnoreCase(reason)) {
             return;
         }
-        if (MV_NO_AUTOMATIC_ACTIVE_REASONS.stream().anyMatch(x -> x.contains(reason))) {
+        if (MV_NO_AUTOMATIC_ACTIVE_REASONS.stream().anyMatch(reason::contains)) {
             return;
         }
 

@@ -36,17 +36,11 @@ package com.starrocks.planner;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.Analyzer;
-import com.starrocks.analysis.DescriptorTable;
-import com.starrocks.analysis.SlotDescriptor;
-import com.starrocks.analysis.TupleDescriptor;
-import com.starrocks.catalog.AggregateType;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
-import com.starrocks.catalog.Type;
+import com.starrocks.catalog.PartitionNames;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
@@ -57,9 +51,9 @@ import com.starrocks.common.util.DebugUtil;
 import com.starrocks.load.Load;
 import com.starrocks.load.streamload.StreamLoadInfo;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.service.FrontendOptions;
-import com.starrocks.sql.ast.PartitionNames;
+import com.starrocks.sql.ast.AggregateType;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.optimizer.statistics.ColumnDict;
 import com.starrocks.sql.optimizer.statistics.IDictManager;
 import com.starrocks.thrift.InternalServiceVersion;
@@ -75,6 +69,8 @@ import com.starrocks.thrift.TScanRangeLocations;
 import com.starrocks.thrift.TScanRangeParams;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.thrift.TWriteQuorumType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -100,25 +96,23 @@ public class StreamLoadPlanner {
 
     private TExecPlanFragmentParams execPlanFragmentParams;
 
-    private Analyzer analyzer;
     private DescriptorTable descTable;
 
     // just for using session variable
     private ConnectContext connectContext;
 
-    private long warehouseId;
+    private ComputeResource computeResource;
 
-    public StreamLoadPlanner(Database db, OlapTable destTable, StreamLoadInfo streamLoadInfo) {
+    public StreamLoadPlanner(ConnectContext context, Database db, OlapTable destTable, StreamLoadInfo streamLoadInfo) {
         this.db = db;
         this.destTable = destTable;
         this.streamLoadInfo = streamLoadInfo;
-        this.connectContext = new ConnectContext();
-        this.warehouseId = streamLoadInfo.getWarehouseId();
+        this.connectContext = context;
+        this.computeResource = streamLoadInfo.getComputeResource();
     }
 
     private void resetAnalyzer() {
-        analyzer = new Analyzer(GlobalStateMgr.getCurrentState(), null);
-        descTable = analyzer.getDescTbl();
+        descTable = new DescriptorTable();
     }
 
     // can only be called after "plan()", or it will return null
@@ -131,11 +125,21 @@ public class StreamLoadPlanner {
     }
 
     public long getWarehouseId() {
-        return warehouseId;
+        return computeResource.getWarehouseId();
+    }
+
+    public ComputeResource getComputeResource() {
+        return computeResource;
+    }
+
+    public TExecPlanFragmentParams plan(TUniqueId loadId) throws StarRocksException {
+        try (final var scope = connectContext.bindScope()) {
+            return do_plan(loadId);
+        }
     }
 
     // create the plan. the plan's query id and load id are same, using the parameter 'loadId'
-    public TExecPlanFragmentParams plan(TUniqueId loadId) throws StarRocksException {
+    public TExecPlanFragmentParams do_plan(TUniqueId loadId) throws StarRocksException {
         boolean isPrimaryKey = destTable.getKeysType() == KeysType.PRIMARY_KEYS;
         resetAnalyzer();
         // construct tuple descriptor, used for scanNode and dataSink
@@ -183,7 +187,7 @@ public class StreamLoadPlanner {
             // add op type column
             SlotDescriptor slotDesc = descTable.addSlotDescriptor(tupleDesc);
             slotDesc.setIsMaterialized(true);
-            slotDesc.setColumn(new Column(Load.LOAD_OP_COLUMN, Type.TINYINT));
+            slotDesc.setColumn(new Column(Load.LOAD_OP_COLUMN, IntegerType.TINYINT));
             slotDesc.setIsNullable(false);
         }
 
@@ -191,9 +195,9 @@ public class StreamLoadPlanner {
         StreamLoadScanNode scanNode =
                 new StreamLoadScanNode(loadId, new PlanNodeId(0), tupleDesc, destTable, streamLoadInfo);
         scanNode.setUseVectorizedLoad(true);
-        scanNode.init(analyzer);
-        scanNode.finalizeStats(analyzer);
-        scanNode.setWarehouseId(streamLoadInfo.getWarehouseId());
+        scanNode.init(descTable);
+        scanNode.finalizeStats();
+        scanNode.setComputeResource(computeResource);
 
         descTable.computeMemLayout();
 
@@ -209,7 +213,7 @@ public class StreamLoadPlanner {
         }
         OlapTableSink olapTableSink = new OlapTableSink(destTable, tupleDesc, partitionIds, writeQuorum,
                 destTable.enableReplicatedStorage(), scanNode.nullExprInAutoIncrement(),
-                enableAutomaticPartition, streamLoadInfo.getWarehouseId());
+                enableAutomaticPartition, computeResource);
         if (missAutoIncrementColumn.size() == 1 && missAutoIncrementColumn.get(0) == Boolean.TRUE) {
             olapTableSink.setMissAutoIncrementColumn();
         }
@@ -241,7 +245,7 @@ public class StreamLoadPlanner {
         params.setProtocol_version(InternalServiceVersion.V1);
         params.setFragment(fragment.toThrift());
 
-        params.setDesc_tbl(analyzer.getDescTbl().toThrift());
+        params.setDesc_tbl(descTable.toThrift());
 
         TPlanFragmentExecParams execParams = new TPlanFragmentExecParams();
         // user load id (streamLoadInfo.id) as query id

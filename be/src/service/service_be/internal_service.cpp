@@ -34,24 +34,24 @@
 
 #include "internal_service.h"
 
-#include "common/closure_guard.h"
-#include "common/config.h"
+#include "base/brpc/brpc.h"
+#include "base/uid_util.h"
 #include "common/utils.h"
 #include "exec/pipeline/fragment_context.h"
 #include "gen_cpp/BackendService.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/buffer_control_block.h"
+#include "runtime/closure_guard.h"
 #include "runtime/data_stream_mgr.h"
+#include "runtime/exec_env.h"
 #include "runtime/fragment_mgr.h"
 #include "runtime/load_channel_mgr.h"
 #include "runtime/result_buffer_mgr.h"
 #include "runtime/routine_load/routine_load_task_executor.h"
 #include "runtime/runtime_filter_worker.h"
-#include "service/brpc.h"
 #include "storage/dictionary_cache_manager.h"
 #include "storage/local_tablet_reader.h"
 #include "storage/storage_engine.h"
-#include "util/uid_util.h"
 
 namespace starrocks {
 
@@ -199,6 +199,18 @@ void BackendInternalServiceImpl<T>::tablet_writer_cancel(google::protobuf::RpcCo
              << ", tablet_id=" << request->tablet_id();
     PInternalServiceImplBase<T>::_exec_env->load_channel_mgr()->cancel(static_cast<brpc::Controller*>(cntl_base),
                                                                        *request, response, done);
+}
+
+template <typename T>
+void BackendInternalServiceImpl<T>::get_load_replica_status(google::protobuf::RpcController* controller,
+                                                            const starrocks::PLoadReplicaStatusRequest* request,
+                                                            starrocks::PLoadReplicaStatusResult* response,
+                                                            google::protobuf::Closure* done) {
+    VLOG_RPC << "load replica status, load_id=" << print_id(request->load_id()) << ", txn_id=" << request->txn_id()
+             << ", index_id=" << request->index_id();
+    ;
+    PInternalServiceImplBase<T>::_exec_env->load_channel_mgr()->get_load_replica_status(
+            static_cast<brpc::Controller*>(controller), request, response, done);
 }
 
 template <typename T>

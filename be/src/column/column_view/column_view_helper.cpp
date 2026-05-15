@@ -16,8 +16,8 @@
 
 #include "column/column_helper.h"
 #include "column/column_view/column_view.h"
-#include "runtime/types.h"
 #include "types/logical_type.h"
+#include "types/type_descriptor.h"
 
 namespace starrocks {
 static bool should_use_view(LogicalType ltype) {
@@ -26,6 +26,7 @@ static bool should_use_view(LogicalType ltype) {
     case TYPE_STRUCT:
     case TYPE_MAP:
     case TYPE_JSON:
+    case TYPE_VARIANT:
     case TYPE_VARCHAR:
     case TYPE_CHAR:
     case TYPE_BINARY:
@@ -41,7 +42,7 @@ std::optional<MutableColumnPtr> ColumnViewHelper::create_column_view(const TypeD
     if (!should_use_view(type_desc.type)) {
         return {};
     }
-    ColumnPtr default_column = ColumnHelper::create_column(type_desc, nullable);
+    MutableColumnPtr default_column = ColumnHelper::create_column(type_desc, nullable);
     if (default_column->is_nullable()) {
         down_cast<NullableColumn*>(default_column.get())->append_default_not_null_value();
     } else {

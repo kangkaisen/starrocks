@@ -19,7 +19,6 @@ import com.google.common.collect.Lists;
 import com.starrocks.common.FeConstants;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.analyzer.SemanticException;
-import org.junit.Assert;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -35,6 +34,7 @@ class OrderByTest extends PlanTestBase {
     @BeforeAll
     public static void beforeClass() throws Exception {
         PlanTestBase.beforeClass();
+        connectContext.getSessionVariable().setEnableRewriteSimpleAggToMetaScan(false);
     }
 
     @Test
@@ -74,7 +74,7 @@ class OrderByTest extends PlanTestBase {
         Assertions.assertTrue(plan.contains(
                 "sort_tuple_slot_exprs:[TExpr(nodes:[TExprNode(node_type:SLOT_REF, type:TTypeDesc(types:[TTypeNode"
                         + "(type:SCALAR, scalar_type:TScalarType(type:BIGINT))]), num_children:0, slot_ref:TSlotRef"
-                        + "(slot_id:1, tuple_id:2), output_scale:-1, output_column:-1, "
+                        + "(slot_id:1, tuple_id:2), output_scale:-1, "
                         + "has_nullable_child:false, is_nullable:true, is_monotonic:true"));
     }
 
@@ -135,18 +135,18 @@ class OrderByTest extends PlanTestBase {
                 "(select sum(v5) from t1) as x1, " +
                 "(select sum(v7) from t2) as x2 from t0 order by t0.v3";
         String plan = getFragmentPlan(sql);
-        assertContains(plan, "  15:SORT\n" +
-                "  |  order by: <slot 3> 3: v3 ASC\n" +
-                "  |  offset: 0\n" +
-                "  |  \n" +
-                "  14:Project\n" +
-                "  |  <slot 1> : 1: v1\n" +
-                "  |  <slot 2> : 2: v2\n" +
-                "  |  <slot 3> : 3: v3\n" +
-                "  |  <slot 8> : 8: sum\n" +
-                "  |  <slot 13> : 12: sum\n" +
-                "  |  \n" +
-                "  13:NESTLOOP JOIN");
+        assertContains(plan, "SORT\n"
+                + "  |  order by: <slot 3> 3: v3 ASC\n"
+                + "  |  offset: 0\n"
+                + "  |  \n"
+                + "  10:Project\n"
+                + "  |  <slot 1> : 1: v1\n"
+                + "  |  <slot 2> : 2: v2\n"
+                + "  |  <slot 3> : 3: v3\n"
+                + "  |  <slot 8> : 8: sum\n"
+                + "  |  <slot 13> : 12: sum\n"
+                + "  |  \n"
+                + "  9:NESTLOOP JOIN");
     }
 
     @Test
@@ -193,17 +193,17 @@ class OrderByTest extends PlanTestBase {
                 "(select sum(v5) from t1) as x1, " +
                 "(select sum(v7) from t2) as x2 from t0 group by v2 order by x3";
         String plan = getFragmentPlan(sql);
-        assertContains(plan, "  16:SORT\n" +
-                "  |  order by: <slot 4> 4: sum ASC\n" +
-                "  |  offset: 0\n" +
-                "  |  \n" +
-                "  15:Project\n" +
-                "  |  <slot 2> : 2: v2\n" +
-                "  |  <slot 4> : 4: sum\n" +
-                "  |  <slot 9> : 9: sum\n" +
-                "  |  <slot 14> : 13: sum\n" +
-                "  |  \n" +
-                "  14:NESTLOOP JOIN\n");
+        assertContains(plan, "SORT\n"
+                + "  |  order by: <slot 4> 4: sum ASC\n"
+                + "  |  offset: 0\n"
+                + "  |  \n"
+                + "  11:Project\n"
+                + "  |  <slot 2> : 2: v2\n"
+                + "  |  <slot 4> : 4: sum\n"
+                + "  |  <slot 9> : 9: sum\n"
+                + "  |  <slot 14> : 13: sum\n"
+                + "  |  \n"
+                + "  10:NESTLOOP JOIN\n");
     }
 
     @Test
@@ -622,6 +622,35 @@ class OrderByTest extends PlanTestBase {
     }
 
     @Test
+    void testTopNFilterWithDifferentGroupByOrder() throws Exception {
+        // When ORDER BY column differs from the first GROUP BY column,
+        // the TopN runtime filter must use the correct exprOrder to match
+        // the group-by column index. Previously exprOrder was hardcoded to 0,
+        // causing a type mismatch crash (DATE vs DATETIME) or wrong results.
+        String sql;
+        String plan;
+
+        // ORDER BY second group-by column (id_datetime) which has different type from first (id_date)
+        sql = "select id_date, id_datetime, count(*) from test_all_type_not_null " +
+                "group by id_date, id_datetime order by id_datetime limit 10;";
+        plan = getVerboseExplain(sql);
+        // The TopN filter should probe on id_datetime, not id_date
+        assertContains(plan, "probe_expr = (8: id_datetime)");
+
+        // ORDER BY first group-by column should still work
+        sql = "select id_date, id_datetime, count(*) from test_all_type_not_null " +
+                "group by id_date, id_datetime order by id_date limit 10;";
+        plan = getVerboseExplain(sql);
+        assertContains(plan, "probe_expr = (9: id_date)");
+
+        // ORDER BY a column not in GROUP BY should not generate TopN RF
+        sql = "select t1a, count(*) cnt from test_all_type_not_null " +
+                "group by t1a order by cnt limit 10;";
+        plan = getVerboseExplain(sql);
+        assertNotContains(plan, "build runtime filters");
+    }
+
+    @Test
     public void testTopNRuntimeFilterWithFilter() throws Exception {
         String sql = "select * from t0 where v1 > 1 order by v1 limit 10";
         String plan = getVerboseExplain(sql);
@@ -660,7 +689,7 @@ class OrderByTest extends PlanTestBase {
     @ParameterizedTest
     @MethodSource("failToStrictSql")
     void testFailToStrictOrderByExpression(String sql) {
-        Assert.assertThrows(SemanticException.class, () -> getFragmentPlan(sql));
+        Assertions.assertThrows(SemanticException.class, () -> getFragmentPlan(sql));
     }
 
     @ParameterizedTest
@@ -760,5 +789,24 @@ class OrderByTest extends PlanTestBase {
         list.add(Arguments.of("select v1, v2 cc from (select abs(v1) v1, abs(v2) v2, v3 from t0) t1 order by t1.v3",
                 "order by: <slot 3> 3: v3 ASC"));
         return list.stream();
+    }
+
+    @Test
+    public void testTopNParallelMergeAdaptOnInputRowCount() throws Exception {
+        {
+            String sql = "select * from t0 order by v1, v2 limit 10";
+            String thriftPlan = getThriftPlan(sql);
+            assertCContains(thriftPlan, "enable_parallel_merge:false");
+            assertNotContains(thriftPlan, "enable_parallel_merge:true");
+        }
+
+        {
+            int dop = 16;
+            starRocksAssert.getCtx().getSessionVariable().setPipelineDop(dop);
+            String sql = "select * from t0 order by v1, v2 limit 1 offset " + (dop * 4096 + 1);
+            String thriftPlan = getThriftPlan(sql);
+            assertCContains(thriftPlan, "enable_parallel_merge:true");
+            assertNotContains(thriftPlan, "enable_parallel_merge:false");
+        }
     }
 }

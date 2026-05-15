@@ -17,14 +17,15 @@
 #include <arrow/array/builder_binary.h>
 #include <arrow/flight/server.h>
 #include <arrow/flight/types.h>
+#include <base/utility/arrow_utils.h>
 #include <exec/pipeline/query_context.h>
-#include <util/arrow/utils.h>
 
+#include "base/uid_util.h"
 #include "common/status.h"
+#include "common/system/backend_options.h"
 #include "exec/arrow_flight_batch_reader.h"
 #include "exprs/base64.h"
-#include "service/backend_options.h"
-#include "util/uid_util.h"
+#include "runtime/exec_env.h"
 
 namespace starrocks {
 
@@ -41,6 +42,16 @@ Status ArrowFlightSqlServer::start(int port) {
     RETURN_STATUS_IF_ERROR(arrow::flight::Location::ForGrpcTcp(BackendOptions::get_service_bind_address(), port)
                                    .Value(&bind_location));
     arrow::flight::FlightServerOptions flight_options(bind_location);
+
+    // Not authenticated in BE flight server.
+    // After the authentication between the ADBC Client and the FE flight server is completed,
+    // the FE flight server will put the query id in the Ticket and send it back to the Client.
+    // When the Client uses the Ticket to fetch data from the BE flight server, the BE flight
+    // server will verify the query id, this step is equivalent to authentication.
+    _bearer_middleware = std::make_shared<NoOpBearerAuthServerMiddlewareFactory>();
+    flight_options.auth_handler = std::make_shared<arrow::flight::NoOpAuthHandler>();
+    flight_options.middleware.emplace_back("bearer-auth-server", _bearer_middleware);
+
     RETURN_STATUS_IF_ERROR(Init(flight_options));
 
     return Status::OK();
@@ -77,7 +88,8 @@ arrow::Result<std::unique_ptr<arrow::flight::FlightDataStream>> ArrowFlightSqlSe
         return arrow::Status::Invalid("Invalid fragment ID format:", result_fragment_id);
     }
 
-    std::shared_ptr<ArrowFlightBatchReader> reader = std::make_shared<ArrowFlightBatchReader>(resultfragmentid);
+    auto reader = std::make_shared<ArrowFlightBatchReader>(ExecEnv::GetInstance()->result_mgr(), resultfragmentid);
+    ARROW_RETURN_NOT_OK(reader->init());
     return std::make_unique<arrow::flight::RecordBatchStream>(reader);
 }
 

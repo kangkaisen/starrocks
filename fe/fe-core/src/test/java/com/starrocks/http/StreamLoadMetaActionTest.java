@@ -16,6 +16,7 @@ package com.starrocks.http;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.load.batchwrite.BatchWriteMgr;
 import com.starrocks.load.batchwrite.RequestCoordinatorBackendResult;
 import com.starrocks.load.batchwrite.TableId;
@@ -29,7 +30,7 @@ import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -39,7 +40,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static com.starrocks.load.streamload.StreamLoadHttpHeader.HTTP_ENABLE_BATCH_WRITE;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class StreamLoadMetaActionTest extends StarRocksHttpTestCase {
 
@@ -107,7 +108,8 @@ public class StreamLoadMetaActionTest extends StarRocksHttpTestCase {
 
         new MockUp<BatchWriteMgr>() {
             @Mock
-            public RequestCoordinatorBackendResult requestCoordinatorBackends(TableId tableId, StreamLoadKvParams params) {
+            public RequestCoordinatorBackendResult requestCoordinatorBackends(
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 return new RequestCoordinatorBackendResult(new TStatus(TStatusCode.OK), computeNodes);
             }
         };
@@ -131,7 +133,8 @@ public class StreamLoadMetaActionTest extends StarRocksHttpTestCase {
         Request request = buildRequest(headers, HashMultimap.create());
         new MockUp<BatchWriteMgr>() {
             @Mock
-            public RequestCoordinatorBackendResult requestCoordinatorBackends(TableId tableId, StreamLoadKvParams params) {
+            public RequestCoordinatorBackendResult requestCoordinatorBackends(
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 ComputeNode node = new ComputeNode(1, "192.0.0.1", 9050);
                 node.setHttpPort(8040);
                 node.setBrpcPort(8060);
@@ -163,7 +166,8 @@ public class StreamLoadMetaActionTest extends StarRocksHttpTestCase {
 
         new MockUp<BatchWriteMgr>() {
             @Mock
-            public RequestCoordinatorBackendResult requestCoordinatorBackends(TableId tableId, StreamLoadKvParams params) {
+            public RequestCoordinatorBackendResult requestCoordinatorBackends(
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 TStatus status = new TStatus();
                 status.setStatus_code(TStatusCode.INTERNAL_ERROR);
                 status.addToError_msgs("artificial failure");

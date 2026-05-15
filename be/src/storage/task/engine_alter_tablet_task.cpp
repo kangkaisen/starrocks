@@ -34,11 +34,14 @@
 
 #include "storage/task/engine_alter_tablet_task.h"
 
-#include "io/io_profiler.h"
+#include "base/utility/defer_op.h"
+#include "common/config_storage_fwd.h"
+#include "io/core/io_profiler.h"
 #include "runtime/current_thread.h"
+#include "runtime/exec_env.h"
 #include "storage/lake/schema_change.h"
 #include "storage/schema_change.h"
-#include "util/defer_op.h"
+#include "storage/storage_metrics.h"
 
 namespace starrocks {
 
@@ -55,13 +58,14 @@ Status EngineAlterTabletTask::execute() {
     MemTracker* prev_tracker = tls_thread_status.set_mem_tracker(_mem_tracker.get());
     DeferOp op([&] { tls_thread_status.set_mem_tracker(prev_tracker); });
 
-    StarRocksMetrics::instance()->create_rollup_requests_total.increment(1);
+    StorageMetrics::instance()->create_rollup_requests_total.increment(1);
 
     auto scope = IOProfiler::scope(IOProfiler::TAG_ALTER, _alter_tablet_req.new_tablet_id);
 
     Status res;
     std::string alter_msg_header = strings::Substitute("[Alter Job:$0, tablet:$1]: ", _alter_tablet_req.job_id,
                                                        _alter_tablet_req.base_tablet_id);
+    std::string task_detail_msg = "";
     if (_alter_tablet_req.tablet_type == TTabletType::TABLET_TYPE_LAKE) {
         lake::SchemaChangeHandler handler(ExecEnv::GetInstance()->lake_tablet_manager());
         res = handler.process_alter_tablet(_alter_tablet_req);
@@ -69,18 +73,17 @@ Status EngineAlterTabletTask::execute() {
         SchemaChangeHandler handler;
         handler.set_alter_msg_header(alter_msg_header);
         res = handler.process_alter_tablet(_alter_tablet_req);
+        task_detail_msg = handler.get_task_detail_msg();
     }
     if (!res.ok()) {
         LOG(WARNING) << alter_msg_header << "failed to do alter task. status=" << res.to_string()
-                     << " base_tablet_id=" << _alter_tablet_req.base_tablet_id
-                     << ", base_schema_hash=" << _alter_tablet_req.base_schema_hash
-                     << ", new_tablet_id=" << _alter_tablet_req.new_tablet_id
-                     << ", new_schema_hash=" << _alter_tablet_req.new_schema_hash;
-        StarRocksMetrics::instance()->create_rollup_requests_failed.increment(1);
+                     << " detail run msg: " << '\n'
+                     << task_detail_msg;
+        StorageMetrics::instance()->create_rollup_requests_failed.increment(1);
         return res;
     }
 
-    LOG(INFO) << alter_msg_header << "success to do alter task. base_tablet_id=" << _alter_tablet_req.base_tablet_id;
+    VLOG(2) << alter_msg_header << "success to do alter task. base_tablet_id=" << _alter_tablet_req.base_tablet_id;
     return Status::OK();
 } // execute
 

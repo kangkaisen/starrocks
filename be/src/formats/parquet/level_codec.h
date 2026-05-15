@@ -21,13 +21,13 @@
 #include <cstdint>
 #include <vector>
 
+#include "base/bit/bit_stream_utils.h"
+#include "base/bit/rle_encoding.h"
+#include "base/concurrency/stopwatch.hpp"
+#include "common/runtime_profile.h"
 #include "common/status.h"
 #include "formats/parquet/types.h"
 #include "gen_cpp/parquet_types.h"
-#include "util/bit_stream_utils.h"
-#include "util/rle_encoding.h"
-#include "util/runtime_profile.h"
-#include "util/stopwatch.hpp"
 
 namespace starrocks {
 class Slice;
@@ -115,9 +115,11 @@ private:
             // NOTE(zc): Because RLE can only record elements that are multiples of 8,
             // it must be ensured that the incoming parameters cannot exceed the boundary.
             n = std::min((size_t)_num_levels, n);
-            auto num_decoded = _rle_decoder.GetBatch(levels, n);
-            _num_levels -= num_decoded;
-            return num_decoded;
+            if (PREDICT_FALSE(!_rle_decoder.GetBatch(levels, n))) {
+                return 0;
+            }
+            _num_levels -= n;
+            return n;
         } else if (_encoding == tparquet::Encoding::BIT_PACKED) {
             DCHECK(false);
         }

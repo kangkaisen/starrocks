@@ -38,13 +38,6 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.BinaryPredicate;
-import com.starrocks.analysis.BinaryType;
-import com.starrocks.analysis.DateLiteral;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.IntLiteral;
-import com.starrocks.analysis.LimitElement;
-import com.starrocks.analysis.StringLiteral;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.DataProperty;
 import com.starrocks.catalog.Database;
@@ -58,14 +51,12 @@ import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionType;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.RangePartitionInfo;
-import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
+import com.starrocks.common.util.DateUtils;
 import com.starrocks.common.util.ListComparator;
-import com.starrocks.common.util.OrderByPair;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
@@ -75,8 +66,18 @@ import com.starrocks.lake.compaction.PartitionStatistics;
 import com.starrocks.lake.compaction.Quantiles;
 import com.starrocks.monitor.unit.ByteSizeValue;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.OrderByPair;
+import com.starrocks.sql.ast.expression.BinaryPredicate;
+import com.starrocks.sql.ast.expression.BinaryType;
+import com.starrocks.sql.ast.expression.DateLiteral;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.IntLiteral;
+import com.starrocks.sql.ast.expression.LimitElement;
+import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.sql.common.MetaUtils;
+import com.starrocks.type.DateType;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -130,7 +131,8 @@ public class PartitionsProcDir implements ProcDirInterface {
                     .add("MaxCS") // Maximum compaction score
                     .add("DataVersion")
                     .add("VersionEpoch")
-                    .add("VersionTxnType");
+                    .add("VersionTxnType")
+                    .add("MetaSwitchVersion");
             this.titleNames = builder.build();
         } else {
             ImmutableList.Builder<String> builder = new ImmutableList.Builder<String>()
@@ -154,7 +156,8 @@ public class PartitionsProcDir implements ProcDirInterface {
                     .add("RowCount")
                     .add("DataVersion")
                     .add("VersionEpoch")
-                    .add("VersionTxnType");
+                    .add("VersionTxnType")
+                    .add("TabletBalanced");
             this.titleNames = builder.build();
         }
     }
@@ -176,7 +179,8 @@ public class PartitionsProcDir implements ProcDirInterface {
             long leftVal;
             long rightVal;
             if (subExpr.getChild(1) instanceof DateLiteral) {
-                leftVal = (new DateLiteral((String) element, Type.DATETIME)).getLongValue();
+                LocalDateTime elementDateTime = DateUtils.parseStrictDateTime(element.toString());
+                leftVal = new DateLiteral(elementDateTime, DateType.DATETIME).getLongValue();
                 rightVal = ((DateLiteral) subExpr.getChild(1)).getLongValue();
             } else {
                 leftVal = Long.parseLong(element.toString());
@@ -286,7 +290,8 @@ public class PartitionsProcDir implements ProcDirInterface {
         // get info
         List<List<Comparable>> partitionInfos = new ArrayList<List<Comparable>>();
         Locker locker = new Locker();
-        locker.lockDatabase(db.getId(), LockType.READ);
+        long tableId = table.getId();
+        locker.lockTableWithIntensiveDbLock(db.getId(), tableId, LockType.READ);
         try {
             List<Long> partitionIds;
             PartitionInfo tblPartitionInfo = table.getPartitionInfo();
@@ -326,18 +331,23 @@ public class PartitionsProcDir implements ProcDirInterface {
                 }
             }
         } finally {
-            locker.unLockDatabase(db.getId(), LockType.READ);
+            locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.READ);
         }
         return partitionInfos;
     }
 
-    public static String distributionKeyAsString(Table table, DistributionInfo distributionInfo) {
+    public static String distributionKeyAsString(OlapTable table, DistributionInfo distributionInfo) {
         if (distributionInfo.getType() == DistributionInfoType.HASH) {
             List<String> columnNames = MetaUtils.getColumnNamesByColumnIds(
                     table.getIdToColumn(), distributionInfo.getDistributionColumns());
             return Joiner.on(", ").join(columnNames);
-        } else {
+        } else if (distributionInfo.getType() == DistributionInfoType.RANDOM) {
             return "ALL KEY";
+        } else if (distributionInfo.getType() == DistributionInfoType.RANGE) {
+            List<String> columnNames = MetaUtils.getRangeDistributionColumnNames(table);
+            return Joiner.on(", ").join(columnNames);
+        } else {
+            throw new RuntimeException("Unsupported distribution type: " + distributionInfo.getType());
         }
     }
 
@@ -372,13 +382,14 @@ public class PartitionsProcDir implements ProcDirInterface {
         partitionInfo.add(TimeUtils.longToTimeString(partition.getLastCheckTime()));
         partitionInfo.add(byteSizeValue);
         partitionInfo.add(new ByteSizeValue(dataSize + extraFileSize));
-        partitionInfo.add(tblPartitionInfo.getIsInMemory(partition.getId()));
+        partitionInfo.add(false);
         partitionInfo.add(physicalPartition.storageRowCount());
 
         partitionInfo.add(physicalPartition.getDataVersion()); // DataVersion
         partitionInfo.add(physicalPartition.getVersionEpoch()); // VersionEpoch
         partitionInfo.add(physicalPartition.getVersionTxnType()); // VersionTxnType
 
+        partitionInfo.add(physicalPartition.isTabletBalanced());
         return partitionInfo;
     }
 
@@ -414,7 +425,7 @@ public class PartitionsProcDir implements ProcDirInterface {
         partitionInfo.add(physicalPartition.getDataVersion()); // DataVersion
         partitionInfo.add(physicalPartition.getVersionEpoch()); // VersionEpoch
         partitionInfo.add(physicalPartition.getVersionTxnType()); // VersionTxnType
-
+        partitionInfo.add(physicalPartition.getMetadataSwitchVersion()); // MetaSwitchVersion
         return partitionInfo;
     }
 
@@ -441,19 +452,26 @@ public class PartitionsProcDir implements ProcDirInterface {
 
     @Override
     public ProcNodeInterface lookup(String partitionIdOrName) throws AnalysisException {
-        long partitionId = -1L;
-
+        // Take per-table READ: OlapTable.idToPartition is HashMap and
+        // nameToPartition is TreeMap (CASE_INSENSITIVE_ORDER); a concurrent
+        // ADD/DROP PARTITION (IX + table WRITE) can race with these gets, so the
+        // lock pins the table while we resolve the partition reference.
         Locker locker = new Locker();
-        locker.lockDatabase(db.getId(), LockType.READ);
+        long tableId = table.getId();
+        locker.lockTableWithIntensiveDbLock(db.getId(), tableId, LockType.READ);
         try {
             PhysicalPartition partition;
             try {
                 partition = table.getPhysicalPartition(Long.parseLong(partitionIdOrName));
             } catch (NumberFormatException e) {
-                partition = table.getPartition(partitionIdOrName, false).getDefaultPhysicalPartition();
-                if (partition == null) {
-                    partition = table.getPartition(partitionIdOrName, true).getDefaultPhysicalPartition();
+                // getPartition(name, ...) can return null if the partition does not
+                // exist; null-guard before dereferencing or this throws NPE on a
+                // legitimate "not found" or under a concurrent DROP PARTITION race.
+                Partition byName = table.getPartition(partitionIdOrName, false);
+                if (byName == null) {
+                    byName = table.getPartition(partitionIdOrName, true);
                 }
+                partition = (byName != null) ? byName.getDefaultPhysicalPartition() : null;
             }
 
             if (partition == null) {
@@ -462,7 +480,7 @@ public class PartitionsProcDir implements ProcDirInterface {
 
             return new IndicesProcDir(db, table, partition);
         } finally {
-            locker.unLockDatabase(db.getId(), LockType.READ);
+            locker.unLockTableWithIntensiveDbLock(db.getId(), tableId, LockType.READ);
         }
     }
 

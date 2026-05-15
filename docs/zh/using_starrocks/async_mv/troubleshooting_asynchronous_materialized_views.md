@@ -145,7 +145,7 @@ ExecTime      | 2.583 s
 
 #### 刷新任务完成后分析资源消耗
 
-在刷新任务完成后，您可以通过 Query Profile 来分析其资源消耗情况。
+在刷新任务完成后，您可以通过 Query Profile 来分析其资源消耗情况。您可以通过集群 Leader FE 节点的 Web UI 查看物化视图刷新任务的 Profile。
 
 当异步物化视图正在刷新时，会执行 INSERT OVERWRITE 语句。您可以检查相应的 Query Profile，以分析刷新任务所消耗的时间和资源。
 
@@ -156,7 +156,7 @@ ExecTime      | 2.583 s
 - `QueryMemCost`：查询的总内存成本。
 - 其他针对各个运算符的特定指标，比如连接运算符和聚合运算符。
 
-有关如何分析 Query Profile 和理解其他指标的详细信息，请参阅 [查看分析 Query Profile](../../administration/query_profile_overview.md).
+有关如何分析 Query Profile 和理解其他指标的详细信息，请参阅 [查看分析 Query Profile](../../best_practices/query_tuning/query_profile_overview.md).
 
 ### 验证查询是否被异步物化视图改写
 
@@ -296,7 +296,7 @@ MySQL > EXPLAIN LOGICAL SELECT `customer`.`c_custkey`
   v3.2 之前版本中，物化视图刷新任务的默认超时时间为 5 分钟，v3.2 版本之后默认为 1 小时。当遇到超时异常时，可以尝试修改超时时间：
 
   ```SQL
-  ALTER MATERIALIZED VIEW mv2 SET ( 'session.query_timeout' = '4000' );
+  ALTER MATERIALIZED VIEW mv2 SET ( 'session.insert_timeout' = '4000' );
   ```
 
 - **分析物化视图性能瓶颈**
@@ -444,3 +444,61 @@ SELECT c_city, sum(tax) FROM tbl GROUP BY c_city;
 CREATE MATERIALIZED VIEW mv3 REFRESH ASYNC AS
 SELECT dt, c_city, sum(tax) FROM tbl GROUP BY dt, c_city;
 ```
+
+## 常见问题解答
+
+#### 哪个资源组控制异步物化视图的资源？如何调整其配置？
+
+如果在创建异步物化视图时未指定 `resource_group` 属性，系统会将其分配给默认资源组 `default_mv_wg`。其默认配置为：
+- `cpu_core_limit`: 1
+- `mem_limit`: 80%
+- `concurrency_limit`: 0
+- `spill_mem_limit_threshold`: 80%
+
+您可以通过以下 BE 配置项调整其 CPU 限制、内存限制、并发限制和溢出阈值：
+- `default_mv_resource_group_cpu_limit`
+- `default_mv_resource_group_memory_limit`
+- `default_mv_resource_group_concurrency_limit`
+- `default_mv_resource_group_spill_mem_limit_threshold`
+
+您还可以通过指定 `resource_group` 属性为物化视图分配专用资源组。
+
+示例：
+
+```SQL
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_test.test_1
+PARTITION BY `metric_date`
+REFRESH MANUAL
+PROPERTIES (
+  "replicated_storage" = "true",
+  "partition_refresh_number" = "1",
+  "force_external_table_query_rewrite" = "CHECKED",
+  "query_rewrite_consistency" = "LOOSE",
+  "replication_num" = "1",
+  "storage_medium" = "HDD",
+  # highlight-start
+  "resource_group" = "rg_mv"
+  # highlight-end
+) AS ...
+```
+
+#### 如果异步物化视图计划每 1 分钟刷新一次，但刷新时间超过 1 分钟会发生什么？
+
+系统会自动处理：
+
+- 如果队列中有待处理任务，新触发的任务将被合并（状态为 `MERGED`）。
+- 如果没有待处理任务（只有正在运行或已成功/失败的任务），新触发的任务将等待当前运行的任务完成后再执行。
+
+限制：每个物化视图一次只能运行一个刷新任务。
+
+#### 设置 auto_refresh_partitions_limit 后，系统是否总是精确刷新该数量的分区？
+
+不会。此参数表示上限。如果系统检测到更少的基表分区发生了变化，则只会刷新那些实际分区。
+
+#### 物化视图配置为每 5 分钟刷新一次，但在 `information_schema.task_runs` 中显示每 5 秒刷新一次。为什么？
+
+从 v3.3 开始，`partition_refresh_number` 的默认值从 -1 更改为 1，这意味着每次刷新操作只处理一个分区。如果需要刷新多个分区，系统会将工作拆分为多个子任务，这导致 `task_runs` 中的调度条目比用户定义的刷新间隔更频繁。
+
+#### 多个异步物化视图可以嵌套吗？有什么建议？
+
+支持嵌套，但建议尽量减少嵌套深度。过多的嵌套会显著增加故障排除的复杂性。

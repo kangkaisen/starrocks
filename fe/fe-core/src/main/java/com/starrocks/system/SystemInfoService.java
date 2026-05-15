@@ -45,8 +45,8 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DiskInfo;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
+import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.ResourceGroup;
-import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.AnalysisException;
@@ -62,31 +62,41 @@ import com.starrocks.common.util.NetUtils;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.datacache.DataCacheMetrics;
+import com.starrocks.lake.StarOSAgent;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.persist.CancelDecommissionDiskInfo;
 import com.starrocks.persist.DecommissionDiskInfo;
 import com.starrocks.persist.DisableDiskInfo;
+import com.starrocks.persist.DropBackendInfo;
 import com.starrocks.persist.DropComputeNodeLog;
+import com.starrocks.persist.UpdateBackendInfo;
 import com.starrocks.persist.UpdateHistoricalNodeLog;
 import com.starrocks.persist.gson.GsonPostProcessable;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ShowResultSet;
 import com.starrocks.qe.ShowResultSetMetaData;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.LocalMetastore;
 import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.analyzer.AlterSystemStmtAnalyzer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AddBackendClause;
 import com.starrocks.sql.ast.AddComputeNodeClause;
+import com.starrocks.sql.ast.CancelAlterSystemStmt;
+import com.starrocks.sql.ast.DecommissionBackendClause;
 import com.starrocks.sql.ast.DropBackendClause;
 import com.starrocks.sql.ast.DropComputeNodeClause;
+import com.starrocks.sql.ast.HostPort;
 import com.starrocks.sql.ast.ModifyBackendClause;
 import com.starrocks.system.Backend.BackendState;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.thrift.TResourceGroupUsage;
 import com.starrocks.thrift.TStatusCode;
+import com.starrocks.type.TypeFactory;
 import com.starrocks.warehouse.Warehouse;
+import com.starrocks.warehouse.cngroup.ComputeResource;
+import com.starrocks.warehouse.cngroup.ComputeResourceProvider;
 import org.apache.commons.validator.routines.InetAddressValidator;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -97,9 +107,11 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -132,12 +144,13 @@ public class SystemInfoService implements GsonPostProcessable {
 
     public void addComputeNodes(AddComputeNodeClause addComputeNodeClause)
             throws DdlException {
-        for (Pair<String, Integer> pair : addComputeNodeClause.getHostPortPairs()) {
-            checkSameNodeExist(pair.first, pair.second);
+        for (HostPort hostPort : addComputeNodeClause.getHostPortPairs()) {
+            checkSameNodeExist(hostPort.getHost(), hostPort.getPort());
         }
 
-        for (Pair<String, Integer> pair : addComputeNodeClause.getHostPortPairs()) {
-            addComputeNode(pair.first, pair.second, addComputeNodeClause.getWarehouse());
+        for (HostPort hostPort : addComputeNodeClause.getHostPortPairs()) {
+            addComputeNode(hostPort.getHost(), hostPort.getPort(), addComputeNodeClause.getWarehouse(),
+                    addComputeNodeClause.getCNGroupName());
         }
     }
 
@@ -168,58 +181,66 @@ public class SystemInfoService implements GsonPostProcessable {
         idToComputeNodeRef.remove(computeNode.getId());
     }
 
-    private boolean needUpdateHistoricalNodes(long currentTime, String warehouse) {
+    private boolean needUpdateHistoricalNodes(long warehouseId, long workerGroupId, long currentTime) {
         HistoricalNodeMgr historicalNodeMgr = GlobalStateMgr.getCurrentState().getHistoricalNodeMgr();
         long minUpdateIntervalSec = ConnectContext.getSessionVariableOrDefault().getHistoricalNodesMinUpdateInterval();
-        if (currentTime - historicalNodeMgr.getLastUpdateTime(warehouse) < minUpdateIntervalSec * 1000L) {
+        if (currentTime - historicalNodeMgr.getLastUpdateTime(warehouseId, workerGroupId) < minUpdateIntervalSec * 1000L) {
             return false;
         }
         return true;
     }
 
-    private void tryUpdateHistoricalComputeNodes(String warehouse) {
+    private void tryUpdateHistoricalComputeNodes(long warehouseId, long workerGroupId) {
         if (!Config.enable_trace_historical_node) {
             return;
         }
         long currentTime = System.currentTimeMillis();
-        if (needUpdateHistoricalNodes(currentTime, warehouse)) {
-            updateHistoricalComputeNodes(warehouse, currentTime);
+        if (needUpdateHistoricalNodes(warehouseId, workerGroupId, currentTime)) {
+            updateHistoricalComputeNodes(warehouseId, workerGroupId, currentTime);
         }
     }
 
-    private void updateHistoricalComputeNodes(String warehouse, long updateTime) {
-        HistoricalNodeMgr historicalNodeMgr = GlobalStateMgr.getCurrentState().getHistoricalNodeMgr();
+    protected void updateHistoricalComputeNodes(long warehouseId, long workerGroupId, long updateTime) {
         List<Long> computeNodeIds;
         if (RunMode.isSharedDataMode()) {
-            computeNodeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouse);
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            ComputeResourceProvider computeResourceProvider = warehouseManager.getComputeResourceProvider();
+            ComputeResource computeResource = computeResourceProvider.ofComputeResource(warehouseId, workerGroupId);
+            try {
+                computeNodeIds = warehouseManager.getAllComputeNodeIds(computeResource);
+            } catch (Exception e) {
+                computeNodeIds = new ArrayList<>();
+                LOG.warn("fail to get compute node ids when updating historical compute nodes");
+            }
         } else {
             computeNodeIds = new ArrayList<>(idToComputeNodeRef.keySet());
         }
 
-        historicalNodeMgr.updateHistoricalComputeNodeIds(computeNodeIds, updateTime, warehouse);
         GlobalStateMgr.getCurrentState().getEditLog().logUpdateHistoricalNode(
-                new UpdateHistoricalNodeLog(warehouse, updateTime, null, computeNodeIds));
-        LOG.info("update historical compute nodes, warehouse: {}, nodes: {}", warehouse, computeNodeIds);
+                new UpdateHistoricalNodeLog(warehouseId, workerGroupId, updateTime, null, computeNodeIds),
+                wal -> replayUpdateHistoricalNode((UpdateHistoricalNodeLog) wal));
+        LOG.info("update historical compute nodes, warehouseId: {}, workerGroupId: {}, nodes: {}", warehouseId, workerGroupId,
+                computeNodeIds);
     }
 
     // Final entry of adding compute node
-    public void addComputeNode(String host, int heartbeatPort, String warehouse) throws DdlException {
+    public void addComputeNode(String host, int heartbeatPort, String warehouse, String cnGroupName) throws DdlException {
         ComputeNode newComputeNode = new ComputeNode(GlobalStateMgr.getCurrentState().getNextId(), host, heartbeatPort);
-        setComputeNodeOwner(newComputeNode);
-        addComputeNodeToWarehouse(newComputeNode, warehouse);
+        newComputeNode.setBackendState(BackendState.using);
+        // NOTICE: this will not update the state of warehouse, only set WarehouseId and groupId of newComputeNode.
+        addComputeNodeToWarehouse(newComputeNode, warehouse, cnGroupName);
 
         // try to record the historical compute nodes
-        tryUpdateHistoricalComputeNodes(warehouse);
-
-        idToComputeNodeRef.put(newComputeNode.getId(), newComputeNode);
+        // This will trigger another wal persist if update historical nodes is enabled.
+        tryUpdateHistoricalComputeNodes(newComputeNode.getWarehouseId(), newComputeNode.getWorkerGroupId());
 
         // log
-        GlobalStateMgr.getCurrentState().getEditLog().logAddComputeNode(newComputeNode);
+        GlobalStateMgr.getCurrentState().getEditLog().logAddComputeNode(
+                newComputeNode, wal -> replayAddComputeNode((ComputeNode) wal));
         LOG.info("finished to add {} ", newComputeNode);
-    }
 
-    public void setComputeNodeOwner(ComputeNode computeNode) {
-        computeNode.setBackendState(BackendState.using);
+        // compute nodes are changed, regenerate tablet number metrics
+        MetricRepo.generateBackendsTabletMetrics();
     }
 
     public boolean isSingleBackendAndComputeNode() {
@@ -227,12 +248,13 @@ public class SystemInfoService implements GsonPostProcessable {
     }
 
     public void addBackends(AddBackendClause addBackendClause) throws DdlException {
-        for (Pair<String, Integer> pair : addBackendClause.getHostPortPairs()) {
-            checkSameNodeExist(pair.first, pair.second);
+        for (HostPort hostPort : addBackendClause.getHostPortPairs()) {
+            checkSameNodeExist(hostPort.getHost(), hostPort.getPort());
         }
 
-        for (Pair<String, Integer> pair : addBackendClause.getHostPortPairs()) {
-            addBackend(pair.first, pair.second, addBackendClause.getWarehouse());
+        for (HostPort hostPort : addBackendClause.getHostPortPairs()) {
+            addBackend(hostPort.getHost(), hostPort.getPort(), addBackendClause.getWarehouse(),
+                    addBackendClause.getCNGroupName());
         }
     }
 
@@ -265,74 +287,72 @@ public class SystemInfoService implements GsonPostProcessable {
         idToReportVersionRef = ImmutableMap.copyOf(copiedReportVersions);
     }
 
-    public void setBackendOwner(Backend backend) {
-        backend.setBackendState(BackendState.using);
-    }
-
-    public void addComputeNodeToWarehouse(ComputeNode computeNode, String warehouseName)
+    public void addComputeNodeToWarehouse(ComputeNode computeNode, String warehouseName, String cnGroupName)
             throws DdlException {
         Warehouse warehouse = GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(warehouseName);
         // check if the warehouse exist
         if (warehouse == null) {
             ErrorReport.reportDdlException(ErrorCode.ERR_UNKNOWN_WAREHOUSE, String.format("name: %s", warehouseName));
         }
-
-        computeNode.setWorkerGroupId(warehouse.getAnyWorkerGroupId());
-        computeNode.setWarehouseId(warehouse.getId());
+        warehouse.addNodeToCNGroup(computeNode, cnGroupName);
     }
 
-    private void tryUpdateHistoricalBackends(String warehouse) {
+    private void tryUpdateHistoricalBackends(long warehouseId, long workerGroupId) {
         if (!Config.enable_trace_historical_node) {
             return;
         }
         long currentTime = System.currentTimeMillis();
-        if (needUpdateHistoricalNodes(currentTime, warehouse)) {
-            updateHistoricalBackends(warehouse, currentTime);
+        if (needUpdateHistoricalNodes(warehouseId, workerGroupId, currentTime)) {
+            updateHistoricalBackends(warehouseId, workerGroupId, currentTime);
         }
     }
 
-    private void updateHistoricalBackends(String warehouse, long updateTime) {
-        HistoricalNodeMgr historicalNodeMgr = GlobalStateMgr.getCurrentState().getHistoricalNodeMgr();
+    protected void updateHistoricalBackends(long warehouseId, long workerGroupId, long updateTime) {
         if (RunMode.isSharedDataMode()) {
-            List<Long> computeNodeIds = GlobalStateMgr.getCurrentState().getWarehouseMgr().getAllComputeNodeIds(warehouse);
-            historicalNodeMgr.updateHistoricalComputeNodeIds(computeNodeIds, updateTime, warehouse);
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            ComputeResourceProvider computeResourceProvider = warehouseManager.getComputeResourceProvider();
+            ComputeResource computeResource = computeResourceProvider.ofComputeResource(warehouseId, workerGroupId);
+            List<Long> computeNodeIds;
+            try {
+                computeNodeIds = warehouseManager.getAllComputeNodeIds(computeResource);
+            } catch (Exception e) {
+                computeNodeIds = new ArrayList<>();
+                LOG.warn("fail to get compute node ids when updating historical backends");
+            }
 
             GlobalStateMgr.getCurrentState().getEditLog().logUpdateHistoricalNode(
-                    new UpdateHistoricalNodeLog(warehouse, updateTime, null, computeNodeIds));
-            LOG.info("update historical compute nodes, warehouse: {}, nodes: {}", warehouse, computeNodeIds.toString());
+                    new UpdateHistoricalNodeLog(warehouseId, workerGroupId, updateTime, null, computeNodeIds),
+                    wal -> replayUpdateHistoricalNode((UpdateHistoricalNodeLog) wal));
+            LOG.info("update historical compute nodes, warehouseId: {}, workerGroupId: {}, nodes: {}", warehouseId,
+                    workerGroupId, computeNodeIds.toString());
         } else {
             List<Long> backendIds = new ArrayList<>(idToBackendRef.keySet());
-            historicalNodeMgr.updateHistoricalBackendIds(backendIds, updateTime, warehouse);
 
             GlobalStateMgr.getCurrentState().getEditLog().logUpdateHistoricalNode(
-                    new UpdateHistoricalNodeLog(warehouse, updateTime, backendIds, null));
-            LOG.info("update historical backend nodes, warehouse: {}, nodeIds: {}", warehouse, backendIds.toString());
+                    new UpdateHistoricalNodeLog(warehouseId, workerGroupId, updateTime, backendIds, null),
+                    wal -> replayUpdateHistoricalNode((UpdateHistoricalNodeLog) wal));
+            LOG.info("update historical backend nodes, warehouseId: {}, workerGroupId: {}, nodeIds: {}", warehouseId,
+                    workerGroupId, backendIds.toString());
         }
     }
 
     // Final entry of adding backend
-    private void addBackend(String host, int heartbeatPort, String warehouse) throws DdlException {
+    private void addBackend(String host, int heartbeatPort, String warehouse, String cnGroupName) throws DdlException {
         Backend newBackend = new Backend(GlobalStateMgr.getCurrentState().getNextId(), host, heartbeatPort);
-        // add backend to DEFAULT_CLUSTER
-        setBackendOwner(newBackend);
-        addComputeNodeToWarehouse(newBackend, warehouse);
+        newBackend.setBackendState(BackendState.using);
+        // NOTICE: this will not update the state of warehouse, only set WarehouseId and groupId of newBackend.
+        addComputeNodeToWarehouse(newBackend, warehouse, cnGroupName);
 
         // try to record the historical backend nodes
-        tryUpdateHistoricalBackends(warehouse);
-
-        // update idToBackend
-        idToBackendRef.put(newBackend.getId(), newBackend);
-
-        // set new backend's report version as 0L
-        Map<Long, AtomicLong> copiedReportVersions = Maps.newHashMap(idToReportVersionRef);
-        copiedReportVersions.put(newBackend.getId(), new AtomicLong(0L));
-        idToReportVersionRef = ImmutableMap.copyOf(copiedReportVersions);
+        // This will trigger another wal persist if update historical nodes is enabled.
+        tryUpdateHistoricalBackends(newBackend.getWarehouseId(), newBackend.getWorkerGroupId());
 
         // log
-        GlobalStateMgr.getCurrentState().getEditLog().logAddBackend(newBackend);
+        GlobalStateMgr.getCurrentState().getEditLog().logAddBackend(newBackend, wal -> replayAddBackend((Backend) wal));
         LOG.info("finished to add {} ", newBackend);
 
-        // backends are changed, regenerated tablet number metrics
+        // backends are changed, regenerate tablet number metrics
+        // Only changed on leader node.
         MetricRepo.generateBackendsTabletMetrics();
     }
 
@@ -347,12 +367,12 @@ public class SystemInfoService implements GsonPostProcessable {
             throw new DdlException(String.format("backend [%s] not found", willBeModifiedHost));
         }
 
-        Backend preUpdateBackend = candidateBackends.get(0);
-        Backend updateBackend = idToBackendRef.get(preUpdateBackend.getId());
-        updateBackend.setHost(fqdn);
-
+        Backend backend = candidateBackends.get(0);
         // log
-        GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(updateBackend);
+        UpdateBackendInfo info = new UpdateBackendInfo(backend.getId());
+        info.setHost(fqdn);
+        GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(
+                info, wal -> replayBackendStateChange((UpdateBackendInfo) wal));
 
         // Message
         StringBuilder formatSb = new StringBuilder();
@@ -367,12 +387,12 @@ public class SystemInfoService implements GsonPostProcessable {
             }
             opMessage = String.format(
                     formatSb.toString(), willBeModifiedHost,
-                    updateBackend.getHeartbeatPort(), fqdn, candidateBackends.size() - 1);
+                    backend.getHeartbeatPort(), fqdn, candidateBackends.size() - 1);
         } else {
-            opMessage = String.format(formatSb.toString(), willBeModifiedHost, updateBackend.getHeartbeatPort(), fqdn);
+            opMessage = String.format(formatSb.toString(), willBeModifiedHost, backend.getHeartbeatPort(), fqdn);
         }
         ShowResultSetMetaData.Builder builder = ShowResultSetMetaData.builder();
-        builder.addColumn(new Column("Message", ScalarType.createVarchar(1024)));
+        builder.addColumn(new Column("Message", TypeFactory.createVarcharType(1024)));
         List<List<String>> messageResult = new ArrayList<>();
         messageResult.add(Collections.singletonList(opMessage));
         return new ShowResultSet(builder.build(), messageResult);
@@ -390,34 +410,160 @@ public class SystemInfoService implements GsonPostProcessable {
         }
 
         ShowResultSetMetaData.Builder builder = ShowResultSetMetaData.builder();
-        builder.addColumn(new Column("Message", ScalarType.createVarchar(1024)));
+        builder.addColumn(new Column("Message", TypeFactory.createVarcharType(1024)));
         List<List<String>> messageResult = new ArrayList<>();
 
         // update backend based on properties
+        Map<String, String> location = new HashMap<>();
         for (Map.Entry<String, String> entry : properties.entrySet()) {
             if (entry.getKey().equals(AlterSystemStmtAnalyzer.PROP_KEY_LOCATION)) {
-                Map<String, String> location = new HashMap<>();
                 // "" means clean backend location label
                 if (entry.getValue().isEmpty()) {
-                    backend.setLocation(location);
                     continue;
                 }
                 String[] locKV = entry.getValue().split(":");
                 location.put(locKV[0].trim(), locKV[1].trim());
-                backend.setLocation(location);
-                String opMessage = String.format("%s:%d's location has been modified to %s",
-                        backend.getHost(), backend.getHeartbeatPort(), properties);
-                messageResult.add(Collections.singletonList(opMessage));
             } else {
                 throw new UnsupportedOperationException("unsupported property: " + entry.getKey());
             }
         }
 
         // persistence
-        GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(backend);
+        UpdateBackendInfo info = new UpdateBackendInfo(backend.getId());
+        info.setLocation(location);
+        GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(
+                info, wal -> replayBackendStateChange((UpdateBackendInfo) wal));
 
+        String opMessage = String.format("%s:%d's location has been modified to %s",
+                backend.getHost(), backend.getHeartbeatPort(), properties);
+        messageResult.add(Collections.singletonList(opMessage));
         // Return message
         return new ShowResultSet(builder.build(), messageResult);
+    }
+
+    public void decommissionBackend(DecommissionBackendClause decommissionBackendClause) throws DdlException {
+        /*
+         * check if the specified backends can be decommissioned
+         * 1. backend should exist.
+         * 2. after decommission, the remaining backend num should meet the replication num.
+         * 3. after decommission, The remaining space capacity can store data on decommissioned backends.
+         */
+
+        List<Backend> decommissionBackends = Lists.newArrayList();
+        Set<Long> decommissionIds = new HashSet<>();
+
+        long needCapacity = 0L;
+        long releaseCapacity = 0L;
+        // check if exist
+        for (HostPort hostPort : decommissionBackendClause.getHostPortPairs()) {
+            Backend backend = getBackendWithHeartbeatPort(hostPort.getHost(), hostPort.getPort());
+            if (backend == null) {
+                throw new DdlException("Backend does not exist[" +
+                        NetUtils.getHostPortInAccessibleFormat(hostPort.getHost(), hostPort.getPort()) + "]");
+            }
+            if (backend.isDecommissioned()) {
+                // already under decommission, ignore it
+                LOG.info(backend.getAddress() + " has already been decommissioned and will be ignored.");
+                continue;
+            }
+            needCapacity += backend.getDataUsedCapacityB();
+            releaseCapacity += backend.getAvailableCapacityB();
+            decommissionBackends.add(backend);
+            decommissionIds.add(backend.getId());
+        }
+
+        if (decommissionBackends.isEmpty()) {
+            LOG.info("No backends will be decommissioned.");
+        } else {
+            // when decommission backends in shared_data mode, unnecessary to check clusterCapacity or table replica
+            if (RunMode.isSharedNothingMode()) {
+                if (getClusterAvailableCapacityB() - releaseCapacity < needCapacity) {
+                    decommissionBackends.clear();
+                    throw new DdlException("It will cause insufficient disk space if these BEs are decommissioned.");
+                }
+
+                long availableBackendCnt = getAvailableBackendIds()
+                        .stream()
+                        .filter(beId -> !decommissionIds.contains(beId))
+                        .count();
+                short maxReplicationNum = 0;
+                LocalMetastore localMetastore = GlobalStateMgr.getCurrentState().getLocalMetastore();
+                for (long dbId : localMetastore.getDbIds()) {
+                    Database db = localMetastore.getDb(dbId);
+                    if (db == null || db.isStatisticsDatabase()) {
+                        // system database can handle the decommission by themselves
+                        continue;
+                    }
+                    Locker locker = new Locker();
+                    locker.lockDatabase(db.getId(), LockType.READ);
+                    try {
+                        for (Table table : GlobalStateMgr.getCurrentState().getLocalMetastore().getTables(db.getId())) {
+                            if (table instanceof OlapTable) {
+                                OlapTable olapTable = (OlapTable) table;
+                                PartitionInfo partitionInfo = olapTable.getPartitionInfo();
+                                for (long partitionId : olapTable.getAllPartitionIds()) {
+                                    short replicationNum = partitionInfo.getReplicationNum(partitionId);
+                                    if (replicationNum > maxReplicationNum) {
+                                        maxReplicationNum = replicationNum;
+                                        if (availableBackendCnt < maxReplicationNum) {
+                                            decommissionBackends.clear();
+                                            throw new DdlException(
+                                                    "It will cause insufficient BE number if these BEs " +
+                                                            "are decommissioned because the table " +
+                                                            db.getFullName() + "." + olapTable.getName() +
+                                                            " requires " + maxReplicationNum + " replicas.");
+
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } finally {
+                        locker.unLockDatabase(db.getId(), LockType.READ);
+                    }
+                }
+            }
+
+            // set backend's state as 'decommissioned'
+            // for decommission operation, here is no decommission job. the system handler will check
+            // all backend in decommission state
+            for (Backend backend : decommissionBackends) {
+                UpdateBackendInfo info = new UpdateBackendInfo(backend.getId());
+                info.setDecommissioned(true);
+                GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(
+                        info, wal -> replayBackendStateChange((UpdateBackendInfo) wal));
+                LOG.info("set backend {} to decommission", backend.getId());
+            }
+        }
+    }
+
+    public void cancelDecommissionBackend(CancelAlterSystemStmt cancelAlterSystemStmt) throws DdlException {
+        // check if backends is under decommission
+        List<Backend> backends = Lists.newArrayList();
+        List<HostPort> hostPortPairs = cancelAlterSystemStmt.getHostPortPairs();
+        for (HostPort hostPort : hostPortPairs) {
+            // check if exist
+            Backend backend = getBackendWithHeartbeatPort(hostPort.getHost(), hostPort.getPort());
+            if (backend == null) {
+                throw new DdlException("Backend does not exist[" +
+                        NetUtils.getHostPortInAccessibleFormat(hostPort.getHost(), hostPort.getPort()) + "]");
+            }
+
+            if (!backend.isDecommissioned()) {
+                // it's ok. just log
+                LOG.info("backend is not decommissioned[{}]", hostPort.getHost());
+                continue;
+            }
+
+            backends.add(backend);
+        }
+
+        for (Backend backend : backends) {
+            UpdateBackendInfo info = new UpdateBackendInfo(backend.getId());
+            info.setDecommissioned(false);
+            GlobalStateMgr.getCurrentState().getEditLog().logBackendStateChange(
+                    info, wal -> replayBackendStateChange((UpdateBackendInfo) wal));
+        }
     }
 
     public ShowResultSet modifyBackend(ModifyBackendClause modifyBackendClause) throws DdlException {
@@ -432,18 +578,19 @@ public class SystemInfoService implements GsonPostProcessable {
     }
 
     public void dropComputeNodes(DropComputeNodeClause dropComputeNodeClause) throws DdlException {
-        String warehouse = dropComputeNodeClause.getWarehouse();
-        // check if the warehouse exist
-        if (GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(warehouse) == null) {
-            ErrorReport.reportDdlException(ErrorCode.ERR_UNKNOWN_WAREHOUSE, String.format("name: %s", warehouse));
-        }
-
-        for (Pair<String, Integer> pair : dropComputeNodeClause.getHostPortPairs()) {
-            dropComputeNode(pair.first, pair.second, warehouse);
+        for (HostPort hostPort : dropComputeNodeClause.getHostPortPairs()) {
+            dropComputeNode(hostPort.getHost(), hostPort.getPort(), dropComputeNodeClause.getWarehouse(),
+                    dropComputeNodeClause.getCNGroupName());
         }
     }
 
-    public void dropComputeNode(String host, int heartbeatPort, String warehouse)
+    /*
+     * The arg warehouse and cnGroupName can be null or empty,
+     * which means ignore warehouse and cngroup when dropping compute node,
+     * otherwise they will be checked and an exception will be thrown if they are not matched.
+     * If the warehouse is null or empty, the cnGroupName will be ignored.
+     */
+    public void dropComputeNode(String host, int heartbeatPort, String warehouse, String cnGroupName)
             throws DdlException {
         ComputeNode dropComputeNode = getComputeNodeWithHeartbeatPort(host, heartbeatPort);
         if (dropComputeNode == null) {
@@ -451,50 +598,59 @@ public class SystemInfoService implements GsonPostProcessable {
                     NetUtils.getHostPortInAccessibleFormat(host, heartbeatPort) + "]");
         }
 
-        // check if warehouseName is right
-        Warehouse wh = GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(dropComputeNode.getWarehouseId());
-        if (wh != null && !warehouse.equalsIgnoreCase(wh.getName())) {
-            throw new DdlException("compute node [" + host + ":" + heartbeatPort +
-                    "] does not exist in warehouse " + warehouse);
+        if (!Strings.isNullOrEmpty(warehouse)) {
+            // check if the warehouse exist
+            if (GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(warehouse) == null) {
+                ErrorReport.reportDdlException(ErrorCode.ERR_UNKNOWN_WAREHOUSE, String.format("name: %s", warehouse));
+            }
+
+            // check if warehouseName is right
+            Warehouse wh = GlobalStateMgr.getCurrentState().getWarehouseMgr()
+                    .getWarehouseAllowNull(dropComputeNode.getWarehouseId());
+            if (wh != null) {
+                if (!warehouse.equalsIgnoreCase(wh.getName())) {
+                    throw new DdlException("compute node [" + host + ":" + heartbeatPort +
+                            "] does not exist in warehouse " + warehouse);
+                }
+                if (!Strings.isNullOrEmpty(cnGroupName)) {
+                    // validate cnGroupName if provided
+                    wh.validateRemoveNodeFromCNGroup(dropComputeNode, cnGroupName);
+                }
+            }
+            // Allow drop compute node if `wh` is null for whatever reason
         }
 
         // try to record the historical backend nodes
-        tryUpdateHistoricalComputeNodes(warehouse);
-
-        // update idToComputeNode
-        idToComputeNodeRef.remove(dropComputeNode.getId());
-
-        // remove from BackendCoreStat
-        BackendResourceStat.getInstance().removeBe(dropComputeNode.getId());
+        tryUpdateHistoricalComputeNodes(dropComputeNode.getWarehouseId(), dropComputeNode.getWorkerGroupId());
 
         // remove worker
         if (RunMode.isSharedDataMode()) {
             int starletPort = dropComputeNode.getStarletPort();
-            // only need to remove worker after be reported its staretPort
+            // only need to remove worker after be reported its starletPort
             if (starletPort != 0) {
                 String workerAddr = NetUtils.getHostPortInAccessibleFormat(dropComputeNode.getHost(), starletPort);
-                GlobalStateMgr.getCurrentState().getStarOSAgent().removeWorker(workerAddr, dropComputeNode.getWorkerGroupId());
+                GlobalStateMgr.getCurrentState().getStarOSAgent()
+                        .removeWorker(workerAddr, dropComputeNode.getWorkerGroupId());
             }
         }
 
         // log
-        GlobalStateMgr.getCurrentState().getEditLog()
-                .logDropComputeNode(new DropComputeNodeLog(dropComputeNode.getId()));
+        GlobalStateMgr.getCurrentState().getEditLog().logDropComputeNode(
+                new DropComputeNodeLog(dropComputeNode.getId()),
+                wal -> removeComputeNode((DropComputeNodeLog) wal));
         LOG.info("finished to drop {}", dropComputeNode);
+
+        // compute nodes are changed, regenerate tablet number metrics
+        MetricRepo.generateBackendsTabletMetrics();
     }
 
     public void dropBackends(DropBackendClause dropBackendClause) throws DdlException {
-        List<Pair<String, Integer>> hostPortPairs = dropBackendClause.getHostPortPairs();
+        List<HostPort> hostPortPairs = dropBackendClause.getHostPortPairs();
         boolean needCheckWithoutForce = !dropBackendClause.isForce();
 
-        String warehouse = dropBackendClause.getWarehouse();
-        // check if the warehouse exist
-        if (GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(warehouse) == null) {
-            ErrorReport.reportDdlException(ErrorCode.ERR_UNKNOWN_WAREHOUSE, String.format("name: %s", warehouse));
-        }
-
-        for (Pair<String, Integer> pair : hostPortPairs) {
-            dropBackend(pair.first, pair.second, warehouse, needCheckWithoutForce);
+        for (HostPort hostPort : hostPortPairs) {
+            dropBackend(hostPort.getHost(), hostPort.getPort(), dropBackendClause.getWarehouse(), dropBackendClause.cngroupName,
+                    needCheckWithoutForce);
         }
     }
 
@@ -505,7 +661,7 @@ public class SystemInfoService implements GsonPostProcessable {
             throw new DdlException("Backend[" + backendId + "] does not exist");
         }
 
-        dropBackend(backend.getHost(), backend.getHeartbeatPort(), WarehouseManager.DEFAULT_WAREHOUSE_NAME, false);
+        dropBackend(backend.getHost(), backend.getHeartbeatPort(), WarehouseManager.DEFAULT_WAREHOUSE_NAME, "", false);
     }
 
     protected void checkWhenNotForceDrop(Backend droppedBackend) {
@@ -531,7 +687,7 @@ public class SystemInfoService implements GsonPostProcessable {
                                     db.getOriginName(), table.getName(), droppedBackend.getHost(),
                                     droppedBackend.getHeartbeatPort(), db.getOriginName(), table.getName());
 
-                            partition.getMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)
+                            partition.getAllMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)
                                     .forEach(rollupIdx -> {
                                         boolean existIntersection = rollupIdx.getTablets().stream()
                                                 .map(Tablet::getId).anyMatch(tabletIds::contains);
@@ -547,8 +703,15 @@ public class SystemInfoService implements GsonPostProcessable {
         });
     }
 
-    // final entry of dropping backend
-    public void dropBackend(String host, int heartbeatPort, String warehouse, boolean needCheckWithoutForce) throws DdlException {
+    /*
+     * Final entry of dropping backend.
+     * The arg warehouse and cnGroupName can be null or empty,
+     * which means ignore warehouse and cngroup when dropping compute node,
+     * otherwise they will be checked and an exception will be thrown if they are not matched.
+     * If the warehouse is null or empty, the cnGroupName will be ignored.
+     */
+    public void dropBackend(String host, int heartbeatPort, String warehouse, String cnGroupName,
+                            boolean needCheckWithoutForce) throws DdlException {
         Backend droppedBackend = getBackendWithHeartbeatPort(host, heartbeatPort);
 
         if (droppedBackend == null) {
@@ -556,14 +719,29 @@ public class SystemInfoService implements GsonPostProcessable {
                     NetUtils.getHostPortInAccessibleFormat(host, heartbeatPort) + "]");
         }
 
-        // check if warehouseName is right
-        Warehouse wh = GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(droppedBackend.getWarehouseId());
-        if (wh != null && !warehouse.equalsIgnoreCase(wh.getName())) {
-            LOG.warn("warehouseName in dropBackends is not equal, " +
-                            "warehouseName from dropBackendClause is {}, while actual one is {}",
-                    warehouse, wh.getName());
-            throw new DdlException("backend [" + host + ":" + heartbeatPort +
-                    "] does not exist in warehouse " + warehouse);
+        if (!Strings.isNullOrEmpty(warehouse)) {
+            // check if the warehouse exist
+            if (GlobalStateMgr.getCurrentState().getWarehouseMgr().getWarehouseAllowNull(warehouse) == null) {
+                ErrorReport.reportDdlException(ErrorCode.ERR_UNKNOWN_WAREHOUSE, String.format("name: %s", warehouse));
+            }
+
+            // check if warehouseName is right
+            Warehouse wh = GlobalStateMgr.getCurrentState().getWarehouseMgr()
+                    .getWarehouseAllowNull(droppedBackend.getWarehouseId());
+            if (wh != null) {
+                if (!warehouse.equalsIgnoreCase(wh.getName())) {
+                    LOG.warn("warehouseName in dropBackends is not equal, " +
+                                    "warehouseName from dropBackendClause is {}, while actual one is {}",
+                            warehouse, wh.getName());
+                    throw new DdlException("backend [" + host + ":" + heartbeatPort +
+                            "] does not exist in warehouse " + warehouse);
+                }
+                if (!Strings.isNullOrEmpty(cnGroupName)) {
+                    // validate cnGroupName if provided
+                    wh.validateRemoveNodeFromCNGroup(droppedBackend, cnGroupName);
+                }
+            }
+            // allow dropping the node if `wh` is null for whatever reason
         }
 
         if (needCheckWithoutForce) {
@@ -575,34 +753,25 @@ public class SystemInfoService implements GsonPostProcessable {
         }
 
         // try to record the historical backend nodes
-        tryUpdateHistoricalBackends(warehouse);
-
-        // update idToBackend
-        idToBackendRef.remove(droppedBackend.getId());
-
-        // update idToReportVersion
-        Map<Long, AtomicLong> copiedReportVersions = Maps.newHashMap(idToReportVersionRef);
-        copiedReportVersions.remove(droppedBackend.getId());
-        idToReportVersionRef = ImmutableMap.copyOf(copiedReportVersions);
-
-        // remove from BackendCoreStat
-        BackendResourceStat.getInstance().removeBe(droppedBackend.getId());
+        tryUpdateHistoricalBackends(droppedBackend.getWarehouseId(), droppedBackend.getWorkerGroupId());
 
         // remove worker
         if (RunMode.isSharedDataMode()) {
             int starletPort = droppedBackend.getStarletPort();
-            // only need to remove worker after be reported its staretPort
+            // only need to remove worker after be reported its starletPort
             if (starletPort != 0) {
                 String workerAddr = NetUtils.getHostPortInAccessibleFormat(droppedBackend.getHost(), starletPort);
-                GlobalStateMgr.getCurrentState().getStarOSAgent().removeWorker(workerAddr, droppedBackend.getWorkerGroupId());
+                GlobalStateMgr.getCurrentState().getStarOSAgent()
+                        .removeWorker(workerAddr, droppedBackend.getWorkerGroupId());
             }
         }
 
         // log
-        GlobalStateMgr.getCurrentState().getEditLog().logDropBackend(droppedBackend);
+        GlobalStateMgr.getCurrentState().getEditLog().logDropBackend(
+                new DropBackendInfo(droppedBackend.getId()), wal -> removeBackend((DropBackendInfo) wal));
         LOG.info("finished to drop {}", droppedBackend);
 
-        // backends are changed, regenerated tablet number metrics
+        // backends are changed, regenerate tablet number metrics
         MetricRepo.generateBackendsTabletMetrics();
     }
 
@@ -629,30 +798,34 @@ public class SystemInfoService implements GsonPostProcessable {
     public void decommissionDisks(String beHostPort, List<String> diskList) throws DdlException {
         Backend backend = getBackendByHostPort(beHostPort);
         for (String disk : diskList) {
-            backend.decommissionDisk(disk);
+            backend.checkDecommissionDisk(disk);
         }
 
-        GlobalStateMgr.getCurrentState().getEditLog()
-                .logDecommissionDisk(new DecommissionDiskInfo(backend.getId(), diskList));
+        GlobalStateMgr.getCurrentState().getEditLog().logDecommissionDisk(
+                new DecommissionDiskInfo(backend.getId(), diskList),
+                wal -> replayDecommissionDisks((DecommissionDiskInfo) wal));
     }
 
     public void cancelDecommissionDisks(String beHostPort, List<String> diskList) throws DdlException {
         Backend backend = getBackendByHostPort(beHostPort);
         for (String disk : diskList) {
-            backend.cancelDecommissionDisk(disk);
+            backend.checkCancelDecommissionDisk(disk);
         }
 
-        GlobalStateMgr.getCurrentState().getEditLog()
-                .logCancelDecommissionDisk(new CancelDecommissionDiskInfo(backend.getId(), diskList));
+        GlobalStateMgr.getCurrentState().getEditLog().logCancelDecommissionDisk(
+                new CancelDecommissionDiskInfo(backend.getId(), diskList),
+                wal -> replayCancelDecommissionDisks((CancelDecommissionDiskInfo) wal));
     }
 
     public void disableDisks(String beHostPort, List<String> diskList) throws DdlException {
         Backend backend = getBackendByHostPort(beHostPort);
         for (String disk : diskList) {
-            backend.disableDisk(disk);
+            backend.checkDisableDisk(disk);
         }
 
-        GlobalStateMgr.getCurrentState().getEditLog().logDisableDisk(new DisableDiskInfo(backend.getId(), diskList));
+        GlobalStateMgr.getCurrentState().getEditLog().logDisableDisk(
+                new DisableDiskInfo(backend.getId(), diskList),
+                wal -> replayDisableDisks((DisableDiskInfo) wal));
     }
 
     public void replayDecommissionDisks(DecommissionDiskInfo info) {
@@ -785,6 +958,11 @@ public class SystemInfoService implements GsonPostProcessable {
     public boolean checkBackendAlive(long backendId) {
         Backend backend = idToBackendRef.get(backendId);
         return backend != null && backend.isAlive();
+    }
+
+    public boolean checkComputeNodeAlive(long cnId) {
+        ComputeNode computeNode = idToComputeNodeRef.get(cnId);
+        return computeNode != null && computeNode.isAlive();
     }
 
     public ComputeNode getComputeNodeWithHeartbeatPort(String host, int heartPort) {
@@ -1054,8 +1232,10 @@ public class SystemInfoService implements GsonPostProcessable {
         }
     }
 
+    // FOR TEST ONLY
     public void clear() {
         this.idToBackendRef = new ConcurrentHashMap<>();
+        this.idToComputeNodeRef = new ConcurrentHashMap<>();
         this.idToReportVersionRef = ImmutableMap.of();
     }
 
@@ -1105,8 +1285,6 @@ public class SystemInfoService implements GsonPostProcessable {
 
     public void replayAddComputeNode(ComputeNode newComputeNode) {
         // update idToComputeNode
-        newComputeNode.setBackendState(BackendState.using);
-
         idToComputeNodeRef.put(newComputeNode.getId(), newComputeNode);
     }
 
@@ -1120,16 +1298,29 @@ public class SystemInfoService implements GsonPostProcessable {
         idToReportVersionRef = ImmutableMap.copyOf(copiedReportVersions);
     }
 
-    public void replayDropComputeNode(long computeNodeId) {
-        LOG.debug("replayDropComputeNode: {}", computeNodeId);
-
+    private ComputeNode removeComputeNode(DropComputeNodeLog dropComputeNodeLog) {
         // update idToComputeNode
-        ComputeNode cn = idToComputeNodeRef.remove(computeNodeId);
+        ComputeNode cn = idToComputeNodeRef.remove(dropComputeNodeLog.getComputeNodeId());
+        if (cn == null) {
+            LOG.error("compute node {} does not exist when remove compute node", dropComputeNodeLog.getComputeNodeId());
+            return null;
+        }
 
         // BackendCoreStat is a global state, checkpoint should not modify it.
         if (!GlobalStateMgr.isCheckpointThread()) {
             // remove from BackendCoreStat
-            BackendResourceStat.getInstance().removeBe(computeNodeId);
+            BackendResourceStat.getInstance().removeBe(cn.getWarehouseId(), dropComputeNodeLog.getComputeNodeId());
+        }
+
+        return cn;
+    }
+
+    public void replayDropComputeNode(DropComputeNodeLog dropComputeNodeLog) {
+        LOG.debug("replayDropComputeNode: {}", dropComputeNodeLog);
+
+        ComputeNode cn = removeComputeNode(dropComputeNodeLog);
+        if (cn == null) {
+            return;
         }
 
         // clear map in starosAgent
@@ -1143,10 +1334,13 @@ public class SystemInfoService implements GsonPostProcessable {
         }
     }
 
-    public void replayDropBackend(Backend backend) {
-        LOG.debug("replayDropBackend: {}", backend);
+    private Backend removeBackend(DropBackendInfo info) {
         // update idToBackend
-        idToBackendRef.remove(backend.getId());
+        Backend backend = idToBackendRef.remove(info.getId());
+        if (backend == null) {
+            LOG.error("backend {} does not exist when remove backend", info.getId());
+            return null;
+        }
 
         // update idToReportVersion
         Map<Long, AtomicLong> copiedReportVersions = Maps.newHashMap(idToReportVersionRef);
@@ -1156,7 +1350,17 @@ public class SystemInfoService implements GsonPostProcessable {
         // BackendCoreStat is a global state, checkpoint should not modify it.
         if (!GlobalStateMgr.isCheckpointThread()) {
             // remove from BackendCoreStat
-            BackendResourceStat.getInstance().removeBe(backend.getId());
+            BackendResourceStat.getInstance().removeBe(backend.getWarehouseId(), backend.getId());
+        }
+        return backend;
+    }
+
+    public void replayDropBackend(DropBackendInfo info) {
+        LOG.debug("replayDropBackend: {}", info.getId());
+
+        Backend backend = removeBackend(info);
+        if (backend == null) {
+            return;
         }
 
         // clear map in starosAgent
@@ -1175,37 +1379,50 @@ public class SystemInfoService implements GsonPostProcessable {
                 log.getWarehouse(), log.getUpdateTime(), log.getBackendIds(), log.getComputeNodeIds());
 
         HistoricalNodeMgr historicalNodeMgr = GlobalStateMgr.getCurrentState().getHistoricalNodeMgr();
+        long warehouseId = log.getWarehouseId();
+        long workerGroupId = log.getWorkerGroupId();
+
+        // To handle the old log format
+        if (log.getWarehouse() != null && log.getWarehouse().length() > 0 && warehouseId == 0 && workerGroupId == 0) {
+            final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+            Warehouse wh = warehouseManager.getWarehouseAllowNull(log.getWarehouse());
+            if (wh != null) {
+                warehouseId = wh.getId();
+                workerGroupId = StarOSAgent.DEFAULT_WORKER_GROUP_ID;
+            }
+        }
+
         if (log.getBackendIds() != null) {
-            historicalNodeMgr.updateHistoricalBackendIds(log.getBackendIds(), log.getUpdateTime(), log.getWarehouse());
+            historicalNodeMgr.updateHistoricalBackendIds(warehouseId, workerGroupId, log.getBackendIds(), log.getUpdateTime());
         }
         if (log.getComputeNodeIds() != null) {
-            historicalNodeMgr.updateHistoricalComputeNodeIds(log.getComputeNodeIds(), log.getUpdateTime(), log.getWarehouse());
+            historicalNodeMgr.updateHistoricalComputeNodeIds(warehouseId, workerGroupId, log.getComputeNodeIds(),
+                    log.getUpdateTime());
         }
     }
 
-    public void updateInMemoryStateBackend(Backend persistentState) {
-        long id = persistentState.getId();
-        Backend inMemoryState = getBackend(id);
-        if (inMemoryState == null) {
+    public void replayBackendStateChange(UpdateBackendInfo info) {
+        long id = info.getId();
+        Backend backend = getBackend(id);
+        if (backend == null) {
             // backend may already be dropped. this may happen when
             // 1. SystemHandler drop the decommission backend
             // 2. at same time, user try to cancel the decommission of that backend.
             // These two operations do not guarantee the order.
             return;
         }
-        inMemoryState.setBePort(persistentState.getBePort());
-        inMemoryState.setHost(persistentState.getHost());
-        inMemoryState.setAlive(persistentState.isAlive());
-        inMemoryState.setDecommissioned(persistentState.isDecommissioned());
-        inMemoryState.setHttpPort(persistentState.getHttpPort());
-        inMemoryState.setBeRpcPort(persistentState.getBeRpcPort());
-        inMemoryState.setBrpcPort(persistentState.getBrpcPort());
-        inMemoryState.setLastUpdateMs(persistentState.getLastUpdateMs());
-        inMemoryState.setLastStartTime(persistentState.getLastStartTime());
-        inMemoryState.setDisks(persistentState.getDisks());
-        inMemoryState.setBackendState(persistentState.getBackendState());
-        inMemoryState.setDecommissionType(persistentState.getDecommissionType());
-        inMemoryState.setLocation(persistentState.getLocation());
+        if (info.getDecommissioned() != null) {
+            backend.setDecommissioned(info.getDecommissioned());
+        }
+        if (info.getHost() != null) {
+            backend.setHost(info.getHost());
+        }
+        if (info.getLocation() != null) {
+            backend.setLocation(info.getLocation());
+        }
+        if (info.getDiskInfoMap() != null) {
+            backend.replayUpdateDiskInfo(info.getDiskInfoMap());
+        }
     }
 
     public long getClusterAvailableCapacityB() {
@@ -1300,6 +1517,15 @@ public class SystemInfoService implements GsonPostProcessable {
         LOG.debug("update path infos: {}", newPathInfos);
     }
 
+    public long getTotalCpuCores() {
+        return Stream.concat(
+                        idToBackendRef.values().stream(),
+                        idToComputeNodeRef.values().stream()
+                )
+                .mapToLong(ComputeNode::getCpuCores)
+                .sum();
+    }
+
     @Override
     public void gsonPostProcess() throws IOException {
         Map<Long, AtomicLong> idToReportVersion = new HashMap<>();
@@ -1312,12 +1538,14 @@ public class SystemInfoService implements GsonPostProcessable {
         if (!GlobalStateMgr.isCheckpointThread()) {
             // update BackendCoreStat
             for (ComputeNode node : idToBackendRef.values()) {
-                BackendResourceStat.getInstance().setNumHardwareCoresOfBe(node.getId(), node.getCpuCores());
-                BackendResourceStat.getInstance().setMemLimitBytesOfBe(node.getId(), node.getMemLimitBytes());
+                BackendResourceStat.getInstance().setNumCoresOfBe(node.getWarehouseId(), node.getId(), node.getCpuCores());
+                BackendResourceStat.getInstance()
+                        .setMemLimitBytesOfBe(node.getWarehouseId(), node.getId(), node.getMemLimitBytes());
             }
             for (ComputeNode node : idToComputeNodeRef.values()) {
-                BackendResourceStat.getInstance().setNumHardwareCoresOfBe(node.getId(), node.getCpuCores());
-                BackendResourceStat.getInstance().setMemLimitBytesOfBe(node.getId(), node.getMemLimitBytes());
+                BackendResourceStat.getInstance().setNumCoresOfBe(node.getWarehouseId(), node.getId(), node.getCpuCores());
+                BackendResourceStat.getInstance()
+                        .setMemLimitBytesOfBe(node.getWarehouseId(), node.getId(), node.getMemLimitBytes());
             }
         }
     }

@@ -324,6 +324,22 @@ PROPERTIES
   | azure.adls2.oauth2_client_secret  | 是       | 创建的新客户端（应用程序）密钥的值。                  |
   | azure.adls2.oauth2_client_endpoint | 是       | 服务主体或应用程序的 OAuth 2.0 令牌端点（v1）。       |
 
+- 要选择 Workload Identity 验证方法，请按以下方式配置 `StorageCredentialParams`：
+
+  ```SQL
+  "azure.adls2.oauth2_token_file" = "<path_to_token>",
+  "azure.adls2.oauth2_tenant_id" = "<service_principal_tenant_id>",
+  "azure.adls2.oauth2_client_id" = "<service_client_id>"
+  ```
+
+  以下表格描述了需要在 `StorageCredentialParams` 中配置的参数。
+
+  | **参数**                               | **必需** | **描述**                                              |
+  | ------------------------------------- | -------- | ----------------------------------------------------- |
+  | azure.adls2.oauth2_token_file         | 是       | Azure Workload Identity Webhook 投射到 Pod 中的 OAuth2 令牌文件的绝对文件路径。 |
+  | azure.adls2.oauth2_tenant_id          | 是       | 您要访问数据的租户的 ID。                             |
+  | azure.adls2.oauth2_client_id          | 是       | 与 Workload Identity 关联的 Azure AD 应用程序（用户分配的托管身份或应用程序注册）的客户端 ID（应用程序 ID）。 |
+
 ###### Azure Data Lake Storage Gen1
 
 如果选择 Data Lake Storage Gen1 作为存储，请采取以下操作之一：
@@ -707,6 +723,21 @@ PROPERTIES
   );
   ```
 
+- 如果选择 Workload Identity 验证方法，请运行如下命令：
+
+  ```SQL
+  CREATE EXTERNAL CATALOG unified_catalog_hms
+  PROPERTIES
+  (
+      "type" = "unified",
+      "unified.metastore.type" = "hive",
+      "hive.metastore.uris" = "thrift://xx.xx.xx.xx:9083",
+      "azure.adls2.oauth2_token_file" = "/var/run/secrets/azure/tokens/azure-identity-token",
+      "azure.adls2.oauth2_tenant_id" = "<service_principal_tenant_id>",
+      "azure.adls2.oauth2_client_id" = "<service_client_id>"
+  );
+  ```
+
 #### Google GCS
 
 - 如果选择基于 VM 的身份验证方法，请运行如下命令：
@@ -840,7 +871,7 @@ DROP CATALOG unified_catalog_glue;
 
 2. [切换到 Hive Catalog 和其中的数据库](#switch-to-a-unified-catalog-and-a-database-in-it)。
 
-3. 使用 [SELECT](../../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 查询指定数据库中的目标表：
+3. 使用 [SELECT](../../sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT.md) 查询指定数据库中的目标表：
 
    ```SQL
    SELECT count(*) FROM <table_name> LIMIT 10
@@ -858,7 +889,7 @@ INSERT INTO unified_catalog.test_database.test_table SELECT * FROM hive_table
 
 ## 在统一 catalog 中创建数据库
 
-与 StarRocks 的内部 catalog 类似，如果您在统一 catalog 上具有 CREATE DATABASE 权限，您可以使用 CREATE DATABASE 语句在该 catalog 中创建数据库。
+同 StarRocks 内部数据目录 (Internal Catalog) 一致，如果您拥有 Unified Catalog 的 [CREATE DATABASE](../../administration/user_privs/authorization/privilege_item.md#数据目录权限-catalog) 权限，那么您可以使用 [CREATE DATABASE](../../sql-reference/sql-statements/Database/CREATE_DATABASE.md) 在该 Unified Catalog 内创建数据库。
 
 > **注意**
 >
@@ -891,7 +922,7 @@ CREATE DATABASE <database_name>
 
 ## 从统一 catalog 中删除数据库
 
-与 StarRocks 的内部数据库类似，如果您在统一 catalog 中创建的数据库上具有 [DROP](../../administration/user_privs/user_privs.md#database) 权限，您可以使用 [DROP DATABASE](../../sql-reference/sql-statements/Database/DROP_DATABASE.md) 语句删除该数据库。您只能删除空数据库。
+同 StarRocks 内部数据库一致，如果您拥有 Unified Catalog 内数据库的 [DROP](../../administration/user_privs/authorization/privilege_item.md#数据库权限-database) 权限，那么您可以使用 [DROP DATABASE](../../sql-reference/sql-statements/Database/DROP_DATABASE.md) 来删除该数据库。仅支持删除空数据库。
 
 > **注意**
 >
@@ -909,7 +940,7 @@ DROP DATABASE <database_name>
 
 ## 在统一 catalog 中创建表
 
-与 StarRocks 的内部数据库类似，如果您在统一 catalog 中创建的数据库上具有 [CREATE TABLE](../../administration/user_privs/user_privs.md#database) 权限，您可以使用 [CREATE TABLE](../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE.md) 或 [CREATE TABLE AS SELECT ../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE_AS_SELECT.mdELECT.md) 语句在该数据库中创建表。
+同 StarRocks 内部数据库一致，如果您拥有 Unified Catalog 内数据库的 [CREATE TABLE](../../administration/user_privs/authorization/privilege_item.md#数据库权限-database) 权限，那么您可以使用 [CREATE TABLE](../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE.md) 或 [CREATE TABLE AS SELECT (CTAS)](../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE_AS_SELECT.md) 在该数据库下创建表。
 
 > **注意**
 >
@@ -943,7 +974,7 @@ PARTITION BY (id,dt);
 
 ## 将数据下沉到统一 catalog 中的表
 
-与 StarRocks 的内部表类似，如果您在统一 catalog 中创建的表上具有 [INSERT](../../administration/user_privs/user_privs.md#table) 权限，您可以使用 [INSERT](../../sql-reference/sql-statements/loading_unloading/INSERT.md) 语句将 StarRocks 表的数据下沉到该统一 catalog 表（目前仅支持 Parquet 格式的统一 catalog 表）。
+同 StarRocks 内表一致，如果您拥有 Unified Catalog 内表的 [INSERT](../../administration/user_privs/authorization/privilege_item.md#表权限-table) 权限，那么您可以使用 [INSERT](../../sql-reference/sql-statements/loading_unloading/INSERT.md) 将 StarRocks 表数据写入到该表（当前仅支持写入到 Parquet 格式的 Unified Catalog 表）。
 
 > **注意**
 >
@@ -978,7 +1009,7 @@ VALUES
 
 ## 从统一 catalog 中删除表
 
-与 StarRocks 的内部表类似，如果您在统一 catalog 中创建的表上具有 [DROP](../../administration/user_privs/user_privs.md#table) 权限，您可以使用 [DROP TABLE](../../sql-reference/sql-statements/table_bucket_part_index/DROP_TABLE.md) 语句删除该表。
+同 StarRocks 内表一致，如果您拥有 Unified Catalog 内表的 [DROP](../../administration/user_privs/authorization/privilege_item.md#表权限-table) 权限，那么您可以使用 [DROP TABLE](../../sql-reference/sql-statements/table_bucket_part_index/DROP_TABLE.md) 来删除该表。
 
 > **注意**
 >

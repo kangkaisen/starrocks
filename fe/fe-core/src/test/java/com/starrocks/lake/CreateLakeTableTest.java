@@ -17,39 +17,56 @@ package com.starrocks.lake;
 import com.staros.proto.FileStoreInfo;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.DeltaLakeTable;
+import com.starrocks.catalog.LightWeightDeltaLakeTable;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Tablet;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.PropertyAnalyzer;
+import com.starrocks.connector.metastore.MetastoreTable;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ShowExecutor;
 import com.starrocks.qe.ShowResultSet;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
+import com.starrocks.service.FrontendServiceImpl;
 import com.starrocks.sql.ast.CreateDbStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.ShowCreateTableStmt;
 import com.starrocks.storagevolume.StorageVolume;
+import com.starrocks.thrift.TBatchGetTabletMetadataRequest;
+import com.starrocks.thrift.TBatchGetTabletMetadataResponse;
+import com.starrocks.thrift.TGetTabletMetadataRequest;
+import com.starrocks.thrift.TGetTabletMetadataResponse;
+import com.starrocks.thrift.TStatusCode;
+import com.starrocks.thrift.TTabletRange;
 import com.starrocks.utframe.UtFrameUtils;
+import io.delta.kernel.engine.Engine;
+import io.delta.kernel.internal.SnapshotImpl;
 import mockit.Mock;
 import mockit.MockUp;
 import org.apache.commons.lang3.reflect.FieldUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 public class CreateLakeTableTest {
     private static ConnectContext connectContext;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster(RunMode.SHARED_DATA);
         // create connect context
@@ -60,7 +77,7 @@ public class CreateLakeTableTest {
         GlobalStateMgr.getCurrentState().getLocalMetastore().createDb(createDbStmt.getFullDbName());
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
     }
 
@@ -72,13 +89,13 @@ public class CreateLakeTableTest {
     private void checkLakeTable(String dbName, String tableName) {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), tableName);
-        Assert.assertTrue(table.isCloudNativeTable());
+        Assertions.assertTrue(table.isCloudNativeTable());
     }
 
     private LakeTable getLakeTable(String dbName, String tableName) {
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), tableName);
-        Assert.assertTrue(table.isCloudNativeTable());
+        Assertions.assertTrue(table.isCloudNativeTable());
         return (LakeTable) table;
     }
 
@@ -127,13 +144,13 @@ public class CreateLakeTableTest {
         LakeTable table = getLakeTable("lake_test", "multi_partition_unique_key");
         String defaultFullPath = getDefaultStorageVolumeFullPath();
         String defaultTableFullPath = String.format("%s/db%d/%d", defaultFullPath, db.getId(), table.getId());
-        Assert.assertEquals(defaultTableFullPath, Objects.requireNonNull(table.getDefaultFilePathInfo()).getFullPath());
-        Assert.assertEquals(defaultTableFullPath + "/100",
+        Assertions.assertEquals(defaultTableFullPath, Objects.requireNonNull(table.getDefaultFilePathInfo()).getFullPath());
+        Assertions.assertEquals(defaultTableFullPath + "/100",
                 Objects.requireNonNull(table.getPartitionFilePathInfo(100)).getFullPath());
-        Assert.assertEquals(2, table.getMaxColUniqueId());
-        Assert.assertEquals(0, table.getColumn("key1").getUniqueId());
-        Assert.assertEquals(1, table.getColumn("key2").getUniqueId());
-        Assert.assertEquals(2, table.getColumn("v").getUniqueId());
+        Assertions.assertEquals(2, table.getMaxColUniqueId());
+        Assertions.assertEquals(0, table.getColumn("key1").getUniqueId());
+        Assertions.assertEquals(1, table.getColumn("key2").getUniqueId());
+        Assertions.assertEquals(2, table.getColumn("v").getUniqueId());
     }
 
     @Test
@@ -147,12 +164,12 @@ public class CreateLakeTableTest {
             LakeTable lakeTable = getLakeTable("lake_test", "single_partition_duplicate_key_cache");
             // check table property
             StorageInfo storageInfo = lakeTable.getTableProperty().getStorageInfo();
-            Assert.assertTrue(storageInfo.isEnableDataCache());
+            Assertions.assertTrue(storageInfo.isEnableDataCache());
             // check partition property
             long partitionId = lakeTable.getPartition("single_partition_duplicate_key_cache").getId();
             DataCacheInfo partitionDataCacheInfo = lakeTable.getPartitionInfo().getDataCacheInfo(partitionId);
-            Assert.assertTrue(partitionDataCacheInfo.isEnabled());
-            Assert.assertFalse(partitionDataCacheInfo.isAsyncWriteBack());
+            Assertions.assertTrue(partitionDataCacheInfo.isEnabled());
+            Assertions.assertFalse(partitionDataCacheInfo.isAsyncWriteBack());
         }
 
         ExceptionChecker.expectThrowsNoException(() -> createTable(
@@ -167,17 +184,17 @@ public class CreateLakeTableTest {
             LakeTable lakeTable = getLakeTable("lake_test", "multi_partition_aggregate_key_cache");
             // check table property
             StorageInfo storageInfo = lakeTable.getTableProperty().getStorageInfo();
-            Assert.assertTrue(storageInfo.isEnableDataCache());
+            Assertions.assertTrue(storageInfo.isEnableDataCache());
             // check partition property
             long partition1Id = lakeTable.getPartition("p1").getId();
             DataCacheInfo partition1DataCacheInfo =
                     lakeTable.getPartitionInfo().getDataCacheInfo(partition1Id);
-            Assert.assertTrue(partition1DataCacheInfo.isEnabled());
+            Assertions.assertTrue(partition1DataCacheInfo.isEnabled());
             long partition2Id = lakeTable.getPartition("p2").getId();
             DataCacheInfo partition2DataCacheInfo =
                     lakeTable.getPartitionInfo().getDataCacheInfo(partition2Id);
-            Assert.assertTrue(partition2DataCacheInfo.isEnabled());
-            Assert.assertFalse(partition2DataCacheInfo.isAsyncWriteBack());
+            Assertions.assertTrue(partition2DataCacheInfo.isEnabled());
+            Assertions.assertFalse(partition2DataCacheInfo.isAsyncWriteBack());
         }
 
         ExceptionChecker.expectThrowsNoException(() -> createTable(
@@ -193,16 +210,16 @@ public class CreateLakeTableTest {
             // check table property
             StorageInfo storageInfo = lakeTable.getTableProperty().getStorageInfo();
             // enabled by default if property key `datacache.enable` is absent
-            Assert.assertTrue(storageInfo.isEnableDataCache());
+            Assertions.assertTrue(storageInfo.isEnableDataCache());
             // check partition property
             long partition1Id = lakeTable.getPartition("p1").getId();
             DataCacheInfo partition1DataCacheInfo =
                     lakeTable.getPartitionInfo().getDataCacheInfo(partition1Id);
-            Assert.assertTrue(partition1DataCacheInfo.isEnabled());
+            Assertions.assertTrue(partition1DataCacheInfo.isEnabled());
             long partition2Id = lakeTable.getPartition("p2").getId();
             DataCacheInfo partition2DataCacheInfo =
                     lakeTable.getPartitionInfo().getDataCacheInfo(partition2Id);
-            Assert.assertFalse(partition2DataCacheInfo.isEnabled());
+            Assertions.assertFalse(partition2DataCacheInfo.isEnabled());
         }
 
         ExceptionChecker.expectThrowsNoException(() -> createTable(
@@ -227,17 +244,17 @@ public class CreateLakeTableTest {
             LakeTable lakeTable = getLakeTable("lake_test", "table_with_persistent_index");
             // check table persistentIndex
             boolean enablePersistentIndex = lakeTable.enablePersistentIndex();
-            Assert.assertTrue(enablePersistentIndex);
+            Assertions.assertTrue(enablePersistentIndex);
             // check table persistentIndexType
             String indexType = lakeTable.getPersistentIndexTypeString();
-            Assert.assertEquals(indexType, "CLOUD_NATIVE");
+            Assertions.assertEquals(indexType, "CLOUD_NATIVE");
 
             String sql = "show create table lake_test.table_with_persistent_index";
             ShowCreateTableStmt showCreateTableStmt =
                     (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
             ShowResultSet resultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
 
-            Assert.assertFalse(resultSet.getResultRows().isEmpty());
+            Assertions.assertFalse(resultSet.getResultRows().isEmpty());
         }
 
         UtFrameUtils.addMockComputeNode(50001);
@@ -259,14 +276,14 @@ public class CreateLakeTableTest {
             LakeTable lakeTable = getLakeTable("lake_test", "table_in_be_and_cn");
             // check table persistentIndex
             boolean enablePersistentIndex = lakeTable.enablePersistentIndex();
-            Assert.assertTrue(enablePersistentIndex);
+            Assertions.assertTrue(enablePersistentIndex);
 
             String sql = "show create table lake_test.table_in_be_and_cn";
             ShowCreateTableStmt showCreateTableStmt =
                     (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
             ShowResultSet resultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
 
-            Assert.assertNotEquals(0, resultSet.getResultRows().size());
+            Assertions.assertNotEquals(0, resultSet.getResultRows().size());
         }
     }
 
@@ -313,7 +330,7 @@ public class CreateLakeTableTest {
         // check explain result
         String sql = "select * from lake_test.duplicate_key_rowcount";
         String plan = UtFrameUtils.getVerboseFragmentPlan(connectContext, sql);
-        Assert.assertTrue(plan.contains("actualRows=6"));
+        Assertions.assertTrue(plan.contains("actualRows=6"));
     }
 
     @Test
@@ -347,17 +364,17 @@ public class CreateLakeTableTest {
             LakeTable lakeTable = getLakeTable("lake_test", "table_with_cloud_native_persistent_index");
             // check table persistentIndex
             boolean enablePersistentIndex = lakeTable.enablePersistentIndex();
-            Assert.assertTrue(enablePersistentIndex);
+            Assertions.assertTrue(enablePersistentIndex);
             // check table persistentIndexType
             String indexType = lakeTable.getPersistentIndexTypeString();
-            Assert.assertEquals("CLOUD_NATIVE", indexType);
+            Assertions.assertEquals("CLOUD_NATIVE", indexType);
 
             String sql = "show create table lake_test.table_with_cloud_native_persistent_index";
             ShowCreateTableStmt showCreateTableStmt =
                     (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
             ShowResultSet resultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
 
-            Assert.assertNotEquals(0, resultSet.getResultRows().size());
+            Assertions.assertNotEquals(0, resultSet.getResultRows().size());
         }
     }
 
@@ -371,10 +388,10 @@ public class CreateLakeTableTest {
                         "ROLLUP (mv1 (c0, c1));"));
         {
             LakeTable lakeTable = getLakeTable("lake_test", "table_with_rollup");
-            Assert.assertEquals(2, lakeTable.getShardGroupIds().size());
+            Assertions.assertEquals(2, lakeTable.getShardGroupIds().size());
 
-            Assert.assertEquals(2, lakeTable.getAllPartitions().stream().findAny().
-                    get().getDefaultPhysicalPartition().getMaterializedIndices(MaterializedIndex.IndexExtState.ALL).size());
+            Assertions.assertEquals(2, lakeTable.getAllPartitions().stream().findAny().
+                    get().getDefaultPhysicalPartition().getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL).size());
 
         }
     }
@@ -387,17 +404,38 @@ public class CreateLakeTableTest {
                         "distributed by hash(c0) buckets 2\n" +
                         "properties('enable_persistent_index' = 'true', 'persistent_index_type' = 'cloud_native');"));
         LakeTable lakeTable = getLakeTable("lake_test", "test_unique_id");
-        // Clear unique id first
-        lakeTable.setMaxColUniqueId(-1);
-        for (Column column : lakeTable.getColumns()) {
-            column.setUniqueId(-1);
+        {
+            // case 1:
+            // table created on version v3.2, then upgraded to v3.3 upwards,
+            // all unique ids include max unique id is -1
+            lakeTable.setMaxColUniqueId(-1);
+            for (Column column : lakeTable.getColumns()) {
+                column.setUniqueId(-1);
+            }
+            lakeTable.gsonPostProcess();
+            Assertions.assertEquals(3, lakeTable.getMaxColUniqueId());
+            Assertions.assertEquals(0, lakeTable.getColumn("c0").getUniqueId());
+            Assertions.assertEquals(1, lakeTable.getColumn("c1").getUniqueId());
+            Assertions.assertEquals(2, lakeTable.getColumn("c2").getUniqueId());
+            Assertions.assertEquals(3, lakeTable.getColumn("c3").getUniqueId());
         }
-        lakeTable.gsonPostProcess();
-        Assert.assertEquals(3, lakeTable.getMaxColUniqueId());
-        Assert.assertEquals(0, lakeTable.getColumn("c0").getUniqueId());
-        Assert.assertEquals(1, lakeTable.getColumn("c1").getUniqueId());
-        Assert.assertEquals(2, lakeTable.getColumn("c2").getUniqueId());
-        Assert.assertEquals(3, lakeTable.getColumn("c3").getUniqueId());
+
+        {
+            // case 1:
+            // 1. table created on version v3.3
+            // 2. cluster downgraded to v3.2
+            // 3. add one column on version v3.2, the column's unique id is -1
+            // 4. cluster upgraded to v3.3
+            lakeTable.setMaxColUniqueId(2);
+            lakeTable.getColumns().get(3).setUniqueId(-1);
+
+            lakeTable.gsonPostProcess();
+            Assertions.assertEquals(3, lakeTable.getMaxColUniqueId());
+            Assertions.assertEquals(0, lakeTable.getColumn("c0").getUniqueId());
+            Assertions.assertEquals(1, lakeTable.getColumn("c1").getUniqueId());
+            Assertions.assertEquals(2, lakeTable.getColumn("c2").getUniqueId());
+            Assertions.assertEquals(3, lakeTable.getColumn("c3").getUniqueId());
+        }
     }
 
     @Test
@@ -431,24 +469,342 @@ public class CreateLakeTableTest {
         LakeTable region = getLakeTable("lake_test", "region");
         LakeTable nation = getLakeTable("lake_test", "nation");
         Map<String, String> regionProps = region.getProperties();
-        Assert.assertTrue(regionProps.containsKey(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT));
+        Assertions.assertTrue(regionProps.containsKey(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT));
         Map<String, String> nationProps = nation.getProperties();
-        Assert.assertTrue(nationProps.containsKey(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT));
-        Assert.assertTrue(nationProps.containsKey(PropertyAnalyzer.PROPERTIES_FOREIGN_KEY_CONSTRAINT));
+        Assertions.assertTrue(nationProps.containsKey(PropertyAnalyzer.PROPERTIES_UNIQUE_CONSTRAINT));
+        Assertions.assertTrue(nationProps.containsKey(PropertyAnalyzer.PROPERTIES_FOREIGN_KEY_CONSTRAINT));
     }
 
     @Test
-    public void testCreateTableWithPartitionAggregation() throws Exception {
+    public void testCreateTableWithFileBundling() throws Exception {
         ExceptionChecker.expectThrowsNoException(() -> createTable(
-                "create table lake_test.dup_test_enable_partition_agg (key1 int, key2 varchar(10))\n" +
+                "create table lake_test.dup_test_file_bundling (key1 int, key2 varchar(10))\n" +
                         "distributed by hash(key1) buckets 3\n" +
-                        "properties('replication_num' = '1', 'enable_partition_aggregation' = 'true');"));
-        checkLakeTable("lake_test", "dup_test_enable_partition_agg");
+                        "properties('replication_num' = '1', 'file_bundling' = 'true');"));
+        checkLakeTable("lake_test", "dup_test_file_bundling");
 
-        String sql = "show create table lake_test.dup_test_enable_partition_agg";
+        String sql = "show create table lake_test.dup_test_file_bundling";
         ShowCreateTableStmt showCreateTableStmt =
                 (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
         ShowResultSet resultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
-        Assert.assertFalse(resultSet.getResultRows().isEmpty());
+        Assertions.assertFalse(resultSet.getResultRows().isEmpty());
+    }
+
+    @Test
+    public void testRangeTableWithRetentionCondition2() throws Exception {
+        ExceptionChecker.expectThrowsNoException(() -> createTable("CREATE TABLE lake_test.r1 \n" +
+                "(\n" +
+                "    dt date,\n" +
+                "    k2 int,\n" +
+                "    v1 int \n" +
+                ")\n" +
+                "PARTITION BY RANGE(dt)\n" +
+                "(\n" +
+                "    PARTITION p0 values [('2024-01-29'),('2024-01-30')),\n" +
+                "    PARTITION p1 values [('2024-01-30'),('2024-01-31')),\n" +
+                "    PARTITION p2 values [('2024-01-31'),('2024-02-01')),\n" +
+                "    PARTITION p3 values [('2024-02-01'),('2024-02-02')) \n" +
+                ")\n" +
+                "DISTRIBUTED BY HASH(k2) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "'replication_num' = '1',\n" +
+                "'partition_retention_condition' = 'dt > current_date() - interval 1 month'\n" +
+                ")"));
+        LakeTable r1 = getLakeTable("lake_test", "r1");
+        String retentionCondition = r1.getTableProperty().getPartitionRetentionCondition();
+        Assertions.assertEquals("dt > current_date() - interval 1 month", retentionCondition);
+
+        String sql = "show create table lake_test.r1";
+        ShowCreateTableStmt showCreateTableStmt =
+                (ShowCreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
+        ShowResultSet resultSet = ShowExecutor.execute(showCreateTableStmt, connectContext);
+        List<List<String>> result = resultSet.getResultRows();
+        Assertions.assertTrue(result.size() == 1);
+        Assertions.assertTrue(result.get(0).size() == 2);
+        final String expect = "CREATE TABLE `r1` (\n" +
+                "  `dt` date NULL COMMENT \"\",\n" +
+                "  `k2` int(11) NULL COMMENT \"\",\n" +
+                "  `v1` int(11) NULL COMMENT \"\"\n" +
+                ") ENGINE=OLAP \n" +
+                "DUPLICATE KEY(`dt`, `k2`, `v1`)\n" +
+                "COMMENT \"OLAP\"\n" +
+                "PARTITION BY RANGE(`dt`)\n" +
+                "(PARTITION p0 VALUES [(\"2024-01-29\"), (\"2024-01-30\")),\n" +
+                "PARTITION p1 VALUES [(\"2024-01-30\"), (\"2024-01-31\")),\n" +
+                "PARTITION p2 VALUES [(\"2024-01-31\"), (\"2024-02-01\")),\n" +
+                "PARTITION p3 VALUES [(\"2024-02-01\"), (\"2024-02-02\")))\n" +
+                "DISTRIBUTED BY HASH(`k2`) BUCKETS 3 \n" +
+                "PROPERTIES (\n" +
+                "\"cloud_native_fast_schema_evolution_v2\" = \"true\",\n" +
+                "\"compression\" = \"LZ4\",\n" +
+                "\"datacache.enable\" = \"true\",\n" +
+                "\"enable_async_write_back\" = \"false\",\n" +
+                "\"file_bundling\" = \"true\",\n" +
+                "\"partition_retention_condition\" = \"dt > current_date() - interval 1 month\",\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"storage_volume\" = \"builtin_storage_volume\"\n" +
+                ");";
+        Assertions.assertTrue(result.get(0).get(1).equals(expect));
+    }
+
+    @Test
+    public void testBasicFieldsCopied() {
+        SnapshotImpl snapshot = Mockito.mock(SnapshotImpl.class);
+        Engine engine = Mockito.mock(Engine.class);
+        MetastoreTable metastore = Mockito.mock(MetastoreTable.class);
+        io.delta.kernel.internal.actions.Metadata metadata = Mockito.mock(io.delta.kernel.internal.actions.Metadata.class);
+        Mockito.when(metastore.getCreateTime()).thenReturn(System.currentTimeMillis());
+        Mockito.when(snapshot.getMetadata()).thenReturn(metadata);
+        Mockito.when(metadata.getId()).thenReturn("test-id");
+
+        DeltaLakeTable table = new DeltaLakeTable(
+                1L, "cat", "db", "tbl",
+                Collections.emptyList(), Collections.emptyList(),
+                snapshot, engine, metastore);
+
+        LightWeightDeltaLakeTable light = new LightWeightDeltaLakeTable(table);
+
+        Assertions.assertEquals(table.getId(), light.getId());
+        Assertions.assertEquals(table.getName(), light.getName());
+        Assertions.assertEquals(table.getCatalogName(), light.getCatalogName());
+        Assertions.assertEquals(table.getCatalogDBName(), light.getCatalogDBName());
+        Assertions.assertEquals(table.getCatalogTableName(), light.getCatalogTableName());
+        Assertions.assertEquals(table.getTableIdentifier(), light.getTableIdentifier());
+        Assertions.assertTrue(light.getFullSchema().isEmpty(), "schema should be stripped");
+    }
+
+    @Test
+    public void testGetFileStatusThrows() {
+        SnapshotImpl snapshot = Mockito.mock(SnapshotImpl.class);
+        Engine engine = Mockito.mock(Engine.class);
+        MetastoreTable metastore = Mockito.mock(MetastoreTable.class);
+        io.delta.kernel.internal.actions.Metadata metadata = Mockito.mock(io.delta.kernel.internal.actions.Metadata.class);
+        Mockito.when(metastore.getCreateTime()).thenReturn(System.currentTimeMillis());
+        Mockito.when(snapshot.getMetadata()).thenReturn(metadata);
+        Mockito.when(metadata.getId()).thenReturn("test-id");
+
+        DeltaLakeTable table = new DeltaLakeTable(
+                1L, "cat", "db", "tbl",
+                Collections.emptyList(), Collections.emptyList(),
+                snapshot, engine, metastore);
+        LightWeightDeltaLakeTable light = new LightWeightDeltaLakeTable(table);
+        Assertions.assertThrows(UnsupportedOperationException.class, light::getDeltaSnapshot);
+    }
+
+    @Test
+    public void testGetTabletMetadata() throws Exception {
+        ExceptionChecker.expectThrowsNoException(() -> createTable(
+                "create table lake_test.tablet_metadata_rpc_test\n" +
+                        "(c0 int, c1 string)\n" +
+                        "duplicate key(c0)\n" +
+                        "distributed by hash(c0) buckets 2"));
+        LakeTable lakeTable = getLakeTable("lake_test", "tablet_metadata_rpc_test");
+        Partition partition = lakeTable.getPartitions().stream().findFirst().get();
+        MaterializedIndex index = partition.getDefaultPhysicalPartition().getLatestBaseIndex();
+        long tabletId = index.getTablets().get(0).getId();
+
+        FrontendServiceImpl impl = new FrontendServiceImpl(null);
+
+        // hash distribution tablet: returns OK with schema, no range
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tabletId);
+            req.setVersion(1);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+            Assertions.assertEquals(TStatusCode.OK, batchResp.getStatus().getStatus_code());
+            Assertions.assertEquals(1, batchResp.getResponsesSize());
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.OK, resp.getStatus().getStatus_code());
+            Assertions.assertTrue(resp.isSetMeta());
+            Assertions.assertEquals(tabletId, resp.getMeta().getTablet_id());
+            Assertions.assertTrue(resp.getMeta().isSetSchema());
+            Assertions.assertTrue(resp.getMeta().isSetCompression_type());
+            // hash distribution table should not have tablet_ranges set
+            Assertions.assertFalse(resp.getMeta().isSetTablet_ranges());
+        }
+
+        // version unset: defaults to 1, behaves identically
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tabletId);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.OK, resp.getStatus().getStatus_code());
+            Assertions.assertTrue(resp.isSetMeta());
+            Assertions.assertTrue(resp.getMeta().isSetSchema());
+        }
+
+        // unsupported version: returns NOT_IMPLEMENTED_ERROR
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tabletId);
+            req.setVersion(2);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.NOT_IMPLEMENTED_ERROR, resp.getStatus().getStatus_code());
+        }
+
+        // range distribution tablet: tablet_ranges should contain all tablets' ranges
+        {
+            boolean savedRangeDistribution = Config.enable_range_distribution;
+            try {
+                Config.enable_range_distribution = true;
+                connectContext.getSessionVariable().setEnableRangeDistribution(true);
+                ExceptionChecker.expectThrowsNoException(() -> createTable(
+                        "create table lake_test.tablet_metadata_range_test\n" +
+                                "(c0 int, c1 string)\n" +
+                                "PRIMARY KEY(c0)"));
+                LakeTable rangeTable = getLakeTable("lake_test", "tablet_metadata_range_test");
+                Assertions.assertTrue(rangeTable.isRangeDistribution());
+
+                Partition rangePart = rangeTable.getPartitions().stream().findFirst().get();
+                MaterializedIndex rangeIndex = rangePart.getDefaultPhysicalPartition().getLatestBaseIndex();
+                int numTablets = rangeIndex.getTablets().size();
+                long rangeTabletId = rangeIndex.getTablets().get(0).getId();
+                TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+                req.setTable_id(rangeTable.getId());
+                req.setPartition_id(rangePart.getDefaultPhysicalPartition().getId());
+                req.setIndex_id(rangeIndex.getId());
+                req.setTablet_id(rangeTabletId);
+                req.setVersion(1);
+                TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+                batchReq.addToRequests(req);
+                TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+                TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+                Assertions.assertEquals(TStatusCode.OK, resp.getStatus().getStatus_code());
+                Assertions.assertTrue(resp.isSetMeta());
+                Assertions.assertTrue(resp.getMeta().isSetTablet_ranges());
+                Assertions.assertEquals(numTablets, resp.getMeta().getTablet_ranges().size());
+                Assertions.assertTrue(resp.getMeta().getTablet_ranges().containsKey(rangeTabletId));
+                // initial range is Range.all(), so bounds are not set
+                TTabletRange tabletRange = resp.getMeta().getTablet_ranges().get(rangeTabletId);
+                Assertions.assertFalse(tabletRange.isSetLower_bound());
+                Assertions.assertFalse(tabletRange.isSetUpper_bound());
+            } finally {
+                Config.enable_range_distribution = savedRangeDistribution;
+                connectContext.getSessionVariable().setEnableRangeDistribution(false);
+            }
+        }
+
+        // non-existent tablet: returns NOT_FOUND
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(999999999L);
+            req.setPartition_id(1L);
+            req.setIndex_id(1L);
+            req.setTablet_id(999999999L);
+            req.setVersion(1);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+            Assertions.assertEquals(TStatusCode.OK, batchResp.getStatus().getStatus_code());
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.NOT_FOUND, resp.getStatus().getStatus_code());
+        }
+
+        // table_id not exist (tablet_id valid but table dropped): returns NOT_FOUND
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(999999999L);
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tabletId);
+            req.setVersion(1);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.NOT_FOUND, resp.getStatus().getStatus_code());
+        }
+
+        // partition_id not exist: returns NOT_FOUND
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(999999999L);
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tabletId);
+            req.setVersion(1);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.NOT_FOUND, resp.getStatus().getStatus_code());
+        }
+
+        // index_id not exist: returns NOT_FOUND
+        {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(999999999L);
+            req.setTablet_id(tabletId);
+            req.setVersion(1);
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            batchReq.addToRequests(req);
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+
+            TGetTabletMetadataResponse resp = batchResp.getResponses().get(0);
+            Assertions.assertEquals(TStatusCode.NOT_FOUND, resp.getStatus().getStatus_code());
+        }
+
+        // empty batch
+        {
+            TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+            TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+            Assertions.assertEquals(TStatusCode.OK, batchResp.getStatus().getStatus_code());
+            Assertions.assertFalse(batchResp.isSetResponses());
+        }
+    }
+
+    @Test
+    public void testGetTabletMetadataBatchSizeRejected() throws Exception {
+        // Multi-request batches are intentionally not implemented: see comment on
+        // getTabletMetadata. Verify that any batch with more than one request is rejected
+        // at the batch level and no per-request response is produced.
+        ExceptionChecker.expectThrowsNoException(() -> createTable(
+                "create table lake_test.tablet_metadata_batch_reject_test\n" +
+                        "(c0 int, c1 string)\n" +
+                        "duplicate key(c0)\n" +
+                        "distributed by hash(c0) buckets 2"));
+        LakeTable lakeTable = getLakeTable("lake_test", "tablet_metadata_batch_reject_test");
+        Partition partition = lakeTable.getPartitions().stream().findFirst().get();
+        MaterializedIndex index = partition.getDefaultPhysicalPartition().getLatestBaseIndex();
+
+        FrontendServiceImpl impl = new FrontendServiceImpl(null);
+        TBatchGetTabletMetadataRequest batchReq = new TBatchGetTabletMetadataRequest();
+        for (Tablet tablet : index.getTablets()) {
+            TGetTabletMetadataRequest req = new TGetTabletMetadataRequest();
+            req.setTable_id(lakeTable.getId());
+            req.setPartition_id(partition.getDefaultPhysicalPartition().getId());
+            req.setIndex_id(index.getId());
+            req.setTablet_id(tablet.getId());
+            req.setVersion(1);
+            batchReq.addToRequests(req);
+        }
+
+        TBatchGetTabletMetadataResponse batchResp = impl.getTabletMetadata(batchReq);
+        Assertions.assertEquals(TStatusCode.NOT_IMPLEMENTED_ERROR, batchResp.getStatus().getStatus_code());
+        Assertions.assertFalse(batchResp.isSetResponses());
     }
 }

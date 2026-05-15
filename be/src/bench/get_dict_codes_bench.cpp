@@ -14,18 +14,16 @@
 
 #include <benchmark/benchmark.h>
 
-#include <map>
 #include <random>
 #include <vector>
 
+#include "base/simd/batch_run_counter.h"
+#include "base/simd/simd.h"
+#include "base/string/slice.h"
 #include "column/column_helper.h"
 #include "column/nullable_column.h"
-#include "simd/batch_run_counter.h"
-#include "simd/simd.h"
-#include "util/slice.h"
 
-namespace starrocks {
-namespace parquet {
+namespace starrocks::parquet {
 
 static const int kDictSize = 4000;
 static const int kDictLength = 5;
@@ -88,7 +86,8 @@ static void BM_GetDictCodesWithMap(benchmark::State& state) {
         }
 
         auto* dict_nullable_column = down_cast<NullableColumn*>(column.get());
-        auto* dict_value_binary_column = down_cast<BinaryColumn*>(dict_nullable_column->data_column().get());
+        const auto* dict_value_binary_column =
+                down_cast<const BinaryColumn*>(dict_nullable_column->data_column().get());
         auto dict_values_filtered = dict_value_binary_column->get_data();
         if (!has_null) {
             dict_codes.reserve(dict_values_filtered.size());
@@ -239,7 +238,6 @@ BM_GetDictCodesWithFilterBatch32/960       0.001 ms        0.001 ms       779697
 BM_GetDictCodesWithFilterBatch32/980       0.001 ms        0.001 ms       796140
 BM_GetDictCodesWithFilterBatch32/1000      0.001 ms        0.001 ms       788616
 */
-} // namespace parquet
-} // namespace starrocks
+} // namespace starrocks::parquet
 
 BENCHMARK_MAIN();

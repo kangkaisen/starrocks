@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <base/testutil/assert.h>
 #include <benchmark/benchmark.h>
-#include <testutil/assert.h>
+
+#include <random>
 
 #include "column/binary_column.h"
-#include "util/random.h"
 
 namespace starrocks {
 

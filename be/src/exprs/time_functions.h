@@ -19,14 +19,21 @@
 #include "exprs/builtin_functions.h"
 #include "exprs/function_context.h"
 #include "exprs/function_helper.h"
-#include "runtime/datetime_value.h"
+#include "types/datetime_value.h"
 #include "types/logical_type.h"
-#include "util/timezone_hsscan.h"
 namespace starrocks {
 
 // TODO:
 class TimeFunctions {
 public:
+    /**
+     * Timeszone of now.
+     * @param: []
+     * @paramType columns: []
+     * @return ConstColumn A ConstColumn holding a String Value object.
+     */
+    DEFINE_VECTORIZED_FN(current_timezone);
+
     /**
      * Timestamp of now.
      * @param: []
@@ -120,6 +127,23 @@ public:
      *  - 7: Sunday
      */
     DEFINE_VECTORIZED_FN(day_of_week_iso);
+
+    /**
+     * Get day of week of the timestamp.
+     * syntax like select weekday("2023-01-03");
+     * result is 1
+     * @param context
+     * @param columns [TimestampColumn] Columns that hold timestamps.
+     * @return  IntColumn Day of the day_of_week_iso:
+     *  - 0: Monday
+     *  - 1: Tuesday
+     *  - 2: Wednesday
+     *  - 3: Thursday
+     *  - 4: Friday
+     *  - 5: Saturday
+     *  - 6: Sunday
+     */
+    DEFINE_VECTORIZED_FN(week_day);
 
     /**
      * Get day of the timestamp.
@@ -705,6 +729,14 @@ public:
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_32);
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_ms_64);
 
+    // TODO
+    // DEFINE_VECTORIZED_FN(year_from_unixtime);
+    // DEFINE_VECTORIZED_FN(month_from_unixtime);
+    // DEFINE_VECTORIZED_FN(day_from_unixtime);
+    DEFINE_VECTORIZED_FN(hour_from_unixtime);
+    // DEFINE_VECTORIZED_FN(minute_from_unixtime);
+    // DEFINE_VECTORIZED_FN(second_from_unixtime);
+
     // from_unix_datetime with format's auxiliary method
     static Status from_unix_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
@@ -712,6 +744,15 @@ public:
 
     static Status from_unix_timezone_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
     static Status from_unix_timezone_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    static Status _unixtime_to_datetime_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope,
+                                                bool timezone_aware);
+    static Status _unixtime_to_datetime_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    static Status unixtime_to_datetime_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    static Status unixtime_to_datetime_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    static Status unixtime_to_datetime_ntz_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    static Status unixtime_to_datetime_ntz_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
     /**
      * @param: [timestamp, formatstr]
@@ -722,6 +763,9 @@ public:
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_with_format_32);
     DEFINE_VECTORIZED_FN(from_unix_to_datetime_with_format_timezone);
 
+    DEFINE_VECTORIZED_FN(unixtime_to_datetime);
+    DEFINE_VECTORIZED_FN(unixtime_to_datetime_ntz);
+
     /**
      * return number of seconds in this day.
      * @param: [varchar]
@@ -729,6 +773,14 @@ public:
      * @return Int64Column
      */
     DEFINE_VECTORIZED_FN(time_to_sec);
+
+    /**
+     * return time
+     * @param: [int]
+     * @paramType columns: [BinaryColumn]
+     * @return Int64Column
+     */
+    DEFINE_VECTORIZED_FN(sec_to_time);
 
     /**
      * Returns the date of the first specified DOW (day of week) that occurs after the input date.
@@ -772,9 +824,11 @@ public:
      */
     DEFINE_VECTORIZED_FN(last_day);
     DEFINE_VECTORIZED_FN(last_day_with_format);
-
     static Status last_day_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
     static Status last_day_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+    // last_day with input date type arguments
+    DEFINE_VECTORIZED_FN(last_day_date);
+    DEFINE_VECTORIZED_FN(last_day_date_with_format);
 
     // Following const variables used to obtains number days of year
     constexpr static int NUMBER_OF_LEAP_YEAR = 366;
@@ -811,6 +865,14 @@ public:
      */
     DEFINE_VECTORIZED_FN(time_format);
 
+    DEFINE_VECTORIZED_FN(iceberg_years_since_epoch_date);
+    DEFINE_VECTORIZED_FN(iceberg_years_since_epoch_datetime);
+    DEFINE_VECTORIZED_FN(iceberg_months_since_epoch_date);
+    DEFINE_VECTORIZED_FN(iceberg_months_since_epoch_datetime);
+    DEFINE_VECTORIZED_FN(iceberg_days_since_epoch_date);
+    DEFINE_VECTORIZED_FN(iceberg_days_since_epoch_datetime);
+    DEFINE_VECTORIZED_FN(iceberg_hours_since_epoch_datetime);
+
 private:
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_from_unix_to_datetime);
 
@@ -823,8 +885,9 @@ private:
     DEFINE_VECTORIZED_FN_TEMPLATE(_t_to_unix_from_datetime_with_format);
 
     // internal approach to process string content, based on any string format.
-    static void str_to_date_internal(TimestampValue* ts, const Slice& fmt, const Slice& str,
-                                     ColumnBuilder<TYPE_DATETIME>* result);
+    // When allow_throw_exception is set and parsing fails, returns Status::InvalidArgument("Fail to parse date").
+    static Status str_to_date_internal(FunctionContext* context, TimestampValue* ts, const Slice& fmt, const Slice& str,
+                                       ColumnBuilder<TYPE_DATETIME>* result);
 
     static std::string convert_format(const Slice& format);
 
@@ -845,14 +908,22 @@ private:
 
     static StatusOr<ColumnPtr> convert_tz_const(FunctionContext* context, const Columns& columns,
                                                 const cctz::time_zone& from, const cctz::time_zone& to);
-
+    // last_day
+    template <LogicalType DATE_TYPE>
+    static StatusOr<ColumnPtr> _last_day(FunctionContext* context, const Columns& columns);
+    template <LogicalType DATE_TYPE>
     static StatusOr<ColumnPtr> _last_day_with_format(FunctionContext* context, const Columns& columns);
+    template <LogicalType DATE_TYPE>
     static StatusOr<ColumnPtr> _last_day_with_format_const(std::string& format_content, FunctionContext* context,
                                                            const Columns& columns);
     static Status _error_date_part();
 
+    template <LogicalType TIMESTAMP_TYPE>
+    static StatusOr<ColumnPtr> _unixtime_to_datetime(FunctionContext* context, const Columns& columns);
+
 public:
     static TimestampValue start_of_time_slice;
+    static TimestampValue unix_epoch;
     static std::string info_reported_by_time_slice;
 
     enum FormatType {

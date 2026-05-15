@@ -22,10 +22,11 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "base/hash/hash_std.hpp"
+#include "base/uid_util.h"
 #include "common/status.h"
 #include "runtime/record_batch_queue.h"
 #include "types/logical_type.h"
-#include "util/hash_util.hpp"
 
 namespace arrow {
 
@@ -36,11 +37,12 @@ namespace starrocks {
 
 class TUniqueId;
 class RecordBatchQueue;
+class MetricRegistry;
 using BlockQueueSharedPtr = std::shared_ptr<RecordBatchQueue>;
 
 class ResultQueueMgr {
 public:
-    ResultQueueMgr();
+    explicit ResultQueueMgr(MetricRegistry* metrics = nullptr);
     ~ResultQueueMgr();
 
     Status fetch_result(const TUniqueId& fragment_instance_id, std::shared_ptr<arrow::RecordBatch>* result, bool* eos);

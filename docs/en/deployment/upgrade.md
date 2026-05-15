@@ -6,6 +6,17 @@ displayed_sidebar: docs
 
 This topic describes how to upgrade your StarRocks cluster.
 
+## Important information
+
+:::important
+Before upgrading StarRocks you should:
+
+- Read the [release notes](https://docs.starrocks.io/releasenotes/release-3.5/) for the StarRocks version that you are upgrading to, and all versions between the current version and the target version and:
+  - Make notes of any behavior changes within StarRocks
+  - Make notes of any changes with integrations between StarRocks and external systems used for importing, exporting, visualization, etc
+- Verify the [deployment prerequisites](./deployment_prerequisites.md) for the target version. For example, StarRocks 3.5.x requires JDK 17 and StarRocks 3.4.x on Ubuntu requires JDK 11.
+:::
+
 ## Overview
 
 Review the information in this section before upgrading, and perform any recommended actions.
@@ -103,12 +114,14 @@ Having passed the upgrade availability test, you can first upgrade the BE nodes 
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # If a custom function (UDF) was used in the old version, you need to copy the old version's UDF directory to the new lib directory.
+   cp -r lib.bak/udf lib/
    ```
 
 3. Start the BE node.
 
    ```Bash
-   sh bin/start_be.sh --daemon
+   ./bin/start_be.sh --daemon
    ```
 
 4. Check if the BE node is started successfully.
@@ -136,12 +149,14 @@ Having passed the upgrade availability test, you can first upgrade the BE nodes 
    mv bin bin.bak
    cp -r /tmp/StarRocks-x.x.x/be/lib  .
    cp -r /tmp/StarRocks-x.x.x/be/bin  .
+   # If a custom function (UDF) was used in the old version, you need to copy the old version's UDF directory to the new lib directory.
+   cp -r lib.bak/udf lib/
    ```
 
 3. Start the CN node.
 
    ```Bash
-   sh bin/start_cn.sh --daemon
+   ./bin/start_cn.sh --daemon
    ```
 
 4. Check if the CN node is started successfully.
@@ -178,7 +193,7 @@ After upgrading all BE and CN nodes, you can then upgrade the FE nodes. You must
 3. Start the FE node.
 
    ```Bash
-   sh bin/start_fe.sh --daemon
+   ./bin/start_fe.sh --daemon
    ```
 
 4. Check if the FE node is started successfully.

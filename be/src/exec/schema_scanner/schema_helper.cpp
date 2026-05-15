@@ -15,22 +15,21 @@
 #include "exec/schema_scanner/schema_helper.h"
 
 #include <sstream>
-#include <utility>
 
+#include "base/network/network_util.h"
+#include "common/runtime_profile.h"
 #include "runtime/client_cache.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "util/network_util.h"
-#include "util/runtime_profile.h"
-#include "util/thrift_rpc_helper.h"
+#include "runtime/thrift_rpc_helper.h"
 
 namespace starrocks {
 
 Status SchemaHelper::_call_rpc(const SchemaScannerState& state,
-                               std::function<void(ClientConnection<FrontendServiceClient>&)> callback) {
+                               const std::function<void(ClientConnection<FrontendServiceClient>&)>& callback) {
     DCHECK(state.param);
     SCOPED_TIMER((state.param)->_rpc_timer);
-    return ThriftRpcHelper::rpc<FrontendServiceClient>(state.ip, state.port, std::move(callback), state.timeout_ms);
+    return ThriftRpcHelper::rpc<FrontendServiceClient>(state.ip, state.port, callback, state.timeout_ms);
 }
 
 Status SchemaHelper::get_db_names(const SchemaScannerState& state, const TGetDbsParams& request,
@@ -192,6 +191,13 @@ Status SchemaHelper::get_tablet_schedules(const SchemaScannerState& state, const
     });
 }
 
+Status SchemaHelper::get_fe_threads(const SchemaScannerState& state, const TGetFeThreadsRequest& request,
+                                    TGetFeThreadsResponse* response) {
+    return _call_rpc(state, [&request, &response](FrontendServiceConnection& client) {
+        client->getFeThreads(*response, request);
+    });
+}
+
 Status SchemaHelper::get_role_edges(const SchemaScannerState& state, const TGetRoleEdgesRequest& request,
                                     TGetRoleEdgesResponse* response) {
     return _call_rpc(state, [&request, &response](FrontendServiceConnection& client) {
@@ -211,6 +217,12 @@ Status SchemaHelper::get_partitions_meta(const SchemaScannerState& state, const 
     return _call_rpc(state, [&var_params, &var_result](FrontendServiceConnection& client) {
         client->getPartitionsMeta(*var_result, var_params);
     });
+}
+
+Status SchemaHelper::listRecycleBinCatalogs(const SchemaScannerState& state, const TListRecycleBinCatalogsParams& req,
+                                            TListRecycleBinCatalogsResult* res) {
+    return _call_rpc(state,
+                     [&req, &res](FrontendServiceConnection& client) { client->listRecycleBinCatalogs(*res, req); });
 }
 
 Status SchemaHelper::get_column_stats_usage(const SchemaScannerState& state, const TColumnStatsUsageReq& var_params,
@@ -264,6 +276,12 @@ Status SchemaHelper::get_warehouse_queries(const SchemaScannerState& state, cons
     return _call_rpc(state, [&request, &response](FrontendServiceConnection& client) {
         client->getWarehouseQueries(*response, request);
     });
+}
+
+Status SchemaHelper::get_tablet_reshard_jobs_info(const SchemaScannerState& state, const TTabletReshardJobsRequest& req,
+                                                  TTabletReshardJobsResponse* res) {
+    return _call_rpc(state,
+                     [&req, &res](FrontendServiceConnection& client) { client->getTabletReshardJobsInfo(*res, req); });
 }
 
 void fill_data_column_with_null(Column* data_column) {

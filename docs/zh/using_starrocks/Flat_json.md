@@ -30,7 +30,7 @@ FROM logs;
 - 冗余数据：查询需要读取整个JSON数据，其中包含许多冗余字段。
 
 StarRocks引入了Flat JSON功能，以提高JSON数据查询效率并降低使用JSON的复杂性。
-- 此功能从3.3.0版本开始提供，默认禁用，需要手动启用。
+- 此功能从3.3.0版本开始提供。在 v4.0 之前默认禁用，需要手动启用。从 v4.0 版本起，默认启用。
 
 ## 什么是Flat JSON
 
@@ -47,6 +47,44 @@ Flat JSON的核心原理是在导入时检测JSON数据，并从JSON数据中提
 
 在导入上述JSON数据时，字段`a`和`b`在大多数JSON数据中存在且数据类型相似（均为INT）。因此，可以从JSON中提取字段`a`和`b`的数据，并分别存储为两个INT列。当在查询中使用这两列时，可以直接读取其数据，而无需处理额外的JSON字段，从而减少处理JSON结构的计算开销。
 
+## 启用 Flat JSON
+
+从 v4.0 版本起，Flat JSON 默认全局启用。对于 v4.0 之前的版本，必须手动启用此功能。
+
+从 v4.0 版本起，此功能可在表级别进行配置。
+
+### 为 v4.0 前版本启用
+
+1. 修改 BE 配置：`enable_json_flat`，在 v4.0 版本之前默认为 `false`。修改方法参考 [配置 BE 参数](../administration/management/BE_configuration.md#configure-be-parameters)。
+2. 启用FE分区裁剪功能：
+
+   ```SQL
+   SET GLOBAL cbo_prune_json_subfield = true;
+   ```
+
+### 在表级别启用 Flat JSON 功能
+
+在表级别设置与 Flat JSON 相关的属性自 v4.0 起支持。
+
+1. 在创建表时，您可以设置 `flat_json.enable` 及其他与 Flat JSON 相关的属性。如需详细说明，请参阅 [CREATE TABLE](../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE.md#在表级别设置-flat-json-属性)。
+
+   或者，您可以使用 [ALTER TABLE](../sql-reference/sql-statements/table_bucket_part_index/ALTER_TABLE.md) 语句设置这些属性。
+
+   示例：
+
+   ```SQL
+   ALTER TABLE t1 SET ("flat_json.enable" = "true");
+   ALTER TABLE t1 SET ("flat_json.null.factor" = "0.1");
+   ALTER TABLE t1 SET ("flat_json.sparsity.factor" = "0.8");
+   ALTER TABLE t1 SET ("flat_json.column.max" = "90");
+   ```
+
+2. 启用FE分区裁剪功能：
+
+   ```SQL
+   SET GLOBAL cbo_prune_json_subfield = true;
+   ```
+
 ## 验证Flat JSON是否有效
 
 导入数据后，可以查询相应列的提取子列：
@@ -56,7 +94,7 @@ SELECT flat_json_meta(<json_column>)
 FROM <table_name>[_META_];
 ```
 
-您可以通过观察以下指标，在[Query Profile](../administration/query_profile_overview.md)中验证执行的查询是否受益于Flat JSON优化：
+您可以通过观察以下指标，在[Query Profile](../best_practices/query_tuning/query_profile_overview.md)中验证执行的查询是否受益于Flat JSON优化：
 - `PushdownAccessPaths`: 推送到存储的子字段路径数量。
 - `AccessPathHits`: Flat JSON子字段命中次数，包含具体JSON命中信息。
 - `AccessPathUnhits`: Flat JSON子字段未命中次数，包含具体JSON未命中信息。
@@ -64,29 +102,43 @@ FROM <table_name>[_META_];
 
 ## 使用示例
 
+- 方法 1：在创建包含 JSON 列的表时配置 Flat JSON 属性。该功能自 v4.0 版本起支持。
+
+  ```SQL
+  CREATE TABLE `t1` (
+      `k1` int,
+      `k2` JSON,
+      `k3` VARCHAR(20),
+      `k4` JSON
+  )             
+  DUPLICATE KEY(`k1`)
+  COMMENT "OLAP"
+  DISTRIBUTED BY HASH(`k1`) BUCKETS 2
+  PROPERTIES (
+      "replication_num" = "3",
+      "flat_json.enable" = "true",
+      "flat_json.null.factor" = "0.5",
+      "flat_json.sparsity.factor" = "0.5",
+      "flat_json.column.max" = "50");
+   INSERT INTO t1 (k1,k2) VALUES
+      (11,parse_json('{"str":"test_flat_json","Integer":123456,"Double":3.14158,"Object":{"c":"d"},"arr":[10,20,30],"Bool":false,"null":null}')),
+      (15,parse_json('{"str":"test_str0","Integer":11,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str1","Integer":111,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (16,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (17,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (18,parse_json('{"str":"test_str5","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (19,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (20,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}'));
+  ``` 
+
+- 方法 2：在创建表之前启用 Flat JSON。
+
 1. 启用该功能（参考其他章节）
 2. 创建包含JSON列的表。在此示例中，使用INSERT INTO将JSON数据加载到表中。
 
    ```SQL
-    -- 方法1：创建包含JSON列的表，并在创建时配置Flat JSON。仅支持存算一体集群。
-   CREATE TABLE `t1` (
-       `k1` int,
-       `k2` JSON,
-       `k3` VARCHAR(20),
-       `k4` JSON
-   )             
-   DUPLICATE KEY(`k1`)
-   COMMENT "OLAP"
-   DISTRIBUTED BY HASH(`k1`) BUCKETS 2
-   PROPERTIES (
-     "replication_num" = "3",
-     "flat_json.enable" = "true",
-     "flat_json.null.factor" = "0.5",
-     "flat_json.sparsity.factor" = "0.5",
-     "flat_json.column.max" = "50");
-   )
-   
-   -- 方法2：需要启用Flat JSON功能，此方法适用于存算一体和存算分离集群。
    CREATE TABLE `t1` (
        `k1` int,
        `k2` JSON,
@@ -97,19 +149,19 @@ FROM <table_name>[_META_];
    COMMENT "OLAP"
    DISTRIBUTED BY HASH(`k1`) BUCKETS 2
    PROPERTIES ("replication_num" = "3");   
-    
-      
+
+
    INSERT INTO t1 (k1,k2) VALUES
-   (11,parse_json('{"str":"test_flat_json","Integer":123456,"Double":3.14158,"Object":{"c":"d"},"arr":[10,20,30],"Bool":false,"null":null}')),
-   (15,parse_json('{"str":"test_str0","Integer":11,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (15,parse_json('{"str":"test_str1","Integer":111,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (16,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (17,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (18,parse_json('{"str":"test_str5","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (19,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
-   (20,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}'));
+      (11,parse_json('{"str":"test_flat_json","Integer":123456,"Double":3.14158,"Object":{"c":"d"},"arr":[10,20,30],"Bool":false,"null":null}')),
+      (15,parse_json('{"str":"test_str0","Integer":11,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str1","Integer":111,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (15,parse_json('{"str":"test_str2","Integer":222,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (16,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (17,parse_json('{"str":"test_str3","Integer":333,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (18,parse_json('{"str":"test_str5","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (19,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}')),
+      (20,parse_json('{"str":"test_str6","Integer":444,"Double":3.14,"Object":{"a":"b"},"arr":[1,2,3],"Bool":true,"null":null}'));
    ```
 
 3. 查看`k2`列的提取子列。
@@ -134,7 +186,7 @@ FROM <table_name>[_META_];
    SELECT get_json_string(k2,'\$.Bool') FROM t1 WHERE k2->'arr' = '[10,20,30]';
    ```
 
-7. 在[Query Profile](../administration/query_profile_overview.md)中查看Flat JSON相关指标
+7. 在[Query Profile](../best_practices/query_tuning/query_profile_overview.md)中查看Flat JSON相关指标
    ```yaml
       PushdownAccessPaths: 2
       - Table: t1
@@ -147,6 +199,28 @@ FROM <table_name>[_META_];
       - AccessPathUnhits: 0
       - JsonFlattern: 0ns
    ```
+
+## 相关变量及配置
+
+### 会话变量
+
+- `cbo_json_v2_rewrite`（默认：true）：启用 JSON v2 路径改写，将 `get_json_*` 等函数改写为直接访问 Flat JSON 子列，从而启用谓词下推和列裁剪。
+- `cbo_json_v2_dict_opt`（默认：true）：为路径改写生成的 Flat JSON 字符串子列启用低基数字典优化，可加速字符串表达式、GROUP BY 和 JOIN。
+
+示例：
+
+```SQL
+SET cbo_json_v2_rewrite = true;
+SET cbo_json_v2_dict_opt = true;
+```
+
+### BE 配置
+
+- [json_flat_null_factor](../administration/management/BE_configuration.md#json_flat_null_factor)
+- [json_flat_column_max](../administration/management/BE_configuration.md#json_flat_column_max)
+- [json_flat_sparsity_factor](../administration/management/BE_configuration.md#json_flat_sparsity_factor)
+- [enable_compaction_flat_json](../administration/management/BE_configuration.md#enable_compaction_flat_json)
+- [enable_lazy_dynamic_flat_json](../administration/management/BE_configuration.md#enable_lazy_dynamic_flat_json)
 
 ## 功能限制
 
@@ -169,32 +243,3 @@ StarRocks存算一体集群从v3.3.0开始支持Flat JSON，存算分离集群�
 - Flat JSON提取的结果分为常用列和保留字段列。当所有JSON Schema一致时，不会生成保留字段列。
 - Flat JSON仅存储常用字段列和保留字段列，不额外存储原始JSON数据。
 - 在加载数据时，常用字段将自动推断为BIGINT/LARGEINT/DOUBLE/STRING类型。无法识别的类型将推断为JSON类型，保留字段列将存储为JSON类型。
-
-## 启用Flat JSON功能（仅支持存算一体集群）
-
-1. 在创建表时，可以在表参数中设置`flat_json.enable`属性。参考[表创建](../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE.md)。
-   Flat JSON功能也可以通过直接修改表属性来启用或重新配置。示例：
-   ```SQL
-   alter table t1 set ("flat_json.enable" = "true")
-   
-   alter table t1 set ("flat_json.null.factor" = "0.1")
-   
-   alter table t1 set ("flat_json.sparsity.factor" = "0.8")
-   
-   alter table t1 set ("flat_json.column.max" = "90")
-   ```
-2. 启用FE分区裁剪功能：`SET GLOBAL cbo_prune_json_subfield = true;`
-
-## 启用Flat JSON功能（3.4版本之前）
-
-1. 修改BE配置：`enable_json_flat`，在3.4版本之前默认为`false`。修改方法参考
-[配置BE参数](../administration/management/BE_configuration.md#configure-be-parameters)
-2. 启用FE分区裁剪功能：`SET GLOBAL cbo_prune_json_subfield = true;`
-
-## 其他可选BE配置
-
-- [json_flat_null_factor](../administration/management/BE_configuration.md#json_flat_null_factor)
-- [json_flat_column_max](../administration/management/BE_configuration.md#json_flat_column_max)
-- [json_flat_sparsity_factor](../administration/management/BE_configuration.md#json_flat_sparsity_factor)
-- [enable_compaction_flat_json](../administration/management/BE_configuration.md#enable_compaction_flat_json)
-- [enable_lazy_dynamic_flat_json](../administration/management/BE_configuration.md#enable_lazy_dynamic_flat_json)

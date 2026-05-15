@@ -36,21 +36,23 @@
 
 #include <memory>
 
+#include "common/thread/thread.h"
+#include "common/util/misc.h"
 #include "gen_cpp/InternalService_types.h"
 #include "runtime/buffer_control_block.h"
-#include "util/misc.h"
-#include "util/starrocks_metrics.h"
-#include "util/thread.h"
+#include "runtime/runtime_metrics.h"
 
 namespace starrocks {
 
-ResultBufferMgr::ResultBufferMgr() {
+ResultBufferMgr::ResultBufferMgr(MetricRegistry* metrics) {
     // Each BufferControlBlock has a limited queue size of 1024, it's not needed to count the
     // actual size of all BufferControlBlock.
-    REGISTER_GAUGE_STARROCKS_METRIC(result_buffer_block_count, [this]() {
-        std::lock_guard<std::mutex> l(_lock);
-        return _buffer_map.size();
-    });
+    if (metrics != nullptr) {
+        REGISTER_GAUGE_RUNTIME_METRIC(metrics, result_buffer_block_count, [this]() {
+            std::lock_guard<std::mutex> l(_lock);
+            return _buffer_map.size();
+        });
+    }
 }
 
 void ResultBufferMgr::stop() {
@@ -123,17 +125,18 @@ Status ResultBufferMgr::fetch_arrow_data(const TUniqueId& query_id, std::shared_
     if (cb == nullptr) {
         return Status::InternalError("no result for this query");
     }
-    RETURN_IF_ERROR(cb->get_arrow_batch(result));
-    return Status::OK();
+
+    return cb->get_arrow_batch(result);
 }
 
 void ResultBufferMgr::set_arrow_schema(const TUniqueId& query_id, const std::shared_ptr<arrow::Schema>& arrow_schema) {
+    std::lock_guard<std::mutex> l(_lock);
     _arrow_schema_map.insert(std::make_pair(query_id, arrow_schema));
 }
 
 std::shared_ptr<arrow::Schema> ResultBufferMgr::get_arrow_schema(const TUniqueId& query_id) {
-    auto iter = _arrow_schema_map.find(query_id);
-    if (_arrow_schema_map.end() != iter) {
+    std::lock_guard<std::mutex> l(_lock);
+    if (auto iter = _arrow_schema_map.find(query_id); _arrow_schema_map.end() != iter) {
         return iter->second;
     }
     return nullptr;
@@ -141,12 +144,13 @@ std::shared_ptr<arrow::Schema> ResultBufferMgr::get_arrow_schema(const TUniqueId
 
 Status ResultBufferMgr::cancel(const TUniqueId& query_id) {
     std::lock_guard<std::mutex> l(_lock);
-    auto iter = _buffer_map.find(query_id);
 
-    if (_buffer_map.end() != iter) {
+    if (auto iter = _buffer_map.find(query_id); _buffer_map.end() != iter) {
         iter->second->cancel();
         _buffer_map.erase(iter);
     }
+
+    _arrow_schema_map.erase(query_id);
 
     return Status::OK();
 }

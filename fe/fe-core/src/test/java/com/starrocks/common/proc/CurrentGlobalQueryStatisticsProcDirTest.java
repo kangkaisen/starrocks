@@ -20,7 +20,7 @@ import com.starrocks.qe.QueryStatisticsInfo;
 import com.starrocks.server.NodeMgr;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
@@ -47,6 +47,8 @@ public class CurrentGlobalQueryStatisticsProcDirTest {
             .withSpillBytes(0)
             .withCpuCostNs(97323000)
             .withExecTime(3533000)
+            .withExecProgress("100%")
+            .withExecState("FINISHED")
             .withWareHouseName("default_warehouse")
             .withCustomQueryId("")
             .withResourceGroupName("wg1");
@@ -65,6 +67,8 @@ public class CurrentGlobalQueryStatisticsProcDirTest {
             .withSpillBytes(0)
             .withCpuCostNs(96576000)
             .withExecTime(2086000)
+            .withExecProgress("100%")
+            .withExecState("FINISHED")
             .withWareHouseName("default_warehouse")
             .withCustomQueryId("")
             .withResourceGroupName("wg2");
@@ -82,6 +86,8 @@ public class CurrentGlobalQueryStatisticsProcDirTest {
             .withSpillBytes(0)
             .withCpuCostNs(97456000)
             .withExecTime(3687000)
+            .withExecProgress("100%")
+            .withExecState("FINISHED")
             .withWareHouseName("default_warehouse")
             .withCustomQueryId("")
             .withResourceGroupName("wg3");
@@ -100,6 +106,8 @@ public class CurrentGlobalQueryStatisticsProcDirTest {
             .withSpillBytes(0)
             .withCpuCostNs(96686000)
             .withExecTime(2196000)
+            .withExecProgress("100%")
+            .withExecState("FINISHED")
             .withWareHouseName("default_warehouse")
             .withCustomQueryId("")
             .withResourceGroupName("wg");
@@ -124,7 +132,7 @@ public class CurrentGlobalQueryStatisticsProcDirTest {
             };
 
             BaseProcResult result = (BaseProcResult) new CurrentGlobalQueryStatisticsProcDir().fetchResult();
-            Assert.assertEquals(LOCAL_TEST_QUERIES.size() + REMOTE_TEST_QUERIES.size(),
+            Assertions.assertEquals(LOCAL_TEST_QUERIES.size() + REMOTE_TEST_QUERIES.size(),
                     result.getRows().size());
 
             List<List<String>> expectedQueryStatisticsInfo =

@@ -24,12 +24,14 @@
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "column/fixed_length_column.h"
+#include "column/vectorized_fwd.h"
 #include "common/object_pool.h"
 #include "exprs/exprs_test_helper.h"
 #include "exprs/mock_vectorized_expr.h"
 #include "runtime/mem_pool.h"
 #include "runtime/runtime_state.h"
 #include "types/logical_type.h"
+#include "types/type_descriptor.h"
 
 namespace starrocks {
 
@@ -168,7 +170,7 @@ TEST_F(VectorizedCaseExprTest, whenArrayMapCase) {
         Chunk chunk;
         ColumnPtr ptr = expr->evaluate(nullptr, &chunk);
         if (ptr->is_nullable()) {
-            ptr = down_cast<NullableColumn*>(ptr.get())->data_column();
+            ptr = down_cast<const NullableColumn*>(ptr.get())->data_column();
         }
         ASSERT_TRUE(ptr->is_map());
         ASSERT_EQ(ptr->size(), 3);
@@ -215,7 +217,7 @@ TEST_F(VectorizedCaseExprTest, whenSliceCase) {
             Chunk chunk;
             ColumnPtr ptr = expr->evaluate(nullptr, &chunk);
             if (ptr->is_nullable()) {
-                ptr = down_cast<NullableColumn*>(ptr.get())->data_column();
+                ptr = down_cast<const NullableColumn*>(ptr.get())->data_column();
             }
             ASSERT_TRUE(ptr->is_timestamp());
 
@@ -268,7 +270,7 @@ TEST_F(VectorizedCaseExprTest, whenDecimalCase) {
             Chunk chunk;
             ColumnPtr ptr = expr->evaluate(nullptr, &chunk);
             if (ptr->is_nullable()) {
-                ptr = down_cast<NullableColumn*>(ptr.get())->data_column();
+                ptr = down_cast<const NullableColumn*>(ptr.get())->data_column();
             }
             ASSERT_TRUE(ptr->is_decimal());
 
@@ -329,7 +331,7 @@ TEST_F(VectorizedCaseExprTest, whenIntCaseAllNull) {
                             }
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -380,7 +382,7 @@ TEST_F(VectorizedCaseExprTest, whenNullIntCaseAllNull) {
                             }
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -465,10 +467,10 @@ TEST_F(VectorizedCaseExprTest, whenNullIntCaseElse) {
             for (int j = 0; j < ptr->size(); ++j) {
                 if (j % 2) {
                     ASSERT_FALSE(ptr->is_null(j));
-                    ASSERT_EQ(s3, v->get_data()[j]);
+                    ASSERT_EQ(s3, v->get_slice(j));
                 } else {
                     ASSERT_FALSE(ptr->is_null(j));
-                    ASSERT_EQ(s2, v->get_data()[j]);
+                    ASSERT_EQ(s2, v->get_slice(j));
                 }
             }
         }
@@ -523,7 +525,7 @@ TEST_F(VectorizedCaseExprTest, whenIntCaseNullElse) {
                             }
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -576,7 +578,7 @@ TEST_F(VectorizedCaseExprTest, whenIntNullableCaseNullElse) {
                             }
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -661,7 +663,7 @@ TEST_F(VectorizedCaseExprTest, whenConstantAndElseVariable) {
                             ASSERT_EQ(20, v->get_data()[j]);
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -702,7 +704,7 @@ TEST_F(VectorizedCaseExprTest, whenNullAndElseVariable) {
                             ASSERT_EQ(20, v->get_data()[j]);
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -751,7 +753,7 @@ TEST_F(VectorizedCaseExprTest, whenIntCaseAllNullElse) {
                             ASSERT_EQ(30, v->get_data()[j]);
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -797,7 +799,7 @@ TEST_F(VectorizedCaseExprTest, NoCaseReturnInt) {
                             ASSERT_EQ(20, v->get_data()[j]);
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -849,7 +851,7 @@ TEST_F(VectorizedCaseExprTest, NoCaseAllNull) {
                             ASSERT_TRUE(ptr->only_null());
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
@@ -899,9 +901,71 @@ TEST_F(VectorizedCaseExprTest, NoCaseWhenNullReturnIntElse) {
                             }
                         }
                     },
-                    expr->is_compilable(&runtime_state));
+                    ExprsTestHelper::should_verify_with_jit(expr.get(), &runtime_state));
         }
     }
 }
 
+TEST_F(VectorizedCaseExprTest, NoCaseWhenFalseReturnElse) {
+    TypeDescriptor type_arr_int = array_type(TYPE_INT);
+    expr_node.case_expr.has_case_expr = false;
+    expr_node.case_expr.has_else_expr = false;
+    expr_node.type = type_arr_int.to_thrift();
+    expr_node.is_nullable = true;
+
+    std::unique_ptr<Expr> expr(VectorizedCaseExprFactory::from_thrift(expr_node, TYPE_ARRAY, TYPE_BOOLEAN));
+
+    auto array0 = ColumnHelper::create_column(type_arr_int, true);
+    array0->append_datum(DatumArray{Datum((int32_t)1), Datum((int32_t)4)}); // [1,4]
+    array0->append_datum(DatumArray{Datum(), Datum()});                     // [NULL, NULL]
+    array0->append_datum(DatumArray{Datum(), Datum((int32_t)12)});          // [NULL, 12]
+    auto array_expr0 = MockExpr(type_arr_int, array0);
+
+    auto bo = BooleanColumn::create();
+    bo->append_datum(Datum(true));  // [true]
+    bo->append_datum(Datum(false)); // [false]
+    bo->append_datum(Datum(false)); // [false]
+    auto when0 = MockExpr(TypeDescriptor::from_logical_type(LogicalType::TYPE_BOOLEAN), bo);
+
+    expr->_children.push_back(&when0);       // when1
+    expr->_children.push_back(&array_expr0); // then1
+
+    {
+        Chunk chunk;
+        chunk.append_column(array0, 1);
+        ColumnPtr ptr = expr->evaluate(nullptr, &chunk);
+        ASSERT_EQ(ptr->size(), 3);
+    }
+}
+
+TEST_F(VectorizedCaseExprTest, NoCaseWhenNullReturnElse) {
+    TypeDescriptor type_arr_int = array_type(TYPE_INT);
+    expr_node.case_expr.has_case_expr = false;
+    expr_node.case_expr.has_else_expr = false;
+    expr_node.type = type_arr_int.to_thrift();
+    expr_node.is_nullable = true;
+
+    std::unique_ptr<Expr> expr(VectorizedCaseExprFactory::from_thrift(expr_node, TYPE_ARRAY, TYPE_BOOLEAN));
+
+    auto array0 = ColumnHelper::create_column(type_arr_int, true);
+    array0->append_datum(DatumArray{Datum((int32_t)1), Datum((int32_t)4)}); // [1,4]
+    array0->append_datum(DatumArray{Datum(), Datum()});                     // [NULL, NULL]
+    array0->append_datum(DatumArray{Datum(), Datum((int32_t)12)});          // [NULL, 12]
+    auto array_expr0 = MockExpr(type_arr_int, array0);
+
+    auto when0 = MockNullVectorizedExpr<TYPE_BOOLEAN>(expr_node, 3, false, true);
+
+    expr->_children.push_back(&when0);       // when1
+    expr->_children.push_back(&array_expr0); // then1
+
+    {
+        Chunk chunk;
+        chunk.append_column(array0, 1);
+        ColumnPtr ptr = expr->evaluate(nullptr, &chunk);
+        ASSERT_EQ(ptr->size(), 3);
+        for (int j = 0; j < ptr->size(); ++j) {
+            ASSERT_TRUE(ptr->is_null(j));
+        }
+    }
+}
 } // namespace starrocks

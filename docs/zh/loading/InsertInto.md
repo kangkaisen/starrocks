@@ -4,7 +4,7 @@ displayed_sidebar: docs
 
 # 通过 INSERT 语句导入数据
 
-import InsertPrivNote from '../_assets/commonMarkdown/insertPrivNote.md'
+import InsertPrivNote from '../_assets/commonMarkdown/insertPrivNote.mdx'
 
 本文介绍如何使用 INSERT 语句向 StarRocks 导入数据。
 
@@ -451,7 +451,7 @@ SELECT * FROM FILES(
 
 ### 设置超时时间
 
-从 v3.4.0 开始，您可以设置 INSERT 语句的超时时间。在 v3.4.0 之前的版本中，INSERT 语句的超时时间由系统变量 `query_timeout` 控制。
+从 v3.4.0 开始，您可以通过 PROPERTIES 设置 INSERT 语句的超时时间。
 
 以下示例将源表 `source_wiki_edit` 中的数据插入到目标表 `insert_wiki_edit`，并将超时时间设置为 `2` 秒：
 
@@ -465,7 +465,7 @@ SELECT * FROM source_wiki_edit;
 
 :::note
 
-从 v3.4.0 版本开始，系统变量 `insert_timeout` 作用于所有涉及 INSERT 的操作（例如，UPDATE、DELETE、CTAS、物化视图刷新、统计信息收集和 PIPE），替代原本的 `query_timeout`。
+从 v3.4.0 起，您还可以使用系统变量 `insert_timeout` 来设置 INSERT 超时时间，适用于涉及 INSERT 的操作（例如，UPDATE、DELETE、CTAS、物化视图刷新、统计数据收集和 PIPE）。在 v3.4.0 之前的版本中，相应的变量是 `query_timeout`。
 
 :::
 
@@ -536,7 +536,7 @@ SELECT * FROM source_wiki_edit;
 - 以下示例将源表中的数据异步覆盖写入至目标表中，并通过 Hint 将 Query Timeout 设置为 `100000` 秒。
 
 ```SQL
-SUBMIT /*+set_var(query_timeout=100000)*/ TASK AS
+SUBMIT /*+set_var(insert_timeout=100000)*/ TASK AS
 INSERT OVERWRITE insert_wiki_edit
 SELECT * FROM source_wiki_edit;
 ```
@@ -589,7 +589,7 @@ ERROR 1064 (HY000): Insert has filtered data in strict mode, tracking_url=http:/
 
 ### 通过 Information Schema 查看
 
-您可以通过 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句从 `information_schema` 数据库中的 `loads` 表来查看 INSERT INTO 作业的结果。该功能自 3.1 版本起支持。
+您可以通过 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT/SELECT.md) 语句从 `information_schema` 数据库中的 `loads` 表来查看 INSERT INTO 作业的结果。该功能自 3.1 版本起支持。
 
 示例一：查看 `load_test` 数据库中导入作业的执行情况，同时指定查询结果根据作业创建时间 (`CREATE_TIME`) 按降序排列，并且最多显示一条结果数据：
 
@@ -654,4 +654,4 @@ REJECTED_RECORD_PATH: NULL
 | Session 变量         | 说明                                                         |
 | -------------------- | ------------------------------------------------------------ |
 | enable_insert_strict | INSERT 导入是否容忍错误数据行。设置为 `true` 时，如果有一条数据错误，则返回导入失败。设置为 `false` 时，如果至少有一条数据被正确导入，则返回导入成功，并会返回一个 Label。该参数默认为 `true`。您可以通过 `SET enable_insert_strict = {true or false};` 命令来设定该参数。 |
-| query_timeout        | SQL 命令的超时时间，单位为秒。INSERT 语句作为 SQL 命令，同样受到该 Session 变量的限制。您可以通过 `SET query_timeout = xxx;` 命令来设定该参数。 |
+| insert_timeout        | INSERT 命令的超时时间，单位为秒。您可以通过 `SET insert_timeout = xxx;` 命令来设定该参数。 |

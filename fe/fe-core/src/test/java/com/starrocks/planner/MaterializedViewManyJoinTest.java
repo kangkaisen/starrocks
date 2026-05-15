@@ -95,6 +95,7 @@ public class MaterializedViewManyJoinTest extends MaterializedViewTestBase {
         connectContext.getSessionVariable().setEnableMaterializedViewTextMatchRewrite(false);
         connectContext.getSessionVariable().setCboMaterializedViewRewriteCandidateLimit(3);
         connectContext.getSessionVariable().setCboMaterializedViewRewriteRuleOutputLimit(3);
+        connectContext.getSessionVariable().setMaterializedViewRewriteMode("force");
         List<Arguments> arguments = generateManyJoinArguments();
         for (Arguments argument : arguments) {
             String name = (String) argument.get()[0];

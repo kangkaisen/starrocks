@@ -19,9 +19,13 @@
 
 #include <utility>
 
+#include "base/testutil/assert.h"
 #include "column/datum_tuple.h"
+#include "common/config_exec_fwd.h"
+#include "fs/fs_factory.h"
 #include "fs/fs_util.h"
 #include "runtime/descriptor_helper.h"
+#include "runtime/descriptors.h"
 #include "runtime/runtime_state.h"
 #include "service/brpc_service_test_util.h"
 #include "storage/async_delta_writer.h"
@@ -32,11 +36,10 @@
 #include "storage/rowset/rowset_writer_context.h"
 #include "storage/rowset/segment_options.h"
 #include "storage/storage_engine.h"
+#include "storage/storage_metrics.h"
 #include "storage/tablet.h"
 #include "storage/tablet_manager.h"
 #include "storage/txn_manager.h"
-#include "testutil/assert.h"
-#include "util/starrocks_metrics.h"
 
 namespace starrocks {
 
@@ -62,7 +65,7 @@ public:
         }
     }
 
-    Status prepare_primary_tablet_segment_dir(std::string path) {
+    Status prepare_primary_tablet_segment_dir(const std::string& path) {
         _primary_tablet_segment_dir = std::move(path);
         RETURN_IF_ERROR(fs::remove_all(_primary_tablet_segment_dir));
         return fs::create_directories(_primary_tablet_segment_dir);
@@ -85,7 +88,7 @@ public:
         c0.__set_is_key(true);
         c0.__set_is_allow_null(false);
         c0.column_type.type = TPrimitiveType::INT;
-        request.tablet_schema.columns.push_back(c0);
+        request.tablet_schema.columns.emplace_back(c0);
 
         auto st = StorageEngine::instance()->create_tablet(request);
         CHECK(st.ok()) << st.to_string();
@@ -159,7 +162,7 @@ public:
         auto schema = ChunkHelper::convert_schema(tablet->tablet_schema(), column_indexes);
         auto chunk = ChunkHelper::new_chunk(schema, num_rows);
         for (auto i = 0; i < num_rows; ++i) {
-            chunk->columns()[0]->append_datum(Datum(static_cast<int32_t>(i)));
+            chunk->mutable_columns()[0]->append_datum(Datum(static_cast<int32_t>(i)));
         }
         ASSERT_OK(rowset_writer->flush_chunk(*chunk, segment_pb));
         rowset = rowset_writer->build().value();
@@ -167,7 +170,7 @@ public:
 
     void attach_segment_data(SegmentPB& segment_pb, brpc::Controller* controller) {
         std::shared_ptr<FileSystem> fs;
-        ASSIGN_OR_ABORT(fs, FileSystem::CreateSharedFromString(segment_pb.path()));
+        ASSIGN_OR_ABORT(fs, FileSystemFactory::CreateSharedFromString(segment_pb.path()));
         auto res = fs->new_random_access_file(segment_pb.path());
         ASSERT_TRUE(res.ok());
         auto rfile = std::move(res.value());
@@ -180,11 +183,11 @@ public:
     }
 
     Status get_prepared_rowset(int64_t tablet_id, int64_t txn_id, int64_t partition_id, RowsetSharedPtr* rowset) {
-        std::map<TabletInfo, RowsetSharedPtr> tablet_infos;
+        std::map<TabletInfo, std::pair<RowsetSharedPtr, bool>> tablet_infos;
         StorageEngine::instance()->txn_manager()->get_txn_related_tablets(txn_id, partition_id, &tablet_infos);
         for (auto& [tablet_info, rs] : tablet_infos) {
             if (tablet_info.tablet_id == tablet_id) {
-                (*rowset) = rs;
+                (*rowset) = rs.first;
                 return Status::OK();
             }
         }
@@ -195,7 +198,7 @@ public:
     void check_single_segment_rowset_result(RowsetSharedPtr& rowset, int num_rows) {
         ASSERT_EQ(1, rowset->rowset_meta()->num_segments());
         SegmentReadOptions seg_options;
-        ASSIGN_OR_ABORT(seg_options.fs, FileSystem::CreateSharedFromString("posix://"));
+        ASSIGN_OR_ABORT(seg_options.fs, FileSystemFactory::CreateSharedFromString("posix://"));
         OlapReaderStatistics stats;
         seg_options.stats = &stats;
         std::string segment_file = Rowset::segment_file_path(_tablet->schema_hash_path(), rowset->rowset_id(), 0);
@@ -205,7 +208,7 @@ public:
         auto res = segment->new_iterator(schema, seg_options);
         ASSERT_FALSE(res.status().is_end_of_file() || !res.ok() || res.value() == nullptr);
 
-        auto seg_iterator = res.value();
+        const auto& seg_iterator = res.value();
         ASSERT_TRUE(seg_iterator->init_encoded_schema(EMPTY_GLOBAL_DICTMAPS).ok());
         auto chunk = ChunkHelper::new_chunk(seg_iterator->schema(), 100);
         int count = 0;
@@ -273,8 +276,8 @@ TEST_F(SegmentFlushExecutorTest, test_write_and_commit_segment) {
     // just verify the metrics have value, rather than verify it accurately
     // because other test cases may also update the metrics concurrently if
     // run tests in parallel, and it's hard to get the accurate value
-    ASSERT_TRUE(StarRocksMetrics::instance()->segment_flush_total.value() > 0);
-    ASSERT_TRUE(StarRocksMetrics::instance()->segment_flush_bytes_total.value() > 0);
+    ASSERT_TRUE(StorageMetrics::instance()->segment_flush_total.value() > 0);
+    ASSERT_TRUE(StorageMetrics::instance()->segment_flush_bytes_total.value() > 0);
 }
 
 TEST_F(SegmentFlushExecutorTest, test_submit_after_cancel) {

@@ -19,26 +19,27 @@
 #include <limits>
 #include <utility>
 
+#include "base/simd/simd.h"
 #include "column/binary_column.h"
 #include "column/column_helper.h"
-#include "column/datum.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
-#include "common/config.h"
 #include "common/object_pool.h"
 #include "common/statusor.h"
+#include "exprs/column_ref.h"
 #include "exprs/expr_context.h"
 #include "exprs/in_const_predicate.hpp"
-#include "exprs/runtime_filter_bank.h"
 #include "gutil/casts.h"
 #include "runtime/global_dict/config.h"
 #include "runtime/global_dict/miscs.h"
-#include "simd/simd.h"
+#include "runtime/runtime_state.h"
 #include "storage/column_expr_predicate.h"
 #include "storage/column_predicate.h"
+#include "storage/column_predicate_inverted_index_fallback.h"
 #include "storage/range.h"
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/scalar_column_iterator.h"
+#include "types/datum.h"
 
 namespace starrocks {
 
@@ -66,7 +67,12 @@ struct RewritePredicateTreeVisitor {
         }
 
         const auto& field = _cid_to_field.find(cid)->second;
-        DCHECK(_rewriter._column_iterators[cid]->all_page_dict_encoded());
+        // NOTE: for regular column, if a column can be rewritten will be checked before
+        // but for JSON extended column, it depends on the segment dicts, if the segment doesn't have the dicts,
+        // the column can't be rewritten, so we need to check it here.
+        if (!_rewriter._column_iterators[cid]->all_page_dict_encoded()) {
+            return RewriteStatus::UNCHANGED;
+        }
 
         ColumnPredicate* rewrited_pred;
         ASSIGN_OR_RETURN(auto rewrite_status, _rewriter._rewrite_predicate(_pool, field, col_pred, &rewrited_pred));
@@ -316,6 +322,15 @@ StatusOr<ColumnPredicateRewriter::RewriteStatus> ColumnPredicateRewriter::_rewri
 
         return _rewrite_expr_predicate(pool, dict_column, code_column, field->is_nullable(), pred, dest_pred);
     }
+
+    if (PredicateType::kGinFallback == pred->type()) {
+        const auto* fallback_pred = down_cast<const InvertedIndexFallbackPredicate*>(pred);
+        if (fallback_pred->get_bitmap().isEmpty()) {
+            return fallback_pred->is_negated_expr() ? RewriteStatus::ALWAYS_TRUE : RewriteStatus::ALWAYS_FALSE;
+        }
+        return RewriteStatus::UNCHANGED;
+    }
+
     if (PredicateType::kPlaceHolder == pred->type()) {
         return RewriteStatus::ALWAYS_TRUE;
     }
@@ -341,6 +356,10 @@ Status ColumnPredicateRewriter::_load_segment_dict(std::vector<std::pair<std::st
     // We already loaded dicts, no need to do once more.
     if (!dicts->empty()) {
         return Status::OK();
+    }
+    // NOTE: for JSON extended column, it might be a JsonColumnIterator, so we need to check it here.
+    if (dynamic_cast<ScalarColumnIterator*>(iter) == nullptr) {
+        return Status::NotSupported("not support dict predicate for non-string column");
     }
     auto column_iterator = down_cast<ScalarColumnIterator*>(iter);
     auto dict_size = column_iterator->dict_size();
@@ -374,6 +393,10 @@ StatusOr<const ColumnPredicateRewriter::DictAndCodes*> ColumnPredicateRewriter::
 
 Status ColumnPredicateRewriter::_load_segment_dict_vec(ColumnIterator* iter, ColumnPtr* dict_column,
                                                        ColumnPtr* code_column, bool field_nullable) {
+    // NOTE: for JSON extended column, it might be a JsonColumnIterator, so we need to check it here.
+    if (dynamic_cast<ScalarColumnIterator*>(iter) == nullptr) {
+        return Status::NotSupported("not support dict predicate for non-string column");
+    }
     auto column_iterator = down_cast<ScalarColumnIterator*>(iter);
     auto dict_size = column_iterator->dict_size();
     int dict_codes[dict_size];
@@ -433,7 +456,7 @@ StatusOr<ColumnPredicateRewriter::RewriteStatus> ColumnPredicateRewriter::_rewri
 
     size_t code_size = raw_code_column->size();
     const auto& code_column = ColumnHelper::cast_to<TYPE_INT>(raw_code_column);
-    const auto& code_values = code_column->get_data();
+    const auto code_values = code_column->immutable_data();
     if (field_nullable) {
         DCHECK((code_size + 1) == value_size);
     } else {

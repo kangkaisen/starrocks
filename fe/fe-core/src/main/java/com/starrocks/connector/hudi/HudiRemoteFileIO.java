@@ -18,6 +18,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import com.starrocks.common.Config;
 import com.starrocks.connector.RemoteFileDesc;
 import com.starrocks.connector.RemoteFileIO;
 import com.starrocks.connector.RemoteFileScanContext;
@@ -43,6 +44,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -65,7 +68,8 @@ public class HudiRemoteFileIO implements RemoteFileIO {
             ctx.usedCount++;
             if (ctx.usedCount == 1) {
                 HoodieLocalEngineContext engineContext = new HoodieLocalEngineContext(configuration);
-                HoodieMetadataConfig metadataConfig = HoodieMetadataConfig.newBuilder().enable(true).build();
+                HoodieMetadataConfig metadataConfig = HoodieMetadataConfig.newBuilder()
+                        .enable(Config.enable_hudi_lib_internal_metadata_table).build();
                 HoodieTableMetaClient metaClient =
                         HoodieTableMetaClient.builder().setConf(configuration).setBasePath(ctx.tableLocation).build();
                 // metaClient.reloadActiveTimeline();
@@ -117,8 +121,11 @@ public class HudiRemoteFileIO implements RemoteFileIO {
                 return resultPartitions.put(pathKey, fileDescs).build();
             }
 
+            String maxInstanceTime = Collections.max(
+                    Arrays.asList(scanContext.hudiLastInstant.requestedTime(), scanContext.hudiLastInstant.getCompletionTime()));
             Iterator<FileSlice> hoodieFileSliceIterator = scanContext.hudiFsView
-                    .getLatestMergedFileSlicesBeforeOrOn(partitionName, scanContext.hudiLastInstant.getTimestamp()).iterator();
+                    .getLatestMergedFileSlicesBeforeOrOn(partitionName, maxInstanceTime)
+                    .iterator();
             while (hoodieFileSliceIterator.hasNext()) {
                 FileSlice fileSlice = hoodieFileSliceIterator.next();
                 Optional<HoodieBaseFile> baseFile = fileSlice.getBaseFile().toJavaOptional();

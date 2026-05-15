@@ -20,16 +20,15 @@
 
 #include <utility>
 
-#include "column/column_builder.h"
-#include "column/vectorized_fwd.h"
-#include "common/compiler_util.h"
 #include "common/status.h"
 #include "exprs/function_context.h"
 #include "exprs/function_helper.h"
-#include "exprs/jsonpath.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
+
+// Forward declarations
+struct JsonPath;
 
 extern const re2::RE2 SIMPLE_JSONPATH_PATTERN;
 
@@ -65,9 +64,6 @@ struct SimpleJsonPath {
 
 class JsonFunctions {
 public:
-    static Status json_path_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
-    static Status json_path_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
-
     /**
      * @param: [json_string, tagged_value]
      * @paramType: [BinaryColumn, BinaryColumn]
@@ -77,6 +73,7 @@ public:
     DEFINE_VECTORIZED_FN(get_json_bigint);
     DEFINE_VECTORIZED_FN(get_json_double);
     DEFINE_VECTORIZED_FN(get_json_string);
+    DEFINE_VECTORIZED_FN(get_json_scalar_string);
 
     /**
      * @param: [json, tagged_value]
@@ -88,6 +85,7 @@ public:
     DEFINE_VECTORIZED_FN(get_native_json_bigint);
     DEFINE_VECTORIZED_FN(get_native_json_double);
     DEFINE_VECTORIZED_FN(get_native_json_string);
+    DEFINE_VECTORIZED_FN(get_native_json_scalar_string);
     DEFINE_VECTORIZED_FN(json_query);
 
     /**
@@ -102,6 +100,13 @@ public:
      * @paramType: [JsonColumn]
      * @return: BinaryColumn
      */
+    DEFINE_VECTORIZED_FN(json_pretty);
+
+    /**
+     * @param: [json_column]
+     * @paramType: [JsonColumn]
+     * @return: BinaryColumn
+     */
     DEFINE_VECTORIZED_FN(json_string);
 
     /**
@@ -110,6 +115,13 @@ public:
      * @return: BooleanColumn
      */
     DEFINE_VECTORIZED_FN(json_exists);
+
+    /**
+     * @param: [json_object, json_value]
+     * @paramType: [JsonColumn, JsonColumn]
+     * @return: BooleanColumn
+     */
+    DEFINE_VECTORIZED_FN(json_contains);
 
     /**
      * Build json object from json values
@@ -157,6 +169,27 @@ public:
     DEFINE_VECTORIZED_FN(json_keys);
 
     /**
+     * Remove data from a JSON document at one or more specified JSON paths
+     * @param JSON, JSONPath, [JSONPath, ...]
+     * @return JSON with specified paths removed
+     */
+    DEFINE_VECTORIZED_FN(json_remove);
+
+    /**
+     * Inserts or updates data in a JSON document at one or more specified JSON paths
+     * @param JSON, JSONPath, Value, [JSONPath, Value, ...]
+     * @return Modified JSON
+     */
+    DEFINE_VECTORIZED_FN(json_set);
+
+    /**
+     * Determine if a JSON value is a scalar value
+     * @param JSON
+     * @return true if the JSON value is a scalar (not an object or array), false otherwise
+     */
+    DEFINE_VECTORIZED_FN(is_json_scalar);
+
+    /**
      * Return json built from struct/map
      */
     DEFINE_VECTORIZED_FN(to_json);
@@ -186,12 +219,15 @@ public:
 private:
     template <LogicalType ResultType>
     static StatusOr<ColumnPtr> _json_query_impl(FunctionContext* context, const Columns& columns);
+    static StatusOr<ColumnPtr> _json_query_scalar_impl(FunctionContext* context, const Columns& columns);
 
     template <LogicalType RresultType>
-    DEFINE_VECTORIZED_FN(_flat_json_query_impl);
+    static StatusOr<ColumnPtr> _flat_json_query_impl(FunctionContext* context, const Columns& columns,
+                                                     bool scalar_type_only = false);
 
     template <LogicalType RresultType>
-    DEFINE_VECTORIZED_FN(_full_json_query_impl);
+    static StatusOr<ColumnPtr> _full_json_query_impl(FunctionContext* context, const Columns& columns,
+                                                     bool scalar_type_only = false);
 
     /**
      * @param: [json_object, json_path]
@@ -218,6 +254,7 @@ private:
 
     template <LogicalType RresultType>
     DEFINE_VECTORIZED_FN(_get_json_value);
+    DEFINE_VECTORIZED_FN(_get_json_scalar_value);
 
     /**
      * @param: [json_object, json_path]
@@ -227,6 +264,10 @@ private:
 
     static Status _get_parsed_paths(const std::vector<std::string>& path_exprs,
                                     std::vector<SimpleJsonPath>* parsed_paths);
+
+    // Helper function to check if target JSON contains candidate JSON
+    static bool json_value_contains(JsonValue* target, JsonValue* candidate);
+    static bool is_slice_scalar_type(const vpack::Slice& slice);
 };
 
 } // namespace starrocks

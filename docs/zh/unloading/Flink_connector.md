@@ -30,12 +30,12 @@ Flink Connector 支持两种数据读取方式：Flink SQL 和 Flink DataStream�
 
 ## 版本要求
 
-| Connector | Flink                    | StarRocks  | Java | Scala      |
-| --------- | ------------------------ | ---------- | ---- | ---------- |
-| 1.2.10    | 1.15,1.16,1.17,1.18,1.19 | 2.1 及以上  | 8    | 2.11,2.12  |
-| 1.2.9     | 1.15,1.16,1.17,1.18      | 2.1 及以上  | 8    | 2.11,2.12  |
-| 1.2.8     | 1.13,1.14,1.15,1.16,1.17 | 2.1 及以上  | 8    | 2.11,2.12  |
-| 1.2.7     | 1.11,1.12,1.13,1.14,1.15 | 2.1 及以上  | 8    | 2.11,2.12  |
+| Connector | Flink                         | StarRocks     | Java | Scala     |
+|-----------|-------------------------------|---------------| ---- |-----------|
+| 1.2.14    | 1.16,1.17,1.18,1.19,1.20      | 2.1 及以上     | 8    | 2.11,2.12 |
+| 1.2.12    | 1.16,1.17,1.18,1.19,1.20      | 2.1 及以上     | 8    | 2.11,2.12 |
+| 1.2.11    | 1.15,1.16,1.17,1.18,1.19,1.20 | 2.1 及以上     | 8    | 2.11,2.12 |
+| 1.2.10    | 1.15,1.16,1.17,1.18,1.19      | 2.1 及以上     | 8    | 2.11,2.12 |
 
 ## 前提条件
 
@@ -115,7 +115,7 @@ Flink Connector 支持两种数据读取方式：Flink SQL 和 Flink DataStream�
 | connector                   | 是       | STRING   | 固定设置为 `starrocks`。                                     |
 | scan-url                    | 是       | STRING   | FE 节点的连接地址，用于通过 Web 服务器访问 FE 节点。 格式如下：`<fe_host>:<fe_http_port>`。默认端口号为 `8030`。多个地址之间用逗号 (,) 分隔。例如 `192.168.xxx.xxx:8030,192.168.xxx.xxx:8030`。 |
 | jdbc-url                    | 是       | STRING   | FE 节点的连接地址，用于访问 FE 节点上的 MySQL 客户端。格式如下：`jdbc:mysql://<fe_host>:<fe_query_port>`。默认端口号为 `9030`。 |
-| username                    | 是       | STRING   | 用于访问 StarRocks 集群的用户名。该账号需具备待读取数据的 StarRocks 表的读权限。有关用户权限的说明，请参见[用户权限](../administration/user_privs/user_privs.md)。 |
+| username                    | 是       | STRING   | 用于访问 StarRocks 集群的用户名。该账号需具备待读取数据的 StarRocks 表的读权限。有关用户权限的说明，请参见[用户权限](../administration/user_privs/authorization/user_privs.md)。 |
 | password                    | 是       | STRING   | 用于访问 StarRocks 集群的用户密码。                          |
 | database-name               | 是       | STRING   | 待读取数据的 StarRocks 数据库的名称。                        |
 | table-name                  | 是       | STRING   | 待读取数据的 StarRocks 表的名称。                            |
@@ -349,6 +349,12 @@ Flink Connector 支持两种数据读取方式：Flink SQL 和 Flink DataStream�
    
        }
    ```
+
+## FAQ
+
+#### 在使用 Flink Connector 导出数据时，我收到错误提示 “Failed to get next from be”，该如何处理？
+
+您可以将 BE 配置项 `scan_context_gc_interval_min`（默认值：5，单位：分钟）设置为更大数值，以延长 Scan Context 清理的时间间隔。
 
 ## 后续操作
 

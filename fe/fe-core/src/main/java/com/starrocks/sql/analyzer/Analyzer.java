@@ -15,9 +15,10 @@
 package com.starrocks.sql.analyzer;
 
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.qe.OriginStatement;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.AddSqlBlackListStmt;
+import com.starrocks.sql.ast.AddSqlDigestBlackListStmt;
+import com.starrocks.sql.ast.AdminAlterAutomatedSnapshotIntervalStmt;
 import com.starrocks.sql.ast.AdminCancelRepairTableStmt;
 import com.starrocks.sql.ast.AdminCheckTabletsStmt;
 import com.starrocks.sql.ast.AdminRepairTableStmt;
@@ -26,12 +27,15 @@ import com.starrocks.sql.ast.AdminSetAutomatedSnapshotOnStmt;
 import com.starrocks.sql.ast.AdminSetConfigStmt;
 import com.starrocks.sql.ast.AdminSetPartitionVersionStmt;
 import com.starrocks.sql.ast.AdminSetReplicaStatusStmt;
+import com.starrocks.sql.ast.AdminShowAutomatedSnapshotStmt;
 import com.starrocks.sql.ast.AdminShowConfigStmt;
 import com.starrocks.sql.ast.AdminShowReplicaDistributionStmt;
 import com.starrocks.sql.ast.AdminShowReplicaStatusStmt;
+import com.starrocks.sql.ast.AdminShowTabletStatusStmt;
 import com.starrocks.sql.ast.AlterCatalogStmt;
 import com.starrocks.sql.ast.AlterDatabaseQuotaStmt;
 import com.starrocks.sql.ast.AlterDatabaseRenameStatement;
+import com.starrocks.sql.ast.AlterDatabaseSetStmt;
 import com.starrocks.sql.ast.AlterLoadStmt;
 import com.starrocks.sql.ast.AlterMaterializedViewStmt;
 import com.starrocks.sql.ast.AlterResourceGroupStmt;
@@ -40,13 +44,15 @@ import com.starrocks.sql.ast.AlterRoutineLoadStmt;
 import com.starrocks.sql.ast.AlterStorageVolumeStmt;
 import com.starrocks.sql.ast.AlterSystemStmt;
 import com.starrocks.sql.ast.AlterTableStmt;
+import com.starrocks.sql.ast.AlterTaskStmt;
 import com.starrocks.sql.ast.AlterViewStmt;
 import com.starrocks.sql.ast.AnalyzeStmt;
-import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.AstVisitorExtendInterface;
 import com.starrocks.sql.ast.BackupStmt;
 import com.starrocks.sql.ast.BaseCreateAlterUserStmt;
 import com.starrocks.sql.ast.BaseGrantRevokePrivilegeStmt;
 import com.starrocks.sql.ast.BaseGrantRevokeRoleStmt;
+import com.starrocks.sql.ast.CallProcedureStatement;
 import com.starrocks.sql.ast.CancelAlterSystemStmt;
 import com.starrocks.sql.ast.CancelAlterTableStmt;
 import com.starrocks.sql.ast.CancelCompactionStmt;
@@ -62,13 +68,13 @@ import com.starrocks.sql.ast.CreateDictionaryStmt;
 import com.starrocks.sql.ast.CreateFileStmt;
 import com.starrocks.sql.ast.CreateFunctionStmt;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
-import com.starrocks.sql.ast.CreateMaterializedViewStmt;
 import com.starrocks.sql.ast.CreateRepositoryStmt;
 import com.starrocks.sql.ast.CreateResourceGroupStmt;
 import com.starrocks.sql.ast.CreateResourceStmt;
 import com.starrocks.sql.ast.CreateRoleStmt;
 import com.starrocks.sql.ast.CreateRoutineLoadStmt;
 import com.starrocks.sql.ast.CreateStorageVolumeStmt;
+import com.starrocks.sql.ast.CreateSyncMVStmt;
 import com.starrocks.sql.ast.CreateTableAsSelectStmt;
 import com.starrocks.sql.ast.CreateTableLikeStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
@@ -102,6 +108,7 @@ import com.starrocks.sql.ast.ExportStmt;
 import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.InstallPluginStmt;
 import com.starrocks.sql.ast.LoadStmt;
+import com.starrocks.sql.ast.OriginStatement;
 import com.starrocks.sql.ast.PauseRoutineLoadStmt;
 import com.starrocks.sql.ast.PrepareStmt;
 import com.starrocks.sql.ast.QueryStatement;
@@ -161,6 +168,7 @@ import com.starrocks.sql.ast.pipe.CreatePipeStmt;
 import com.starrocks.sql.ast.pipe.DescPipeStmt;
 import com.starrocks.sql.ast.pipe.DropPipeStmt;
 import com.starrocks.sql.ast.pipe.ShowPipeStmt;
+import com.starrocks.sql.ast.spm.ShowBaselinePlanStmt;
 import com.starrocks.sql.ast.translate.TranslateStmt;
 import com.starrocks.sql.ast.txn.BeginStmt;
 import com.starrocks.sql.ast.txn.CommitStmt;
@@ -174,6 +182,10 @@ import com.starrocks.sql.ast.warehouse.ShowClustersStmt;
 import com.starrocks.sql.ast.warehouse.ShowNodesStmt;
 import com.starrocks.sql.ast.warehouse.ShowWarehousesStmt;
 import com.starrocks.sql.ast.warehouse.SuspendWarehouseStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.AlterCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.CreateCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.DropCnGroupStmt;
+import com.starrocks.sql.ast.warehouse.cngroup.EnableDisableCnGroupStmt;
 
 public class Analyzer {
     private final AnalyzerVisitor analyzerVisitor;
@@ -186,7 +198,7 @@ public class Analyzer {
         GlobalStateMgr.getCurrentState().getAnalyzer().analyzerVisitor.visit(statement, context);
     }
 
-    public static class AnalyzerVisitor implements AstVisitor<Void, ConnectContext> {
+    public static class AnalyzerVisitor implements AstVisitorExtendInterface<Void, ConnectContext> {
         private static final Analyzer.AnalyzerVisitor INSTANCE = new Analyzer.AnalyzerVisitor();
 
         public static Analyzer.AnalyzerVisitor getInstance() {
@@ -254,13 +266,13 @@ public class Analyzer {
 
         @Override
         public Void visitAlterResourceGroupStatement(AlterResourceGroupStmt statement, ConnectContext session) {
-            statement.analyze();
+            ResourceGroupAnalyzer.analyzeAlterResourceGroupStmt(statement);
             return null;
         }
 
         @Override
         public Void visitDropResourceGroupStatement(DropResourceGroupStmt statement, ConnectContext session) {
-            statement.analyze();
+            ResourceGroupAnalyzer.analyzeDropResourceGroupStmt(statement);
             return null;
         }
 
@@ -272,6 +284,12 @@ public class Analyzer {
 
         @Override
         public Void visitAdminShowReplicaStatusStatement(AdminShowReplicaStatusStmt statement, ConnectContext session) {
+            AdminStmtAnalyzer.analyze(statement, session);
+            return null;
+        }
+
+        @Override
+        public Void visitAdminShowTabletStatusStatement(AdminShowTabletStatusStmt statement, ConnectContext session) {
             AdminStmtAnalyzer.analyze(statement, session);
             return null;
         }
@@ -348,6 +366,22 @@ public class Analyzer {
 
         @Override
         public Void visitSubmitTaskStatement(SubmitTaskStmt statement, ConnectContext context) {
+            analyzeSubmitTask(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitAlterTaskStatement(AlterTaskStmt statement, ConnectContext context) {
+            TaskAnalyzer.analyzeAlterTaskStmt(statement);
+            return null;
+        }
+
+        public static void analyzeSubmitTask(SubmitTaskStmt statement, ConnectContext context) {
+            StatementBase workhouse = analyzeSubmitTaskWorkhorse(statement, context);
+            analyzeSubmitTaskOnly(workhouse, statement, context);
+        }
+
+        public static StatementBase analyzeSubmitTaskWorkhorse(SubmitTaskStmt statement, ConnectContext context) {
             StatementBase taskStmt = null;
             if (statement.getCreateTableAsSelectStmt() != null) {
                 CreateTableAsSelectStmt createTableAsSelectStmt = statement.getCreateTableAsSelectStmt();
@@ -364,7 +398,12 @@ public class Analyzer {
             } else {
                 throw new SemanticException("Submit task statement is not supported");
             }
-            boolean hasTemporaryTable = AnalyzerUtils.hasTemporaryTables(taskStmt);
+            return taskStmt;
+        }
+
+        public static void analyzeSubmitTaskOnly(StatementBase taskStatement, SubmitTaskStmt statement,
+                                                 ConnectContext context) {
+            boolean hasTemporaryTable = AnalyzerUtils.hasTemporaryTables(taskStatement);
             if (hasTemporaryTable) {
                 throw new SemanticException("Cannot submit task based on temporary table");
             }
@@ -373,12 +412,11 @@ public class Analyzer {
             String sqlText = origStmt.originStmt.substring(statement.getSqlBeginIndex());
             statement.setSqlText(sqlText);
             TaskAnalyzer.analyzeSubmitTaskStmt(statement, context);
-            return null;
         }
 
         @Override
         public Void visitCreateResourceGroupStatement(CreateResourceGroupStmt statement, ConnectContext session) {
-            statement.analyze();
+            ResourceGroupAnalyzer.analyzeCreateResourceGroupStmt(statement);
             return null;
         }
 
@@ -437,6 +475,13 @@ public class Analyzer {
         }
 
         @Override
+        public Void visitAdminShowAutomatedSnapshotStatement(AdminShowAutomatedSnapshotStmt statement,
+                                                             ConnectContext session) {
+            AdminStmtAnalyzer.analyze(statement, session);
+            return null;
+        }
+
+        @Override
         public Void visitDropTableStatement(DropTableStmt statement, ConnectContext session) {
             DropStmtAnalyzer.analyze(statement, session);
             return null;
@@ -462,8 +507,8 @@ public class Analyzer {
         }
 
         @Override
-        public Void visitCreateMaterializedViewStmt(CreateMaterializedViewStmt statement, ConnectContext context) {
-            statement.analyze(context);
+        public Void visitCreateSyncMVStmt(CreateSyncMVStmt statement, ConnectContext context) {
+            CreateSyncMVStmtAnalyzer.analyze(statement, context);
             return null;
         }
 
@@ -514,7 +559,13 @@ public class Analyzer {
 
         @Override
         public Void visitAlterDatabaseQuotaStatement(AlterDatabaseQuotaStmt statement, ConnectContext context) {
-            AlterDbQuotaAnalyzer.analyze(statement, context);
+            AlterDatabaseAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitAlterDatabaseSetStatement(AlterDatabaseSetStmt statement, ConnectContext context) {
+            AlterDatabaseAnalyzer.analyze(statement, context);
             return null;
         }
 
@@ -532,7 +583,7 @@ public class Analyzer {
 
         @Override
         public Void visitAlterDatabaseRenameStatement(AlterDatabaseRenameStatement statement, ConnectContext context) {
-            AlterDatabaseRenameStatementAnalyzer.analyze(statement, context);
+            AlterDatabaseAnalyzer.analyze(statement, context);
             return null;
         }
 
@@ -598,6 +649,13 @@ public class Analyzer {
         @Override
         public Void visitAdminSetAutomatedSnapshotOffStatement(AdminSetAutomatedSnapshotOffStmt statement,
                                                                ConnectContext context) {
+            ClusterSnapshotAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitAdminAlterAutomatedSnapshotIntervalStatement(AdminAlterAutomatedSnapshotIntervalStmt statement,
+                                                                      ConnectContext context) {
             ClusterSnapshotAnalyzer.analyze(statement, context);
             return null;
         }
@@ -946,8 +1004,12 @@ public class Analyzer {
 
         @Override
         public Void visitAddSqlBlackListStatement(AddSqlBlackListStmt statement, ConnectContext session) {
-            statement.analyze();
             return null;
+        }
+
+        @Override
+        public Void visitAddSqlDigestBlackListStatement(AddSqlDigestBlackListStmt statement, ConnectContext context) {
+            return AstVisitorExtendInterface.super.visitAddSqlDigestBlackListStatement(statement, context);
         }
 
         // ------------------------------------------- Export Statement ------------------------------------------------
@@ -1164,6 +1226,30 @@ public class Analyzer {
             return null;
         }
 
+        @Override
+        public Void visitCreateCNGroupStatement(CreateCnGroupStmt statement, ConnectContext context) {
+            WarehouseAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitDropCNGroupStatement(DropCnGroupStmt statement, ConnectContext context) {
+            WarehouseAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitEnableDisableCNGroupStatement(EnableDisableCnGroupStmt statement, ConnectContext context) {
+            WarehouseAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitAlterCNGroupStatement(AlterCnGroupStmt statement, ConnectContext context) {
+            WarehouseAnalyzer.analyze(statement, context);
+            return null;
+        }
+
         // ---------------------------------------- Transaction Statement --------------------------------------------------
 
         @Override
@@ -1188,6 +1274,19 @@ public class Analyzer {
         @Override
         public Void visitTranslateStatement(TranslateStmt statement, ConnectContext context) {
             TranslateAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        @Override
+        public Void visitShowBaselinePlanStatement(ShowBaselinePlanStmt statement, ConnectContext context) {
+            ShowStmtAnalyzer.analyze(statement, context);
+            return null;
+        }
+
+        // ---------------------------------------- Procedure Statement -------------------------------------------------
+        @Override
+        public Void visitCallProcedureStatement(CallProcedureStatement statement, ConnectContext context) {
+            CallProcedureAnalyzer.analyze(statement, context);
             return null;
         }
     }

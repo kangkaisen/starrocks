@@ -36,11 +36,13 @@
 
 #include <memory>
 
+#include "base/utility/defer_op.h"
+#include "common/config_exec_fwd.h"
+#include "common/config_storage_fwd.h"
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
 #include "storage/chunk_helper.h"
 #include "storage/tablet_reader.h"
-#include "util/defer_op.h"
 
 namespace starrocks {
 
@@ -58,8 +60,8 @@ Status EngineChecksumTask::execute() {
 
 Status EngineChecksumTask::_compute_checksum() {
     int64_t begin_us = butil::gettimeofday_us();
-    LOG(INFO) << "begin to process compute checksum."
-              << "tablet_id=" << _tablet_id << ", version=" << _version;
+    VLOG(1) << "begin to process compute checksum."
+            << "tablet_id=" << _tablet_id << ", version=" << _version;
 
     if (_checksum == nullptr) {
         LOG(WARNING) << "The input checksum is a null pointer";

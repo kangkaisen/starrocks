@@ -15,17 +15,16 @@
 package com.starrocks.authorization;
 
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.BasicTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.TableName;
 import com.starrocks.catalog.View;
 import com.starrocks.catalog.system.SystemTable;
 import com.starrocks.connector.metadata.MetadataTable;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.sql.StatementPlanner;
 import com.starrocks.sql.analyzer.Analyzer;
 import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.sql.ast.AstTraverser;
@@ -107,7 +106,7 @@ public class ColumnPrivilege {
              */
             ColumnRefFactory columnRefFactory = new ColumnRefFactory();
             LogicalPlan logicalPlan;
-            MVTransformerContext mvTransformerContext = StatementPlanner.makeMVTransformerContext(context.getSessionVariable());
+            MVTransformerContext mvTransformerContext = MVTransformerContext.of(context, true);
             TransformerContext transformerContext = new TransformerContext(columnRefFactory, context, mvTransformerContext);
             logicalPlan = new RelationTransformer(transformerContext).transformWithSelectLimit(stmt.getQueryRelation());
 
@@ -123,8 +122,11 @@ public class ColumnPrivilege {
             optimizedPlan.getOp().accept(new ScanColumnCollector(tableObjectToTableName, scanColumns), optimizedPlan, null);
         }
 
-        for (TableName tableName : tableNameTableObj.keySet()) {
-            if (excludeTables.contains(tableName)) {
+        for (Map.Entry<TableName, Table> entry : tableNameTableObj.entrySet()) {
+            TableName tableName = entry.getKey();
+            Table table = entry.getValue();
+
+            if (excludeTables.contains(tableName) || table instanceof MetadataTable) {
                 continue;
             }
 
@@ -142,8 +144,6 @@ public class ColumnPrivilege {
                     }
                 }
             } else {
-                Table table = tableNameTableObj.get(tableName);
-
                 if (table instanceof View) {
                     try {
                         // for privilege checking, treat connector view as table
@@ -259,24 +259,27 @@ public class ColumnPrivilege {
         @Override
         public Void visitInsertStatement(InsertStmt node, Void context) {
             Table table = node.getTargetTable();
-            tableNameToTableObj.put(node.getTableName(), table);
-            tableTableNameMap.put(table, node.getTableName());
+            TableName tableName = TableName.fromTableRef(node.getTableRef());
+            tableNameToTableObj.put(tableName, table);
+            tableTableNameMap.put(table, tableName);
             return super.visitInsertStatement(node, context);
         }
 
         @Override
         public Void visitUpdateStatement(UpdateStmt node, Void context) {
             Table table = node.getTable();
-            tableNameToTableObj.put(node.getTableName(), table);
-            tableTableNameMap.put(table, node.getTableName());
+            TableName tableName = TableName.fromTableRef(node.getTableRef());
+            tableNameToTableObj.put(tableName, table);
+            tableTableNameMap.put(table, tableName);
             return super.visitUpdateStatement(node, context);
         }
 
         @Override
         public Void visitDeleteStatement(DeleteStmt node, Void context) {
             Table table = node.getTable();
-            tableNameToTableObj.put(node.getTableName(), table);
-            tableTableNameMap.put(table, node.getTableName());
+            TableName tableName = TableName.fromTableRef(node.getTableRef());
+            tableNameToTableObj.put(tableName, table);
+            tableTableNameMap.put(table, tableName);
             return super.visitDeleteStatement(node, context);
         }
 

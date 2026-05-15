@@ -87,7 +87,7 @@ public class ColocateTableBalancer extends FrontendDaemon {
     private static final long CHECK_INTERVAL_MS = 20 * 1000L; // 20 second
 
     private ColocateTableBalancer(long intervalMs) {
-        super("colocate group clone checker", intervalMs);
+        super("colocate-group-clone-checker", intervalMs);
     }
 
     private static ColocateTableBalancer INSTANCE = null;
@@ -333,7 +333,7 @@ public class ColocateTableBalancer extends FrontendDaemon {
             if (db == null) {
                 continue;
             }
-            ClusterLoadStatistic statistic = globalStateMgr.getTabletScheduler().getLoadStatistic();
+            ClusterLoadStatistic statistic = globalStateMgr.getTabletScheduler().getClusterLoadStatistic();
             if (statistic == null) {
                 continue;
             }
@@ -363,10 +363,11 @@ public class ColocateTableBalancer extends FrontendDaemon {
                     group2ColocateRelocationInfo.put(gid,
                             new ColocateRelocationInfo(!unavailableBeIdsInGroup.isEmpty(),
                                     colocateIndex.getBackendsPerBucketSeq(gid), Maps.newHashMap()));
-                    colocateIndex.addBackendsPerBucketSeq(gid, balancedBackendsPerBucketSeq);
                     ColocatePersistInfo info =
                             ColocatePersistInfo.createForBackendsPerBucketSeq(gid, balancedBackendsPerBucketSeq);
-                    globalStateMgr.getEditLog().logColocateBackendsPerBucketSeq(info);
+                    globalStateMgr.getEditLog().logColocateBackendsPerBucketSeq(info, wal -> {
+                        colocateIndex.addBackendsPerBucketSeq(gid, balancedBackendsPerBucketSeq);
+                    });
                     colocateIndex.markGroupUnstable(groupId, true);
                     LOG.info("balance colocate per group , group id {}, " +
                                     "now backends per bucket sequence is: {}, " +
@@ -669,10 +670,11 @@ public class ColocateTableBalancer extends FrontendDaemon {
             toChangeGroups.add(entry.getKey());
             List<List<Long>> oldBackendsPerBucketSeq = colocateIndex.getBackendsPerBucketSeq(entry.getKey());
             for (GroupId groupId : toChangeGroups) {
-                colocateIndex.addBackendsPerBucketSeq(groupId, balancedBackendsPerBucketSeq);
                 ColocatePersistInfo info =
                         ColocatePersistInfo.createForBackendsPerBucketSeq(groupId, balancedBackendsPerBucketSeq);
-                globalStateMgr.getEditLog().logColocateBackendsPerBucketSeq(info);
+                globalStateMgr.getEditLog().logColocateBackendsPerBucketSeq(info, wal -> {
+                    colocateIndex.addBackendsPerBucketSeq(groupId, balancedBackendsPerBucketSeq);
+                });
                 colocateIndex.markGroupUnstable(groupId, true);
                 LOG.info("overall colocate balance for group {}, now backends per bucket sequence is: {}, " +
                                 "bucket sequence before balance: {}",
@@ -794,20 +796,29 @@ public class ColocateTableBalancer extends FrontendDaemon {
                     long visibleVersion = physicalPartition.getVisibleVersion();
                     // Here we only get VISIBLE indexes. All other indexes are not queryable.
                     // So it does not matter if tablets of other indexes are not matched.
-                    for (MaterializedIndex index : physicalPartition.getMaterializedIndices(IndexExtState.VISIBLE)) {
+                    for (MaterializedIndex index : physicalPartition.getLatestMaterializedIndices(IndexExtState.VISIBLE)) {
                         Preconditions.checkState(backendBucketsSeq.size() == index.getTablets().size(),
                                 backendBucketsSeq.size() + " v.s. " + index.getTablets().size());
+
+                        BalanceStat balanceStat = BalanceStat.BALANCED_STAT;
+
                         int idx = 0;
                         for (Long tabletId : index.getTabletIdsInOrder()) {
                             LocalTablet tablet = (LocalTablet) index.getTablet(tabletId);
-                            Set<Long> bucketsSeq = backendBucketsSeq.get(idx);
+                            Set<Long> bucketSeq = backendBucketsSeq.get(idx);
+
+                            // check tablet colocate status
+                            TabletHealthStatus st = TabletChecker.getColocateTabletHealthStatus(tablet, visibleVersion,
+                                    replicationNum, bucketSeq);
+                            if (st == TabletHealthStatus.COLOCATE_MISMATCH && balanceStat.isBalanced()) {
+                                balanceStat =
+                                        BalanceStat.createColocationGroupBalanceStat(tabletId, tablet.getBackendIds(), bucketSeq);
+                            }
+
                             // Tablet has already been scheduled, no need to schedule again
                             if (!tabletScheduler.containsTablet(tablet.getId())) {
-                                Preconditions.checkState(bucketsSeq.size() == replicationNum,
-                                        bucketsSeq.size() + " vs. " + replicationNum);
-                                TabletHealthStatus
-                                        st = TabletChecker.getColocateTabletHealthStatus(tablet, visibleVersion,
-                                        replicationNum, bucketsSeq);
+                                Preconditions.checkState(bucketSeq.size() == replicationNum,
+                                        bucketSeq.size() + " vs. " + replicationNum);
                                 if (st != TabletHealthStatus.HEALTHY) {
                                     isGroupStable = false;
                                     Priority colocateUnhealthyPrio = Priority.HIGH;
@@ -844,10 +855,10 @@ public class ColocateTableBalancer extends FrontendDaemon {
                                         Pair<Boolean, Long> result =
                                                 tabletScheduler.blockingAddTabletCtxToScheduler(db, tabletCtx,
                                                         needToForceRepair(st, tablet,
-                                                                bucketsSeq) || isPartitionUrgent /* forcefully add or not */);
+                                                                bucketSeq) || isPartitionUrgent /* forcefully add or not */);
                                         if (LOG.isDebugEnabled() && result.first &&
                                                 st == TabletHealthStatus.COLOCATE_MISMATCH) {
-                                            logDebugInfoForColocateMismatch(bucketsSeq, tablet);
+                                            logDebugInfoForColocateMismatch(bucketSeq, tablet);
                                         }
 
                                         waitTotalTimeMs += result.second;
@@ -857,7 +868,7 @@ public class ColocateTableBalancer extends FrontendDaemon {
                                                     tableId,
                                                     info != null ? info.getLastBackendsPerBucketSeq().get(idx) :
                                                             Lists.newArrayList(),
-                                                    bucketsSeq);
+                                                    bucketSeq);
                                         }
                                     }
                                 } else {
@@ -866,13 +877,15 @@ public class ColocateTableBalancer extends FrontendDaemon {
                             } else {
                                 // tablet maybe added to scheduler because of balance between local disks,
                                 // in this case we shouldn't mark the group unstable
-                                if (TabletChecker.getColocateTabletHealthStatus(
-                                        tablet, visibleVersion, replicationNum, bucketsSeq) != TabletHealthStatus.HEALTHY) {
+                                if (st != TabletHealthStatus.HEALTHY) {
                                     isGroupStable = false;
                                 }
                             }
                             idx++;
                         } // end for tablets
+
+                        // set balance stat in materialized index
+                        index.setBalanceStat(balanceStat);
                     } // end for materialize indexes
 
                     if (isUrgentPartitionHealthy && isPartitionUrgent) {

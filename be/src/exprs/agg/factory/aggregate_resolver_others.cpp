@@ -19,7 +19,7 @@
 #include "exprs/agg/group_concat.h"
 #include "exprs/agg/percentile_cont.h"
 #include "types/logical_type.h"
-#include "util/percentile_value.h"
+#include "types/percentile_value.h"
 
 namespace starrocks {
 
@@ -53,10 +53,24 @@ void AggregateFuncResolver::register_others() {
     add_aggregate_mapping_variadic<TYPE_DOUBLE, TYPE_DOUBLE, PercentileApproxState>(
             "percentile_approx", false, AggregateFactory::MakePercentileApproxAggregateFunction());
 
+    // percentile_approx(expr, ARRAY<DOUBLE>) -> ARRAY<DOUBLE>
+    add_aggregate_mapping_variadic<TYPE_BIGINT, TYPE_ARRAY, PercentileApproxState>(
+            "percentile_approx", false, AggregateFactory::MakePercentileApproxArrayAggregateFunction());
+    add_aggregate_mapping_variadic<TYPE_DOUBLE, TYPE_ARRAY, PercentileApproxState>(
+            "percentile_approx", false, AggregateFactory::MakePercentileApproxArrayAggregateFunction());
+
     add_aggregate_mapping_variadic<TYPE_BIGINT, TYPE_DOUBLE, PercentileApproxState>(
             "percentile_approx_weighted", false, AggregateFactory::MakePercentileApproxWeightedAggregateFunction());
     add_aggregate_mapping_variadic<TYPE_DOUBLE, TYPE_DOUBLE, PercentileApproxState>(
             "percentile_approx_weighted", false, AggregateFactory::MakePercentileApproxWeightedAggregateFunction());
+
+    // percentile_approx_weighted(expr, weight, ARRAY<DOUBLE>) -> ARRAY<DOUBLE>
+    add_aggregate_mapping_variadic<TYPE_BIGINT, TYPE_ARRAY, PercentileApproxState>(
+            "percentile_approx_weighted", false,
+            AggregateFactory::MakePercentileApproxWeightedArrayAggregateFunction());
+    add_aggregate_mapping_variadic<TYPE_DOUBLE, TYPE_ARRAY, PercentileApproxState>(
+            "percentile_approx_weighted", false,
+            AggregateFactory::MakePercentileApproxWeightedArrayAggregateFunction());
 
     add_aggregate_mapping<TYPE_PERCENTILE, TYPE_PERCENTILE, PercentileValue>(
             "percentile_union", false, AggregateFactory::MakePercentileUnionAggregateFunction());
@@ -87,6 +101,7 @@ void AggregateFuncResolver::register_others() {
     add_decimal_mapping<TYPE_DECIMAL32, TYPE_DECIMAL128>("decimal_multi_distinct_sum");
     add_decimal_mapping<TYPE_DECIMAL64, TYPE_DECIMAL128>("decimal_multi_distinct_sum");
     add_decimal_mapping<TYPE_DECIMAL128, TYPE_DECIMAL128>("decimal_multi_distinct_sum");
+    add_decimal_mapping<TYPE_DECIMAL256, TYPE_DECIMAL256>("decimal_multi_distinct_sum");
 
     // This first type is the 4th type input of windowfunnel.
     // And the 1st type is BigInt, 2nd is datetime, 3rd is mode(default 0).
@@ -96,7 +111,10 @@ void AggregateFuncResolver::register_others() {
     add_array_mapping<TYPE_DATE, TYPE_INT>("window_funnel");
 
     add_general_mapping<AnyValueSemiState>("any_value", false, AggregateFactory::MakeAnyValueSemiAggregateFunction());
-    add_general_mapping_notnull("array_agg2", false, AggregateFactory::MakeArrayAggAggregateFunctionV2());
+    add_general_mapping_notnull("array_agg2", false,
+                                AggregateFactory::MakeArrayAggAggregateFunctionV2<ArrayAggAggregateStateV2>());
+    add_general_window_mapping_notnull("array_agg2",
+                                       AggregateFactory::MakeArrayAggAggregateFunctionV2<ArrayAggWindowStateV2>());
     add_general_mapping_notnull("group_concat2", false, AggregateFactory::MakeGroupConcatAggregateFunctionV2());
 
     add_general_mapping_notnull("dict_merge", false, AggregateFactory::MakeDictMergeAggregateFunction());

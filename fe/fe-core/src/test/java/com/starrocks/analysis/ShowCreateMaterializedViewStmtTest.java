@@ -15,8 +15,10 @@
 package com.starrocks.analysis;
 
 import com.google.common.collect.Lists;
+import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.constraint.UniqueConstraint;
 import com.starrocks.common.Config;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
@@ -28,7 +30,6 @@ import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import org.junit.Assert;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -100,7 +101,7 @@ public class ShowCreateMaterializedViewStmtTest {
         Table table = currentState.getLocalMetastore().getDb("test").getTable("mv9");
         List<String> createTableStmt = Lists.newArrayList();
         AstToStringBuilder.getDdlStmt(table, createTableStmt, null, null, false, true);
-        Assert.assertEquals("CREATE MATERIALIZED VIEW `mv9` (`k1`, `k2`)\n" +
+        Assertions.assertEquals("CREATE MATERIALIZED VIEW `mv9` (`k1`, `k2`)\n" +
                 "DISTRIBUTED BY HASH(`k1`) BUCKETS 10 \n" +
                 "REFRESH MANUAL\n" +
                 "PROPERTIES (\n" +
@@ -110,8 +111,7 @@ public class ShowCreateMaterializedViewStmtTest {
                 "\"foreign_key_constraints\" = \"default_catalog.test.tbl1(k1) REFERENCES default_catalog.test.tbl2(k1)\",\n" +
                 "\"storage_medium\" = \"HDD\"\n" +
                 ")\n" +
-                "AS SELECT `tbl1`.`k1`, `tbl2`.`k2`\n" +
-                "FROM `test`.`tbl1` INNER JOIN `test`.`tbl2` ON `tbl1`.`k1` = `tbl2`.`k1`;", createTableStmt.get(0));
+                "AS select tbl1.k1, tbl2.k2 from tbl1 join tbl2 on tbl1.k1 = tbl2.k1;", createTableStmt.get(0));
     }
 
     @Test
@@ -128,7 +128,7 @@ public class ShowCreateMaterializedViewStmtTest {
         Table table = currentState.getLocalMetastore().getDb("test").getTable("mv10");
         List<String> createTableStmt = Lists.newArrayList();
         AstToStringBuilder.getDdlStmt(table, createTableStmt, null, null, false, true);
-        Assert.assertEquals("CREATE MATERIALIZED VIEW `mv10` (`c1`, `c2`)\n" +
+        Assertions.assertEquals("CREATE MATERIALIZED VIEW `mv10` (`c1`, `c2`)\n" +
                         "DISTRIBUTED BY HASH(`c1`) BUCKETS 10 \n" +
                         "REFRESH MANUAL\n" +
                         "PROPERTIES (\n" +
@@ -138,8 +138,7 @@ public class ShowCreateMaterializedViewStmtTest {
                         "\"foreign_key_constraints\" = \"hive0.partitioned_db.t1(c2) REFERENCES hive0.partitioned_db2.t2(c2)\",\n" +
                         "\"storage_medium\" = \"HDD\"\n" +
                         ")\n" +
-                        "AS SELECT `hive0`.`partitioned_db2`.`t2`.`c1`, `hive0`.`partitioned_db`.`t1`.`c2`\n" +
-                        "FROM `hive0`.`partitioned_db`.`t1` INNER JOIN `hive0`.`partitioned_db2`.`t2` ON `hive0`.`partitioned_db`.`t1`.`c2` = `hive0`.`partitioned_db2`.`t2`.`c2`;",
+                        "AS select t2.c1, t1.c2 from hive0.partitioned_db.t1 join hive0.partitioned_db2.t2 on t1.c2 = t2.c2;",
                 createTableStmt.get(0));
     }
 
@@ -157,7 +156,7 @@ public class ShowCreateMaterializedViewStmtTest {
         Table table = currentState.getLocalMetastore().getDb("test").getTable("mv8");
         List<String> createTableStmt = Lists.newArrayList();
         AstToStringBuilder.getDdlStmt(table, createTableStmt, null, null, false, true);
-        Assert.assertEquals(createTableStmt.get(0),
+        Assertions.assertEquals(createTableStmt.get(0),
                 "CREATE MATERIALIZED VIEW `mv8` (`l_orderkey`, `l_partkey`, `l_shipdate`)\n" +
                         "DISTRIBUTED BY HASH(`l_orderkey`) BUCKETS 10 \n" +
                         "REFRESH MANUAL\n" +
@@ -166,8 +165,7 @@ public class ShowCreateMaterializedViewStmtTest {
                         "\"replication_num\" = \"1\",\n" +
                         "\"storage_medium\" = \"HDD\"\n" +
                         ")\n" +
-                        "AS SELECT `lineitem`.`l_orderkey`, `lineitem`.`l_partkey`, `lineitem`.`l_shipdate`\n" +
-                        "FROM `hive0`.`tpch`.`lineitem`;");
+                        "AS select l_orderkey,l_partkey,l_shipdate from hive0.tpch.lineitem;");
         ctx.getGlobalStateMgr().setMetadataMgr(oldMetadataMgr);
     }
 
@@ -238,16 +236,71 @@ public class ShowCreateMaterializedViewStmtTest {
         Assertions.assertEquals("k1", table.getUniqueConstraints().get(0).getUniqueColumnNames(table).get(0));
 
         starRocksAssert.dropTable("tbl_constraint_test");
-        Assert.assertThrows(SemanticException.class, () -> table.getUniqueConstraints().get(0).getUniqueColumnNames(table));
+        Assertions.assertThrows(SemanticException.class, () -> table.getUniqueConstraints().get(0).getUniqueColumnNames(table));
+    }
+
+    @Test
+    public void testMvAutoGeneratedUniqueConstraintResolvesAgainstSelf() throws Exception {
+        // OlapTable auto-generates a UniqueConstraint for PRIMARY_KEYS / UNIQUE_KEYS tables with
+        // catalog/db set to null (self-reference). For MVs this used to fail
+        // analyzer-time with "Table null.null.<mv> is not found"; the resolver must fall back to
+        // selfTable when both catalog and db are null.
+        String createMvSql = "create materialized view mv_self_ref "
+                + "distributed by hash(k1) buckets 3 "
+                + "refresh manual "
+                + "as select k1, k2 from tbl1;";
+        StatementBase statementBase = UtFrameUtils.parseStmtWithNewParser(createMvSql, ctx);
+        GlobalStateMgr currentState = GlobalStateMgr.getCurrentState();
+        currentState.getLocalMetastore().createMaterializedView((CreateMaterializedViewStatement) statementBase);
+        MaterializedView mv = (MaterializedView) currentState.getLocalMetastore().getDb("test").getTable("mv_self_ref");
+
+        UniqueConstraint selfRef = new UniqueConstraint(null, null, mv.getName(),
+                Lists.newArrayList(ColumnId.create("k1")));
+        Assertions.assertEquals(Lists.newArrayList("k1"), selfRef.getUniqueColumnNames(mv));
+
+        starRocksAssert.dropMaterializedView("mv_self_ref");
+    }
+
+    @Test
+    public void testAsyncIsSynonymForScheduleAndShowCreatePrefersSchedule() throws Exception {
+        final String mvName = "test_mv_async_synonym";
+        starRocksAssert.ddl("drop materialized view if exists " + mvName);
+        // ASYNC must remain accepted as a synonym.
+        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW " + mvName +
+                " DISTRIBUTED BY HASH(`k1`) BUCKETS 3" +
+                " REFRESH ASYNC EVERY(INTERVAL 1 HOUR)" +
+                " AS SELECT k1, k2 FROM test.tbl1");
+        MaterializedView mv = starRocksAssert.getMv(starRocksAssert.getCtx().getDatabase(), mvName);
+        List<String> ddl = Lists.newArrayList();
+        AstToStringBuilder.getDdlStmt(mv, ddl, null, null, false, true);
+        Assertions.assertTrue(ddl.get(0).contains("REFRESH SCHEDULE EVERY(INTERVAL 1 HOUR)"),
+                "SHOW CREATE should display SCHEDULE, got: " + ddl.get(0));
+        Assertions.assertFalse(ddl.get(0).contains("REFRESH ASYNC"),
+                "SHOW CREATE should not display ASYNC, got: " + ddl.get(0));
+        starRocksAssert.dropMaterializedView(mvName);
+
+        // SCHEDULE should also parse and produce the same display.
+        starRocksAssert.withMaterializedView("CREATE MATERIALIZED VIEW " + mvName +
+                " DISTRIBUTED BY HASH(`k1`) BUCKETS 3" +
+                " REFRESH SCHEDULE EVERY(INTERVAL 1 HOUR)" +
+                " AS SELECT k1, k2 FROM test.tbl1");
+        mv = starRocksAssert.getMv(starRocksAssert.getCtx().getDatabase(), mvName);
+        ddl.clear();
+        AstToStringBuilder.getDdlStmt(mv, ddl, null, null, false, true);
+        Assertions.assertTrue(ddl.get(0).contains("REFRESH SCHEDULE EVERY(INTERVAL 1 HOUR)"),
+                "SHOW CREATE should display SCHEDULE, got: " + ddl.get(0));
+        starRocksAssert.dropMaterializedView(mvName);
     }
 
     public static Stream<Arguments> genTestArguments() {
+        // Bare ASYNC (without EVERY) is the legacy form retained for backward compatibility;
+        // SCHEDULE is the preferred keyword for scheduled refresh and requires EVERY.
         List<String> refreshArgumentsList = Lists.newArrayList(
                 "REFRESH MANUAL",
                 "REFRESH DEFERRED MANUAL",
                 "REFRESH ASYNC",
-                "REFRESH ASYNC EVERY(INTERVAL 1 HOUR)",
-                "REFRESH ASYNC START(\"1998-01-01 00:00:00\") EVERY(INTERVAL 1 HOUR)"
+                "REFRESH SCHEDULE EVERY(INTERVAL 1 HOUR)",
+                "REFRESH SCHEDULE START(\"1998-01-01 00:00:00\") EVERY(INTERVAL 1 HOUR)"
         );
         List<String> orderByList = Lists.newArrayList("", "ORDER BY (k3)");
         List<String> propertiesList = Lists.newArrayList(

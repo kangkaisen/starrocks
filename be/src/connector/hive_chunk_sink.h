@@ -19,17 +19,14 @@
 #include <boost/thread/future.hpp>
 #include <future>
 
-#include "column/chunk.h"
 #include "common/status.h"
+#include "common/thread/priority_thread_pool.hpp"
 #include "connector/async_flush_stream_poller.h"
 #include "connector/connector.h"
 #include "connector/sink_memory_manager.h"
 #include "connector_chunk_sink.h"
 #include "formats/column_evaluator.h"
 #include "formats/file_writer.h"
-#include "fs/fs.h"
-#include "runtime/runtime_state.h"
-#include "util/priority_thread_pool.hpp"
 #include "utils.h"
 
 namespace starrocks::connector {
@@ -38,9 +35,7 @@ class HiveChunkSink : public ConnectorChunkSink {
 public:
     HiveChunkSink(std::vector<std::string> partition_columns,
                   std::vector<std::unique_ptr<ColumnEvaluator>>&& partition_column_evaluators,
-                  std::unique_ptr<LocationProvider> location_provider,
-                  std::unique_ptr<formats::FileWriterFactory> file_writer_factory, int64_t max_file_size,
-                  RuntimeState* state);
+                  std::unique_ptr<PartitionChunkWriterFactory> partition_chunk_writer_factory, RuntimeState* state);
 
     ~HiveChunkSink() override = default;
 

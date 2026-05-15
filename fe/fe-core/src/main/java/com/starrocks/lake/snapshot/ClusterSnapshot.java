@@ -45,16 +45,27 @@ public class ClusterSnapshot {
     public ClusterSnapshot() {
     }
 
-    public ClusterSnapshot(long id, String snapshotName, String storageVolumeName, long createdTimeMs,
-            long finishedTimeMs, long feJournalId, long starMgrJournalId) {
+    public ClusterSnapshot(long id, String snapshotName, ClusterSnapshotType type, String storageVolumeName,
+                           long createdTimeMs, long finishedTimeMs, long feJournalId, long starMgrJournalId) {
         this.id = id;
         this.snapshotName = snapshotName;
-        this.type = ClusterSnapshotType.AUTOMATED;
+        this.type = type;
         this.storageVolumeName = storageVolumeName;
         this.createdTimeMs = createdTimeMs;
         this.finishedTimeMs = finishedTimeMs;
         this.feJournalId = feJournalId;
         this.starMgrJournalId = starMgrJournalId;
+    }
+
+    private ClusterSnapshot(ClusterSnapshot snapshot) {
+        this.id = snapshot.id;
+        this.snapshotName = snapshot.snapshotName;
+        this.type = snapshot.type;
+        this.storageVolumeName = snapshot.storageVolumeName;
+        this.createdTimeMs = snapshot.createdTimeMs;
+        this.finishedTimeMs = snapshot.finishedTimeMs;
+        this.feJournalId = snapshot.feJournalId;
+        this.starMgrJournalId = snapshot.starMgrJournalId;
     }
 
     public void setJournalIds(long feJournalId, long starMgrJournalId) {
@@ -92,6 +103,18 @@ public class ClusterSnapshot {
 
     public long getId() {
         return id;
+    }
+
+    public boolean isAutomated() {
+        return type == ClusterSnapshotType.AUTOMATED;
+    }
+
+    public void setClusterSnapshotInfo(ClusterSnapshotInfo clusterSnapshotInfo) {
+        return;
+    }
+
+    public ClusterSnapshot copyForPersist() {
+        return new ClusterSnapshot(this);
     }
 
     public TClusterSnapshotsItem getInfo() {

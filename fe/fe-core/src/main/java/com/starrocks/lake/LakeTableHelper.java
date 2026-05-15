@@ -15,6 +15,7 @@
 package com.starrocks.lake;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 import com.staros.client.StarClientException;
 import com.staros.proto.ShardInfo;
 import com.staros.proto.StatusCode;
@@ -29,26 +30,34 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.Config;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.proto.DropTableRequest;
+import com.starrocks.proto.DropTabletCacheMeta;
+import com.starrocks.proto.DropTabletCacheRequest;
+import com.starrocks.proto.DropTabletCacheResponse;
 import com.starrocks.proto.StatusPB;
 import com.starrocks.rpc.BrpcProxy;
 import com.starrocks.rpc.LakeService;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.RunMode;
-import com.starrocks.server.WarehouseManager;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.transaction.TransactionState;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Future;
 
 public class LakeTableHelper {
     private static final Logger LOG = LogManager.getLogger(LakeTableHelper.class);
@@ -69,12 +78,14 @@ public class LakeTableHelper {
         table.removeTableBinds(replay);
         if (replay) {
             table.removeTabletsFromInvertedIndex();
+            GlobalStateMgr.getCurrentState().getWarehouseMgr().removeTableWarehouseInfo(table.getId());
             return true;
         }
         LakeTableCleaner cleaner = new LakeTableCleaner(table);
         boolean succ = cleaner.cleanTable();
         if (succ) {
             table.removeTabletsFromInvertedIndex();
+            GlobalStateMgr.getCurrentState().getWarehouseMgr().removeTableWarehouseInfo(table.getId());
         }
         return succ;
     }
@@ -115,8 +126,10 @@ public class LakeTableHelper {
         }
     }
 
-    static Optional<ShardInfo> getAssociatedShardInfo(PhysicalPartition partition, long warehouseId) throws StarClientException {
-        List<MaterializedIndex> allIndices = partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
+    static Optional<ShardInfo> getAssociatedShardInfo(PhysicalPartition partition,
+                                                      ComputeResource computeResource) throws StarClientException {
+        List<MaterializedIndex> allIndices = partition.getLatestMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
+        final long workerGroupId = computeResource.getWorkerGroupId();
         for (MaterializedIndex materializedIndex : allIndices) {
             List<Tablet> tablets = materializedIndex.getTablets();
             if (tablets.isEmpty()) {
@@ -127,9 +140,6 @@ public class LakeTableHelper {
                 if (GlobalStateMgr.isCheckpointThread()) {
                     throw new RuntimeException("Cannot call getShardInfo in checkpoint thread");
                 }
-                WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
-                long workerGroupId = warehouseManager.selectWorkerGroupByWarehouseId(warehouseId)
-                        .orElse(StarOSAgent.DEFAULT_WORKER_GROUP_ID);
                 ShardInfo shardInfo = GlobalStateMgr.getCurrentState().getStarOSAgent().getShardInfo(tablet.getShardId(),
                         workerGroupId);
 
@@ -144,20 +154,123 @@ public class LakeTableHelper {
         return Optional.empty();
     }
 
-    static boolean removePartitionDirectory(Partition partition, long warehouseId) throws StarClientException {
+    /**
+     * Attempts to drop cache for all tablets in the given partition.
+     * This is a best-effort operation - errors are logged but not propagated.
+     *
+     * @param partition the partition whose tablet caches should be dropped
+     * @param computeResource the compute resource used to locate the tablets
+     */
+    public static void dropPartitionCache(Partition partition, ComputeResource computeResource) {
+        Map<Long, Long> tablets = new HashMap<>();
+        // if we reach here, only catalog recycle bin will touch partition,
+        // so we don't need db or table lock here
+        GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
+        partition.getSubPartitions().forEach(physicalPartition -> {
+            long visibleVersion = physicalPartition.getVisibleVersion();
+            physicalPartition.getAllMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)
+                    .forEach(materializedIndex ->
+                            materializedIndex.getTablets().forEach(tablet ->
+                            tablets.put(tablet.getId(), visibleVersion)));
+        });
+        Map<Long /* beId */, List<Pair<Long /* tabletId */, Long /* version */>>> tabletsByBeMap = new HashMap<>();
+        for (Map.Entry<Long, Long> entry : tablets.entrySet()) {
+            try {
+                long beId = globalStateMgr.getStarOSAgent().getPrimaryComputeNodeIdByShard(
+                        entry.getKey(), computeResource.getWorkerGroupId());
+                tabletsByBeMap.computeIfAbsent(beId,
+                        k -> Lists.newArrayList()).add(Pair.of(entry.getKey(), entry.getValue()));
+            } catch (StarRocksException e) {
+                // still continue, drop cache is a try-at-best behavior
+                LOG.debug("Fail to get replica for tablet {} when drop cache, error: {}.",
+                        entry.getKey(), e.getMessage());
+            }
+        }
+
+        Map<Long, Future<DropTabletCacheResponse>> futureMap = new HashMap<>();
+        for (Map.Entry<Long, List<Pair<Long, Long>>> entry : tabletsByBeMap.entrySet()) {
+            long beId = entry.getKey();
+            ComputeNode node = globalStateMgr.getNodeMgr().getClusterInfo()
+                    .getBackendOrComputeNode(beId);
+            if (node == null) {
+                LOG.debug("Node {} not exist when drop cache.", beId);
+                continue;
+            }
+
+            List<DropTabletCacheMeta> metas = Lists.newArrayList();
+            for (Pair<Long, Long> e : entry.getValue()) {
+                DropTabletCacheMeta meta = new DropTabletCacheMeta();
+                meta.tabletId = e.getKey();
+                meta.version = e.getValue();
+                metas.add(meta);
+            }
+            DropTabletCacheRequest request = new DropTabletCacheRequest();
+            request.tablets = metas;
+            try {
+                LakeService lakeService = BrpcProxy.getLakeService(node.getHost(), node.getBrpcPort());
+                futureMap.put(beId, lakeService.dropTabletCache(request));
+            } catch (Throwable e) {
+                LOG.debug("Fail to send rpc request to node: {} when drop cache, error: {}.",
+                        node.toString(), e.getMessage());
+            }
+        }
+
+        for (Map.Entry<Long, Future<DropTabletCacheResponse>> entry : futureMap.entrySet()) {
+            long beId = entry.getKey();
+            Future<DropTabletCacheResponse> future = entry.getValue();
+            DropTabletCacheResponse response = null;
+            try {
+                response = future.get();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                LOG.debug("Interrupted while waiting for response from node: {} when drop cache, error: {}.",
+                        beId, exception.getMessage());
+                continue;
+            } catch (Exception e) {
+                LOG.debug("Failed to get response from node: {} when drop cache, error: {}.",
+                        beId, e.getMessage());
+                continue;
+            }
+            if (response != null && response.status != null && response.status.statusCode != 0) {
+                String errorMsg = "";
+                if (response.status.errorMsgs != null && !response.status.errorMsgs.isEmpty()) {
+                    errorMsg = response.status.errorMsgs.get(0);
+                }
+                LOG.debug("Failed to drop cache from node: {}, error: {}.", beId, errorMsg);
+            }
+        }
+    }
+
+    static boolean removePartitionDirectory(Partition partition, ComputeResource computeResource, boolean dropCache)
+            throws StarClientException {
+        return removePartitionDirectory(partition, computeResource, dropCache, false);
+    }
+
+    static boolean removePartitionDirectory(Partition partition, ComputeResource computeResource, boolean dropCache,
+                                            boolean forceRemoveSharedDirectory) throws StarClientException {
         boolean ret = true;
+
+        if (Config.lake_enable_drop_tablet_cache && dropCache) {
+            dropPartitionCache(partition, computeResource);
+        }
+
+        // Track removed paths to avoid double-removal when multiple sub-partitions share the same
+        // underlying directory (common when forceRemoveSharedDirectory=true for table deletion).
+        // Without deduplication, the second removal fails with a non-zero status code even though
+        // the directory is already gone, causing erasePartition() to retry indefinitely.
+        Set<String> removedPaths = new HashSet<>();
         for (PhysicalPartition subPartition : partition.getSubPartitions()) {
-            ShardInfo shardInfo = getAssociatedShardInfo(subPartition, warehouseId).orElse(null);
+            ShardInfo shardInfo = getAssociatedShardInfo(subPartition, computeResource).orElse(null);
             if (shardInfo == null) {
                 LOG.info("Skipped remove directory of empty partition {}", subPartition.getId());
                 continue;
             }
-            if (isSharedDirectory(shardInfo.getFilePath().getFullPath(), subPartition.getId())) {
-                LOG.info("Skipped remove possible directory shared by multiple partitions: {}",
-                        shardInfo.getFilePath().getFullPath());
+            String path = shardInfo.getFilePath().getFullPath();
+            if (!forceRemoveSharedDirectory && isSharedDirectory(path, subPartition.getId())) {
+                LOG.info("Skipped remove possible directory shared by multiple partitions: {}", path);
                 continue;
             }
-            if (!removeShardRootDirectory(shardInfo)) {
+            if (removedPaths.add(path) && !removeShardRootDirectory(shardInfo)) {
                 ret = false;
             }
         }
@@ -173,7 +286,7 @@ public class LakeTableHelper {
         Collection<PhysicalPartition> subPartitions = partition.getSubPartitions();
         Set<Long> needRemoveShardGroupIdSet = new HashSet<>();
         for (PhysicalPartition subPartition : subPartitions) {
-            for (MaterializedIndex index : subPartition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
+            for (MaterializedIndex index : subPartition.getAllMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
                 needRemoveShardGroupIdSet.add(index.getShardGroupId());
             }
         }
@@ -184,9 +297,9 @@ public class LakeTableHelper {
         }
     }
 
-    public static boolean isSharedPartitionDirectory(PhysicalPartition physicalPartition, long warehouseId)
+    public static boolean isSharedPartitionDirectory(PhysicalPartition physicalPartition, ComputeResource computeResource)
             throws StarClientException {
-        ShardInfo shardInfo = getAssociatedShardInfo(physicalPartition, warehouseId).orElse(null);
+        ShardInfo shardInfo = getAssociatedShardInfo(physicalPartition, computeResource).orElse(null);
         if (shardInfo == null) {
             return false;
         }
@@ -207,6 +320,23 @@ public class LakeTableHelper {
     }
 
     /**
+     * For version compatibility reason, check if column unique id is valid, and if finding any we should restore
+     * column unique id
+     *
+     * @param table the table to restore column unique id
+     */
+    public static void restoreColumnUniqueIdIfNeeded(OlapTable table) {
+        for (MaterializedIndexMeta indexMeta : table.getIndexMetaIdToMeta().values()) {
+            List<Column> indexMetaSchema = indexMeta.getSchema();
+            // check and restore column unique id for each schema
+            if (restoreColumnUniqueId(indexMetaSchema)) {
+                LOG.info("Column unique ids in table {} with index meta {} have been restored, columns size: {}",
+                        table.getName(), indexMeta.getIndexMetaId(), indexMetaSchema.size());
+            }
+        }
+    }
+
+    /**
      * For tables created in the old version of StarRocks cluster, the column unique id is generated on BE and
      * is not saved in FE catalog. For these tables, we want to be able to record their column unique id in the
      * catalog after the upgrade, and the column unique id recorded must be consistent with the one on BE.
@@ -214,21 +344,20 @@ public class LakeTableHelper {
      * each column as their unique id, so here we just need to follow the same algorithm to calculate the unique
      * id of each column.
      *
-     * @param table the table to restore column unique id
-     * @return the max column unique id
+     * @param indexMetaSchema the columns to restore column unique id
+     * @return true if the column unique id is restored, false otherwise
      */
-    public static int restoreColumnUniqueId(OlapTable table) {
-        int maxId = 0;
-        for (MaterializedIndexMeta indexMeta : table.getIndexIdToMeta().values()) {
-            final int columnCount = indexMeta.getSchema().size();
-            maxId = Math.max(maxId, columnCount - 1);
-            for (int i = 0; i < columnCount; i++) {
-                Column col = indexMeta.getSchema().get(i);
-                Preconditions.checkState(col.getUniqueId() <= 0, col.getUniqueId());
-                col.setUniqueId(i);
-            }
+    public static boolean restoreColumnUniqueId(List<Column> indexMetaSchema) {
+        // unique id should have a integer value greater than or equal to 0
+        boolean hasInvalidUniqueId = indexMetaSchema.stream().anyMatch(column -> column.getUniqueId() < 0);
+        if (!hasInvalidUniqueId) {
+            return false;
         }
-        return maxId;
+        for (int i = 0; i < indexMetaSchema.size(); i++) {
+            Column col = indexMetaSchema.get(i);
+            col.setUniqueId(i);
+        }
+        return true;
     }
 
     public static boolean supportCombinedTxnLog(TransactionState.LoadJobSourceType sourceType) {
@@ -240,5 +369,73 @@ public class LakeTableHelper {
                 sourceType == TransactionState.LoadJobSourceType.ROUTINE_LOAD_TASK ||
                 sourceType == TransactionState.LoadJobSourceType.INSERT_STREAMING ||
                 sourceType == TransactionState.LoadJobSourceType.BATCH_LOAD_JOB;
+    }
+
+    // for now, only loading txn and compaction txn support combined txn log
+    public static boolean isTransactionSupportCombinedTxnLog(TransactionState.LoadJobSourceType sourceType) {
+        return isLoadingTransaction(sourceType) || sourceType == TransactionState.LoadJobSourceType.LAKE_COMPACTION;
+    }
+
+    // if one of the tables in tableIdList is LakeTable with file bundling, return true
+    // else return false
+    public static boolean fileBundling(long dbId, List<Long> tableIdList) {
+        if (!RunMode.isSharedDataMode()) {
+            return false;
+        }
+        // for each tableIdList
+        for (Long tableId : tableIdList) {
+            OlapTable table = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(dbId, tableId);
+            if (table == null) {
+                continue;
+            }
+            // check if table is LakeTable with file bundling
+            if (table.isFileBundling()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static Optional<Long> extractIdFromPath(String path) {
+        if (path == null) {
+            return Optional.empty();
+        }
+    
+        int lastSlashIndex = path.lastIndexOf('/');
+        if (lastSlashIndex == -1 || lastSlashIndex == path.length() - 1) {
+            return Optional.empty();
+        }
+    
+        String idPart = path.substring(lastSlashIndex + 1);
+        try {
+            return Optional.of(Long.parseLong(idPart));
+        } catch (NumberFormatException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Computes the minimum active transaction ID that must be preserved for vacuum operations.
+     * This considers:
+     * 1. Database-level minimum active transaction ID from the global transaction manager
+     * 2. Active schema change jobs' transaction IDs
+     * 3. Active rollup (materialized view) jobs' transaction IDs
+     *
+     * The minimum across all these sources is returned to ensure vacuum does not delete
+     * data still needed by any active operation.
+     *
+     * @param dbId the database ID
+     * @param tableId the table ID
+     * @return the minimum active transaction ID that must be preserved
+     */
+    public static long computeMinActiveTxnId(long dbId, long tableId) {
+        long dbMinTxnId = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
+                .getMinActiveTxnIdOfDatabase(dbId);
+        Optional<Long> schemaChangeMinTxnId = GlobalStateMgr.getCurrentState().getSchemaChangeHandler()
+                .getActiveTxnIdOfTable(tableId);
+        Optional<Long> rollupMinTxnId = GlobalStateMgr.getCurrentState().getRollupHandler()
+                .getActiveTxnIdOfTable(tableId);
+        return Math.min(Math.min(dbMinTxnId, schemaChangeMinTxnId.orElse(Long.MAX_VALUE)),
+                rollupMinTxnId.orElse(Long.MAX_VALUE));
     }
 }

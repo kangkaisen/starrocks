@@ -44,21 +44,26 @@ namespace starrocks {
 
 class ExecEnv;
 class HttpRequest;
-class MetricRegistry;
+class MetricsVisitor;
+class ProcessMetricsRegistry;
 
 typedef void (*MockFunc)(const std::string&);
 
 class MetricsAction : public HttpHandler {
 public:
-    explicit MetricsAction(MetricRegistry* metrics) : _metrics(metrics), _mock_func(nullptr) {}
+    explicit MetricsAction(ProcessMetricsRegistry* process_metrics_registry)
+            : _process_metrics_registry(process_metrics_registry), _mock_func(nullptr) {}
     // for tests
-    explicit MetricsAction(MetricRegistry* metrics, MockFunc func) : _metrics(metrics), _mock_func(func) {}
+    explicit MetricsAction(ProcessMetricsRegistry* process_metrics_registry, MockFunc func)
+            : _process_metrics_registry(process_metrics_registry), _mock_func(func) {}
     ~MetricsAction() override = default;
 
     void handle(HttpRequest* req) override;
 
 private:
-    MetricRegistry* _metrics;
+    void _collect_table_metrics(starrocks::MetricsVisitor* visitor);
+
+    ProcessMetricsRegistry* _process_metrics_registry;
     MockFunc _mock_func;
     bvar::DumpOptions _options;
 };

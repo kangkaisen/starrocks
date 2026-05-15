@@ -15,19 +15,21 @@ package com.starrocks.connector.partitiontraits;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import com.starrocks.analysis.LiteralExpr;
-import com.starrocks.analysis.NullLiteral;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.IcebergPartitionKey;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.NullablePartitionKey;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.common.AnalysisException;
-import com.starrocks.connector.ConnectorMetadatRequestContext;
+import com.starrocks.common.tvr.TvrTableSnapshot;
+import com.starrocks.connector.ConnectorMetadataRequestContext;
 import com.starrocks.connector.PartitionInfo;
-import com.starrocks.connector.TableVersionRange;
 import com.starrocks.connector.iceberg.IcebergPartitionUtils;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.expression.LiteralExpr;
+import com.starrocks.sql.ast.expression.LiteralExprFactory;
+import com.starrocks.sql.ast.expression.NullLiteral;
+import com.starrocks.type.Type;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.Snapshot;
 
@@ -56,6 +58,12 @@ public class IcebergPartitionTraits extends DefaultTraits {
     @Override
     public List<PartitionInfo> getPartitions(List<String> partitionNames) {
         IcebergTable icebergTable = (IcebergTable) table;
+        if (pinnedVersionRange != null) {
+            ConnectorMetadataRequestContext ctx = new ConnectorMetadataRequestContext();
+            ctx.setTableVersionRange(pinnedVersionRange);
+            return GlobalStateMgr.getCurrentState().getMetadataMgr().
+                    getPartitions(icebergTable.getCatalogName(), table, partitionNames, ctx);
+        }
         return GlobalStateMgr.getCurrentState().getMetadataMgr().
                 getPartitions(icebergTable.getCatalogName(), table, partitionNames);
     }
@@ -73,11 +81,15 @@ public class IcebergPartitionTraits extends DefaultTraits {
         }
 
         IcebergTable icebergTable = (IcebergTable) table;
-        Optional<Long> snapshotId = Optional.ofNullable(icebergTable.getNativeTable().currentSnapshot())
-                .map(Snapshot::snapshotId);
-        ConnectorMetadatRequestContext requestContext = new ConnectorMetadatRequestContext();
+        ConnectorMetadataRequestContext requestContext = new ConnectorMetadataRequestContext();
         requestContext.setQueryMVRewrite(isQueryMVRewrite());
-        requestContext.setTableVersionRange(TableVersionRange.withEnd(snapshotId));
+        if (pinnedVersionRange != null) {
+            requestContext.setTableVersionRange(pinnedVersionRange);
+        } else {
+            Optional<Long> snapshotId = Optional.ofNullable(icebergTable.getNativeTable().currentSnapshot())
+                    .map(Snapshot::snapshotId);
+            requestContext.setTableVersionRange(TvrTableSnapshot.of(snapshotId));
+        }
         return GlobalStateMgr.getCurrentState().getMetadataMgr().listPartitionNames(
                 table.getCatalogName(), getCatalogDBName(), getTableName(), requestContext);
     }
@@ -122,9 +134,9 @@ public class IcebergPartitionTraits extends DefaultTraits {
                 if (field.transform().dedupName().equalsIgnoreCase("time")) {
                     rawValue = IcebergPartitionUtils.normalizeTimePartitionName(rawValue, field,
                             icebergTable.getNativeTable().schema(), column.getType());
-                    exprValue = LiteralExpr.create(rawValue, column.getType());
+                    exprValue = LiteralExprFactory.create(rawValue, column.getType());
                 } else {
-                    exprValue = LiteralExpr.create(rawValue, column.getType());
+                    exprValue = LiteralExprFactory.create(rawValue, column.getType());
                 }
             }
             partitionKey.pushColumn(exprValue, column.getType().getPrimitiveType());
@@ -138,6 +150,33 @@ public class IcebergPartitionTraits extends DefaultTraits {
         Optional<Snapshot> snapshot = Optional.ofNullable(icebergTable.getNativeTable().currentSnapshot());
         return snapshot.map(value -> LocalDateTime.ofInstant(Instant.ofEpochMilli(value.timestampMillis()).
                 plusSeconds(extraSeconds), Clock.systemDefaultZone().getZone())).orElse(null);
+    }
+
+    @Override
+    public PartitionKey createPartitionKeyWithType(List<String> values, List<Type> types) throws AnalysisException {
+        Preconditions.checkState(values.size() == types.size(),
+                "columns size is %s, but values size is %s", types.size(), values.size());
+
+        PartitionKey partitionKey = createEmptyKey();
+        for (int i = 0; i < values.size(); i++) {
+            String rawValue = values.get(i);
+            Type type = types.get(i);
+            LiteralExpr exprValue;
+            if (rawValue == null) {
+                exprValue = NullLiteral.create(type);
+            } else {
+                exprValue = LiteralExprFactory.create(rawValue, type);
+            }
+            partitionKey.pushColumn(exprValue, type.getPrimitiveType());
+        }
+
+        for (int i = 0; i < types.size(); i++) {
+            LiteralExpr exprValue = partitionKey.getKeys().get(i);
+            if (exprValue.getType().isDecimalV3()) {
+                exprValue.setType(types.get(i)); //keep the precision and scale.
+            }
+        }
+        return partitionKey;
     }
 }
 

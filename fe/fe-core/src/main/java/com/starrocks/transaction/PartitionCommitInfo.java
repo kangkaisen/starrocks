@@ -37,13 +37,9 @@ package com.starrocks.transaction;
 import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.catalog.ColumnId;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
 import com.starrocks.lake.compaction.Quantiles;
-import com.starrocks.persist.gson.GsonUtils;
 
-import java.io.DataInput;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -115,11 +111,26 @@ public class PartitionCommitInfo implements Writable {
         this.dictCollectedVersions = dictCollectedVersions;
     }
 
-
-
-    public static PartitionCommitInfo read(DataInput in) throws IOException {
-        String json = Text.readString(in);
-        return GsonUtils.GSON.fromJson(json, PartitionCommitInfo.class);
+    public PartitionCommitInfo(PartitionCommitInfo partitionCommitInfo) {
+        this.physicalPartitionId = partitionCommitInfo.physicalPartitionId;
+        this.version = partitionCommitInfo.version;
+        this.versionTime = partitionCommitInfo.versionTime;
+        this.dataVersion = partitionCommitInfo.dataVersion;
+        this.versionEpoch = partitionCommitInfo.versionEpoch;
+        this.invalidDictCacheColumns = partitionCommitInfo.invalidDictCacheColumns == null
+                ? Lists.newArrayList()
+                : Lists.newArrayList(partitionCommitInfo.invalidDictCacheColumns);
+        this.validDictCacheColumns = partitionCommitInfo.validDictCacheColumns == null
+                ? Lists.newArrayList()
+                : Lists.newArrayList(partitionCommitInfo.validDictCacheColumns);
+        this.dictCollectedVersions = partitionCommitInfo.dictCollectedVersions == null
+                ? Lists.newArrayList()
+                : Lists.newArrayList(partitionCommitInfo.dictCollectedVersions);
+        this.compactionScore = partitionCommitInfo.compactionScore == null
+                ? null
+                : new Quantiles(partitionCommitInfo.compactionScore);
+        this.tabletIdToRowCountForPartitionFirstLoad.putAll(partitionCommitInfo.tabletIdToRowCountForPartitionFirstLoad);
+        this.isDoubleWrite = partitionCommitInfo.isDoubleWrite;
     }
 
     public void setVersionTime(long time) {

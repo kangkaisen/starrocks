@@ -37,9 +37,11 @@ package com.starrocks.task;
 import com.google.common.base.Preconditions;
 import com.starrocks.binlog.BinlogConfig;
 import com.starrocks.catalog.FlatJsonConfig;
+import com.starrocks.catalog.TabletRange;
 import com.starrocks.common.Status;
 import com.starrocks.common.util.concurrent.MarkedCountDownLatch;
 import com.starrocks.thrift.TBinlogConfig;
+import com.starrocks.thrift.TCompactionStrategy;
 import com.starrocks.thrift.TCompressionType;
 import com.starrocks.thrift.TCreateTabletReq;
 import com.starrocks.thrift.TFlatJsonConfig;
@@ -51,6 +53,8 @@ import com.starrocks.thrift.TTabletType;
 import com.starrocks.thrift.TTaskType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 public class CreateReplicaTask extends AgentTask {
     private static final Logger LOG = LogManager.getLogger(CreateReplicaTask.class);
@@ -89,6 +93,21 @@ public class CreateReplicaTask extends AgentTask {
     private final TTabletSchema tabletSchema;
     private long gtid = 0;
     private long timeoutMs = -1;
+    private TCompactionStrategy compactionStrategy = TCompactionStrategy.DEFAULT;
+    private TabletRange range;
+
+    // Tracks the send-phase outcome for retry logic. Used to resolve the race between
+    // the send-failure handler (in TabletTaskExecutor.sendCreateReplicaTasks) and the
+    // CN success callback (in LeaderImpl.finishCreateReplica).
+    // Only SEND_FAILED tasks are retried. If CN callback sets SUCCEEDED after send handler
+    // sets FAILED, the task is no longer retried.
+    enum SendState {
+        PENDING,
+        FAILED,
+        SUCCEEDED
+    }
+
+    private final AtomicReference<SendState> sendState = new AtomicReference<>(SendState.PENDING);
 
     private CreateReplicaTask(Builder builder) {
         super(null, builder.getNodeId(), TTaskType.CREATE, builder.getDbId(), builder.getTableId(),
@@ -112,6 +131,8 @@ public class CreateReplicaTask extends AgentTask {
         this.inRestoreMode = builder.isInRestoreMode();
         this.gtid = builder.getGtid();
         this.timeoutMs = builder.getTimeoutMs();
+        this.compactionStrategy = builder.getCompactionStrategy();
+        this.range = builder.getRange();
     }
 
     public static Builder newBuilder() {
@@ -160,6 +181,37 @@ public class CreateReplicaTask extends AgentTask {
         return tabletType;
     }
 
+    /**
+     * Reassign this task to a different node and reset its failed state.
+     * Used for retrying failed tasks on an alternative compute node in shared-data mode.
+     */
+    public void resetNodeId(long newNodeId) {
+        this.backendId = newNodeId;
+        this.isFailed = false;
+        this.errorMsg = null;
+        this.sendState.set(SendState.PENDING);
+    }
+
+    /**
+     * Mark this task as send-failed. Returns true only if the CN callback hasn't
+     * already marked it as succeeded (CAS from PENDING to FAILED).
+     */
+    public boolean markSendFailed() {
+        return sendState.compareAndSet(SendState.PENDING, SendState.FAILED);
+    }
+
+    /**
+     * Mark this task as succeeded by the CN callback. Unconditionally sets SUCCEEDED,
+     * overriding any previous state including FAILED.
+     */
+    public void markSendSucceeded() {
+        sendState.set(SendState.SUCCEEDED);
+    }
+
+    public boolean isSendFailed() {
+        return sendState.get() == SendState.FAILED;
+    }
+
     public TCreateTabletReq toThrift() {
         TCreateTabletReq createTabletReq = new TCreateTabletReq();
         createTabletReq.setTablet_id(tabletId);
@@ -195,6 +247,12 @@ public class CreateReplicaTask extends AgentTask {
         createTabletReq.setEnable_tablet_creation_optimization(enableTabletCreationOptimization);
         createTabletReq.setGtid(gtid);
         createTabletReq.setTimeout_ms(timeoutMs);
+        if (compactionStrategy != null) {
+            createTabletReq.setCompaction_strategy(compactionStrategy);
+        }
+        if (range != null) {
+            createTabletReq.setRange(range.toThrift());
+        }
         return createTabletReq;
     }
 
@@ -226,6 +284,8 @@ public class CreateReplicaTask extends AgentTask {
         private TTabletSchema tabletSchema;
         private long gtid = 0;
         private long timeoutMs = -1;
+        private TCompactionStrategy compactionStrategy = TCompactionStrategy.DEFAULT;
+        private TabletRange range;
 
         private Builder() {
         }
@@ -453,6 +513,24 @@ public class CreateReplicaTask extends AgentTask {
         public Builder setTimeoutMs(long timeoutMs) {
             this.timeoutMs = timeoutMs;
             return this;
+        }
+
+        public TCompactionStrategy getCompactionStrategy() {
+            return compactionStrategy;
+        }
+
+        public Builder setCompactionStrategy(TCompactionStrategy compactionStrategy) {
+            this.compactionStrategy = compactionStrategy;
+            return this;
+        }
+
+        public Builder setRange(TabletRange range) {
+            this.range = range;
+            return this;
+        }
+
+        public TabletRange getRange() {
+            return range;
         }
 
         public CreateReplicaTask build() {

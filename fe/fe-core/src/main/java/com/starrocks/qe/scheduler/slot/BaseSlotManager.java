@@ -104,6 +104,8 @@ public abstract class BaseSlotManager {
             new ThreadFactoryBuilder().setDaemon(true).setNameFormat("slot-mgr-res-%d").build());
 
     private final Map<String, Set<LogicalSlot>> requestFeNameToSlots = new HashMap<>();
+    
+    protected final ResourceUsageMonitor resourceUsageMonitor;
 
     /**
      * The lifecycle of a slot is managed by the slot tracker.
@@ -123,7 +125,15 @@ public abstract class BaseSlotManager {
      */
 
     public BaseSlotManager(ResourceUsageMonitor resourceUsageMonitor) {
+        this.resourceUsageMonitor = resourceUsageMonitor;
         resourceUsageMonitor.registerResourceAvailableListener(this::notifyResourceUsageAvailable);
+    }
+
+    /**
+     * Get the resource usage monitor.
+     */
+    public ResourceUsageMonitor getResourceUsageMonitor() {
+        return resourceUsageMonitor;
     }
 
     /**
@@ -146,6 +156,8 @@ public abstract class BaseSlotManager {
      */
     public abstract void collectWarehouseMetrics(MetricVisitor visitor);
 
+    public abstract void onQueryFinished(LogicalSlot slot, ConnectContext context);
+
     /**
      * Whether to enable query queue by the slot manager for input JobSpec.
      */
@@ -154,6 +166,12 @@ public abstract class BaseSlotManager {
                 !connectContext.getSessionVariable().isEnableQueryQueue()) {
             return false;
         }
+
+        // for etl mode, always enable query queue
+        if (GlobalVariable.isEnableEtlExecQueueAllWorkloads() && connectContext.getSessionVariable().isETLExecMode()) {
+            return true;
+        }
+
         if (instance.isStatisticsJob()) {
             return GlobalVariable.isEnableQueryQueueStatistic();
         }

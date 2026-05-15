@@ -14,14 +14,12 @@
 
 #include <benchmark/benchmark.h>
 
-#include <memory>
 #include <random>
 
 #include "formats/parquet/encoding_dict.h"
 #include "formats/parquet/encoding_plain.h"
 
-namespace starrocks {
-namespace parquet {
+namespace starrocks::parquet {
 
 static const int kDictSize = 20;
 static const int kDictLength = 10;
@@ -61,7 +59,7 @@ static void BM_DictDecoder(benchmark::State& state) {
             ColumnHelper::as_column<NullableColumn>(ColumnHelper::create_column(TypeDescriptor{TYPE_INT}, true));
     NullableColumn* nulls = nulls_ptr.get();
     nulls->resize(kTestChunkSize);
-    uint8_t* null_data = nulls->mutable_null_column()->mutable_raw_data();
+    auto& null_data = nulls->null_column_raw_ptr()->get_data();
 
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -98,7 +96,6 @@ static void BM_DictDecoder(benchmark::State& state) {
 
 BENCHMARK(BM_DictDecoder)->DenseRange(0, 100, 10)->Unit(benchmark::kMillisecond);
 
-} // namespace parquet
-} // namespace starrocks
+} // namespace starrocks::parquet
 
 BENCHMARK_MAIN();

@@ -19,14 +19,13 @@
 #include "common/logging.h"
 #include "exec/schema_scanner/schema_helper.h"
 #include "runtime/runtime_state.h"
-#include "runtime/string_value.h"
 #include "types/logical_type.h"
 
 namespace starrocks {
 
 SchemaScanner::ColumnDesc SchemaKeywordsScanner::_s_columns[] = {
         //   name,       type,          size,     is_null
-        {"KEYWORD", TypeDescriptor::create_varchar_type(sizeof(StringValue)), sizeof(StringValue), false},
+        {"WORD", TypeDescriptor::create_varchar_type(sizeof(Slice)), sizeof(Slice), false},
         {"RESERVED", TypeDescriptor::from_logical_type(TYPE_BOOLEAN), sizeof(bool), false},
 };
 
@@ -94,18 +93,18 @@ Status SchemaKeywordsScanner::fill_chunk(ChunkPtr* chunk) {
         if (slot_id < 1 || slot_id > _column_num) {
             return Status::InternalError(fmt::format("invalid slot id:{}", slot_id));
         }
-        ColumnPtr column = (*chunk)->get_column_by_slot_id(slot_id);
+        auto* column = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
 
         switch (slot_id) {
         case 1: {
             // KEYWORD
             Slice keyword = Slice(info.keyword);
-            fill_column_with_slot<TYPE_VARCHAR>(column.get(), (void*)&keyword);
+            fill_column_with_slot<TYPE_VARCHAR>(column, (void*)&keyword);
             break;
         }
         case 2: {
             // IS_RESERVED
-            fill_column_with_slot<TYPE_BOOLEAN>(column.get(), (void*)&info.reserved);
+            fill_column_with_slot<TYPE_BOOLEAN>(column, (void*)&info.reserved);
             break;
         }
         default:

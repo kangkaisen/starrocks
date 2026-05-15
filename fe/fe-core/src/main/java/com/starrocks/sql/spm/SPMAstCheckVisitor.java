@@ -14,21 +14,21 @@
 
 package com.starrocks.sql.spm;
 
-import com.starrocks.analysis.AnalyticExpr;
-import com.starrocks.analysis.Expr;
-import com.starrocks.analysis.OrderByElement;
-import com.starrocks.analysis.ParseNode;
-import com.starrocks.analysis.SlotRef;
-import com.starrocks.analysis.Subquery;
-import com.starrocks.sql.ast.AstVisitor;
+import com.starrocks.sql.ast.AstVisitorExtendInterface;
 import com.starrocks.sql.ast.CTERelation;
-import com.starrocks.sql.ast.FieldReference;
 import com.starrocks.sql.ast.JoinRelation;
+import com.starrocks.sql.ast.OrderByElement;
+import com.starrocks.sql.ast.ParseNode;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.SelectRelation;
 import com.starrocks.sql.ast.SetOperationRelation;
 import com.starrocks.sql.ast.SubqueryRelation;
 import com.starrocks.sql.ast.TableRelation;
+import com.starrocks.sql.ast.expression.AnalyticExpr;
+import com.starrocks.sql.ast.expression.Expr;
+import com.starrocks.sql.ast.expression.FieldReference;
+import com.starrocks.sql.ast.expression.SlotRef;
+import com.starrocks.sql.ast.expression.Subquery;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
@@ -37,7 +37,7 @@ import java.util.Objects;
 /*
  * This class is used to compare two ASTs
  */
-public class SPMAstCheckVisitor implements AstVisitor<Boolean, ParseNode> {
+public class SPMAstCheckVisitor implements AstVisitorExtendInterface<Boolean, ParseNode> {
     protected static <T> T cast(ParseNode node) {
         return (T) node;
     }
@@ -148,6 +148,9 @@ public class SPMAstCheckVisitor implements AstVisitor<Boolean, ParseNode> {
     @Override
     public Boolean visitCTE(CTERelation stmt, ParseNode context) {
         CTERelation other = cast(context);
+        if (stmt.getMaterializationHint() != other.getMaterializationHint()) {
+            return false;
+        }
         return check(stmt.getCteQueryStatement(), other.getCteQueryStatement());
     }
 
@@ -187,6 +190,8 @@ public class SPMAstCheckVisitor implements AstVisitor<Boolean, ParseNode> {
         check = check && Objects.equals(node.getSkewHint(), other.getSkewHint());
         check = check && Objects.equals(node.isUseHashBasedPartition(), other.isUseHashBasedPartition());
         check = check && Objects.equals(node.isSkewed(), other.isSkewed());
+        check = check && Objects.equals(node.getSkewColumn(), other.getSkewColumn());
+        check = check && Objects.equals(node.getSkewValues(), other.getSkewValues());
 
         check = check && check(node.getFnCall(), other.getFnCall());
         check = check && check(node.getPartitionExprs(), other.getPartitionExprs());

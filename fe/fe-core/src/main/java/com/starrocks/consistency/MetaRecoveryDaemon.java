@@ -26,7 +26,7 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.proc.BaseProcResult;
-import com.starrocks.common.util.FrontendDaemon;
+import com.starrocks.common.util.LeaderDaemon;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
@@ -46,19 +46,31 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-public class MetaRecoveryDaemon extends FrontendDaemon {
+public class MetaRecoveryDaemon extends LeaderDaemon {
     private static final Logger LOG = LogManager.getLogger(MetaRecoveryDaemon.class);
 
     private final Set<UnRecoveredPartition> unRecoveredPartitions = new HashSet<>();
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
     public MetaRecoveryDaemon() {
-        super("meta_recovery");
+        super("meta-recovery");
     }
 
     @Override
-    protected void runAfterCatalogReady() {
+    protected void runAfterLeaseValid() {
         recover();
+    }
+
+    @Override
+    protected void onStopped() {
+        // unRecoveredPartitions is leader-session diagnostic state surfaced via the proc node;
+        // it should not survive demotion since the next leader rebuilds it from scratch.
+        lock.writeLock().lock();
+        try {
+            unRecoveredPartitions.clear();
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     public void recover() {
@@ -97,7 +109,7 @@ public class MetaRecoveryDaemon extends FrontendDaemon {
                             StringBuilder info = new StringBuilder();
                             boolean isFirstTablet = true;
                             boolean foundCommonVersion = true;
-                            for (MaterializedIndex idx : physicalPartition.getMaterializedIndices(
+                            for (MaterializedIndex idx : physicalPartition.getLatestMaterializedIndices(
                                     MaterializedIndex.IndexExtState.VISIBLE)) {
                                 for (Tablet tablet : idx.getTablets()) {
                                     LocalTablet localTablet = (LocalTablet) tablet;
@@ -178,10 +190,8 @@ public class MetaRecoveryDaemon extends FrontendDaemon {
         PartitionVersionRecoveryInfo recoveryInfo =
                 new PartitionVersionRecoveryInfo(partitionsToRecover, System.currentTimeMillis());
 
-        recoverPartitionVersion(recoveryInfo);
-
         GlobalStateMgr.getCurrentState().getEditLog()
-                .logRecoverPartitionVersion(new PartitionVersionRecoveryInfo(partitionsToRecover, System.currentTimeMillis()));
+                .logRecoverPartitionVersion(recoveryInfo, wal -> recoverPartitionVersion(recoveryInfo));
     }
 
     public void recoverPartitionVersion(PartitionVersionRecoveryInfo recoveryInfo) {
@@ -220,7 +230,7 @@ public class MetaRecoveryDaemon extends FrontendDaemon {
                 long originNextVersion = physicalPartition.getNextVersion();
                 physicalPartition.setVisibleVersion(version.getVersion(), recoveryInfo.getRecoverTime());
                 physicalPartition.setNextVersion(version.getVersion() + 1);
-                for (MaterializedIndex index : physicalPartition.getMaterializedIndices(IndexExtState.VISIBLE)) {
+                for (MaterializedIndex index : physicalPartition.getLatestMaterializedIndices(IndexExtState.VISIBLE)) {
                     for (Tablet tablet : index.getTablets()) {
                         if (!(tablet instanceof LocalTablet)) {
                             continue;

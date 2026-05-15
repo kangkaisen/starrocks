@@ -89,6 +89,10 @@ In the following scenarios, we recommend prioritizing acceleration through Data 
 
 Creating a materialized view on tables in external catalogs is similar to creating a materialized view on StarRocks native tables. You only need to set a suitable refresh strategy in accordance with the data source you are using, and manually enable query rewrite for external catalog-based materialized views.
 
+:::note
+External table materialized views do not support automatic refresh **triggered by base table data changes**. They only support asynchronous **fixed-interval** refresh and manual refresh.
+:::
+
 ### Choose a suitable refresh strategy
 
 Currently, StarRocks cannot detect partition-level data changes in Hudi catalogs. Therefore, a full-size refresh is performed once the task is triggered.
@@ -181,7 +185,7 @@ In scenarios involving query rewriting, if you use a very complex query statemen
 
 ## Best practices
 
-In real-world business scenarios, you can identify queries with high execution latency and resource consumption by analyzing audit logs or big query logs. You can further use [query profiles](../../../administration/query_profile_overview.md) to pinpoint the specific stages where the query is slow. The following sections provide instructions and examples on how to boost data lake query performance with materialized views.
+In real-world business scenarios, you can identify queries with high execution latency and resource consumption by analyzing audit logs or big query logs. You can further use [query profiles](../../../best_practices/query_tuning/query_profile_overview.md) to pinpoint the specific stages where the query is slow. The following sections provide instructions and examples on how to boost data lake query performance with materialized views.
 
 ### Case One: Accelerate join calculation in data lake
 

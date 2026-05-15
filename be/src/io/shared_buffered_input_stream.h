@@ -19,7 +19,7 @@
 #include <memory>
 
 #include "common/status.h"
-#include "io/seekable_input_stream.h"
+#include "io/core/seekable_input_stream.h"
 
 namespace starrocks::io {
 
@@ -76,6 +76,8 @@ public:
     StatusOr<std::unique_ptr<NumericStatistics>> get_numeric_statistics() override {
         return _stream->get_numeric_statistics();
     }
+
+    IoStatsSnapshot get_io_stats_snapshot() const override;
 
     Status set_io_ranges(const std::vector<IORange>& ranges, bool coalesce_lazy_column = true);
     void release_to_offset(int64_t offset);

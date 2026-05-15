@@ -17,24 +17,23 @@
 #include "common/status.h"
 #include "exec/schema_scanner/schema_helper.h"
 #include "runtime/runtime_state.h"
-#include "runtime/string_value.h"
 
 namespace starrocks {
 
 SchemaScanner::ColumnDesc SchemaAnalyzeStatus::_s_tbls_columns[] = {
         //   name,       type,          size,     is_null
-        {"Id", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Catalog", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Database", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Table", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Columns", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Type", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Schedule", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Status", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"StartTime", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"EndTime", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Properties", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
-        {"Reason", TypeDescriptor::create_varchar_type(1024), sizeof(StringValue), false},
+        {"Id", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Catalog", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Database", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Table", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Columns", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Type", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Schedule", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Status", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"StartTime", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"EndTime", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Properties", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
+        {"Reason", TypeDescriptor::create_varchar_type(1024), sizeof(Slice), false},
 };
 
 SchemaAnalyzeStatus::SchemaAnalyzeStatus()
@@ -80,7 +79,7 @@ Status SchemaAnalyzeStatus::_fill_chunk(ChunkPtr* chunk) {
     auto& slot_id_map = (*chunk)->get_slot_id_to_index_map();
     auto datum_array = _build_row();
     for (const auto& [slot_id, index] : slot_id_map) {
-        Column* column = (*chunk)->get_column_by_slot_id(slot_id).get();
+        auto* column = (*chunk)->get_column_raw_ptr_by_slot_id(slot_id);
         column->append_datum(datum_array[slot_id - 1]);
     }
     return {};

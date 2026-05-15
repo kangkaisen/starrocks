@@ -17,59 +17,179 @@
 
 package com.starrocks.service.arrow.flight.sql.session;
 
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import com.google.common.cache.RemovalNotification;
+import com.starrocks.authentication.AuthenticationException;
+import com.starrocks.authentication.AuthenticationHandler;
+import com.starrocks.common.Config;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.UUIDUtil;
+import com.starrocks.qe.ConnectScheduler;
+import com.starrocks.qe.GlobalVariable;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.service.ExecuteEnv;
 import com.starrocks.service.arrow.flight.sql.ArrowFlightSqlConnectContext;
-import com.starrocks.sql.ast.UserIdentity;
+import com.starrocks.system.Frontend;
 import org.apache.arrow.flight.CallStatus;
+import org.apache.arrow.flight.FlightRuntimeException;
+import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.NotNull;
+
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 public class ArrowFlightSqlSessionManager {
 
-    private final ArrowFlightSqlTokenManager arrowFlightSqlTokenManager;
+    private final LoadingCache<String, ArrowFlightSqlTokenInfo> tokenCache;
 
-    public ArrowFlightSqlSessionManager(ArrowFlightSqlTokenManager arrowFlightSqlTokenManager) {
-        this.arrowFlightSqlTokenManager = arrowFlightSqlTokenManager;
+    public ArrowFlightSqlSessionManager() {
+        this.tokenCache = CacheBuilder.newBuilder()
+                .maximumSize(Math.min(Config.arrow_token_cache_size, Config.qe_max_connection))
+                .expireAfterWrite(Config.arrow_token_cache_expire_second, TimeUnit.SECONDS)
+                .removalListener((RemovalNotification<String, ArrowFlightSqlTokenInfo> notification) -> {
+                    ArrowFlightSqlConnectContext context =
+                            ExecuteEnv.getInstance().getScheduler().getArrowFlightSqlConnectContext(notification.getKey());
+                    if (context != null) {
+                        context.kill(true, "token is expired or evicted");
+                    }
+                })
+                .build(new CacheLoader<>() {
+                    @NotNull
+                    @Override
+                    public ArrowFlightSqlTokenInfo load(@NotNull String key) {
+                        // Since we only use add, getIfPresent, expired and evicted function of cache,
+                        // this method should never be invoked.
+                        return ArrowFlightSqlTokenInfo.createInvalidTokenInfo();
+                    }
+                });
     }
 
-    public ArrowFlightSqlConnectContext getConnectContext(String peerIdentity) {
+    public String initializeSession(String username, String remoteIP, String password) {
+        String token = generateToken();
+        ArrowFlightSqlConnectContext ctx = new ArrowFlightSqlConnectContext(token);
+        ctx.setRemoteIP(remoteIP);
+
         try {
-            ArrowFlightSqlTokenInfo arrowFlightSqlTokenInfo =
-                    arrowFlightSqlTokenManager.validateToken(peerIdentity);
-
-            String token = arrowFlightSqlTokenInfo.getToken();
-            ArrowFlightSqlConnectContext arrowFlightSqlConnectContext =
-                    ExecuteEnv.getInstance().getScheduler().getArrowFlightSqlConnectContext(token);
-            if (arrowFlightSqlConnectContext == null) {
-                arrowFlightSqlConnectContext =
-                        createArrowFlightSqlConnectContext(token, arrowFlightSqlTokenInfo);
-            }
-            return arrowFlightSqlConnectContext;
-        } catch (Exception e) {
-            throw CallStatus.INTERNAL.withCause(e).toRuntimeException();
+            AuthenticationHandler.authenticate(
+                    ctx, username, remoteIP, password.getBytes(StandardCharsets.UTF_8));
+        } catch (AuthenticationException e) {
+            throw CallStatus.UNAUTHENTICATED
+                    .withDescription("Access denied for user: " + username)
+                    .withCause(e)
+                    .toRuntimeException();
         }
-    }
 
-    private ArrowFlightSqlConnectContext createArrowFlightSqlConnectContext(String token,
-                                                                            ArrowFlightSqlTokenInfo arrowFlightSqlTokenInfo) {
-        UserIdentity currentUser = arrowFlightSqlTokenInfo.getCurrentUser();
-        ArrowFlightSqlConnectContext ctx = new ArrowFlightSqlConnectContext();
+        ArrowFlightSqlTokenInfo tokenInfo = new ArrowFlightSqlTokenInfo(ctx.getCurrentUserIdentity(), token);
+        tokenCache.put(token, tokenInfo);
+
         ctx.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
-        ctx.setQualifiedUser(currentUser.getUser());
         ctx.setQueryId(UUIDUtil.genUUID());
-        ctx.setRemoteIP(currentUser.getHost());
-        ctx.setCurrentUserIdentity(currentUser);
-        ctx.setCurrentRoleIds(currentUser);
-        ctx.setToken(token);
+        ctx.setExecutionId(UUIDUtil.toTUniqueId(ctx.getQueryId()));
 
-        Pair<Boolean, String> result = ExecuteEnv.getInstance().getScheduler().registerConnection(ctx);
-        if (!result.first.booleanValue()) {
-            ctx.getState().setError(result.second);
-            throw new IllegalArgumentException(result.second);
+        // Assign connection ID
+        ConnectScheduler connectScheduler = ExecuteEnv.getInstance().getScheduler();
+        ctx.setConnectionId(connectScheduler.getNextConnectionId());
+        ctx.resetConnectionStartTime();
+
+        Pair<Boolean, String> isSuccessAndErrorMsg = connectScheduler.registerConnection(ctx);
+        if (!isSuccessAndErrorMsg.first) {
+            String errorMsg = isSuccessAndErrorMsg.second;
+            ctx.getState().setError(errorMsg);
+            throw CallStatus.RESOURCE_EXHAUSTED
+                    .withDescription("failed to register connection: " + errorMsg)
+                    .toRuntimeException();
         }
 
-        return ctx;
+        return token;
     }
 
+    public void validateToken(String token) throws IllegalArgumentException {
+        if (StringUtils.isEmpty(token)) {
+            throw new IllegalArgumentException("bearer token is empty");
+        }
+
+        ArrowFlightSqlTokenInfo tokenInfo = tokenCache.getIfPresent(token);
+        if (tokenInfo == null) {
+            throw new IllegalArgumentException(String.format("invalid bearer token [%s], please try to reconnect. " +
+                    "Maybe the token is expired or evicted, could modify fe.conf " +
+                    "[arrow_token_cache_expire_second] and [arrow_token_cache_size]", token));
+        }
+    }
+
+    public void closeSession(String token) {
+        tokenCache.invalidate(token);
+    }
+
+    @NotNull
+    public ArrowFlightSqlConnectContext validateAndGetConnectContext(String token) throws FlightRuntimeException {
+        ArrowFlightSqlConnectContext connectContext =
+                ExecuteEnv.getInstance().getScheduler().getArrowFlightSqlConnectContext(token);
+        if (connectContext == null) {
+            throw CallStatus.NOT_FOUND
+                    .withDescription("cannot find connect arrow context of the token [" + token + "]")
+                    .toRuntimeException();
+        }
+        return connectContext;
+    }
+
+    public boolean isLocalToken(String token) {
+        if (!GlobalVariable.isArrowFlightProxyEnabled()) {
+            return true;  // Without proxy, all tokens are local
+        }
+        String feHost = extractFeHost(token);
+        if (feHost == null) {
+            return true;  // Legacy token format (no host prefix)
+        }
+        String selfHost = GlobalStateMgr.getCurrentState().getNodeMgr().getSelfNode().first;
+        return feHost.equals(selfHost);
+    }
+
+    /**
+     * Extract the FE host from a token.
+     * Token format when proxy enabled: "FE_HOST|UUID"
+     * Uses '|' as delimiter to support IPv6 addresses (which contain ':').
+     * Returns null if token doesn't contain host prefix.
+     */
+    public static String extractFeHost(String token) {
+        if (StringUtils.isEmpty(token)) {
+            return null;
+        }
+        int separatorIndex = token.indexOf('|');
+        if (separatorIndex <= 0) {
+            return null;  // No host prefix or invalid format
+        }
+        return token.substring(0, separatorIndex);
+    }
+
+    /**
+     * Validate that a host is a known FE in the cluster.
+     * This prevents forwarding requests to arbitrary/malicious hosts.
+     */
+    public static boolean isValidFeHost(String host) {
+        if (StringUtils.isEmpty(host)) {
+            return false;
+        }
+        for (Frontend fe : GlobalStateMgr.getCurrentState().getNodeMgr().getFrontends(null)) {
+            if (host.equals(fe.getHost())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Generate a token. When proxy is enabled, includes FE host prefix.
+     * Format: "FE_HOST|UUID" (proxy enabled) or "UUID" (proxy disabled)
+     * Uses '|' as delimiter to support IPv6 addresses (which contain ':').
+     */
+    private String generateToken() {
+        String uuid = UUIDUtil.genUUID().toString();
+        if (GlobalVariable.isArrowFlightProxyEnabled()) {
+            String selfHost = GlobalStateMgr.getCurrentState().getNodeMgr().getSelfNode().first;
+            return selfHost + "|" + uuid;
+        }
+        return uuid;
+    }
 }

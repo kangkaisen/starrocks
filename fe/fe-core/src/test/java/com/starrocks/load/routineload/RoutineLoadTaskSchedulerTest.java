@@ -42,14 +42,17 @@ import com.starrocks.common.StarRocksException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TRoutineLoadTask;
+import com.starrocks.utframe.UtFrameUtils;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
 import org.awaitility.Awaitility;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Queue;
@@ -61,8 +64,16 @@ public class RoutineLoadTaskSchedulerTest {
 
     @Mocked
     private RoutineLoadMgr routineLoadManager;
-    @Mocked
-    private GlobalStateMgr globalStateMgr;
+
+    @BeforeEach
+    public void setUp() {
+        UtFrameUtils.setUpForPersistTest();
+    }
+
+    @AfterEach
+    public void tearDown() {
+        UtFrameUtils.tearDownForPersisTest();
+    }
 
     @Test
     public void testRunOneCycle(@Injectable KafkaRoutineLoadJob kafkaRoutineLoadJob1,
@@ -88,15 +99,10 @@ public class RoutineLoadTaskSchedulerTest {
 
         Deencapsulation.setField(routineLoadManager, "idToRoutineLoadJob", idToRoutineLoadJob);
 
+        GlobalStateMgr.getCurrentState().setRoutineLoadMgr(routineLoadManager);
+
         new Expectations() {
             {
-                GlobalStateMgr.getCurrentState();
-                minTimes = 0;
-                result = globalStateMgr;
-                globalStateMgr.getRoutineLoadMgr();
-                minTimes = 0;
-                result = routineLoadManager;
-
                 routineLoadManager.getClusterIdleSlotNum();
                 minTimes = 0;
                 result = 1;
@@ -155,15 +161,10 @@ public class RoutineLoadTaskSchedulerTest {
 
         Deencapsulation.setField(routineLoadManager, "idToRoutineLoadJob", idToRoutineLoadJob);
 
+        GlobalStateMgr.getCurrentState().setRoutineLoadMgr(routineLoadManager);
+
         new Expectations() {
             {
-                GlobalStateMgr.getCurrentState();
-                minTimes = 0;
-                result = globalStateMgr;
-                globalStateMgr.getRoutineLoadMgr();
-                minTimes = 0;
-                result = routineLoadManager;
-
                 routineLoadManager.getClusterIdleSlotNum();
                 minTimes = 0;
                 result = 1;
@@ -207,9 +208,9 @@ public class RoutineLoadTaskSchedulerTest {
         try {
             routineLoadTaskScheduler.scheduleOneTask(routineLoadTaskInfo1);
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof StarRocksException);
-            Assert.assertEquals("txn does not exist: 1", e.getMessage());
-            Assert.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.state);
+            Assertions.assertTrue(e instanceof StarRocksException);
+            Assertions.assertEquals("txn does not exist: 1", e.getMessage());
+            Assertions.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.state);
         }
     }
 
@@ -237,15 +238,10 @@ public class RoutineLoadTaskSchedulerTest {
 
         Deencapsulation.setField(routineLoadManager, "idToRoutineLoadJob", idToRoutineLoadJob);
 
+        GlobalStateMgr.getCurrentState().setRoutineLoadMgr(routineLoadManager);
+
         new Expectations() {
             {
-                GlobalStateMgr.getCurrentState();
-                minTimes = 0;
-                result = globalStateMgr;
-                globalStateMgr.getRoutineLoadMgr();
-                minTimes = 0;
-                result = routineLoadManager;
-
                 routineLoadManager.getClusterIdleSlotNum();
                 minTimes = 0;
                 result = 1;
@@ -289,9 +285,9 @@ public class RoutineLoadTaskSchedulerTest {
         try {
             routineLoadTaskScheduler.scheduleOneTask(routineLoadTaskInfo1);
         } catch (Exception e) {
-            Assert.assertTrue(e instanceof MetaNotFoundException);
-            Assert.assertEquals("database 1 does not exist", e.getMessage());
-            Assert.assertEquals(RoutineLoadJob.JobState.CANCELLED, routineLoadJob.state);
+            Assertions.assertTrue(e instanceof MetaNotFoundException);
+            Assertions.assertEquals("database 1 does not exist", e.getMessage());
+            Assertions.assertEquals(RoutineLoadJob.JobState.CANCELLED, routineLoadJob.state);
         }
     }
 }

@@ -46,7 +46,7 @@ import com.starrocks.thrift.BackendService;
 import com.starrocks.thrift.HeartbeatService;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.utframe.UtFrameUtils;
-import junit.framework.Assert;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.commons.dbcp2.BasicDataSource;
 import org.apache.commons.io.FileUtils;
 import org.apache.logging.log4j.LogManager;
@@ -68,6 +68,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class PseudoCluster {
     private static final Logger LOG = LogManager.getLogger(PseudoCluster.class);
@@ -210,7 +212,8 @@ public class PseudoCluster {
 
         @Override
         public List<Long> createShards(int numShards, FilePathInfo pathInfo, FileCacheInfo cacheInfo,
-                                       long groupId, List<Long> matchShardIds, Map<String, String> properties, long workerGroupId)
+                                       long groupId, List<Long> matchShardIds, Map<String, String> properties,
+                                       ComputeResource computeResource)
                 throws DdlException {
             List<Long> shardIds = new ArrayList<>();
             for (int i = 0; i < numShards; i++) {
@@ -293,7 +296,7 @@ public class PseudoCluster {
             OlapTable olapTable = (OlapTable) table;
             List<Long> ret = Lists.newArrayList();
             for (PhysicalPartition partition : olapTable.getPhysicalPartitions()) {
-                for (MaterializedIndex index : partition.getMaterializedIndices(
+                for (MaterializedIndex index : partition.getLatestMaterializedIndices(
                         MaterializedIndex.IndexExtState.ALL)) {
                     for (Tablet tablet : index.getTablets()) {
                         ret.add(tablet.getId());
@@ -378,7 +381,7 @@ public class PseudoCluster {
             try {
                 FileUtils.forceDelete(new File(getRunDir()));
             } catch (IOException e) {
-                Assert.fail("shutdown failed " + e);
+                fail("shutdown failed " + e);
             }
         }
     }
@@ -391,6 +394,7 @@ public class PseudoCluster {
      * build cluster at specified dir
      *
      * @param runDir      must be an absolute path
+     * @param queryPort the initial query port (may conflict, the final query port may be different)
      * @param numBackends num backends
      * @return PseudoCluster
      * @throws Exception
@@ -398,19 +402,7 @@ public class PseudoCluster {
     private static PseudoCluster build(String runDir, boolean fakeJournal, int queryPort, int numBackends) throws Exception {
         PseudoCluster cluster = new PseudoCluster();
         cluster.runDir = runDir;
-        cluster.queryPort = queryPort;
         cluster.frontend = new PseudoFrontend();
-
-        BasicDataSource dataSource = new BasicDataSource();
-        dataSource.setUrl(
-                "jdbc:mariadb://127.0.0.1:" + queryPort + "/?permitMysqlScheme" +
-                        "&usePipelineAuth=false&useBatchMultiSend=false&" +
-                        "autoReconnect=true&failOverReadOnly=false&maxReconnects=10");
-        dataSource.setUsername("root");
-        dataSource.setPassword("");
-        dataSource.setMaxTotal(40);
-        dataSource.setMaxIdle(40);
-        cluster.dataSource = dataSource;
 
         ThriftConnectionPool.beHeartbeatPool = cluster.heartBeatPool;
         ThriftConnectionPool.backendPool = cluster.backendThriftPool;
@@ -423,9 +415,29 @@ public class PseudoCluster {
         Config.plugin_dir = runDir + "/plugins";
         Map<String, String> feConfMap = Maps.newHashMap();
         feConfMap.put("tablet_create_timeout_second", "10");
+        // The query_port parameter is a hint; the actual port may differ if conflicts occur
         feConfMap.put("query_port", Integer.toString(queryPort));
         cluster.frontend.init(fakeJournal, runDir, feConfMap);
         cluster.frontend.start(new String[0]);
+
+        // Auto-detect query port by the PseudoFrontend, may throw Exception if failed after retries.
+        cluster.queryPort = cluster.frontend.getQueryPort();
+
+        BasicDataSource dataSource = new BasicDataSource();
+        dataSource.setUrl(
+                "jdbc:mariadb://127.0.0.1:" + cluster.queryPort + "/?permitMysqlScheme" +
+                        "&usePipelineAuth=false&useBatchMultiSend=false&" +
+                        "autoReconnect=true&failOverReadOnly=false&maxReconnects=10");
+        dataSource.setUsername("root");
+        dataSource.setPassword("");
+        dataSource.setMaxTotal(40);
+        dataSource.setMaxIdle(40);
+        cluster.dataSource = dataSource;
+        // Disable SingleNodeSchedule globally for test environment
+        // SingleNodeSchedule's batch deployment may cause timing issues and compatibility problems
+        // with certain sink types (like OlapTableSink, prepared statements) in test scenarios
+        GlobalStateMgr.getCurrentState().getVariableMgr().getDefaultSessionVariable()
+                .setEnableSingleNodeSchedule(false);
 
         if (logToConsole) {
             System.out.println("start add console appender");

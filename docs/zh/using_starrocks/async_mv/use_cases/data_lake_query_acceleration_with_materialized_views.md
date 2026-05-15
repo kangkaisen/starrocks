@@ -91,6 +91,10 @@ StarRocks 支持基于 External Catalog，如 Hive Catalog、Iceberg Catalog、H
 
 在 External Catalog 中的表上创建物化视图与在 StarRocks 本地表上创建物化视图类似。您只需根据正在使用的数据源设置合适的刷新策略，并手动启用 External Catalog 物化视图的查询改写功能。
 
+:::note
+外表物化视图不支持**由基表数据变更触发的**自动刷新。仅支持**异步定时**刷新和手动刷新。
+:::
+
 ### 选择合适的刷新策略
 
 目前，StarRocks 无法检测 Hudi Catalog 中的分区级别数据更改。因此，一旦触发刷新任务，将执行全量刷新。
@@ -140,17 +144,17 @@ FROM `iceberg`.`test`.`iceberg_sample_datetime_day`;
 
 ### 配置名称                                           
 
-####  enable_background_refresh_connector_metadata                 
+#### enable_background_refresh_connector_metadata                 
 
 **Default**:  v3.0 为 `true`，v2.5 为 `false` <br/>
 **Description**:  是否开启 Hive 元数据缓存周期性刷新。开启后，StarRocks 会轮询 Hive 集群的元数据服务（HMS 或 AWS Glue），并刷新经常访问的 Hive 外部数据目录的元数据缓存，以感知数据更新。`true` 代表开启，`false` 代表关闭。 <br/>
 
-####  background_refresh_metadata_interval_millis                  
+#### background_refresh_metadata_interval_millis                  
 
 **Default**:  600000（10 分钟）               <br/>
 **Description**:  接连两次 Hive 元数据缓存刷新之间的间隔。单位：毫秒。         <br/>
 
-####  background_refresh_metadata_time_secs_since_last_access_secs 
+#### background_refresh_metadata_time_secs_since_last_access_secs 
 
 **Default**:  86400（24 小时）                <br/>
 **Description**:  Hive 元数据缓存刷新任务过期时间。对于已被访问过的 Hive Catalog，如果超过该时间没有被访问，则停止刷新其元数据缓存。对于未被访问过的 Hive Catalog，StarRocks 不会刷新其元数据缓存。单位：秒。 <br/>
@@ -179,7 +183,7 @@ where empid < 5;
 
 ## 最佳实践
 
-在实际业务场景中，您可以通过分析 Audit Log 或[大查询日志](../../../administration/management/monitor_manage_big_queries.md)来识别执行较慢、资源消耗较高的查询。您还可以使用 [Query Profile](../../../administration/query_profile_overview.md) 来精确定位查询缓慢的特定阶段。以下各小节提供了如何通过物化视图提高数据湖查询性能的说明和示例。
+在实际业务场景中，您可以通过分析 Audit Log 或[大查询日志](../../../administration/management/monitor_manage_big_queries.md)来识别执行较慢、资源消耗较高的查询。您还可以使用 [Query Profile](../../../best_practices/query_tuning/query_profile_overview.md) 来精确定位查询缓慢的特定阶段。以下各小节提供了如何通过物化视图提高数据湖查询性能的说明和示例。
 
 ### 案例一：加速数据湖中的 Join 计算
 

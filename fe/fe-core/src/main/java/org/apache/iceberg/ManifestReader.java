@@ -16,12 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.iceberg;
 
-import com.google.common.cache.Cache;
+import com.github.benmanes.caffeine.cache.Cache;
 import com.starrocks.connector.iceberg.DataFileWrapper;
 import com.starrocks.connector.iceberg.DeleteFileWrapper;
-import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.avro.AvroIterable;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.expressions.Evaluator;
@@ -47,10 +47,12 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import static org.apache.iceberg.expressions.Expressions.alwaysTrue;
 
-// copy from https://github.com/apache/iceberg/blob/apache-iceberg-1.5.0/core/src/main/java/org/apache/iceberg/ManifestReader.java
+// copy from https://github.com/apache/iceberg/blob/apache-iceberg-1.10.0/core/src/main/java/org/apache/iceberg/ManifestReader.java
 public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
         implements CloseableIterable<F> {
     static final ImmutableList<String> ALL_COLUMNS = ImmutableList.of("*");
@@ -65,22 +67,23 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
                     "record_count");
 
     protected enum FileType {
-        DATA_FILES(GenericDataFile.class.getName()),
-        DELETE_FILES(GenericDeleteFile.class.getName());
+        DATA_FILES(GenericDataFile.class),
+        DELETE_FILES(GenericDeleteFile.class);
 
-        private final String fileClass;
+        private final Class<? extends StructLike> fileClass;
 
-        FileType(String fileClass) {
+        FileType(Class<? extends StructLike> fileClass) {
             this.fileClass = fileClass;
         }
 
-        private String fileClass() {
+        private Class<? extends StructLike> fileClass() {
             return fileClass;
         }
     }
 
     private final InputFile file;
     private final InheritableMetadata inheritableMetadata;
+    private final Long firstRowId;
     private final FileType content;
     private final PartitionSpec spec;
     private final Schema fileSchema;
@@ -108,8 +111,22 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
             Map<Integer, PartitionSpec> specsById,
             InheritableMetadata inheritableMetadata,
             FileType content) {
+        this(file, specId, specsById, inheritableMetadata, null, content);
+    }
+
+    protected ManifestReader(
+            InputFile file,
+            int specId,
+            Map<Integer, PartitionSpec> specsById,
+            InheritableMetadata inheritableMetadata,
+            Long firstRowId,
+            FileType content) {
+        Preconditions.checkArgument(
+                firstRowId == null || content == FileType.DATA_FILES,
+                "First row ID is not valid for delete manifests");
         this.file = file;
         this.inheritableMetadata = inheritableMetadata;
+        this.firstRowId = firstRowId;
         this.content = content;
 
         if (specsById != null) {
@@ -118,7 +135,7 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
             this.spec = readPartitionSpec(file);
         }
 
-        this.fileSchema = new Schema(DataFile.getType(spec.partitionType()).fields());
+        this.fileSchema = new Schema(DataFile.getType(spec.rawPartitionType()).fields());
     }
 
     private <T extends ContentFile<T>> PartitionSpec readPartitionSpec(InputFile inputFile) {
@@ -136,13 +153,16 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
 
     private static <T extends ContentFile<T>> Map<String, String> readMetadata(InputFile inputFile) {
         Map<String, String> metadata;
-        try {
-            try (AvroIterable<ManifestEntry<T>> headerReader =
-                         Avro.read(inputFile)
-                                 .project(ManifestEntry.getSchema(Types.StructType.of()).select("status"))
-                                 .classLoader(GenericManifestEntry.class.getClassLoader())
-                                 .build()) {
-                metadata = headerReader.getMetadata();
+        try (CloseableIterable<ManifestEntry<T>> headerReader =
+                     InternalData.read(FileFormat.AVRO, inputFile)
+                             .project(ManifestEntry.getSchema(Types.StructType.of()).select("status"))
+                             .build()) {
+
+            if (headerReader instanceof AvroIterable) {
+                metadata = ((AvroIterable<ManifestEntry<T>>) headerReader).getMetadata();
+            } else {
+                throw new RuntimeException(
+                        "Reader does not support metadata reading: " + headerReader.getClass().getName());
             }
         } catch (IOException e) {
             throw new RuntimeIOException(e);
@@ -231,6 +251,8 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
     }
 
     private CloseableIterable<ManifestEntry<F>> entries(boolean onlyLive) {
+        boolean shouldCacheDataFiles = shouldCacheDataFiles();
+        boolean shouldCacheDeleteFiles = shouldCacheDeleteFiles();
         if (hasRowFilter() || hasPartitionFilter() || partitionSet != null) {
             Evaluator evaluator = evaluator();
             InclusiveMetricsEvaluator metricsEvaluator = metricsEvaluator();
@@ -239,9 +261,10 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
             boolean requireStatsProjection = requireStatsProjection(rowFilter, columns);
             Collection<String> projectColumns =
                     requireStatsProjection ? withStatsColumns(columns) : columns;
+            projectColumns = withStatsColumnsForDataFileCache(projectColumns, shouldCacheDataFiles);
             CloseableIterable<ManifestEntry<F>> entries =
                     open(projection(fileSchema, fileProjection, projectColumns, caseSensitive));
-            entries = fillCacheIfNeeded(entries);
+            entries = fillCacheIfNeeded(entries, shouldCacheDataFiles, shouldCacheDeleteFiles);
             return CloseableIterable.filter(
                     content == FileType.DATA_FILES
                             ? scanMetrics.skippedDataFiles()
@@ -253,55 +276,118 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
                                     && metricsEvaluator.eval(entry.file())
                                     && inPartitionSet(entry.file()));
         } else {
+            Collection<String> projectColumns = withStatsColumnsForDataFileCache(columns, shouldCacheDataFiles);
             CloseableIterable<ManifestEntry<F>> entries =
-                    open(projection(fileSchema, fileProjection, columns, caseSensitive));
-            entries = fillCacheIfNeeded(entries);
+                    open(projection(fileSchema, fileProjection, projectColumns, caseSensitive));
+            entries = fillCacheIfNeeded(entries, shouldCacheDataFiles, shouldCacheDeleteFiles);
             return onlyLive ? filterLiveEntries(entries) : entries;
         }
     }
 
     // when the identifier field ids is null, it will copy all metrics.
-    private CloseableIterable<ManifestEntry<F>> fillCacheIfNeeded(CloseableIterable<ManifestEntry<F>> entries) {
-        if (dataFileCache != null && content == FileType.DATA_FILES) {
+    private CloseableIterable<ManifestEntry<F>> fillCacheIfNeeded(
+            CloseableIterable<ManifestEntry<F>> entries, boolean shouldCacheDataFiles, boolean shouldCacheDeleteFiles) {
+        if (!shouldCacheDataFiles && !shouldCacheDeleteFiles) {
+            return entries;
+        }
+
+        Set<DataFile> tmpDataFiles = Sets.newHashSet();
+        Set<DeleteFile> tmpDeleteFiles = Sets.newHashSet();
+        if (shouldCacheDataFiles) {
+            final Set<Integer> requestedColumnIds =
+                    identifierFieldIds != null && !identifierFieldIds.isEmpty() ? identifierFieldIds : null;
             entries = CloseableIterable.transform(entries,
                     entry -> {
-                        Set<DataFile> dataFiles = dataFileCache.getIfPresent(file.location());
-                        if (dataFiles != null && entry.isLive()) {
-                            Set<Integer> requestedColumnIds = null;
-                            if (identifierFieldIds != null && !identifierFieldIds.isEmpty()) {
-                                requestedColumnIds = identifierFieldIds;
-                            }
-
+                        if (entry.isLive()) {
                             DataFile dataFile = (DataFile) entry.file();
                             DataFile copiedDataFile = dataFileCacheWithMetrics ?
                                     dataFile.copyWithStats(requestedColumnIds) :
                                     dataFile.copyWithoutStats();
-                            dataFiles.add(DataFileWrapper.wrap(copiedDataFile));
+                            tmpDataFiles.add(DataFileWrapper.wrap(copiedDataFile));
                         }
                         return entry;
                     });
         }
 
-        if (content == FileType.DELETE_FILES && deleteFileCache != null) {
+        if (shouldCacheDeleteFiles) {
             entries = CloseableIterable.transform(entries,
                     entry -> {
-                        Set<DeleteFile> deleteFiles = deleteFileCache.getIfPresent(file.location());
-                        if (deleteFiles != null && entry.isLive()) {
-                            deleteFiles.add(DeleteFileWrapper.wrap((DeleteFile) entry.file().copy()));
+                        if (entry.isLive()) {
+                            tmpDeleteFiles.add(DeleteFileWrapper.wrap((DeleteFile) entry.file().copy()));
                         }
                         return entry;
                     });
         }
 
-        return entries;
+        final CloseableIterable<ManifestEntry<F>> transformedEntries = entries;
+        final AtomicBoolean fullyConsumed = new AtomicBoolean(false);
+        return new CloseableIterable<ManifestEntry<F>>() {
+            @Override
+            public CloseableIterator<ManifestEntry<F>> iterator() {
+                CloseableIterator<ManifestEntry<F>> iterator = transformedEntries.iterator();
+                return new CloseableIterator<ManifestEntry<F>>() {
+                    @Override
+                    public boolean hasNext() {
+                        boolean hasNext = iterator.hasNext();
+                        if (!hasNext) {
+                            fullyConsumed.set(true);
+                        }
+                        return hasNext;
+                    }
+
+                    @Override
+                    public ManifestEntry<F> next() {
+                        return iterator.next();
+                    }
+
+                    @Override
+                    public void close() throws IOException {
+                        iterator.close();
+                    }
+                };
+            }
+
+            @Override
+            public void close() throws IOException {
+                try {
+                    if (fullyConsumed.get()) {
+                        if (!tmpDataFiles.isEmpty()) {
+                            dataFileCache.put(file.location(), tmpDataFiles); // to recalculate the weight
+                        }
+                        if (!tmpDeleteFiles.isEmpty()) {
+                            deleteFileCache.put(file.location(), tmpDeleteFiles); // to recalculate the weight
+                        }
+                    }
+                } finally {
+                    transformedEntries.close();
+                }
+            }
+        };
+    }
+
+    private boolean shouldCacheDataFiles() {
+        return dataFileCache != null && content == FileType.DATA_FILES && dataFileCache.getIfPresent(file.location()) != null;
+    }
+
+    private boolean shouldCacheDeleteFiles() {
+        return deleteFileCache != null && content == FileType.DELETE_FILES &&
+                deleteFileCache.getIfPresent(file.location()) != null;
+    }
+
+    private Collection<String> withStatsColumnsForDataFileCache(
+            Collection<String> projectColumns, boolean shouldCacheDataFiles) {
+        if (shouldCacheDataFiles && dataFileCacheWithMetrics && projectColumns != null) {
+            return withStatsColumns(projectColumns);
+        }
+        return projectColumns;
     }
 
     private boolean hasRowFilter() {
-        return rowFilter != null && rowFilter != Expressions.alwaysTrue();
+        return rowFilter != alwaysTrue();
     }
 
     private boolean hasPartitionFilter() {
-        return partFilter != null && partFilter != Expressions.alwaysTrue();
+        return partFilter != alwaysTrue();
     }
 
     private boolean inPartitionSet(F fileToCheck) {
@@ -311,33 +397,33 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
 
     private CloseableIterable<ManifestEntry<F>> open(Schema projection) {
         FileFormat format = FileFormat.fromFileName(file.location());
-        Preconditions.checkArgument(format != null, "Unable to determine format of manifest: %s", file);
+        Preconditions.checkArgument(
+                format != null, "Unable to determine format of manifest: %s", file.location());
 
         List<Types.NestedField> fields = Lists.newArrayList();
         fields.addAll(projection.asStruct().fields());
+        if (projection.findField(DataFile.RECORD_COUNT.fieldId()) == null) {
+            fields.add(DataFile.RECORD_COUNT);
+        }
+        if (projection.findField(DataFile.FIRST_ROW_ID.fieldId()) == null) {
+            fields.add(DataFile.FIRST_ROW_ID);
+        }
         fields.add(MetadataColumns.ROW_POSITION);
 
-        switch (format) {
-            case AVRO:
-                AvroIterable<ManifestEntry<F>> reader =
-                        Avro.read(file)
-                                .project(ManifestEntry.wrapFileSchema(Types.StructType.of(fields)))
-                                .rename("manifest_entry", GenericManifestEntry.class.getName())
-                                .rename("partition", PartitionData.class.getName())
-                                .rename("r102", PartitionData.class.getName())
-                                .rename("data_file", content.fileClass())
-                                .rename("r2", content.fileClass())
-                                .classLoader(GenericManifestEntry.class.getClassLoader())
-                                .reuseContainers()
-                                .build();
+        CloseableIterable<ManifestEntry<F>> reader =
+                InternalData.read(format, file)
+                        .project(ManifestEntry.wrapFileSchema(Types.StructType.of(fields)))
+                        .setRootType(GenericManifestEntry.class)
+                        .setCustomType(ManifestEntry.DATA_FILE_ID, content.fileClass())
+                        .setCustomType(DataFile.PARTITION_ID, PartitionData.class)
+                        .reuseContainers()
+                        .build();
 
-                addCloseable(reader);
+        addCloseable(reader);
 
-                return CloseableIterable.transform(reader, inheritableMetadata::apply);
-
-            default:
-                throw new UnsupportedOperationException("Invalid format for manifest file: " + format);
-        }
+        CloseableIterable<ManifestEntry<F>> withMetadata =
+                CloseableIterable.transform(reader, inheritableMetadata::apply);
+        return CloseableIterable.transform(withMetadata, idAssigner(firstRowId));
     }
 
     CloseableIterable<ManifestEntry<F>> liveEntries() {
@@ -353,7 +439,9 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
         return entry != null && entry.status() != ManifestEntry.Status.DELETED;
     }
 
-    /** @return an Iterator of DataFile. Makes defensive copies of files before returning */
+    /**
+     * @return an Iterator of DataFile. Makes defensive copies of files before returning
+     */
     @Override
     public CloseableIterator<F> iterator() {
         boolean dropStats = dropStats(columns);
@@ -379,32 +467,22 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
         if (lazyEvaluator == null) {
             Expression projected = Projections.inclusive(spec, caseSensitive).project(rowFilter);
             Expression finalPartFilter = Expressions.and(projected, partFilter);
-            if (finalPartFilter != null) {
-                this.lazyEvaluator = new Evaluator(spec.partitionType(), finalPartFilter, caseSensitive);
-            } else {
-                this.lazyEvaluator =
-                        new Evaluator(spec.partitionType(), Expressions.alwaysTrue(), caseSensitive);
-            }
+            this.lazyEvaluator = new Evaluator(spec.partitionType(), finalPartFilter, caseSensitive);
         }
         return lazyEvaluator;
     }
 
     private InclusiveMetricsEvaluator metricsEvaluator() {
         if (lazyMetricsEvaluator == null) {
-            if (rowFilter != null) {
-                this.lazyMetricsEvaluator =
-                        new InclusiveMetricsEvaluator(spec.schema(), rowFilter, caseSensitive);
-            } else {
-                this.lazyMetricsEvaluator =
-                        new InclusiveMetricsEvaluator(spec.schema(), Expressions.alwaysTrue(), caseSensitive);
-            }
+            this.lazyMetricsEvaluator =
+                    new InclusiveMetricsEvaluator(spec.schema(), rowFilter, caseSensitive);
         }
         return lazyMetricsEvaluator;
     }
 
     private static boolean requireStatsProjection(Expression rowFilter, Collection<String> columns) {
         // Make sure we have all stats columns for metrics evaluator
-        return rowFilter != Expressions.alwaysTrue()
+        return rowFilter != alwaysTrue()
                 && columns != null
                 && !columns.containsAll(ManifestReader.ALL_COLUMNS)
                 && !columns.containsAll(STATS_COLUMNS);
@@ -431,6 +509,37 @@ public class ManifestReader<F extends ContentFile<F>> extends CloseableGroup
             List<String> projectColumns = Lists.newArrayList(columns);
             projectColumns.addAll(STATS_COLUMNS); // order doesn't matter
             return projectColumns;
+        }
+    }
+
+    private static <F extends ContentFile<F>> Function<ManifestEntry<F>, ManifestEntry<F>> idAssigner(
+            Long firstRowId) {
+        if (firstRowId != null) {
+            return new Function<>() {
+                private long nextRowId = firstRowId;
+
+                @Override
+                public ManifestEntry<F> apply(ManifestEntry<F> entry) {
+                    if (entry.file() instanceof BaseFile && entry.status() != ManifestEntry.Status.DELETED) {
+                        BaseFile<?> file = (BaseFile<?>) entry.file();
+                        if (null == file.firstRowId()) {
+                            file.setFirstRowId(nextRowId);
+                            nextRowId += file.recordCount();
+                        }
+                    }
+
+                    return entry;
+                }
+            };
+        } else {
+            // data file's first_row_id is null when the manifest's first_row_id is null
+            return entry -> {
+                if (entry.file() instanceof BaseFile) {
+                    ((BaseFile<?>) entry.file()).setFirstRowId(null);
+                }
+
+                return entry;
+            };
         }
     }
 }

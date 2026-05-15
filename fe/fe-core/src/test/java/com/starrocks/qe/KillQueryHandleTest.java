@@ -14,12 +14,14 @@
 
 package com.starrocks.qe;
 
+import com.starrocks.catalog.UserIdentity;
+import com.starrocks.common.ErrorCode;
+import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.rpc.ThriftConnectionPool;
 import com.starrocks.rpc.ThriftRPCRequestExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.service.ExecuteEnv;
 import com.starrocks.sql.ast.StatementBase;
-import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.thrift.TMasterOpResult;
 import com.starrocks.thrift.TNetworkAddress;
 import com.starrocks.utframe.StarRocksAssert;
@@ -28,12 +30,10 @@ import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
 import org.apache.spark.internal.config.R;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.xnio.StreamConnection;
-
-import java.util.UUID;
 
 public class KillQueryHandleTest {
 
@@ -41,7 +41,7 @@ public class KillQueryHandleTest {
 
     private static ConnectContext connectContext;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
 
@@ -54,11 +54,12 @@ public class KillQueryHandleTest {
         // test killing query successfully
         ConnectContext ctx1 = prepareConnectContext(connection);
 
-        Assert.assertFalse(ctx1.isKilled());
+        Assertions.assertFalse(ctx1.isKilled());
         ConnectContext ctx = kill(ctx1.getQueryId().toString(), false);
         // isKilled is set
-        Assert.assertTrue(ctx1.isKilled());
-        Assert.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
+        Assertions.assertTrue(ctx1.isKilled());
+        Assertions.assertEquals(ErrorCode.ERR_QUERY_INTERRUPTED, ctx1.getState().getErrorCode());
+        Assertions.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -84,7 +85,7 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
 
         ConnectContext ctx = kill(ctx1.getQueryId().toString(), true);
-        Assert.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
+        Assertions.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -96,8 +97,8 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
 
         ConnectContext ctx = kill("xxx", false);
-        Assert.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
-        Assert.assertEquals("Unknown query id: xxx", ctx.getState().getErrorMessage());
+        Assertions.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
+        Assertions.assertEquals("Unknown query id: xxx", ctx.getState().getErrorMessage());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -130,8 +131,8 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
 
         ConnectContext ctx = kill(ctx1.getQueryId().toString(), true);
-        Assert.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
-        Assert.assertEquals("query xxx not found", ctx.getState().getErrorMessage());
+        Assertions.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
+        Assertions.assertEquals("query xxx not found", ctx.getState().getErrorMessage());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -142,8 +143,8 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
 
         ConnectContext ctx = kill(ctx1.getQueryId().toString(), true);
-        Assert.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
-        Assert.assertTrue(ctx.getState().getErrorMessage().contains("ConnectException"));
+        Assertions.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
+        Assertions.assertTrue(ctx.getState().getErrorMessage().contains("ConnectException"));
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -163,8 +164,8 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
 
         ConnectContext ctx = kill(ctx1.getQueryId().toString(), true);
-        Assert.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
-        Assert.assertEquals("Failed to connect to fe 127.0.0.1:9020 due to Unknown error x",
+        Assertions.assertEquals(QueryState.MysqlStateType.ERR, ctx.getState().getStateType());
+        Assertions.assertEquals("Failed to connect to fe 127.0.0.1:9020 due to Unknown error x",
                 ctx.getState().getErrorMessage());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
@@ -176,11 +177,12 @@ public class KillQueryHandleTest {
         ConnectContext ctx1 = prepareConnectContext(connection);
         ctx1.getSessionVariable().setCustomQueryId("a_custom_query_id");
 
-        Assert.assertFalse(ctx1.isKilled());
+        Assertions.assertFalse(ctx1.isKilled());
         ConnectContext ctx = kill("a_custom_query_id", false);
         // isKilled is set
-        Assert.assertTrue(ctx1.isKilled());
-        Assert.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
+        Assertions.assertTrue(ctx1.isKilled());
+        Assertions.assertEquals(ErrorCode.ERR_QUERY_INTERRUPTED, ctx1.getState().getErrorCode());
+        Assertions.assertEquals(QueryState.MysqlStateType.OK, ctx.getState().getStateType());
 
         ExecuteEnv.getInstance().getScheduler().unregisterConnection(ctx1);
     }
@@ -196,7 +198,7 @@ public class KillQueryHandleTest {
         ctx1.setQualifiedUser("root");
         ctx1.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
         ctx1.setConnectionId(1);
-        ctx1.setQueryId(UUID.randomUUID());
+        ctx1.setQueryId(UUIDUtil.genUUID());
 
         ExecuteEnv.getInstance().getScheduler().registerConnection(ctx1);
         return ctx1;

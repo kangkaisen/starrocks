@@ -16,10 +16,17 @@
 
 #include <utility>
 
+#include "column/raw_data_visitor.h"
+#include "common/config_cache_fwd.h"
+#include "common/config_ingest_fwd.h"
+#include "common/config_primary_key_fwd.h"
+#include "common/config_storage_fwd.h"
 #include "common/tracer.h"
-#include "io/io_profiler.h"
+#include "io/core/io_profiler.h"
 #include "runtime/current_thread.h"
 #include "runtime/descriptors.h"
+#include "runtime/exec_env.h"
+#include "runtime/load_fail_point.h"
 #include "storage/compaction_manager.h"
 #include "storage/memtable.h"
 #include "storage/memtable_flush_executor.h"
@@ -28,11 +35,11 @@
 #include "storage/rowset/rowset_factory.h"
 #include "storage/segment_replicate_executor.h"
 #include "storage/storage_engine.h"
+#include "storage/storage_metrics.h"
 #include "storage/tablet_manager.h"
 #include "storage/tablet_updates.h"
 #include "storage/txn_manager.h"
 #include "storage/update_manager.h"
-#include "util/starrocks_metrics.h"
 
 namespace starrocks {
 
@@ -46,21 +53,19 @@ StatusOr<std::unique_ptr<DeltaWriter>> DeltaWriter::open(const DeltaWriterOption
 }
 
 DeltaWriter::DeltaWriter(DeltaWriterOptions opt, MemTracker* mem_tracker, StorageEngine* storage_engine)
-        : _state(kUninitialized),
-          _opt(std::move(opt)),
+        : _opt(std::move(opt)),
           _mem_tracker(mem_tracker),
           _storage_engine(storage_engine),
           _tablet(nullptr),
           _cur_rowset(nullptr),
           _rowset_writer(nullptr),
-          _schema_initialized(false),
+
           _mem_table(nullptr),
           _mem_table_sink(nullptr),
           _tablet_schema(nullptr),
           _flush_token(nullptr),
           _replicate_token(nullptr),
-          _segment_flush_token(nullptr),
-          _with_rollback_log(true) {}
+          _segment_flush_token(nullptr) {}
 
 DeltaWriter::~DeltaWriter() {
     SCOPED_THREAD_LOCAL_MEM_SETTER(_mem_tracker, false);
@@ -369,7 +374,7 @@ Status DeltaWriter::_init() {
     _set_state(kWriting, Status::OK());
 
     VLOG(2) << "DeltaWriter [tablet_id=" << _opt.tablet_id << ", load_id=" << print_id(_opt.load_id)
-            << ", replica_state=" << _replica_state_name(_replica_state) << "] open success.";
+            << ", replica_state=" << replica_state_name(_replica_state) << "] open success.";
 
     // no need after initialization.
     _opt.ptable_schema_param = nullptr;
@@ -400,7 +405,9 @@ Status DeltaWriter::_check_partial_update_with_sort_key(const Chunk& chunk) {
         if (_opt.slots != nullptr && _opt.slots->back()->col_name() == "__op") {
             size_t op_column_id = chunk.num_columns() - 1;
             const auto& op_column = chunk.get_column_by_index(op_column_id);
-            auto* ops = reinterpret_cast<const uint8_t*>(op_column->raw_data());
+            RawDataVisitor visitor;
+            RETURN_IF_ERROR(op_column->accept(&visitor));
+            const auto* ops = visitor.result();
             ok = !std::any_of(ops, ops + chunk.num_rows(), [](auto op) { return op == TOpType::UPSERT; });
         } else {
             ok = false;
@@ -438,7 +445,7 @@ Status DeltaWriter::write(const Chunk& chunk, const uint32_t* indexes, uint32_t 
                     "memory limit exceeded, please reduce load frequency or increase config "
                     "`load_process_max_memory_hard_limit_ratio` or add more BE nodes");
         }
-        _reset_mem_table();
+        RETURN_IF_ERROR(_reset_mem_table());
     }
     auto state = get_state();
     if (state != kWriting) {
@@ -446,13 +453,13 @@ Status DeltaWriter::write(const Chunk& chunk, const uint32_t* indexes, uint32_t 
         // no error just in wrong state
         if (err_st.ok()) {
             err_st = Status::InternalError(
-                    fmt::format("Fail to prepare. tablet_id: {}, state: {}", _opt.tablet_id, _state_name(state)));
+                    fmt::format("Fail to prepare. tablet_id: {}, state: {}", _opt.tablet_id, state_name(state)));
         }
         return err_st;
     }
     if (_replica_state == Secondary) {
         return Status::InternalError(fmt::format("Fail to write chunk, tablet_id: {}, replica_state: {}",
-                                                 _opt.tablet_id, _replica_state_name(_replica_state)));
+                                                 _opt.tablet_id, replica_state_name(_replica_state)));
     }
 
     if (_tablet->keys_type() == KeysType::PRIMARY_KEYS && !_mem_table->check_supported_column_partial_update(chunk)) {
@@ -466,15 +473,15 @@ Status DeltaWriter::write(const Chunk& chunk, const uint32_t* indexes, uint32_t 
     if (_mem_tracker->limit_exceeded()) {
         VLOG(2) << "Flushing memory table due to memory limit exceeded";
         st = _flush_memtable();
-        _reset_mem_table();
+        RETURN_IF_ERROR(_reset_mem_table());
     } else if (_mem_tracker->parent() && _mem_tracker->parent()->limit_exceeded()) {
         VLOG(2) << "Flushing memory table due to parent memory limit exceeded";
         st = _flush_memtable();
-        _reset_mem_table();
+        RETURN_IF_ERROR(_reset_mem_table());
     } else if (full) {
         st = flush_memtable_async();
-        _reset_mem_table();
         ADD_COUNTER_RELAXED(_stats.memtable_full_count, 1);
+        RETURN_IF_ERROR(_reset_mem_table());
     }
     if (!st.ok()) {
         _set_state(kAborted, st);
@@ -489,14 +496,14 @@ Status DeltaWriter::write_segment(const SegmentPB& segment_pb, butil::IOBuf& dat
         // no error just in wrong state
         if (err_st.ok()) {
             err_st = Status::InternalError(
-                    fmt::format("Fail to write segment. tablet_id: {}, state: {}", _opt.tablet_id, _state_name(state)));
+                    fmt::format("Fail to write segment. tablet_id: {}, state: {}", _opt.tablet_id, state_name(state)));
         }
         return err_st;
     }
     if (_replica_state != Secondary) {
         return Status::InternalError(fmt::format("Fail to write segment: {}, tablet_id: {}, replica_state: {}",
                                                  segment_pb.segment_id(), _opt.tablet_id,
-                                                 _replica_state_name(_replica_state)));
+                                                 replica_state_name(_replica_state)));
     }
 
     _tablet->add_in_writing_data_size(_opt.txn_id, segment_pb.data_size());
@@ -515,10 +522,10 @@ Status DeltaWriter::write_segment(const SegmentPB& segment_pb, butil::IOBuf& dat
     ADD_COUNTER_RELAXED(_stats.add_segment_time_ns, duration_ns);
     ADD_COUNTER_RELAXED(_stats.add_segment_io_time_ns, io_time_ns);
 
-    StarRocksMetrics::instance()->segment_flush_total.increment(1);
-    StarRocksMetrics::instance()->segment_flush_duration_us.increment(duration_ns / 1000);
-    StarRocksMetrics::instance()->segment_flush_io_time_us.increment(io_time_ns / 1000);
-    StarRocksMetrics::instance()->segment_flush_bytes_total.increment(segment_pb.data_size());
+    StorageMetrics::instance()->segment_flush_total.increment(1);
+    StorageMetrics::instance()->segment_flush_duration_us.increment(duration_ns / 1000);
+    StorageMetrics::instance()->segment_flush_io_time_us.increment(io_time_ns / 1000);
+    StorageMetrics::instance()->segment_flush_bytes_total.increment(segment_pb.data_size());
     VLOG(2) << "Flush segment tablet " << _opt.tablet_id << " segment: " << segment_pb.DebugString()
             << ", duration: " << duration_ns / 1000 << "us, io_time: " << (io_time_ns / 1000) << "us";
     return Status::OK();
@@ -539,8 +546,8 @@ Status DeltaWriter::close() {
     }
         // no error just in wrong state
     case kCommitted:
-        return Status::InternalError(fmt::format("Fail to close delta writer. tablet_id: {}, state: {}", _opt.tablet_id,
-                                                 _state_name(state)));
+        return Status::InternalError(
+                fmt::format("Fail to close delta writer. tablet_id: {}, state: {}", _opt.tablet_id, state_name(state)));
     case kClosed:
         return Status::OK();
     case kWriting:
@@ -558,6 +565,7 @@ Status DeltaWriter::manual_flush() {
 }
 
 Status DeltaWriter::flush_memtable_async(bool eos) {
+    DeferOp defer([this] { _mem_table.reset(); });
     _last_write_ts = 0;
     _write_buffer_size = 0;
     // _mem_table is nullptr means write() has not been called
@@ -648,8 +656,8 @@ Status DeltaWriter::_flush_memtable() {
     auto elapsed_time = watch.elapsed_time();
     ADD_COUNTER_RELAXED(_stats.memory_exceed_count, 1);
     ADD_COUNTER_RELAXED(_stats.write_wait_flush_time_ns, elapsed_time);
-    StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-    StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(elapsed_time / 1000);
+    StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+    StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(elapsed_time / 1000);
     return st;
 }
 
@@ -663,6 +671,7 @@ Status DeltaWriter::_build_current_tablet_schema(int64_t index_id, const POlapTa
             if (ptable_schema_param->indexes(i).id() == index_id) break;
         }
         if (i < ptable_schema_param->indexes_size()) {
+            _is_shadow = ptable_schema_param->indexes(i).is_shadow();
             if (ptable_schema_param->indexes_size() > 0 && ptable_schema_param->indexes(i).has_column_param() &&
                 ptable_schema_param->indexes(i).column_param().columns_desc_size() != 0 &&
                 ptable_schema_param->indexes(i).column_param().columns_desc(0).unique_id() >= 0 &&
@@ -683,7 +692,7 @@ Status DeltaWriter::_build_current_tablet_schema(int64_t index_id, const POlapTa
     return Status::OK();
 }
 
-void DeltaWriter::_reset_mem_table() {
+Status DeltaWriter::_reset_mem_table() {
     if (!_schema_initialized) {
         _vectorized_schema = MemTable::convert_schema(_tablet_schema, _opt.slots);
         _schema_initialized = true;
@@ -695,8 +704,14 @@ void DeltaWriter::_reset_mem_table() {
         _mem_table = std::make_unique<MemTable>(_tablet->tablet_id(), &_vectorized_schema, _opt.slots,
                                                 _mem_table_sink.get(), "", _mem_tracker);
     }
+    PrimaryKeyEncodingType pk_encoding_type = PrimaryKeyEncodingType::PK_ENCODING_TYPE_NONE;
+    if (_tablet->keys_type() == KeysType::PRIMARY_KEYS) {
+        pk_encoding_type = PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1;
+    }
+    RETURN_IF_ERROR(_mem_table->prepare(pk_encoding_type));
     _mem_table->set_write_buffer_row(_memtable_buffer_row);
     _write_buffer_size = _mem_table->write_buffer_size();
+    return Status::OK();
 }
 
 Status DeltaWriter::commit() {
@@ -722,7 +737,7 @@ Status DeltaWriter::commit() {
         // no error just in wrong state
     case kWriting:
         return Status::InternalError(fmt::format("Fail to commit delta writer. tablet_id: {}, state: {}",
-                                                 _opt.tablet_id, _state_name(state)));
+                                                 _opt.tablet_id, state_name(state)));
     case kCommitted:
         return Status::OK();
     case kClosed:
@@ -747,17 +762,6 @@ Status DeltaWriter::commit() {
     }
     auto rowset_build_ts = watch.elapsed_time();
 
-    if (_tablet->keys_type() == KeysType::PRIMARY_KEYS && !config::skip_pk_preload &&
-        !_storage_engine->update_manager()->mem_tracker()->limit_exceeded_by_ratio(config::memory_high_level) &&
-        !_storage_engine->update_manager()->update_state_mem_tracker()->any_limit_exceeded()) {
-        auto st = _storage_engine->update_manager()->on_rowset_finished(_tablet.get(), _cur_rowset.get());
-        if (!st.ok() && !st.is_uninitialized()) {
-            _set_state(kAborted, st);
-            return st;
-        }
-    }
-    auto pk_preload_ts = watch.elapsed_time();
-
     if (_replicate_token != nullptr) {
         if (auto st = _replicate_token->wait(); UNLIKELY(!st.ok())) {
             LOG(WARNING) << st;
@@ -766,9 +770,11 @@ Status DeltaWriter::commit() {
         }
     }
     auto replica_ts = watch.elapsed_time();
-
-    auto res = _storage_engine->txn_manager()->commit_txn(_opt.partition_id, _tablet, _opt.txn_id, _opt.load_id,
-                                                          _cur_rowset, false);
+    Status res;
+    FAIL_POINT_TRIGGER_ASSIGN_STATUS_OR_DEFAULT(
+            load_commit_txn, res, COMMIT_TXN_FP_ACTION(_opt.txn_id, _opt.tablet_id),
+            _storage_engine->txn_manager()->commit_txn(_opt.partition_id, _tablet, _opt.txn_id, _opt.load_id,
+                                                       _cur_rowset, false, _is_shadow));
     auto commit_txn_ts = watch.elapsed_time();
 
     if (!res.ok()) {
@@ -785,23 +791,20 @@ Status DeltaWriter::commit() {
             _state = kCommitted;
         } else {
             return Status::InternalError(fmt::format("Delta writer has been aborted. tablet_id: {}, state: {}",
-                                                     _opt.tablet_id, _state_name(_state)));
+                                                     _opt.tablet_id, state_name(_state)));
         }
     }
     VLOG(2) << "Closed delta writer. tablet_id: " << _tablet->tablet_id() << ", stats: " << _flush_token->get_stats();
     ADD_COUNTER_RELAXED(_stats.commit_time_ns, watch.elapsed_time());
     ADD_COUNTER_RELAXED(_stats.commit_wait_flush_time_ns, flush_ts);
     ADD_COUNTER_RELAXED(_stats.commit_rowset_build_time_ns, rowset_build_ts - flush_ts);
-    ADD_COUNTER_RELAXED(_stats.commit_pk_preload_time_ns, pk_preload_ts - rowset_build_ts);
-    ADD_COUNTER_RELAXED(_stats.commit_wait_replica_time_ns, replica_ts - pk_preload_ts);
+    ADD_COUNTER_RELAXED(_stats.commit_wait_replica_time_ns, replica_ts - rowset_build_ts);
     ADD_COUNTER_RELAXED(_stats.commit_txn_commit_time_ns, commit_txn_ts - replica_ts);
-    StarRocksMetrics::instance()->delta_writer_commit_task_total.increment(1);
-    StarRocksMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
-    StarRocksMetrics::instance()->delta_writer_wait_flush_duration_us.increment(flush_ts / 1000);
-    StarRocksMetrics::instance()->delta_writer_pk_preload_duration_us.increment((pk_preload_ts - rowset_build_ts) /
-                                                                                1000);
-    StarRocksMetrics::instance()->delta_writer_wait_replica_duration_us.increment((replica_ts - pk_preload_ts) / 1000);
-    StarRocksMetrics::instance()->delta_writer_txn_commit_duration_us.increment((commit_txn_ts - replica_ts) / 1000);
+    StorageMetrics::instance()->delta_writer_commit_task_total.increment(1);
+    StorageMetrics::instance()->delta_writer_wait_flush_task_total.increment(1);
+    StorageMetrics::instance()->delta_writer_wait_flush_duration_us.increment(flush_ts / 1000);
+    StorageMetrics::instance()->delta_writer_wait_replica_duration_us.increment((replica_ts - rowset_build_ts) / 1000);
+    StorageMetrics::instance()->delta_writer_txn_commit_duration_us.increment((commit_txn_ts - replica_ts) / 1000);
     return Status::OK();
 }
 
@@ -841,7 +844,7 @@ int64_t DeltaWriter::partition_id() const {
     return _opt.partition_id;
 }
 
-const char* DeltaWriter::_state_name(State state) const {
+const char* DeltaWriter::state_name(State state) {
     switch (state) {
     case kUninitialized:
         return "kUninitialized";
@@ -857,7 +860,7 @@ const char* DeltaWriter::_state_name(State state) const {
     return "";
 }
 
-const char* DeltaWriter::_replica_state_name(ReplicaState state) const {
+const char* DeltaWriter::replica_state_name(ReplicaState state) {
     switch (state) {
     case Primary:
         return "Primary Replica";
@@ -869,20 +872,22 @@ const char* DeltaWriter::_replica_state_name(ReplicaState state) const {
     return "";
 }
 
-Status DeltaWriter::_fill_auto_increment_id(const Chunk& chunk) {
+Status DeltaWriter::_fill_auto_increment_id(Chunk& chunk) {
     // 1. get pk column from chunk
     vector<uint32_t> pk_columns;
+    pk_columns.reserve(_tablet_schema->num_key_columns());
     for (size_t i = 0; i < _tablet_schema->num_key_columns(); i++) {
         pk_columns.push_back((uint32_t)i);
     }
     Schema pkey_schema = ChunkHelper::convert_schema(_tablet_schema, pk_columns);
     MutableColumnPtr pk_column;
-    if (!PrimaryKeyEncoder::create_column(pkey_schema, &pk_column).ok()) {
+    if (!PrimaryKeyEncoder::create_column(pkey_schema, &pk_column, PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1).ok()) {
         CHECK(false) << "create column for primary key encoder failed";
     }
     auto col = pk_column->clone();
 
-    PrimaryKeyEncoder::encode(pkey_schema, chunk, 0, chunk.num_rows(), col.get());
+    PrimaryKeyEncoder::encode(pkey_schema, chunk, 0, chunk.num_rows(), col.get(),
+                              PrimaryKeyEncodingType::PK_ENCODING_TYPE_V1);
     MutableColumnPtr upserts = std::move(col);
 
     std::vector<uint64_t> rss_rowids;
@@ -911,8 +916,9 @@ Status DeltaWriter::_fill_auto_increment_id(const Chunk& chunk) {
     for (int i = 0; i < _vectorized_schema.num_fields(); i++) {
         const TabletColumn& tablet_column = _tablet_schema->column(i);
         if (tablet_column.is_auto_increment()) {
-            auto& column = chunk.get_column_by_index(i);
-            RETURN_IF_ERROR((Int64Column::dynamic_pointer_cast(column))->fill_range(ids, filter));
+            auto* column = chunk.get_column_raw_ptr_by_index(i);
+            auto* int64_column = down_cast<Int64Column*>(column);
+            RETURN_IF_ERROR(int64_column->fill_range(ids, filter));
             break;
         }
     }

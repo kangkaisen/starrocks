@@ -19,7 +19,6 @@ import com.aliyun.odps.table.read.split.impl.IndexedInputSplit;
 import com.aliyun.odps.table.read.split.impl.RowRangeInputSplit;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
-import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.catalog.OdpsTable;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.connector.CatalogConnector;
@@ -172,7 +171,6 @@ public class OdpsScanNode extends ScanNode {
         msg.node_type = TPlanNodeType.HDFS_SCAN_NODE;
         THdfsScanNode tHdfsScanNode = new THdfsScanNode();
         tHdfsScanNode.setTuple_id(desc.getId().asInt());
-        tHdfsScanNode.setCan_use_min_max_count_opt(false);
 
         String explainString = getExplainString(conjuncts);
         LOG.info("Explain string: " + explainString);
@@ -187,5 +185,7 @@ public class OdpsScanNode extends ScanNode {
         tCloudConfiguration.setCloud_type(TCloudType.ALIYUN);
         tHdfsScanNode.setCloud_configuration(tCloudConfiguration);
         msg.hdfs_scan_node = tHdfsScanNode;
+
+        setConnectorCatalogType(msg);
     }
 }

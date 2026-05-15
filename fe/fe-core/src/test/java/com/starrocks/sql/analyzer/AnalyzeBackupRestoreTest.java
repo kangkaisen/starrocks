@@ -24,8 +24,8 @@ import com.starrocks.common.Pair;
 import com.starrocks.server.GlobalStateMgr;
 import mockit.Mock;
 import mockit.MockUp;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -35,7 +35,7 @@ import static com.starrocks.sql.analyzer.AnalyzeTestUtil.analyzeSuccess;
 
 public class AnalyzeBackupRestoreTest {
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         AlterTest.beforeClass();
         AnalyzeTestUtil.init();
@@ -54,7 +54,7 @@ public class AnalyzeBackupRestoreTest {
         BlobStorage storage = new BlobStorage(brokerName, Maps.newHashMap());
         Repository repo = new Repository(10000, "repo", false, location, storage);
         repo.initRepository();
-        GlobalStateMgr.getCurrentState().getBackupHandler().getRepoMgr().addAndInitRepoIfNotExist(repo, false);
+        GlobalStateMgr.getCurrentState().getBackupHandler().getRepoMgr().addAndInitRepoIfNotExist(repo);
 
         AnalyzeTestUtil.getStarRocksAssert().withFunction("CREATE FUNCTION Echostring(string) RETURNS string properties" +
                         "(\"symbol\" = \"Echostring\", \"type\" = \"StarrocksJar\", \"file\" = \"xxx\");");

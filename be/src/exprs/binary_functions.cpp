@@ -19,23 +19,21 @@
 #include "column/column_helper.h"
 #include "column/column_viewer.h"
 #include "column/nullable_column.h"
-#include "exprs/base64.h"
 #include "exprs/encryption_functions.h"
+#include "exprs/function_helper.h"
 #include "exprs/string_functions.h"
-#include "gutil/strings/escaping.h"
 
 namespace starrocks {
 
 // to_binary
 StatusOr<ColumnPtr> BinaryFunctions::to_binary(FunctionContext* context, const Columns& columns) {
     auto state = reinterpret_cast<BinaryFormatState*>(context->get_function_state(FunctionContext::THREAD_LOCAL));
-    auto& src_column = columns[0];
-    const int size = src_column->size();
-    ColumnBuilder<TYPE_VARBINARY> result(size);
     auto to_binary_type = state->to_binary_type;
     switch (to_binary_type) {
-    case BinaryFormatType::UTF8:
-        return src_column;
+    case BinaryFormatType::UTF8: {
+        auto& src_column = columns[0];
+        return std::move(*src_column).mutate();
+    }
     case BinaryFormatType::ENCODE64:
         return EncryptionFunctions::from_base64(context, columns);
     default:
@@ -75,13 +73,12 @@ Status BinaryFunctions::to_binary_close(FunctionContext* context, FunctionContex
 // to_binary
 StatusOr<ColumnPtr> BinaryFunctions::from_binary(FunctionContext* context, const Columns& columns) {
     auto state = reinterpret_cast<BinaryFormatState*>(context->get_function_state(FunctionContext::THREAD_LOCAL));
-    auto& src_column = columns[0];
-    const int size = src_column->size();
-    ColumnBuilder<TYPE_VARBINARY> result(size);
     auto to_binary_type = state->to_binary_type;
     switch (to_binary_type) {
-    case BinaryFormatType::UTF8:
-        return src_column;
+    case BinaryFormatType::UTF8: {
+        auto& src_column = columns[0];
+        return std::move(*src_column).mutate();
+    }
     case BinaryFormatType::ENCODE64:
         return EncryptionFunctions::to_base64(context, columns);
     default:
@@ -118,4 +115,25 @@ Status BinaryFunctions::from_binary_close(FunctionContext* context, FunctionCont
     return Status::OK();
 }
 
+StatusOr<ColumnPtr> BinaryFunctions::iceberg_truncate_binary(FunctionContext* context, const Columns& columns) {
+    RETURN_IF_COLUMNS_ONLY_NULL(columns);
+
+    const int size = columns[0]->size();
+    ColumnViewer<TYPE_VARBINARY> viewer(columns[0]);
+    int32_t width = ColumnViewer<TYPE_INT>(columns[1]).value(0);
+
+    ColumnBuilder<TYPE_BINARY> result(size);
+    for (int i = 0; i < size; i++) {
+        if (viewer.is_null(i)) {
+            result.append_null();
+        } else {
+            Slice src_value = viewer.value(i);
+            result.append(Slice(src_value.get_data(), std::min(width, static_cast<int32_t>(src_value.get_size()))));
+        }
+    }
+    return result.build(ColumnHelper::is_all_const(columns));
+}
+
 } // namespace starrocks
+
+#include "gen_cpp/opcode/BinaryFunctions.inc"

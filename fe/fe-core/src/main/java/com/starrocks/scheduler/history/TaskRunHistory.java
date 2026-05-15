@@ -39,7 +39,6 @@ import java.util.stream.Collectors;
 
 public class TaskRunHistory {
     private static final Logger LOG = LogManager.getLogger(TaskRunHistory.class);
-    private static final int MEMORY_TASK_RUN_SAMPLES = 10;
 
     // Thread-Safe history map:
     // QueryId -> TaskRunStatus
@@ -87,13 +86,6 @@ public class TaskRunHistory {
         return historyTaskRunMap.size();
     }
 
-    public synchronized List<Object> getSamplesForMemoryTracker() {
-        return historyTaskRunMap.values()
-                .stream()
-                .limit(MEMORY_TASK_RUN_SAMPLES)
-                .collect(Collectors.toList());
-    }
-
     public List<TaskRunStatus> lookupHistoryByTaskNames(String dbName, Set<String> taskNames) {
         List<TaskRunStatus> result = getInMemoryHistory().stream()
                 .filter(x -> x.matchByTaskName(dbName, taskNames))
@@ -130,16 +122,20 @@ public class TaskRunHistory {
 
     // TODO: make it thread safe
     /**
-     * Remove expired task runs, would be called in regular daemon thread, and also in checkpoint
+     * Remove expired task runs, would be called in regular daemon thread, and also in checkpoint.
+     *
+     * @param archiveHistory Controls historical task run archiving behavior.
+     *         - When `false`: Performs cleanup of expired task runs and garbage collection only.
+     *         - When `true`: Also persists historical task runs, but must only be executed on the FE leader.
      */
-    public void vacuum() {
+    public void vacuum(boolean archiveHistory) {
         removeExpiredRuns();
 
         // trigger to force gc to avoid too many history task runs.
         forceGC();
 
         // archive histories
-        if (!GlobalStateMgr.isCheckpointThread()) {
+        if (archiveHistory && !GlobalStateMgr.isCheckpointThread()) {
             archiveHistory();
         }
     }
@@ -195,15 +191,11 @@ public class TaskRunHistory {
             Stopwatch watch = Stopwatch.createStarted();
             historyTable.addHistories(runs);
 
-            // 2. Remove from memory
-            for (var run : runs) {
-                removeTaskByQueryId(run.getQueryId());
-            }
-
-            // 3. Write EditLog
+            // 2. Write EditLog
             List<String> queryIdList = runs.stream().map(TaskRunStatus::getQueryId).collect(Collectors.toList());
             ArchiveTaskRunsLog log = new ArchiveTaskRunsLog(queryIdList);
-            GlobalStateMgr.getCurrentState().getEditLog().logArchiveTaskRuns(log);
+            GlobalStateMgr.getCurrentState().getEditLog().logArchiveTaskRuns(log,
+                    wal -> replay((ArchiveTaskRunsLog) wal));
             LOG.info("archive task-run history, {} records took {}ms",
                     runs.size(), watch.elapsed(TimeUnit.MILLISECONDS));
         } catch (Throwable e) {

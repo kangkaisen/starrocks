@@ -67,10 +67,12 @@ public:
 
     TPartitionType::type partition_type() const override { return TPartitionType::BUCKET_SHUFFLE_HASH_PARTITIONED; }
     const std::vector<ExprContext*>& partition_exprs() const override;
+    const std::vector<TBucketProperty>& get_bucket_properties() const override;
     void set_chunk_source_mem_bytes(int64_t mem_bytes);
     void set_scan_mem_limit(int64_t scan_mem_limit);
     void set_mem_share_arb(ConnectorScanOperatorMemShareArbitrator* arb);
     void set_data_source_mem_bytes(int64_t value);
+    Status mark_split_source_morsel_finished();
 
     void attach_shared_input(int32_t operator_seq, int32_t source_index);
     void detach_shared_input(int32_t operator_seq, int32_t source_index);
@@ -119,6 +121,7 @@ public:
     bool is_running_all_io_tasks() const override;
 
     Status append_morsels(std::vector<MorselPtr>&& morsels);
+    Status mark_split_source_morsel_finished();
     ConnectorScanOperatorAdaptiveProcessor* adaptive_processor() const { return _adaptive_processor; }
     bool enable_adaptive_io_tasks() const { return _enable_adaptive_io_tasks; }
 
@@ -127,6 +130,8 @@ public:
     }
     std::string get_name() const override;
     bool need_notify_all() override;
+
+    int64_t get_scan_table_id() const override;
 
 private:
     int64_t _adjust_scan_mem_limit(int64_t old_chunk_source_mem_bytes, int64_t new_chunk_source_mem_bytes);
@@ -159,6 +164,8 @@ protected:
 
 private:
     Status _read_chunk(RuntimeState* state, ChunkPtr* chunk) override;
+    Status _report_split_source_morsel_finished_once();
+    void _update_catalog_metrics();
 
     ConnectorScanOperatorIOTasksMemLimiter* _get_io_tasks_mem_limiter() const;
 
@@ -174,6 +181,8 @@ private:
     ChunkPipelineAccumulator _ck_acc;
     bool _opened = false;
     bool _closed = false;
+    bool _is_split_source_morsel = false;
+    bool _split_source_morsel_reported = false;
     uint64_t _chunk_rows_read = 0;
     uint64_t _chunk_mem_bytes = 0;
     int64_t _request_mem_tracker_bytes = 0;

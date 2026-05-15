@@ -18,40 +18,43 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
-import com.starrocks.analysis.FunctionParams;
+import com.google.common.collect.Streams;
 import com.starrocks.catalog.AggregateFunction;
-import com.starrocks.catalog.AnyArrayType;
-import com.starrocks.catalog.AnyElementType;
-import com.starrocks.catalog.AnyMapType;
-import com.starrocks.catalog.AnyStructType;
-import com.starrocks.catalog.ArrayType;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.MapType;
 import com.starrocks.catalog.MaterializedView;
-import com.starrocks.catalog.ScalarType;
-import com.starrocks.catalog.StructType;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.FunctionAnalyzer;
+import com.starrocks.sql.ast.expression.FunctionParams;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MVTestBase;
 import com.starrocks.sql.optimizer.statistics.EmptyStatisticStorage;
 import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.sql.plan.PlanTestBase;
 import com.starrocks.statistic.StatisticsMetaManager;
+import com.starrocks.type.AggStateDesc;
+import com.starrocks.type.AnyArrayType;
+import com.starrocks.type.AnyElementType;
+import com.starrocks.type.AnyMapType;
+import com.starrocks.type.AnyStructType;
+import com.starrocks.type.ArrayType;
+import com.starrocks.type.BooleanType;
+import com.starrocks.type.MapType;
+import com.starrocks.type.StringType;
+import com.starrocks.type.StructType;
+import com.starrocks.type.Type;
+import com.starrocks.type.TypeFactory;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import org.apache.kudu.shaded.com.google.common.collect.Streams;
 import org.assertj.core.util.Sets;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -63,8 +66,15 @@ import java.util.stream.Stream;
 
 public class AggStateCombinatorTest extends MVTestBase {
     private static final int MAX_AGG_FUNC_NUM_IN_TEST = 20;
+    private static final Set<String> SUPPORTED_AGG_STATE_FUNCTIONS =
+            ImmutableSet.of("ndv", "percentile_disc", "corr", "multi_distinct_sum", "var_samp", "sum", "stddev_pop",
+                    "array_agg_distinct", "approx_count_distinct", "variance_samp", "min", "avg", "any_value", "stddev",
+                    "max_by", "multi_distinct_count", "retention", "mann_whitney_u_test", "min_by", "var_pop",
+                    "percentile_cont", "std", "max", "covar_samp", "stddev_samp", "array_unique_agg", "bitmap_agg",
+                    "ds_hll_count_distinct", "percentile_approx", "variance", "bitmap_union_int", "variance_pop",
+                    "covar_pop");
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() throws Exception {
         // set default config for async mvs
         UtFrameUtils.setDefaultConfigForAsyncMVTest(connectContext);
@@ -90,14 +100,6 @@ public class AggStateCombinatorTest extends MVTestBase {
         FeConstants.setLengthForVarchar = false;
     }
 
-    private static final Set<String> SUPPORTED_AGG_STATE_FUNCTIONS = ImmutableSet.of(
-            "ndv", "percentile_disc", "corr", "multi_distinct_sum", "var_samp", "sum", "stddev_pop",
-            "array_agg_distinct", "approx_count_distinct", "variance_samp", "min", "avg", "any_value",
-            "stddev", "max_by", "multi_distinct_count", "retention", "mann_whitney_u_test", "min_by",
-            "var_pop", "percentile_cont", "std", "max", "covar_samp", "stddev_samp", "array_unique_agg",
-            "bitmap_agg", "ds_hll_count_distinct", "percentile_approx", "variance", "bitmap_union_int",
-            "variance_pop", "covar_pop");
-
     private List<AggregateFunction> getBuiltInAggFunctions() {
         List<AggregateFunction> builtInAggregateFunctions = Lists.newArrayList();
         var functions = GlobalStateMgr.getCurrentState().getBuiltinFunctions();
@@ -105,30 +107,30 @@ public class AggStateCombinatorTest extends MVTestBase {
             if (!(func instanceof AggregateFunction)) {
                 continue;
             }
-            if ((func instanceof AggStateMergeCombinator) || (func instanceof AggStateUnionCombinator)) {
+            if (AggStateUtils.isAggStateCombinator(func)) {
                 continue;
             }
             builtInAggregateFunctions.add((AggregateFunction) func);
         }
-        Assert.assertTrue(builtInAggregateFunctions.size() > 0);
+        Assertions.assertTrue(builtInAggregateFunctions.size() > 0);
         return builtInAggregateFunctions;
     }
 
     private Type mockType(Type type) {
         if (type.isDecimalOfAnyVersion()) {
-            return ScalarType.createDecimalV3NarrowestType(10, 2);
+            return TypeFactory.createDecimalV3NarrowestType(10, 2);
         } else if (type.isChar()) {
-            return ScalarType.createCharType(100);
+            return TypeFactory.createCharType(100);
         } else if (type.isVarchar()) {
-            return ScalarType.createVarcharType(100);
+            return TypeFactory.createVarcharType(100);
         } else if (type instanceof AnyElementType) {
-            return Type.STRING;
+            return StringType.STRING;
         } else if (type instanceof AnyArrayType) {
-            return Type.ARRAY_BIGINT;
+            return ArrayType.ARRAY_BIGINT;
         } else if (type instanceof AnyMapType) {
-            return new MapType(Type.STRING, Type.STRING);
+            return new MapType(StringType.STRING, StringType.STRING);
         } else if (type instanceof AnyStructType) {
-            Type[] argsTypes = {Type.STRING};
+            Type[] argsTypes = { StringType.STRING };
             ArrayList<Type> structTypes = new ArrayList<>();
             for (Type t : argsTypes) {
                 structTypes.add(new ArrayType(t));
@@ -146,12 +148,24 @@ public class AggStateCombinatorTest extends MVTestBase {
         List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
         String aggStateFuncName = FunctionSet.getAggStateName(aggFunc.functionName());
         Type[] argumentTypes = argTypes.toArray(Type[]::new);
-        System.out.println("FunctionName:" + aggFunc.functionName() + ", Arg Types:" + argTypes
-                + ", Intermediate Types:" + aggFunc.getIntermediateTypeOrReturnType()
-                + ", ReturnType:" + aggFunc.getReturnType());
         FunctionParams params = new FunctionParams(false, Lists.newArrayList());
-        Boolean[] argArgumentConstants = IntStream.range(0, aggFunc.getNumArgs())
-                .mapToObj(x -> new Boolean(false)).toArray(Boolean[]::new);
+        Boolean[] argArgumentConstants = IntStream.range(0, aggFunc.getNumArgs()).mapToObj(x -> Boolean.FALSE)
+                .toArray(Boolean[]::new);
+        Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
+                aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
+        return result;
+    }
+
+    private Function getAggStateIfFunc(AggregateFunction aggFunc) {
+        List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
+        argTypes.add(BooleanType.BOOLEAN);
+        String aggStateFuncName = FunctionSet.getAggStateIfName(aggFunc.functionName());
+        Type[] argumentTypes = argTypes.toArray(Type[]::new);
+        FunctionParams params = new FunctionParams(false, null);
+        List<Boolean> argArgumentConstantsList = IntStream.range(0, aggFunc.getNumArgs()).mapToObj(x -> Boolean.FALSE)
+                .collect(Collectors.toList());
+        argArgumentConstantsList.add(false);
+        Boolean[] argArgumentConstants = argArgumentConstantsList.toArray(Boolean[]::new);
         Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
                 aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
         return result;
@@ -212,6 +226,18 @@ public class AggStateCombinatorTest extends MVTestBase {
                 }
                 break;
             }
+            case FunctionSet.PERCENTILE_APPROX_WEIGHTED: {
+                args.add(colTypes.get(argTypes.get(0)));
+                if (argTypes.size() == 3) {
+                    args.add("1");
+                    args.add("0.5");
+                } else {
+                    args.add("1");
+                    args.add("0.5");
+                    args.add("1000");
+                }
+                break;
+            }
             default:
                 for (String argType : argTypes) {
                     args.add(colTypes.get(argType));
@@ -223,7 +249,7 @@ public class AggStateCombinatorTest extends MVTestBase {
     private void buildTableT1(List<String> funcNames,
                               Map<String, String> colTypes,
                               List<List<String>> aggArgTypes) {
-        buildTableT1(funcNames, colTypes, aggArgTypes, Lists.newArrayList(), Lists.newArrayList(), -1);
+        buildTableT1(funcNames, colTypes, aggArgTypes, Lists.newArrayList(), Lists.newArrayList(), -1, false);
     }
 
     private void buildTableT1(List<String> funcNames,
@@ -231,15 +257,14 @@ public class AggStateCombinatorTest extends MVTestBase {
                               List<List<String>> aggArgTypes,
                               List<String> aggStateColumns,
                               List<String> aggStateColNames) {
-        buildTableT1(funcNames, colTypes, aggArgTypes, aggStateColumns, aggStateColNames, -1);
+        buildTableT1(funcNames, colTypes, aggArgTypes, aggStateColumns, aggStateColNames, -1, false);
     }
 
     private void buildTableT1(List<String> funcNames,
                               Map<String, String> colTypes,
                               List<List<String>> aggArgTypes,
                               List<String> aggStateColumns,
-                              List<String> aggStateColNames,
-                              int size) {
+                              List<String> aggStateColNames, int size, boolean isAggIf) {
         String define = "c0 boolean,\n" +
                 "c1 tinyint(4),\n" +
                 "c2 smallint(6),\n" +
@@ -268,8 +293,9 @@ public class AggStateCombinatorTest extends MVTestBase {
                 "c25 json,\n" +
                 "c26 varbinary,\n" +
                 "c27 map<varchar(1048576),varchar(1048576)>,\n" +
-                "c28 struct<col1 array<varchar(1048576)>>,\n" +
-                "c29 array<varchar(100)>";
+                "c28 struct<`col1` array<varchar(1048576)>>,\n" +
+                "c29 array<varchar(100)>,\n" +
+                "c30 variant";
         String[] splits = define.split(",\n");
         for (String colType : splits) {
             String[] parts = colType.split(" ");
@@ -280,7 +306,7 @@ public class AggStateCombinatorTest extends MVTestBase {
         var builtInAggregateFunctions = getBuiltInAggFunctions();
         int i = 0;
         for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, isAggIf)) {
                 continue;
             }
 
@@ -311,7 +337,7 @@ public class AggStateCombinatorTest extends MVTestBase {
                     "PROPERTIES (  \"replication_num\" = \"1\");";
             starRocksAssert.withTable(sql);
         } catch (Exception e) {
-            Assert.fail(e.getMessage());
+            Assertions.fail(e.getMessage());
         }
     }
 
@@ -322,10 +348,24 @@ public class AggStateCombinatorTest extends MVTestBase {
             if (FunctionSet.UNSUPPORTED_AGG_STATE_FUNCTIONS.contains(aggFunc.functionName())) {
                 continue;
             }
+            // merge combinator
             var mergeCombinator = AggStateMergeCombinator.of(aggFunc);
-            Assert.assertTrue(mergeCombinator.isPresent());
+            Assertions.assertTrue(mergeCombinator.isPresent());
+            // union combinator
             var unionCombinator = AggStateUnionCombinator.of(aggFunc);
-            Assert.assertTrue(unionCombinator.isPresent());
+            Assertions.assertTrue(unionCombinator.isPresent());
+            // if combinator
+            var ifCombinator = AggStateIf.of(aggFunc);
+            Assertions.assertTrue(ifCombinator.isPresent());
+            // combine combinator
+            var combineCombinator = AggStateCombineCombinator.of(aggFunc);
+            Assertions.assertTrue(combineCombinator.isPresent());
+            // agg union state combinator
+            var stateUnionCombinator = StateUnionCombinator.of(aggFunc);
+            Assertions.assertTrue(stateUnionCombinator.isPresent());
+            // agg merge state combinator
+            var stateMergeCombinator = StateMergeCombinator.of(aggFunc);
+            Assertions.assertTrue(stateMergeCombinator.isPresent());
         }
     }
 
@@ -335,21 +375,18 @@ public class AggStateCombinatorTest extends MVTestBase {
         Set<String> supportedAggFunctions = Sets.newHashSet();
         Set<String> unSupportedAggFunctions = Sets.newHashSet();
         for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                 unSupportedAggFunctions.add(aggFunc.functionName());
                 continue;
             }
             supportedAggFunctions.add(aggFunc.functionName());
             Function result = getAggStateFunc(aggFunc);
-            Assert.assertNotNull(result);
-            Assert.assertTrue(result instanceof AggStateCombinator);
-            Assert.assertFalse(result.getReturnType().isWildcardDecimal());
-            Assert.assertFalse(result.getReturnType().isPseudoType());
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof StateFunctionCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
         }
-        System.out.println("Supported Agg Functions size:" + supportedAggFunctions.size());
-        System.out.println("Supported Agg Functions:" + supportedAggFunctions);
-        System.out.println("UnSupported Agg Functions:" + unSupportedAggFunctions);
-        Assert.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
     }
 
     @Test
@@ -357,12 +394,12 @@ public class AggStateCombinatorTest extends MVTestBase {
         var builtInAggregateFunctions = getBuiltInAggFunctions();
         Set<String> supportedAggFunctions = Sets.newHashSet();
         for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                 continue;
             }
             supportedAggFunctions.add(aggFunc.functionName());
             Function aggStateFunc = getAggStateFunc(aggFunc);
-            Assert.assertNotNull(aggStateFunc);
+            Assertions.assertNotNull(aggStateFunc);
             String aggStateFuncName = FunctionSet.getAggStateUnionName(aggFunc.functionName());
             FunctionParams params = new FunctionParams(false, Lists.newArrayList());
 
@@ -370,22 +407,18 @@ public class AggStateCombinatorTest extends MVTestBase {
             // set agg_state_desc
             List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
             intermediateType.setAggStateDesc(new AggStateDesc(aggFunc.functionName(),
-                    aggFunc.getReturnType(), argTypes));
+                    aggFunc.getReturnType(), argTypes, AggStateDesc.isAggFuncResultNullable(aggFunc.functionName())));
             Type[] argumentTypes = { intermediateType };
             Boolean[] argArgumentConstants = { false };
 
-            System.out.println("Start to get func:" + aggStateFuncName + ", Arg Types:"
-                    + Stream.of(argumentTypes).collect(Collectors.toList()));
             Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
                     aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
-            Assert.assertNotNull(result);
-            Assert.assertTrue(result instanceof AggStateUnionCombinator);
-            Assert.assertFalse(result.getReturnType().isWildcardDecimal());
-            Assert.assertFalse(result.getReturnType().isPseudoType());
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof AggStateUnionCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
         }
-        System.out.println("Supported Agg Functions size:" + supportedAggFunctions.size());
-        System.out.println("Supported Agg Functions:" + supportedAggFunctions);
-        Assert.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
     }
 
     @Test
@@ -393,19 +426,19 @@ public class AggStateCombinatorTest extends MVTestBase {
         var builtInAggregateFunctions = getBuiltInAggFunctions();
         Set<String> supportedAggFunctions = Sets.newHashSet();
         for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                 continue;
             }
             supportedAggFunctions.add(aggFunc.functionName());
 
             Function aggStateFunc = getAggStateFunc(aggFunc);
-            Assert.assertNotNull(aggStateFunc);
+            Assertions.assertNotNull(aggStateFunc);
 
             Type intermediateType = aggStateFunc.getReturnType();
             // set agg_state_desc
             List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
             intermediateType.setAggStateDesc(new AggStateDesc(aggFunc.functionName(),
-                    aggFunc.getReturnType(), argTypes));
+                    aggFunc.getReturnType(), argTypes, AggStateDesc.isAggFuncResultNullable(aggFunc.functionName())));
             Type[] argumentTypes = { intermediateType };
             Boolean[] argArgumentConstants = { false };
 
@@ -413,14 +446,32 @@ public class AggStateCombinatorTest extends MVTestBase {
             FunctionParams params = new FunctionParams(false, Lists.newArrayList());
             Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
                     aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
-            Assert.assertNotNull(result);
-            Assert.assertTrue(result instanceof AggStateMergeCombinator);
-            Assert.assertFalse(result.getReturnType().isWildcardDecimal());
-            Assert.assertFalse(result.getReturnType().isPseudoType());
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof AggStateMergeCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
         }
-        System.out.println("Supported Agg Functions size:" + supportedAggFunctions.size());
-        System.out.println("Supported Agg Functions:" + supportedAggFunctions);
-        Assert.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+    }
+
+    @Test
+    public void testFunctionAnalyzerIfCombinator() {
+        var builtInAggregateFunctions = getBuiltInAggFunctions();
+        Set<String> supportedAggFunctions = Sets.newHashSet();
+        for (AggregateFunction aggFunc : builtInAggregateFunctions) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, true)) {
+                continue;
+            }
+            supportedAggFunctions.add(aggFunc.functionName());
+
+            Function aggStateFunc = getAggStateIfFunc(aggFunc);
+
+            Assertions.assertNotNull(aggStateFunc);
+            Assertions.assertTrue(aggStateFunc instanceof AggStateIf);
+            Assertions.assertFalse(aggStateFunc.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(aggStateFunc.getReturnType().isPseudoType());
+        }
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
     }
 
     @Test
@@ -434,7 +485,7 @@ public class AggStateCombinatorTest extends MVTestBase {
         {
             int i = 0;
             for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                     continue;
                 }
                 if (i >= MAX_AGG_FUNC_NUM_IN_TEST) {
@@ -459,7 +510,7 @@ public class AggStateCombinatorTest extends MVTestBase {
                     Table table = starRocksAssert.getCtx().getGlobalStateMgr().getLocalMetastore()
                             .getDb(connectContext.getDatabase()).getTable("test_agg_state_table");
                     List<Column> tableColumns = table.getColumns();
-                    Assert.assertEquals(columns.size() + 1, tableColumns.size());
+                    Assertions.assertEquals(columns.size() + 1, tableColumns.size());
                     // test _union/_merge for per agg function
                     for (int i = 0; i < colNames.size(); i++) {
                         // test _union
@@ -485,7 +536,7 @@ public class AggStateCombinatorTest extends MVTestBase {
         {
             int i = 0;
             for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                     continue;
                 }
                 if (i > MAX_AGG_FUNC_NUM_IN_TEST) {
@@ -510,7 +561,7 @@ public class AggStateCombinatorTest extends MVTestBase {
                     Table table = starRocksAssert.getCtx().getGlobalStateMgr().getLocalMetastore()
                             .getDb(connectContext.getDatabase()).getTable("test_agg_state_table");
                     List<Column> tableColumns = table.getColumns();
-                    Assert.assertEquals(columns.size() + 1, tableColumns.size());
+                    Assertions.assertEquals(columns.size() + 1, tableColumns.size());
                     // test _union/_merge for per agg function
                     for (int i = 0; i < colNames.size(); i++) {
                         // test _merge
@@ -525,8 +576,6 @@ public class AggStateCombinatorTest extends MVTestBase {
                 });
     }
 
-
-
     @Test
     public void testCreateAggStateTableWithAllFunctions() {
         var builtInAggregateFunctions = getBuiltInAggFunctions();
@@ -538,7 +587,7 @@ public class AggStateCombinatorTest extends MVTestBase {
         {
             int i = 0;
             for (AggregateFunction aggFunc : builtInAggregateFunctions) {
-                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc)) {
+                if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
                     continue;
                 }
                 if (i > MAX_AGG_FUNC_NUM_IN_TEST) {
@@ -563,7 +612,7 @@ public class AggStateCombinatorTest extends MVTestBase {
                     Table table = starRocksAssert.getCtx().getGlobalStateMgr().getLocalMetastore()
                             .getDb(connectContext.getDatabase()).getTable("test_agg_state_table");
                     List<Column> tableColumns = table.getColumns();
-                    Assert.assertEquals(columns.size() + 1, tableColumns.size());
+                    Assertions.assertEquals(columns.size() + 1, tableColumns.size());
                     // test _union
                     {
                         List<String> unionColumns =
@@ -573,6 +622,9 @@ public class AggStateCombinatorTest extends MVTestBase {
                         String sql1 = "select k1, " +
                                 Joiner.on(",").join(unionColumns) + " from test_agg_state_table group by k1";
                         String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
+                        PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
+                                "     table: test_agg_state_table, rollup: test_agg_state_table\n" +
+                                "     preAggregation: on");
                         PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
                                 "     table: test_agg_state_table, rollup: test_agg_state_table");
                     }
@@ -586,6 +638,9 @@ public class AggStateCombinatorTest extends MVTestBase {
                         String sql1 = "select k1, " +
                                 Joiner.on(",").join(mergeColumns) + " from test_agg_state_table group by k1";
                         String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
+                        PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
+                                "     table: test_agg_state_table, rollup: test_agg_state_table\n" +
+                                "     preAggregation: on");
                         PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
                                 "     table: test_agg_state_table, rollup: test_agg_state_table");
                     }
@@ -724,23 +779,23 @@ public class AggStateCombinatorTest extends MVTestBase {
             PlanTestBase.assertContains(plan, "  1:Project\n" +
                     "  |  output columns:\n" +
                     "  |  1 <-> [1: k1, DATE, true]\n" +
-                    "  |  32 <-> multi_distinct_sum_state[([8: c6, DOUBLE, true]); args: DOUBLE; " +
+                    "  |  33 <-> multi_distinct_sum_state[([8: c6, DOUBLE, true]); args: DOUBLE; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  33 <-> multi_distinct_sum_state[([9: c7, FLOAT, true]); args: FLOAT; " +
+                    "  |  34 <-> multi_distinct_sum_state[([9: c7, FLOAT, true]); args: FLOAT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  34 <-> multi_distinct_sum_state[([2: c0, BOOLEAN, true]); args: BOOLEAN; " +
+                    "  |  35 <-> multi_distinct_sum_state[([2: c0, BOOLEAN, true]); args: BOOLEAN; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  35 <-> multi_distinct_sum_state[([3: c1, TINYINT, true]); args: TINYINT; " +
+                    "  |  36 <-> multi_distinct_sum_state[([3: c1, TINYINT, true]); args: TINYINT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  36 <-> multi_distinct_sum_state[([4: c2, SMALLINT, true]); args: SMALLINT; " +
+                    "  |  37 <-> multi_distinct_sum_state[([4: c2, SMALLINT, true]); args: SMALLINT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  37 <-> multi_distinct_sum_state[([5: c3, INT, true]); args: INT; " +
+                    "  |  38 <-> multi_distinct_sum_state[([5: c3, INT, true]); args: INT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  38 <-> multi_distinct_sum_state[([6: c4, BIGINT, true]); args: BIGINT; " +
+                    "  |  39 <-> multi_distinct_sum_state[([6: c4, BIGINT, true]); args: BIGINT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  39 <-> multi_distinct_sum_state[([7: c5, LARGEINT, true]); args: LARGEINT; " +
+                    "  |  40 <-> multi_distinct_sum_state[([7: c5, LARGEINT, true]); args: LARGEINT; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
-                    "  |  40 <-> multi_distinct_sum_state[([10: c8, DECIMAL64(10,2), true]); args: DECIMAL64; " +
+                    "  |  41 <-> multi_distinct_sum_state[([10: c8, DECIMAL64(10,2), true]); args: DECIMAL64; " +
                     "result: VARBINARY; args nullable: true; result nullable: true]\n" +
                     "  |  cardinality: 1");
             PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
@@ -752,28 +807,30 @@ public class AggStateCombinatorTest extends MVTestBase {
             String sql1 = "select k1, " + Joiner.on(", ").join(unionColumns)
                     + " from test_agg_state_table group by k1;";
             String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
-            PlanTestBase.assertContains(plan, "|  aggregate: multi_distinct_sum_union[([6: v4, VARBINARY, true]); " +
-                    "args: VARBINARY; result: VARBINARY; args nullable: true; " +
-                    "result nullable: true], multi_distinct_sum_union[([7: v5, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([8: v6, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([9: v7, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([10: v8, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([11: v9, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([12: v10, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([2: v0, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([3: v1, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([4: v2, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_union[([5: v3, VARBINARY, true]); args: VARBINARY; " +
-                    "result: VARBINARY; args nullable: true; result nullable: true]");
+            PlanTestBase.assertContains(plan, "aggregate: multi_distinct_sum_union[([5: v3, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([6: v4, VARBINARY, true]); args: VARBINARY; result: VARBINARY; " +
+                    "args nullable: true; result nullable: true], " +
+                    "multi_distinct_sum_union[([7: v5, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([8: v6, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true], " +
+                    "multi_distinct_sum_union[([9: v7, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([10: v8, VARBINARY, true]); " +
+                    "args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([11: v9, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([12: v10, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([13: v11, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([2: v0, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([3: v1, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_union[([4: v2, VARBINARY, true]);" +
+                    " args: VARBINARY; result: VARBINARY; args nullable: true; result nullable: true");
             PlanTestBase.assertContains(plan, " 0:OlapScanNode\n" +
                     "     table: test_agg_state_table, rollup: test_agg_state_table");
         }
@@ -783,28 +840,29 @@ public class AggStateCombinatorTest extends MVTestBase {
             String sql1 = "select k1, " + Joiner.on(", ").join(mergeColumns)
                     + " from test_agg_state_table group by k1;";
             String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
-            PlanTestBase.assertContains(plan, "|  aggregate: multi_distinct_sum_merge[([6: v4, VARBINARY, true]); " +
-                    "args: VARBINARY; result: BIGINT; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([7: v5, VARBINARY, true]); args: VARBINARY; " +
-                    "result: BIGINT; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([8: v6, VARBINARY, true]); args: VARBINARY; " +
-                    "result: BIGINT; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([9: v7, VARBINARY, true]); args: VARBINARY; " +
-                    "result: LARGEINT; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([10: v8, VARBINARY, true]); args: VARBINARY; " +
-                    "result: DECIMAL128(38,2); args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([11: v9, VARBINARY, true]); args: VARBINARY; " +
-                    "result: DECIMAL128(38,2); args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([12: v10, VARBINARY, true]); args: VARBINARY; " +
-                    "result: DECIMAL128(38,2); args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([2: v0, VARBINARY, true]); args: VARBINARY; " +
-                    "result: DOUBLE; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([3: v1, VARBINARY, true]); args: VARBINARY; " +
-                    "result: DOUBLE; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([4: v2, VARBINARY, true]); args: VARBINARY; " +
-                    "result: BIGINT; args nullable: true; result nullable: true], " +
-                    "multi_distinct_sum_merge[([5: v3, VARBINARY, true]); args: VARBINARY; " +
-                    "result: BIGINT; args nullable: true; result nullable: true]");
+            PlanTestBase.assertContains(plan, "|  aggregate: multi_distinct_sum_merge[([5: v3, VARBINARY, true]);" +
+                    " args: VARBINARY; result: BIGINT; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([6: v4, VARBINARY, true]); args: VARBINARY; result: BIGINT;" +
+                    " args nullable: true; result nullable: true], multi_distinct_sum_merge[([7: v5, VARBINARY, true]);" +
+                    " args: VARBINARY; result: BIGINT; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([8: v6, VARBINARY, true]);" +
+                    " args: VARBINARY; result: BIGINT; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([9: v7, VARBINARY, true]);" +
+                    " args: VARBINARY; result: LARGEINT; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([10: v8, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DECIMAL128(38,2); args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([11: v9, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DECIMAL128(38,2); args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([12: v10, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DECIMAL128(38,2); args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([13: v11, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DECIMAL128(38,2); args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([2: v0, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DOUBLE; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([3: v1, VARBINARY, true]);" +
+                    " args: VARBINARY; result: DOUBLE; args nullable: true; result nullable: true]," +
+                    " multi_distinct_sum_merge[([4: v2, VARBINARY, true]);" +
+                    " args: VARBINARY; result: BIGINT; args nullable: true; result nullable: true]");
             PlanTestBase.assertContains(plan, " 0:OlapScanNode\n" +
                     "     table: test_agg_state_table, rollup: test_agg_state_table");
         }
@@ -860,8 +918,8 @@ public class AggStateCombinatorTest extends MVTestBase {
         {
             String sql1 = "select k1, " + Joiner.on(", ").join(stateColumns) + " from t1;";
             String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
-            PlanTestBase.assertContains(plan, "32 <-> array_agg_state[([26: c24, VARCHAR, true]); args: VARCHAR; " +
-                    "result: struct<col1 array<varchar(100)>>; args nullable: true; result nullable: true]");
+            PlanTestBase.assertContains(plan, "33 <-> array_agg_state[([26: c24, VARCHAR, true]); args: VARCHAR; " +
+                    "result: struct<`col1` array<varchar(100)>>; args nullable: true; result nullable: true]");
             PlanTestBase.assertContains(plan, "  0:OlapScanNode\n" +
                     "     table: t1, rollup: t1");
         }
@@ -872,8 +930,8 @@ public class AggStateCombinatorTest extends MVTestBase {
                     + " from test_agg_state_table group by k1;";
             String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
             PlanTestBase.assertContains(plan, "|  aggregate: array_agg_union[([2: v0, " +
-                    "struct<col1 array<varchar(100)>>, true]); args: INVALID_TYPE; result: " +
-                    "struct<col1 array<varchar(100)>>; args nullable: true; result nullable: true]");
+                    "struct<`col1` array<varchar(1048576)>>, true]); args: INVALID_TYPE; " +
+                    "result: struct<`col1` array<varchar(100)>>; args nullable: true; result nullable: true]");
             PlanTestBase.assertContains(plan, " 0:OlapScanNode\n" +
                     "     table: test_agg_state_table, rollup: test_agg_state_table");
         }
@@ -883,8 +941,8 @@ public class AggStateCombinatorTest extends MVTestBase {
             String sql1 = "select k1, " + Joiner.on(", ").join(mergeColumns)
                     + " from test_agg_state_table group by k1;";
             String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
-            PlanTestBase.assertContains(plan, "|  aggregate: " +
-                    "array_agg_merge[([2: v0, struct<col1 array<varchar(100)>>, true]); args: INVALID_TYPE; " +
+            PlanTestBase.assertContains(plan, "|  aggregate: array_agg_merge[([2: v0, " +
+                    "struct<`col1` array<varchar(1048576)>>, true]); args: INVALID_TYPE; " +
                     "result: ARRAY<VARCHAR(100)>; args nullable: true; result nullable: true]");
             PlanTestBase.assertContains(plan, " 0:OlapScanNode\n" +
                     "     table: test_agg_state_table, rollup: test_agg_state_table");
@@ -900,7 +958,7 @@ public class AggStateCombinatorTest extends MVTestBase {
         List<List<String>> aggArgTypes = Lists.newArrayList();
         List<String> columns = Lists.newArrayList();
         List<String> colNames = Lists.newArrayList();
-        buildTableT1(funcNames, colTypes, aggArgTypes, columns, colNames, MAX_AGG_FUNC_NUM_IN_TEST);
+        buildTableT1(funcNames, colTypes, aggArgTypes, columns, colNames, MAX_AGG_FUNC_NUM_IN_TEST, false);
 
         String sql = " CREATE TABLE test_agg_state_table ( \n" +
                 "k1  date, \n" +
@@ -912,7 +970,7 @@ public class AggStateCombinatorTest extends MVTestBase {
                     Table table = starRocksAssert.getCtx().getGlobalStateMgr().getLocalMetastore()
                             .getDb(connectContext.getDatabase()).getTable("test_agg_state_table");
                     List<Column> tableColumns = table.getColumns();
-                    Assert.assertEquals(columns.size() + 1, tableColumns.size());
+                    Assertions.assertEquals(columns.size() + 1, tableColumns.size());
 
                     // test _state
                     {
@@ -956,6 +1014,35 @@ public class AggStateCombinatorTest extends MVTestBase {
                                 "     table: test_agg_state_table, rollup: test_agg_state_table");
                     }
                 });
+        starRocksAssert.dropTable("t1");
+    }
+
+    @Test
+    public void testGenerateSqlTesterTestsTotalForAggIf() throws Exception {
+        List<String> funcNames = Lists.newArrayList();
+        Map<String, String> colTypes = Maps.newLinkedHashMap();
+        List<List<String>> aggArgTypes = Lists.newArrayList();
+        List<String> columns = Lists.newArrayList();
+        List<String> colNames = Lists.newArrayList();
+        buildTableT1(funcNames, colTypes, aggArgTypes, columns, colNames, MAX_AGG_FUNC_NUM_IN_TEST, true);
+
+        Set<String> ifFunctions = Sets.newHashSet();
+        for (int i = 0; i < funcNames.size(); i++) {
+            String fnName = funcNames.get(i);
+            List<String> argTypes = aggArgTypes.get(i);
+            String arg = buildAggFuncArgs(fnName, argTypes, colTypes);
+            String col;
+            if (arg.length() == 0) {
+                col = String.format("%s(c0)", FunctionSet.getAggStateIfName(fnName));
+            } else {
+                col = String.format("%s(%s, c0)", FunctionSet.getAggStateIfName(fnName), arg);
+            }
+            ifFunctions.add(col);
+        }
+        String sql1 = "select " + Joiner.on(", ").join(ifFunctions) + " from t1;";
+        String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql1);
+        PlanTestBase.assertContains(plan, "if");
+
         starRocksAssert.dropTable("t1");
     }
 
@@ -1053,7 +1140,7 @@ public class AggStateCombinatorTest extends MVTestBase {
     }
 
     @Test
-    @Ignore
+    @Disabled
     public void testCreateSyncMVWithArrayAggDistinct() throws Exception {
         testCreateSyncMVWithSpecificAggFunc(FunctionSet.ARRAY_AGG_DISTINCT);
     }
@@ -1151,12 +1238,109 @@ public class AggStateCombinatorTest extends MVTestBase {
         // count agg function's output should be always not nullable.
         for (Column col : mvCols) {
             if (col.getName().startsWith("agg")) {
-                Assert.assertTrue(col.getType().isBigint());
-                Assert.assertFalse(col.isAllowNull());
+                Assertions.assertTrue(col.getType().isBigint());
+                Assertions.assertFalse(col.isAllowNull());
             }
         }
         starRocksAssert.dropTable("t1");
         starRocksAssert.dropMaterializedView("test_mv1");
     }
-}
 
+    private Function getAggStateCombineFunc(AggregateFunction aggFunc) {
+        List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
+        String aggStateFuncName = AggStateUtils.aggStateCombineFunctionName(aggFunc.functionName());
+        Type[] argumentTypes = argTypes.toArray(Type[]::new);
+        FunctionParams params = new FunctionParams(false, Lists.newArrayList());
+        Boolean[] argArgumentConstants = IntStream.range(0, aggFunc.getNumArgs()).mapToObj(x -> Boolean.FALSE)
+                .toArray(Boolean[]::new);
+        Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
+                aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
+        return result;
+    }
+
+    @Test
+    public void testFunctionAnalyzeCombineCombinator() {
+        var builtInAggregateFunctions = getBuiltInAggFunctions();
+        Set<String> supportedAggFunctions = Sets.newHashSet();
+        Set<String> unSupportedAggFunctions = Sets.newHashSet();
+        for (AggregateFunction aggFunc : builtInAggregateFunctions) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
+                unSupportedAggFunctions.add(aggFunc.functionName());
+                continue;
+            }
+            supportedAggFunctions.add(aggFunc.functionName());
+            Function result = getAggStateCombineFunc(aggFunc);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof AggStateCombineCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal(),
+                    "Wildcard decimal is not supported for agg state combine function: " + result.getFunctionName());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
+        }
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+    }
+
+    @Test
+    public void testFunctionAnalyzeStateUnionCombinator() {
+        var builtInAggregateFunctions = getBuiltInAggFunctions();
+        Set<String> supportedAggFunctions = Sets.newHashSet();
+        for (AggregateFunction aggFunc : builtInAggregateFunctions) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
+                continue;
+            }
+            supportedAggFunctions.add(aggFunc.functionName());
+            Function aggStateFunc = getAggStateFunc(aggFunc);
+            Assertions.assertNotNull(aggStateFunc);
+            String aggStateFuncName = FunctionSet.getStateUnionName(aggFunc.functionName());
+            FunctionParams params = new FunctionParams(false, Lists.newArrayList());
+
+            Type intermediateType = aggStateFunc.getReturnType();
+            // set agg_state_desc
+            List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
+            intermediateType.setAggStateDesc(new AggStateDesc(aggFunc.functionName(),
+                    aggFunc.getReturnType(), argTypes, AggStateDesc.isAggFuncResultNullable(aggFunc.functionName())));
+            Type[] argumentTypes = { intermediateType, intermediateType };
+            Boolean[] argArgumentConstants = { false, false };
+
+            Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
+                    aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof StateUnionCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
+        }
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+    }
+
+
+    @Test
+    public void testFunctionAnalyzeStateMergeCombinator() {
+        var builtInAggregateFunctions = getBuiltInAggFunctions();
+        Set<String> supportedAggFunctions = Sets.newHashSet();
+        for (AggregateFunction aggFunc : builtInAggregateFunctions) {
+            if (!AggStateUtils.isSupportedAggStateFunction(aggFunc, false)) {
+                continue;
+            }
+            supportedAggFunctions.add(aggFunc.functionName());
+            Function aggStateFunc = getAggStateFunc(aggFunc);
+            Assertions.assertNotNull(aggStateFunc);
+            String aggStateFuncName = FunctionSet.getStateMergeName(aggFunc.functionName());
+            FunctionParams params = new FunctionParams(false, Lists.newArrayList());
+
+            Type intermediateType = aggStateFunc.getReturnType();
+            // set agg_state_desc
+            List<Type> argTypes = Stream.of(aggFunc.getArgs()).map(this::mockType).collect(Collectors.toList());
+            intermediateType.setAggStateDesc(new AggStateDesc(aggFunc.functionName(),
+                    aggFunc.getReturnType(), argTypes, AggStateDesc.isAggFuncResultNullable(aggFunc.functionName())));
+            Type[] argumentTypes = { intermediateType };
+            Boolean[] argArgumentConstants = { false };
+
+            Function result = FunctionAnalyzer.getAnalyzedAggregateFunction(ConnectContext.get(),
+                    aggStateFuncName, params, argumentTypes, argArgumentConstants, NodePosition.ZERO);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result instanceof StateMergeCombinator);
+            Assertions.assertFalse(result.getReturnType().isWildcardDecimal());
+            Assertions.assertFalse(result.getReturnType().isPseudoType());
+        }
+        Assertions.assertTrue(supportedAggFunctions.size() >= SUPPORTED_AGG_STATE_FUNCTIONS.size());
+    }
+}

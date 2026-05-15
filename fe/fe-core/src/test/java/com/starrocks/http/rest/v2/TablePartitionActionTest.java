@@ -22,14 +22,12 @@ import com.staros.proto.FileStoreInfo;
 import com.staros.proto.FileStoreType;
 import com.staros.proto.S3FileStoreInfo;
 import com.staros.proto.ShardInfo;
-import com.starrocks.analysis.StringLiteral;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.catalog.DataProperty;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DistributionInfo;
 import com.starrocks.catalog.HashDistributionInfo;
-import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.MaterializedIndex;
@@ -37,15 +35,12 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.PartitionType;
-import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.SinglePartitionInfo;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableIndexes;
 import com.starrocks.catalog.TabletMeta;
-import com.starrocks.catalog.Type;
 import com.starrocks.http.StarRocksHttpTestCase;
 import com.starrocks.http.rest.v2.RestBaseResultV2.PagedResult;
 import com.starrocks.http.rest.v2.vo.PartitionInfoView.PartitionView;
@@ -56,16 +51,24 @@ import com.starrocks.lake.LakeTablet;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.ColumnDef;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.sql.ast.PartitionValue;
+import com.starrocks.sql.ast.expression.StringLiteral;
 import com.starrocks.thrift.TStorageMedium;
+import com.starrocks.type.DateType;
+import com.starrocks.type.IntegerType;
+import com.starrocks.type.PrimitiveType;
+import com.starrocks.type.TypeFactory;
+import com.starrocks.type.VarcharType;
+import com.starrocks.warehouse.cngroup.ComputeResource;
 import mockit.Expectations;
 import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.http.client.utils.URIBuilder;
 import org.assertj.core.util.Lists;
-import org.junit.FixMethodOrder;
-import org.junit.Test;
-import org.junit.runners.MethodSorters;
+import org.junit.jupiter.api.MethodOrderer.MethodName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -78,13 +81,13 @@ import java.util.Objects;
 import java.util.function.Consumer;
 
 import static com.starrocks.catalog.InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-@FixMethodOrder(MethodSorters.JVM)
+@TestMethodOrder(MethodName.class)
 public class TablePartitionActionTest extends StarRocksHttpTestCase {
 
     private static final String TABLE_PARTITION_URL_PATTERN =
@@ -120,11 +123,11 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
     private static OlapTable newUnpartitionedOlapTable(Long tableId, String tableName) {
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().clear();
 
-        Column c0 = new Column("c0", Type.BIGINT, true, null, null, false, null, "cc0", 1);
-        Column c1 = new Column("c1", Type.DATETIME, true, null, null, false, null, "cc1", 2);
-        Column c2 = new Column("c2", Type.VARCHAR, true, null, null, false, null, "cc2", 3);
+        Column c0 = new Column("c0", IntegerType.BIGINT, true, null, null, false, null, "cc0", 1);
+        Column c1 = new Column("c1", DateType.DATETIME, true, null, null, false, null, "cc1", 2);
+        Column c2 = new Column("c2", VarcharType.VARCHAR, true, null, null, false, null, "cc2", 3);
         Column c3 = new Column("c3",
-                ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
+                TypeFactory.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
                 false, null, null, true, new ColumnDef.DefaultValueDef(true, new StringLiteral("0")), "cc3", 4
         );
         List<Column> columns = Lists.newArrayList(c0, c1, c2, c3);
@@ -162,11 +165,11 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
     private static LakeTable newRangePartitionLakeTable(Long tableId, String tableName, int partitionSize) throws Exception {
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().clear();
 
-        Column c0 = new Column("c0", Type.BIGINT, true, null, null, false, null, "cc0", 1);
-        Column c1 = new Column("c1", Type.DATETIME, true, null, null, false, null, "cc1", 2);
-        Column c2 = new Column("c2", Type.VARCHAR, true, null, null, false, null, "cc2", 3);
+        Column c0 = new Column("c0", IntegerType.BIGINT, true, null, null, false, null, "cc0", 1);
+        Column c1 = new Column("c1", DateType.DATETIME, true, null, null, false, null, "cc1", 2);
+        Column c2 = new Column("c2", VarcharType.VARCHAR, true, null, null, false, null, "cc2", 3);
         Column c3 = new Column("c3",
-                ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
+                TypeFactory.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
                 false, null, null, true, new ColumnDef.DefaultValueDef(true, new StringLiteral("0")), "cc3", 4
         );
         List<Column> columns = Lists.newArrayList(c0, c1, c2, c3);
@@ -187,7 +190,7 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
         // index
         MaterializedIndex baseIndex = new MaterializedIndex(testIndexId, MaterializedIndex.IndexState.NORMAL);
         TabletMeta tabletMeta = new TabletMeta(
-                testDbId, RANGE_PARTITION_TABLE_ID, BASE_PARTITION_ID, testIndexId, testSchemaHash, TStorageMedium.HDD, true);
+                testDbId, RANGE_PARTITION_TABLE_ID, BASE_PARTITION_ID, testIndexId, TStorageMedium.HDD, true);
         baseIndex.addTablet(tablet, tabletMeta);
 
         FilePathInfo.Builder builder = FilePathInfo.newBuilder();
@@ -221,7 +224,14 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
                 result = Sets.newHashSet(testBackendId1);
 
                 GlobalStateMgr.getCurrentState().getWarehouseMgr()
-                        .getComputeNodeId(anyLong, (LakeTablet) any);
+                        .getComputeNodeId((ComputeResource) any, anyLong);
+
+                minTimes = 0;
+                result = testBackendId1;
+
+                GlobalStateMgr.getCurrentState().getWarehouseMgr()
+                        .getAliveComputeNodeId((ComputeResource) any, anyLong);
+
                 minTimes = 0;
                 result = testBackendId1;
             }
@@ -319,11 +329,11 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
         GlobalStateMgr.getCurrentState().getTabletInvertedIndex().clear();
 
         Map<ColumnId, Column> idToColumn = new HashMap<>();
-        Column c0 = new Column("c0", Type.BIGINT, true, null, null, false, null, "cc0", 1);
-        Column c1 = new Column("c1", Type.DATETIME, true, null, null, false, null, "cc1", 2);
-        Column c2 = new Column("c2", Type.VARCHAR, true, null, null, false, null, "cc2", 3);
+        Column c0 = new Column("c0", IntegerType.BIGINT, true, null, null, false, null, "cc0", 1);
+        Column c1 = new Column("c1", DateType.DATETIME, true, null, null, false, null, "cc1", 2);
+        Column c2 = new Column("c2", VarcharType.VARCHAR, true, null, null, false, null, "cc2", 3);
         Column c3 = new Column("c3",
-                ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
+                TypeFactory.createDecimalV3Type(PrimitiveType.DECIMAL64, 18, 8),
                 false, null, null, true, new ColumnDef.DefaultValueDef(true, new StringLiteral("0")), "cc3", 4
         );
         List<Column> columns = Lists.newArrayList(c0, c1, c2, c3);
@@ -349,7 +359,7 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
         // index
         MaterializedIndex baseIndex = new MaterializedIndex(testIndexId, MaterializedIndex.IndexState.NORMAL);
         TabletMeta tabletMeta = new TabletMeta(
-                testDbId, LIST_PARTITION_TABLE_ID, BASE_PARTITION_ID, testIndexId, testSchemaHash, TStorageMedium.HDD);
+                testDbId, LIST_PARTITION_TABLE_ID, BASE_PARTITION_ID, testIndexId, TStorageMedium.HDD);
         baseIndex.addTablet(tablet, tabletMeta);
 
         tablet.addReplica(new Replica(
@@ -377,7 +387,6 @@ public class TablePartitionActionTest extends StarRocksHttpTestCase {
                     partitionId,
                     new DataProperty(TStorageMedium.SSD),
                     (short) 1,
-                    false,
                     null,
                     new ArrayList<>(),
                     Collections.singletonList(Lists.newArrayList("list_partition_" + i)));

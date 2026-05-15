@@ -21,19 +21,21 @@
 #include <string>
 #include <thread>
 
+#include "common/config_rpc_client_fwd.h"
 #include "fs/fs.h"
 #include "gen_cpp/FileBrokerService_types.h"
 #include "gen_cpp/TFileBrokerService.h"
 #include "runtime/broker_mgr.h"
 #include "runtime/client_cache.h"
 #include "runtime/exec_env.h"
-#include "util/thrift_rpc_helper.h"
+#include "runtime/thrift_rpc_helper.h"
 
 using namespace fmt::literals;
 
 namespace starrocks {
 
 using BrokerServiceClient = TFileBrokerServiceClient;
+const int DEFAULT_TIMEOUT_MS = config::broker_write_timeout_seconds * 1000;
 
 #ifdef BE_TEST
 namespace {

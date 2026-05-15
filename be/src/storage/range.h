@@ -20,9 +20,10 @@
 #include <string>
 #include <vector>
 
-#include "column/datum.h"
 #include "column/vectorized_fwd.h"
+#include "common/memory/column_allocator.h"
 #include "storage/rowset/common.h"
+#include "types/datum.h"
 #include "util/logging.h"
 
 namespace starrocks {
@@ -46,6 +47,9 @@ public:
 
     // the id of end row, exclusive.
     T end() const { return _end; }
+
+    // expand the end with delta
+    void expand(T delta) { _end += delta; }
 
     bool empty() const { return span_size() == 0; }
 
@@ -160,6 +164,8 @@ public:
     size_t covered_ranges(size_t size) const;
 
     void skip(T size);
+
+    size_t remaining_rows() const;
 
 private:
     const SparseRange<T>* _range{nullptr};
@@ -453,6 +459,20 @@ inline SparseRangeIterator<T> SparseRangeIterator<T>::intersection(const SparseR
     }
 
     SparseRangeIterator<T> res(result);
+    return res;
+}
+
+template <typename T>
+inline size_t SparseRangeIterator<T>::remaining_rows() const {
+    if (!has_more()) {
+        return 0;
+    }
+    size_t res = 0;
+    auto range = Range<T>(_next_rowid, _range->_ranges[0].end());
+    res += range.span_size();
+    for (size_t i = _index + 1; i < _range->_ranges.size(); i++) {
+        res += _range->_ranges[i].span_size();
+    }
     return res;
 }
 

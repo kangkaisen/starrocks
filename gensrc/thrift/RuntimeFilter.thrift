@@ -36,11 +36,12 @@ namespace cpp starrocks
 namespace java com.starrocks.thrift
 
 include "Exprs.thrift"
+include "Partitions.thrift"
 include "Types.thrift"
 
 enum TRuntimeFilterBuildJoinMode {
   NONE,
-  BORADCAST,
+  BROADCAST,
   PARTITIONED,
   LOCAL_HASH_BUCKET,
   COLOCATE,
@@ -50,7 +51,8 @@ enum TRuntimeFilterBuildJoinMode {
 
 enum TRuntimeFilterBuildType {
   JOIN_FILTER,
-  TOPN_FILTER
+  TOPN_FILTER,
+  AGG_FILTER,
 }
 
 struct TRuntimeFilterDestination {
@@ -92,6 +94,7 @@ struct TRuntimeFilterLayout {
   7: optional list<i32> bucketseq_to_instance;
   8: optional list<i32> bucketseq_to_driverseq;
   9: optional list<i32> bucketseq_to_partition;
+  10: optional list<Partitions.TBucketProperty> bucket_properties;
 }
 
 struct TRuntimeFilterDescription {
@@ -145,6 +148,11 @@ struct TRuntimeFilterDescription {
   19: optional bool is_broad_cast_join_in_skew;
   // only set when is_broad_cast_join_in_skew is true
   20: optional i32 skew_shuffle_filter_id;
+
+  // fields for TOPN RuntimeFilter
+  21: optional bool is_asc;
+  22: optional bool is_nulls_first;
+  23: optional i64 limit;
 }
 
 struct TRuntimeFilterProberParams {

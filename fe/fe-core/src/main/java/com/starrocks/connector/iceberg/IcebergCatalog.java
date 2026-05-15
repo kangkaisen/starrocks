@@ -14,18 +14,17 @@
 
 package com.starrocks.connector.iceberg;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.common.MetaNotFoundException;
-import com.starrocks.common.Pair;
-import com.starrocks.connector.ConnectorMetadatRequestContext;
+import com.starrocks.connector.ConnectorMetadataRequestContext;
 import com.starrocks.connector.ConnectorViewDefinition;
 import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.memory.MemoryTrackable;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.AlterViewStmt;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.MetadataTableType;
@@ -33,6 +32,8 @@ import org.apache.iceberg.MetadataTableUtils;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionsTable;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.StarRocksIcebergTableScan;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
@@ -40,6 +41,7 @@ import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.util.StructProjection;
 import org.apache.iceberg.view.SQLViewRepresentation;
@@ -55,7 +57,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.starrocks.catalog.IcebergView.STARROCKS_DIALECT;
@@ -67,6 +71,35 @@ import static org.apache.iceberg.StarRocksIcebergTableScan.newTableScanContext;
 public interface IcebergCatalog extends MemoryTrackable {
     Logger DEFAULT_LOGGER = LogManager.getLogger(IcebergCatalog.class);
     String EMPTY_PARTITION_NAME = "";
+    // Iceberg PARTITIONS metadata table column offsets.
+    // Partitioned table schema:
+    //   partition(0), spec_id(1), record_count(2), file_count(3), total_data_file_size_in_bytes(4),
+    //   position_delete_record_count(5), position_delete_file_count(6),
+    //   equality_delete_record_count(7), equality_delete_file_count(8),
+    //   last_updated_at(9), last_updated_snapshot_id(10)
+    int UNPARTITIONED_LAST_UPDATED_AT_COLUMN_INDEX = 7;
+    int PARTITION_DATA_COLUMN_INDEX = 0;
+    int SPEC_ID_COLUMN_INDEX = 1;
+    int PARTITION_LAST_UPDATED_AT_COLUMN_INDEX = 9;
+    int PARTITION_RECORD_COUNT_COLUMN_INDEX = 2;
+    int PARTITION_FILE_COUNT_COLUMN_INDEX = 3;
+    int PARTITION_TOTAL_DATA_FILE_SIZE_COLUMN_INDEX = 4;
+    int PARTITION_POSITION_DELETE_RECORD_COUNT_COLUMN_INDEX = 5;
+    int PARTITION_POSITION_DELETE_FILE_COUNT_COLUMN_INDEX = 6;
+    int PARTITION_EQUALITY_DELETE_RECORD_COUNT_COLUMN_INDEX = 7;
+    int PARTITION_EQUALITY_DELETE_FILE_COUNT_COLUMN_INDEX = 8;
+    // Unpartitioned table schema:
+    //   record_count(0), file_count(1), total_data_file_size_in_bytes(2),
+    //   position_delete_record_count(3), position_delete_file_count(4),
+    //   equality_delete_record_count(5), equality_delete_file_count(6),
+    //   last_updated_at(7), last_updated_snapshot_id(8)
+    int UNPARTITIONED_RECORD_COUNT_COLUMN_INDEX = 0;
+    int UNPARTITIONED_FILE_COUNT_COLUMN_INDEX = 1;
+    int UNPARTITIONED_TOTAL_DATA_FILE_SIZE_COLUMN_INDEX = 2;
+    int UNPARTITIONED_POSITION_DELETE_RECORD_COUNT_COLUMN_INDEX = 3;
+    int UNPARTITIONED_POSITION_DELETE_FILE_COUNT_COLUMN_INDEX = 4;
+    int UNPARTITIONED_EQUALITY_DELETE_RECORD_COUNT_COLUMN_INDEX = 5;
+    int UNPARTITIONED_EQUALITY_DELETE_FILE_COUNT_COLUMN_INDEX = 6;
 
     default Logger getLogger() {
         return DEFAULT_LOGGER;
@@ -74,61 +107,72 @@ public interface IcebergCatalog extends MemoryTrackable {
 
     IcebergCatalogType getIcebergCatalogType();
 
-    List<String> listAllDatabases();
+    List<String> listAllDatabases(ConnectContext context);
 
-    default void createDB(String dbName, Map<String, String> properties) {
+    default void createDB(ConnectContext context, String dbName, Map<String, String> properties) {
     }
 
-    default void dropDB(String dbName) throws MetaNotFoundException {
+    default void dropDB(ConnectContext context, String dbName) throws MetaNotFoundException {
     }
 
-    Database getDB(String dbName);
+    Database getDB(ConnectContext context, String dbName);
 
-    List<String> listTables(String dbName);
+    List<String> listTables(ConnectContext context, String dbName);
 
-    default boolean createTable(String dbName,
+    default boolean createTable(ConnectContext context,
+                                String dbName,
                                 String tableName,
                                 Schema schema,
                                 PartitionSpec partitionSpec,
                                 String location,
+                                SortOrder sortOrder,
                                 Map<String, String> properties) {
         return false;
     }
 
-    default boolean dropTable(String dbName, String tableName, boolean purge) {
+    default boolean dropTable(ConnectContext context, String dbName, String tableName, boolean purge) {
         throw new StarRocksConnectorException("This catalog doesn't support dropping tables");
     }
 
-    void renameTable(String dbName, String tblName, String newTblName) throws StarRocksConnectorException;
+    void renameTable(ConnectContext context, String dbName, String tblName, String newTblName) throws StarRocksConnectorException;
 
-    Table getTable(String dbName, String tableName) throws StarRocksConnectorException;
+    Table getTable(ConnectContext context, String dbName, String tableName) throws StarRocksConnectorException;
 
-    default boolean tableExists(String dbName, String tableName) throws StarRocksConnectorException {
+    default boolean tableExists(ConnectContext context, String dbName, String tableName) throws StarRocksConnectorException {
         try {
-            getTable(dbName, tableName);
+            getTable(context, dbName, tableName);
             return true;
         } catch (NoSuchTableException e) {
             return false;
         }
     }
 
-    default boolean createView(String catalogName, ConnectorViewDefinition connectorViewDefinition, boolean replace) {
-        return createViewDefault(connectorViewDefinition.getDatabaseName(), connectorViewDefinition, replace);
+    default boolean createView(ConnectContext context, String catalogName, ConnectorViewDefinition connectorViewDefinition,
+                               boolean replace) {
+        return createViewDefault(context, connectorViewDefinition.getDatabaseName(), connectorViewDefinition, replace);
     }
 
-    default boolean createViewDefault(String catalogName, ConnectorViewDefinition definition, boolean replace) {
+    default boolean createViewDefault(ConnectContext context, String catalogName, ConnectorViewDefinition definition,
+                                      boolean replace) {
         Schema schema = IcebergApiConverter.toIcebergApiSchema(definition.getColumns());
         Namespace ns = convertDbNameToNamespace(definition.getDatabaseName());
-        ViewBuilder viewBuilder = getViewBuilder(TableIdentifier.of(ns, definition.getViewName()));
+        ViewBuilder viewBuilder = getViewBuilder(context, TableIdentifier.of(ns, definition.getViewName()));
         viewBuilder = viewBuilder.withSchema(schema)
                 .withQuery(STARROCKS_DIALECT, definition.getInlineViewDef())
                 .withDefaultNamespace(ns)
                 .withDefaultCatalog(definition.getCatalogName())
                 .withProperties(buildViewProperties(definition, catalogName))
-                .withLocation(defaultTableLocation(ns, definition.getViewName()));
+                .withLocation(defaultTableLocation(context, ns, definition.getViewName()));
 
         if (replace) {
-            viewBuilder.createOrReplace();
+            try {
+                viewBuilder.createOrReplace();
+            } catch (RESTException re) {
+                DEFAULT_LOGGER.error("Failed to create view using Iceberg Catalog, for dbName {} viewName {}",
+                        definition.getDatabaseName(), definition.getViewName(), re);
+                throw new StarRocksConnectorException("Failed to create view using Iceberg Catalog",
+                        new RuntimeException("Failed to create view using Iceberg Catalog, exception: " + re.getMessage(), re));
+            }
         } else {
             viewBuilder.create();
         }
@@ -136,18 +180,18 @@ public interface IcebergCatalog extends MemoryTrackable {
         return true;
     }
 
-    default ViewBuilder getViewBuilder(TableIdentifier identifier) {
+    default ViewBuilder getViewBuilder(ConnectContext context, TableIdentifier identifier) {
         throw new StarRocksConnectorException("This catalog doesn't support creating/alter views");
     }
 
-    default boolean alterView(View currentView, ConnectorViewDefinition connectorViewDefinition) {
-        return alterViewDefault(currentView, connectorViewDefinition);
+    default boolean alterView(ConnectContext context, View currentView, ConnectorViewDefinition connectorViewDefinition) {
+        return alterViewDefault(context, currentView, connectorViewDefinition);
     }
 
-    default boolean alterViewDefault(View currentView, ConnectorViewDefinition definition) {
+    default boolean alterViewDefault(ConnectContext context, View currentView, ConnectorViewDefinition definition) {
 
         Namespace ns = convertDbNameToNamespace(definition.getDatabaseName());
-        ViewBuilder viewBuilder = getViewBuilder(TableIdentifier.of(ns, definition.getViewName()));
+        ViewBuilder viewBuilder = getViewBuilder(context, TableIdentifier.of(ns, definition.getViewName()));
         Map<String, String> properties = currentView.properties();
         Map<String, String> alterProperties = definition.getProperties();
 
@@ -186,18 +230,34 @@ public interface IcebergCatalog extends MemoryTrackable {
         return true;
     }
 
-    default boolean dropView(String dbName, String viewName) {
+    default boolean dropView(ConnectContext context, String dbName, String viewName) {
         throw new StarRocksConnectorException("This catalog doesn't support dropping views");
     }
 
-    default View getView(String dbName, String viewName) {
+    default View getView(ConnectContext context, String dbName, String viewName) {
         throw new StarRocksConnectorException("This catalog doesn't loading iceberg view");
+    }
+
+    /**
+     * Register an existing table in the catalog using the given metadata file location.
+     *
+     * @param context The connect context
+     * @param dbName The database name
+     * @param tableName The table name
+     * @param metadataFileLocation The location of the metadata file
+     * @return true if the table was successfully registered, false otherwise
+     */
+    default boolean registerTable(ConnectContext context, String dbName, String tableName, String metadataFileLocation) {
+        throw new StarRocksConnectorException("This catalog doesn't support registering tables");
     }
 
     default void deleteUncommittedDataFiles(List<String> fileLocations) {
     }
 
-    default void refreshTable(String dbName, String tableName, ExecutorService refreshExecutor) {
+    default void refreshTable(String dbName, String tableName, ConnectContext ctx, ExecutorService refreshExecutor) {
+    }
+
+    default void invalidateTableCache(String dbName, String tableName) {
     }
 
     default void invalidatePartitionCache(String dbName, String tableName) {
@@ -210,12 +270,27 @@ public interface IcebergCatalog extends MemoryTrackable {
         return new StarRocksIcebergTableScan(
                 table,
                 table.schema(),
-                newTableScanContext(table),
+                newTableScanContext(table, srScanContext),
                 srScanContext);
     }
 
-    default String defaultTableLocation(Namespace ns, String tableName) {
-        Map<String, String> properties = loadNamespaceMetadata(ns);
+    default Map<String, String> getCatalogProperties() {
+        return new HashMap<>();
+    }
+
+    /**
+     * Check if this catalog uses vended credentials for table access.
+     * When vended credentials are used, caching tables may cause issues
+     * because credentials expire before the cache TTL.
+     *
+     * @return true if vended credentials are enabled
+     */
+    default boolean isVendedCredentialsEnabled() {
+        return false;
+    }
+
+    default String defaultTableLocation(ConnectContext context, Namespace ns, String tableName) {
+        Map<String, String> properties = loadNamespaceMetadata(context, ns);
         String databaseLocation = properties.get(LOCATION_PROPERTY);
         checkArgument(databaseLocation != null, "location must be set for %s.%s", ns, tableName);
 
@@ -226,16 +301,12 @@ public interface IcebergCatalog extends MemoryTrackable {
         }
     }
 
-    default Map<String, String> loadNamespaceMetadata(Namespace ns) {
+    default Map<String, String> loadNamespaceMetadata(ConnectContext context, Namespace ns) {
         return new HashMap<>();
     }
 
     default Map<String, Long> estimateCount() {
         return new HashMap<>();
-    }
-
-    default List<Pair<List<Object>, Long>> getSamples() {
-        return new ArrayList<>();
     }
 
     // --------------- partition APIs ---------------
@@ -245,13 +316,7 @@ public interface IcebergCatalog extends MemoryTrackable {
         PartitionsTable partitionsTable = (PartitionsTable) MetadataTableUtils.
                 createMetadataTableInstance(nativeTable, MetadataTableType.PARTITIONS);
         TableScan tableScan = partitionsTable.newScan();
-        // NOTE: if there is an exception raise because of snapshot id is not the latest one, it's expected
-        // using partition metadata table scan is more  efficient than doing file scan, but limitation is
-        // it only supports the latest snapshot id.
         if (snapshotId != -1) {
-            Preconditions.checkArgument(nativeTable.currentSnapshot().snapshotId() == snapshotId,
-                    "Ignore this error if snapshot id does not match. Iceberg partition metadata table only supports latest " +
-                            "snapshot. current = " + nativeTable.currentSnapshot().snapshotId() + ", expect = " + snapshotId);
             tableScan = tableScan.useSnapshot(snapshotId);
         }
         if (executorService != null) {
@@ -275,24 +340,34 @@ public interface IcebergCatalog extends MemoryTrackable {
                     // equality_delete_file_count,
                     // last_updated_at,
                     // last_updated_snapshot_id
-                    CloseableIterable<StructLike> rows = task.asDataTask().rows();
-                    for (StructLike row : rows) {
-                        // Get the last updated time of the table according to the table schema
-                        long lastUpdated = -1;
-                        try {
-                            lastUpdated = row.get(7, Long.class);
-                        } catch (NullPointerException e) {
-                            // It is a known issue but we do not hanle it right now. If the refresh frequency of 
-                            // the materialized view is very high, an excessive number of error logs will be printed. 
-                            // Therefore, only brief logs are printed now.
-                            logger.error("The table [{}] snapshot [{}] has been expired", nativeTable.name(), snapshotId);
+                    try (CloseableIterable<StructLike> rows = task.asDataTask().rows()) {
+                        for (StructLike row : rows) {
+                            // Get the last updated time of the table according to the table schema
+                            // last_updated_at can be null if the referenced snapshot has been expired.
+                            // Use Long wrapper to avoid NPE during auto-unboxing.
+                            long lastUpdated = getPartitionLastUpdatedTime(icebergTable, row,
+                                    UNPARTITIONED_LAST_UPDATED_AT_COLUMN_INDEX,
+                                    EMPTY_PARTITION_NAME, snapshotId);
+                            long version = getPartitionVersion(row,
+                                    UNPARTITIONED_RECORD_COUNT_COLUMN_INDEX,
+                                    UNPARTITIONED_FILE_COUNT_COLUMN_INDEX,
+                                    UNPARTITIONED_TOTAL_DATA_FILE_SIZE_COLUMN_INDEX,
+                                    UNPARTITIONED_POSITION_DELETE_RECORD_COUNT_COLUMN_INDEX,
+                                    UNPARTITIONED_POSITION_DELETE_FILE_COUNT_COLUMN_INDEX,
+                                    UNPARTITIONED_EQUALITY_DELETE_RECORD_COUNT_COLUMN_INDEX,
+                                    UNPARTITIONED_EQUALITY_DELETE_FILE_COUNT_COLUMN_INDEX,
+                                    EMPTY_PARTITION_NAME);
+                            partition = new Partition(lastUpdated, version);
+                            break;
                         }
-                        partition = new Partition(lastUpdated);
-                        break;
                     }
                 }
                 if (partition == null) {
-                    partition = new Partition(-1);
+                    long tableLatestSnapshotTime = getTableLatestSnapshotTime(icebergTable, logger);
+                    long tableLatestSnapshotVersion = getTableLatestSnapshotVersion(icebergTable, logger);
+                    logger.warn("The unpartitioned table [{}] has no partitions in PartitionsTable, " +
+                            "using {} as last updated time", nativeTable.name(), tableLatestSnapshotTime);
+                    partition = new Partition(tableLatestSnapshotTime, tableLatestSnapshotVersion);
                 }
                 partitionMap.put(EMPTY_PARTITION_NAME, partition);
             } catch (IOException e) {
@@ -314,25 +389,35 @@ public interface IcebergCatalog extends MemoryTrackable {
                     // equality_delete_file_count,
                     // last_updated_at,
                     // last_updated_snapshot_id
-                    CloseableIterable<StructLike> rows = task.asDataTask().rows();
-                    for (StructLike row : rows) {
-                        // Get the partition data/spec id/last updated time according to the table schema
-                        StructProjection partitionData = row.get(0, StructProjection.class);
-                        int specId = row.get(1, Integer.class);
-                        PartitionSpec spec = nativeTable.specs().get(specId);
+                    try (CloseableIterable<StructLike> rows = task.asDataTask().rows()) {
+                        for (StructLike row : rows) {
+                            // Get the partition data/spec id/last updated time according to the table schema
+                            StructProjection partitionData = row.get(PARTITION_DATA_COLUMN_INDEX, StructProjection.class);
+                            int specId = row.get(SPEC_ID_COLUMN_INDEX, Integer.class);
+                            PartitionSpec spec = nativeTable.specs().get(specId);
 
-                        String partitionName =
-                                PartitionUtil.convertIcebergPartitionToPartitionName(spec, partitionData);
+                            // Old partition specs may be referenced in metadata even if they have been deleted. Skip them.
+                            if (spec == null) {
+                                continue;
+                            }
 
-                        long lastUpdated = -1;
-                        try {
-                            lastUpdated = row.get(9, Long.class);
-                        } catch (NullPointerException e) {
-                            logger.error("The table [{}.{}] snapshot [{}] has been expired", nativeTable.name(), partitionName,
-                                    snapshotId, e);
+                            String partitionName =
+                                    PartitionUtil.convertIcebergPartitionToPartitionName(nativeTable, spec, partitionData);
+                            long lastUpdated =
+                                    getPartitionLastUpdatedTime(icebergTable, row, PARTITION_LAST_UPDATED_AT_COLUMN_INDEX,
+                                            partitionName, snapshotId);
+                            long version = getPartitionVersion(row,
+                                    PARTITION_RECORD_COUNT_COLUMN_INDEX,
+                                    PARTITION_FILE_COUNT_COLUMN_INDEX,
+                                    PARTITION_TOTAL_DATA_FILE_SIZE_COLUMN_INDEX,
+                                    PARTITION_POSITION_DELETE_RECORD_COUNT_COLUMN_INDEX,
+                                    PARTITION_POSITION_DELETE_FILE_COUNT_COLUMN_INDEX,
+                                    PARTITION_EQUALITY_DELETE_RECORD_COUNT_COLUMN_INDEX,
+                                    PARTITION_EQUALITY_DELETE_FILE_COUNT_COLUMN_INDEX,
+                                    partitionName);
+                            Partition partition = new Partition(lastUpdated, version, specId);
+                            partitionMap.put(partitionName, partition);
                         }
-                        Partition partition = new Partition(lastUpdated);
-                        partitionMap.put(partitionName, partition);
                     }
                 }
             } catch (IOException e) {
@@ -342,20 +427,127 @@ public interface IcebergCatalog extends MemoryTrackable {
         return partitionMap;
     }
 
+    private long getPartitionLastUpdatedTime(IcebergTable icebergTable, StructLike row,
+                                             int columnIndex, String partitionName,
+                                             long snapshotId) {
+        Table nativeTable = icebergTable.getNativeTable();
+        Logger logger = getLogger();
+        // Iceberg PARTITIONS metadata table exposes last_updated_at in microseconds. Keep the fallback path in the
+        // same unit because com.starrocks.connector.iceberg.Partition reports MICROSECONDS to downstream callers.
+        //
+        // last_updated_at can be null if the referenced snapshot has been expired. Use Long wrapper to avoid NPE
+        // during auto-unboxing.
+        long lastUpdated = -1;
+        if (row != null) {
+            try {
+                Long lastUpdatedWrapper = row.get(columnIndex, Long.class);
+                if (lastUpdatedWrapper != null) {
+                    lastUpdated = lastUpdatedWrapper;
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to get last_updated_at for partition [{}] of table [{}] " +
+                                "under snapshot [{}]", partitionName, nativeTable.name(), snapshotId, e);
+            }
+        }
+        return lastUpdated;
+    }
+
+    private long getPartitionVersion(StructLike row,
+                                     int recordCountIndex, int fileCountIndex, int totalSizeIndex,
+                                     int posDeleteRecordCountIndex, int posDeleteFileCountIndex,
+                                     int eqDeleteRecordCountIndex, int eqDeleteFileCountIndex,
+                                     String partitionName) {
+        // Always use a partition-specific stats fingerprint as the version token.
+        // This keeps the version space uniform regardless of whether the partition's
+        // last_updated_snapshot_id references a live or GC'd snapshot, so A→C transitions
+        // (snapshot expires between two MV refreshes) do not cause a spurious refresh.
+        // modifiedTime (last_updated_at) is stored separately and used as the real wall-clock signal.
+        return computePartitionStatsFingerprint(row,
+                recordCountIndex, fileCountIndex, totalSizeIndex,
+                posDeleteRecordCountIndex, posDeleteFileCountIndex,
+                eqDeleteRecordCountIndex, eqDeleteFileCountIndex,
+                partitionName);
+    }
+
+    private long computePartitionStatsFingerprint(StructLike row,
+                                                  int recordCountIndex,
+                                                  int fileCountIndex,
+                                                  int totalSizeIndex,
+                                                  int posDeleteRecordCountIndex,
+                                                  int posDeleteFileCountIndex,
+                                                  int eqDeleteRecordCountIndex,
+                                                  int eqDeleteFileCountIndex,
+                                                  String partitionName) {
+        Logger logger = getLogger();
+        try {
+            long rc = getStatsColumnAsLong(row, recordCountIndex);
+            long fc = getStatsColumnAsLong(row, fileCountIndex);
+            long ts = getStatsColumnAsLong(row, totalSizeIndex);
+            long posDeleteRc = getStatsColumnAsLong(row, posDeleteRecordCountIndex);
+            long posDeleteFc = getStatsColumnAsLong(row, posDeleteFileCountIndex);
+            long eqDeleteRc = getStatsColumnAsLong(row, eqDeleteRecordCountIndex);
+            long eqDeleteFc = getStatsColumnAsLong(row, eqDeleteFileCountIndex);
+            // Include all data and delete file stats so that delete-only operations
+            // (position deletes, equality deletes) or rewrites that preserve data file
+            // counts but change delete files are correctly detected as changes.
+            // Produce a non-negative 31-bit hash to satisfy the >= 0 sentinel check in DefaultTraits.
+            return (long) Objects.hash(rc, fc, ts, posDeleteRc, posDeleteFc, eqDeleteRc, eqDeleteFc) & 0x7FFFFFFFL;
+        } catch (Exception e) {
+            logger.error("Failed to compute stats fingerprint for partition [{}]", partitionName, e);
+            return -1L;
+        }
+    }
+
+    private long getStatsColumnAsLong(StructLike row, int columnIndex) {
+        Number value = row.get(columnIndex, Number.class);
+        return value != null ? value.longValue() : 0L;
+    }
+
+    private long getTableLatestSnapshotTime(IcebergTable icebergTable,
+                                            Logger logger) {
+        Table nativeTable = icebergTable.getNativeTable();
+        // currentSnapshot() is Iceberg's canonical pointer to the latest snapshot in the table's current metadata.
+        // We intentionally do not scan table.snapshots(): the fallback only needs the current head snapshot time.
+        Snapshot snapshot = nativeTable.currentSnapshot();
+        if (snapshot == null) {
+            logger.warn("The table [{}] has no current snapshot, using -1 as last updated time",
+                    nativeTable.name());
+            return -1;
+        }
+        // Keep the same unit as PARTITIONS.last_updated_at and Partition#getModifiedTimeUnit().
+        return TimeUnit.MILLISECONDS.toMicros(snapshot.timestampMillis());
+    }
+
+    private long getTableLatestSnapshotVersion(IcebergTable icebergTable,
+                                               Logger logger) {
+        Table nativeTable = icebergTable.getNativeTable();
+        Snapshot snapshot = nativeTable.currentSnapshot();
+        if (snapshot == null) {
+            logger.warn("The table [{}] has no current snapshot, using -1 as version", nativeTable.name());
+            return -1;
+        }
+        // sequenceNumber is Iceberg's monotonic snapshot version within a table. Use it for MV refresh detection
+        // because snapshot timestamps are not guaranteed to be strictly increasing.
+        return snapshot.sequenceNumber();
+    }
+
     default List<String> listPartitionNames(IcebergTable icebergTable,
-                                            ConnectorMetadatRequestContext requestContext,
+                                            ConnectorMetadataRequestContext requestContext,
                                             ExecutorService executorService) {
         Table nativeTable = icebergTable.getNativeTable();
 
-        // Call public method so subclasses can override and optimize this method.
-        Map<String, Partition> partitionMap = getPartitions(icebergTable, requestContext.getSnapshotId(), executorService);
         if (nativeTable.spec().isUnpartitioned()) {
             return List.of();
         } else {
+            // Call public method so subclasses can override and optimize this method.
+            Map<String, Partition> partitionMap = getPartitions(icebergTable, requestContext.getSnapshotId(), executorService);
             return new ArrayList<>(partitionMap.keySet());
         }
     }
 
+    /**
+     * Get partition info by names using the current (live) snapshot.
+     */
     default List<Partition> getPartitionsByNames(IcebergTable icebergTable,
                                                  ExecutorService executorService,
                                                  List<String> partitionNames) {
@@ -364,7 +556,18 @@ public interface IcebergCatalog extends MemoryTrackable {
         if (nativeTable.currentSnapshot() != null) {
             snapshotId = nativeTable.currentSnapshot().snapshotId();
         }
+        return getPartitionsByNames(icebergTable, snapshotId, executorService, partitionNames);
+    }
 
+    /**
+     * Get partition info by names at a specific snapshot.
+     * @param snapshotId the Iceberg snapshot ID to read partitions from, or -1 for current snapshot
+     */
+    default List<Partition> getPartitionsByNames(IcebergTable icebergTable,
+                                                 long snapshotId,
+                                                 ExecutorService executorService,
+                                                 List<String> partitionNames) {
+        Table nativeTable = icebergTable.getNativeTable();
         // Call public method so subclasses can override and optimize this method.
         Map<String, Partition> partitionMap = getPartitions(icebergTable, snapshotId, executorService);
         if (nativeTable.spec().isUnpartitioned()) {

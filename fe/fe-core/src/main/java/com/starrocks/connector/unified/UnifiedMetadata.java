@@ -16,22 +16,26 @@ package com.starrocks.connector.unified;
 
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.MvId;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.AlreadyExistsException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.profile.Tracers;
-import com.starrocks.connector.ConnectorMetadatRequestContext;
+import com.starrocks.common.tvr.TvrTableDeltaTrait;
+import com.starrocks.common.tvr.TvrTableSnapshot;
+import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.connector.ConnectorMetadata;
+import com.starrocks.connector.ConnectorMetadataRequestContext;
 import com.starrocks.connector.ConnectorTableVersion;
+import com.starrocks.connector.DelegatingConnectorMetadata;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.MetaPreparationItem;
 import com.starrocks.connector.PartitionInfo;
 import com.starrocks.connector.RemoteFileInfo;
 import com.starrocks.connector.RemoteFileInfoSource;
 import com.starrocks.connector.SerializedMetaSpec;
-import com.starrocks.connector.TableVersionRange;
 import com.starrocks.connector.hive.HiveMetadata;
 import com.starrocks.connector.metadata.MetadataTableType;
 import com.starrocks.credential.CloudConfiguration;
@@ -57,7 +61,7 @@ import static com.starrocks.catalog.Table.TableType.KUDU;
 import static com.starrocks.catalog.Table.TableType.PAIMON;
 import static java.util.Objects.requireNonNull;
 
-public class UnifiedMetadata implements ConnectorMetadata {
+public class UnifiedMetadata implements ConnectorMetadata, DelegatingConnectorMetadata {
     public static final String ICEBERG_TABLE_TYPE_NAME = "table_type";
     public static final String ICEBERG_TABLE_TYPE_VALUE = "iceberg";
     public static final String SPARK_TABLE_PROVIDER_KEY = "spark.sql.sources.provider";
@@ -133,9 +137,29 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public TableVersionRange getTableVersionRange(String dbName, Table table,
-                                                  Optional<ConnectorTableVersion> startVersion,
-                                                  Optional<ConnectorTableVersion> endVersion) {
+    public TvrTableSnapshot getCurrentTvrSnapshot(String dbName, Table table) {
+        ConnectorMetadata metadata = metadataOfTable(table);
+        return metadata.getCurrentTvrSnapshot(dbName, table);
+    }
+
+    @Override
+    public TvrTableSnapshot acquireTvrSnapshot(String dbName, Table table, MvId mvId) {
+        ConnectorMetadata metadata = metadataOfTable(table);
+        return metadata.acquireTvrSnapshot(dbName, table, mvId);
+    }
+
+    @Override
+    public List<TvrTableDeltaTrait> listTableDeltaTraits(String dbName, Table table,
+                                                         TvrTableSnapshot fromSnapshotExclusive,
+                                                         TvrTableSnapshot toSnapshotInclusive) {
+        ConnectorMetadata metadata = metadataOfTable(table);
+        return metadata.listTableDeltaTraits(dbName, table, fromSnapshotExclusive, toSnapshotInclusive);
+    }
+
+    @Override
+    public TvrVersionRange getTableVersionRange(String dbName, Table table,
+                                                Optional<ConnectorTableVersion> startVersion,
+                                                Optional<ConnectorTableVersion> endVersion) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getTableVersionRange(dbName, table, startVersion, endVersion);
     }
@@ -151,7 +175,8 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public List<String> listPartitionNames(String databaseName, String tableName, ConnectorMetadatRequestContext requestContext) {
+    public List<String> listPartitionNames(String databaseName, String tableName,
+                                           ConnectorMetadataRequestContext requestContext) {
         ConnectorMetadata metadata = metadataOfTable(databaseName, tableName);
         return metadata.listPartitionNames(databaseName, tableName, requestContext);
     }
@@ -194,6 +219,11 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public ConnectorMetadata delegateFor(Table table) {
+        return metadataOfTable(table);
+    }
+
+    @Override
     public List<PartitionInfo> getPartitions(Table table, List<String> partitionNames) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getPartitions(table, partitionNames);
@@ -202,7 +232,7 @@ public class UnifiedMetadata implements ConnectorMetadata {
     @Override
     public Statistics getTableStatistics(OptimizerContext session, Table table, Map<ColumnRefOperator, Column> columns,
                                          List<PartitionKey> partitionKeys, ScalarOperator predicate, long limit,
-                                         TableVersionRange version) {
+                                         TvrVersionRange version) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getTableStatistics(session, table, columns, partitionKeys, predicate, limit, version);
     }
@@ -225,18 +255,14 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public void createDb(String dbName) throws DdlException, AlreadyExistsException {
-        hiveMetadata.createDb(dbName);
-    }
-
-    @Override
     public boolean dbExists(ConnectContext context, String dbName) {
         return hiveMetadata.dbExists(context, dbName);
     }
 
     @Override
-    public void createDb(String dbName, Map<String, String> properties) throws DdlException, AlreadyExistsException {
-        hiveMetadata.createDb(dbName, properties);
+    public void createDb(ConnectContext context, String dbName, Map<String, String> properties)
+            throws DdlException, AlreadyExistsException {
+        hiveMetadata.createDb(context, dbName, properties);
     }
 
     @Override
@@ -250,22 +276,35 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public boolean createTable(CreateTableStmt stmt) throws DdlException {
+    public boolean createTable(ConnectContext context, CreateTableStmt stmt) throws DdlException {
         requireNonNull(stmt.getEngineName(), "engine name is null");
         Table.TableType type = Table.TableType.deserialize(stmt.getEngineName().toUpperCase());
-        return metadataMap.get(type).createTable(stmt);
+        return metadataMap.get(type).createTable(context, stmt);
     }
 
     @Override
-    public void dropTable(DropTableStmt stmt) throws DdlException {
+    public void dropTable(ConnectContext context, DropTableStmt stmt) throws DdlException {
         ConnectorMetadata metadata = metadataOfTable(stmt.getDbName(), stmt.getTableName());
-        metadata.dropTable(stmt);
+        metadata.dropTable(context, stmt);
     }
 
     @Override
     public void finishSink(String dbName, String table, List<TSinkCommitInfo> commitInfos, String branch) {
         ConnectorMetadata metadata = metadataOfTable(dbName, table);
         metadata.finishSink(dbName, table, commitInfos, branch);
+    }
+
+    @Override
+    public void finishSink(String dbName, String table, List<TSinkCommitInfo> commitInfos, String branch, Object extra) {
+        ConnectorMetadata metadata = metadataOfTable(dbName, table);
+        metadata.finishSink(dbName, table, commitInfos, branch, extra);
+    }
+
+    @Override
+    public void finishSink(String dbName, String table, List<TSinkCommitInfo> commitInfos, String branch, Object extra,
+                           ConnectContext context) {
+        ConnectorMetadata metadata = metadataOfTable(dbName, table);
+        metadata.finishSink(dbName, table, commitInfos, branch, extra, context);
     }
 
     @Override

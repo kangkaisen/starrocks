@@ -81,7 +81,7 @@ sudo apt update
 ```
 
 ```bash
-sudo apt install gcc g++ maven openjdk-11-jdk python3 python-is-python3 unzip cmake bzip2 ccache byacc ccache flex automake libtool bison binutils-dev libiberty-dev build-essential ninja-build
+sudo apt install gcc g++ maven openjdk-11-jdk python3 python-is-python3 unzip cmake bzip2 ccache byacc ccache flex automake libtool bison libiberty-dev build-essential ninja-build curl
 ```
 
 `JAVA_HOME` 環境のセットアップ
@@ -123,9 +123,9 @@ Ubuntu サーバーで `./start_fe.sh --debug` を実行し、IDEA のリモー�
 
 ### BE
 
-最初に `fe` フォルダで `mvn install -DskipTests` を実行して、gensrc ディレクトリ内の thrift と protobuf が正しくコンパイルされていることを確認することをお勧めします。
+最初に `fe` フォルダで `mvn install -DskipTests` を実行して、FE 側の Java thrift/proto ソースを生成しておくことをお勧めします。
 
-その後、`gensrc` フォルダに入り、それぞれ `make clean` と `make` コマンドを実行する必要があります。そうしないと Clion が thrift の出力ファイルを検出できません。
+BE については、CMake の configure/build を一度実行してください。BE の thrift/protobuf ヘッダーは configure/build 中にアクティブな build ディレクトリ配下 (例: `be/build_Release/gensrc/gen_cpp`) に CMake が生成するため、これらのファイルのために `cd gensrc && make` を実行する必要はありません。共有の script 生成物が必要な場合だけ `make -C gensrc script` を実行してください。
 
 Clion を使用して `be` フォルダを開きます。
 

@@ -14,9 +14,17 @@
 
 package com.starrocks.qe;
 
+import com.google.gson.JsonObject;
+import com.starrocks.common.StarRocksException;
+import com.starrocks.common.util.ProfileManager;
+import com.starrocks.common.util.ProfilingExecPlan;
+import com.starrocks.common.util.RuntimeProfile;
+import com.starrocks.sql.ExplainAnalyzer;
 import com.starrocks.thrift.TQueryStatisticsInfo;
-import org.junit.Assert;
-import org.junit.Test;
+import mockit.Mock;
+import mockit.MockUp;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import static com.starrocks.common.proc.CurrentGlobalQueryStatisticsProcDirTest.QUERY_ONE_LOCAL;
 
@@ -38,18 +46,72 @@ public class QueryStatisticsInfoTest {
                 firstQuery.getMemUsageBytes(),
                 firstQuery.getSpillBytes(),
                 firstQuery.getExecTime(),
+                firstQuery.getExecProgress(),
+                firstQuery.getExecState(),
                 firstQuery.getWareHouseName(),
                 firstQuery.getCustomQueryId(),
                 firstQuery.getResourceGroupName()
         );
-        Assert.assertEquals(firstQuery, otherQuery);
-        Assert.assertEquals(firstQuery.hashCode(), otherQuery.hashCode());
+        Assertions.assertEquals(firstQuery, otherQuery);
+        Assertions.assertEquals(firstQuery.hashCode(), otherQuery.hashCode());
     }
 
     @Test
     public void testThrift() {
         TQueryStatisticsInfo firstQueryThrift = firstQuery.toThrift();
         QueryStatisticsInfo firstQueryTest = QueryStatisticsInfo.fromThrift(firstQueryThrift);
-        Assert.assertEquals(firstQuery, firstQueryTest);
+        Assertions.assertEquals(firstQuery, firstQueryTest);
+    }
+
+    @Test
+    public void testGetExecProgress() throws Exception {
+        ProfileManager manager = ProfileManager.getInstance();
+        manager.clearProfiles();
+
+        RuntimeProfile profile = new RuntimeProfile("");
+        RuntimeProfile summaryProfile = new RuntimeProfile("Summary");
+        summaryProfile.addInfoString(ProfileManager.QUERY_ID, "123");
+        summaryProfile.addInfoString(ProfileManager.QUERY_TYPE, "Query");
+        summaryProfile.addInfoString(ProfileManager.QUERY_STATE, "Running");
+        profile.addChild(summaryProfile);
+
+        try {
+            new MockUp<ExplainAnalyzer>() {
+                @Mock
+                public String getQueryProgress() throws StarRocksException {
+                    JsonObject progressInfo = new JsonObject();
+                    progressInfo.addProperty("total_operator_num", 5);
+                    progressInfo.addProperty("finished_operator_num", 3);
+                    progressInfo.addProperty("progress_percent", "60.00%");
+
+                    JsonObject result = new JsonObject();
+                    result.addProperty("query_id", "123");
+                    result.addProperty("state", "Running");
+                    result.add("progress_info", progressInfo);
+                    return result.toString();
+                }
+            };
+
+            manager.pushProfile(new ProfilingExecPlan(), profile);
+            Assertions.assertEquals("60.00%", QueryStatisticsInfo.getExecProgress("123"));
+
+            manager.clearProfiles();
+            Assertions.assertEquals("", QueryStatisticsInfo.getExecProgress("123"));
+
+            manager.pushProfile(null, profile);
+            Assertions.assertEquals("", QueryStatisticsInfo.getExecProgress("123"));
+
+            manager.clearProfiles();
+            manager.pushProfile(new ProfilingExecPlan(), profile);
+            new MockUp<ExplainAnalyzer>() {
+                @Mock
+                public String getQueryProgress() throws StarRocksException {
+                    throw new StarRocksException("mock failure");
+                }
+            };
+            Assertions.assertEquals("", QueryStatisticsInfo.getExecProgress("123"));
+        } finally {
+            manager.clearProfiles();
+        }
     }
 }
